@@ -1,0 +1,6 @@
+# 仅使用 stable 可用的 rustfmt 选项（group_imports / imports_granularity
+# 等 nightly-only 选项刻意不启用，避免工具链分裂）。
+edition = "2024"
+max_width = 100
+use_field_init_shorthand = true
+use_try_shorthand = true

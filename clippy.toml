@@ -1,0 +1,6 @@
+# 与 rust-toolchain.toml 保持一致，超出 MSRV 语法的 lint 自动降级
+msrv = "1.88"
+# 允许 re-export 不破坏 API 的检查（发布到 crates.io 时再开）
+avoid-breaking-exported-api = false
+# 圈复杂度阈值（默认 25，略放宽避免过度拆函数）
+cognitive-complexity-threshold = 30

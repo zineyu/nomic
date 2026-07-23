@@ -1,0 +1,14 @@
+# typos 拼写检查：https://github.com/crate-ci/typos
+[default]
+locale = "en"
+
+[files]
+extend-exclude = [
+  "Cargo.lock",
+  "*.svg",
+  "*.min.*",
+]
+
+# 项目专有词汇白名单（被误报时追加）
+[default.extend-words]
+nomic = "nomic"

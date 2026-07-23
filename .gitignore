@@ -1,0 +1,21 @@
+# Rust
+/target
+**/*.rs.bk
+
+# devenv
+.devenv/
+devenv.local.nix
+.devenv.flake.nix
+.pre-commit-config.yaml
+
+# direnv
+.direnv/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# OS
+.DS_Store

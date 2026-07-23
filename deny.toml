@@ -1,0 +1,43 @@
+# cargo-deny 配置：许可证、安全公告、依赖去重、来源管控
+# 文档：https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = false
+
+[output]
+feature-depth = 1
+
+[advisories]
+# 默认使用 RustSec advisory-db；已知无修复方案且可接受的漏洞在此忽略
+ignore = []
+yanked = "deny"
+
+[licenses]
+# 宽松的 copyleft/permissive 白名单；新增许可证需评审后加入
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Zlib",
+  "CC0-1.0",
+  "MPL-2.0",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+# 需要禁用/替换的特定 crate 在此声明
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

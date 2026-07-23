@@ -1,5 +1,5 @@
 [package]
-name = "nomic-core"
+name = "nomic-ai"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,16 +10,12 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-async-trait.workspace = true
+eventsource-stream.workspace = true
 futures.workspace = true
-nomic-ai.workspace = true
-schemars.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
-async-trait.workspace = true
-schemars.workspace = true

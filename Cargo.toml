@@ -1,16 +1,65 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 repository = "https://github.com/zine/nomic"
 
-[workspace.dependencies]
 # 共享依赖统一在此声明版本，crate 内使用 `dep.workspace = true` 引用。
+[workspace.dependencies]
+# ── 内部 crate ──────────────────────────────────────────────────────────────
+nomic-ai = { path = "crates/nomic-ai", version = "0.1.0" }
+nomic-core = { path = "crates/nomic-core", version = "0.1.0" }
+nomic-tools = { path = "crates/nomic-tools", version = "0.1.0" }
+
+# ── 异步运行时与工具 ─────────────────────────────────────────────────────────
+tokio = { version = "1.53", features = [
+  "macros",
+  "rt-multi-thread",
+  "fs",
+  "process",
+  "io-util",
+  "time",
+  "sync",
+  "signal",
+] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# ── HTTP / SSE ──────────────────────────────────────────────────────────────
+reqwest = { version = "0.13", default-features = false, features = [
+  "rustls",
+  "stream",
+  "json",
+  "charset",
+  "http2",
+  "system-proxy",
+] }
+eventsource-stream = "0.2"
+
+# ── 序列化与 schema ─────────────────────────────────────────────────────────
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+schemars = "1.2"
+
+# ── 错误处理 ────────────────────────────────────────────────────────────────
+anyhow = "1.0"
+thiserror = "2.0"
+
+# ── CLI ─────────────────────────────────────────────────────────────────────
+clap = { version = "4.5", features = ["derive"] }
+
+# ── 文本处理（nomic-tools）─────────────────────────────────────────────────
+similar = "2"
+unicode-normalization = "0.1"
+
+# ── 测试 ────────────────────────────────────────────────────────────────────
+tokio-test = "0.4"
 
 # ── Lint 配置：严格但实用 ────────────────────────────────────────────────────
 # 所有 crate 通过 `[lints] workspace = true` 继承。
@@ -44,6 +93,10 @@ option_if_let_else = "allow"
 # cargo 组中要求 crates.io 发布元数据（readme/keywords/categories），
 # 内部 workspace 无需强制；发布到 crates.io 时移除本行并补全 metadata
 cargo_common_metadata = "allow"
+# 传递依赖的多版本（syn 2/3、windows-sys 等）不受本仓库控制，无法消除
+multiple_crate_versions = "allow"
+# 中文文档中夹杂标识符（OpenAI、stop_reason 等）会大量误报，收益低于噪音
+doc_markdown = "allow"
 
 [profile.release]
 lto = "thin"

@@ -1,24 +1,17 @@
-//! Core domain primitives for the nomic workspace.
+//! nomic-core：agent loop 与工具抽象（对应 pi 的 pi-agent-core 层）。
 //!
-//! 这是 workspace 的示例 crate，用于验证工具链、lint 与 CI 配置。
+//! - `tool`：[`AgentTool`] 强类型工具契约与 [`DynTool`] 类型擦除包装
+//! - `hooks`：生命周期 hooks（trait + 默认空实现）
+//! - `agent`：事件驱动的 agent loop
 
-/// Returns a greeting addressed to `name`.
-///
-/// # Examples
-///
-/// ```
-/// assert_eq!(nomic_core::greet("world"), "Hello, world!");
-/// ```
-pub fn greet(name: &str) -> String {
-    format!("Hello, {name}!")
-}
+mod agent;
+mod hooks;
+mod tool;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn greets_by_name() {
-        assert_eq!(greet("nomic"), "Hello, nomic!");
-    }
-}
+pub use agent::{Agent, AgentConfig, AgentError, AgentEvent};
+pub use hooks::{
+    AfterToolCall, AfterToolCallOverride, AgentHooks, BeforeToolCall, NoopHooks, ToolCallDecision,
+};
+pub use tool::{
+    AgentTool, DynTool, ExecutionMode, ToolError, ToolResult, ToolUpdate, ToolUpdateCallback,
+};

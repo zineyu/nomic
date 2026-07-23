@@ -1,25 +1,24 @@
 [package]
-name = "nomic-core"
+name = "nomic-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "nomic"
+path = "src/main.rs"
+
 [lints]
 workspace = true
 
 [dependencies]
-async-trait.workspace = true
-futures.workspace = true
+anyhow.workspace = true
+clap.workspace = true
 nomic-ai.workspace = true
-schemars.workspace = true
-serde.workspace = true
+nomic-core.workspace = true
+nomic-tools.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-
-[dev-dependencies]
-async-trait.workspace = true
-schemars.workspace = true

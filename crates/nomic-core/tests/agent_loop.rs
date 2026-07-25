@@ -21,13 +21,21 @@ use tokio_util::sync::CancellationToken;
 struct MockProvider {
     /// 每次 stream 调用弹出一段事件脚本
     scripts: Mutex<VecDeque<Vec<AssistantEvent>>>,
+    /// 每次 stream 调用收到的上下文消息数（验证历史注入）
+    context_lens: Mutex<Vec<usize>>,
 }
 
 impl MockProvider {
     fn new(scripts: Vec<Vec<AssistantEvent>>) -> Arc<Self> {
         Arc::new(Self {
             scripts: Mutex::new(scripts.into()),
+            context_lens: Mutex::new(Vec::new()),
         })
+    }
+
+    /// 各次 stream 调用收到的上下文消息数
+    fn context_lens(&self) -> Vec<usize> {
+        self.context_lens.lock().expect("lock").clone()
     }
 }
 
@@ -35,10 +43,14 @@ impl Provider for MockProvider {
     fn stream(
         &self,
         _model: &Model,
-        _context: &Context,
+        context: &Context,
         _options: &StreamOptions,
         _cancel: CancellationToken,
     ) -> nomic_ai::AssistantStream {
+        self.context_lens
+            .lock()
+            .expect("lock")
+            .push(context.messages.len());
         let events = self
             .scripts
             .lock()
@@ -230,6 +242,51 @@ async fn text_only_prompt_single_turn() {
         e,
         AgentEvent::MessageUpdate(AssistantEvent::TextDelta { .. })
     )));
+}
+
+#[tokio::test]
+async fn resume_with_seeded_history() {
+    let provider = MockProvider::new(vec![text_done("world")]);
+    let history = vec![
+        Message::User(nomic_ai::UserMessage {
+            content: nomic_ai::UserMessageContent::Text("old question".to_string()),
+            timestamp: now_millis(),
+        }),
+        Message::Assistant(assistant_message(
+            vec![AssistantContent::Text(TextContent {
+                text: "old answer".to_string(),
+                text_signature: None,
+            })],
+            StopReason::Stop,
+        )),
+    ];
+    let (mut agent, rx) = Agent::with_messages(
+        AgentConfig {
+            model: model(),
+            provider: provider.clone(),
+            stream_options: StreamOptions::default(),
+            hooks: Arc::new(NoopHooks),
+            tool_execution: nomic_core::ExecutionMode::Parallel,
+        },
+        vec![DynTool::new(EchoTool)],
+        "test system prompt",
+        history.clone(),
+    );
+
+    let collector = tokio::spawn(collect_events(rx));
+    let new_messages = agent
+        .prompt("hi", CancellationToken::new())
+        .await
+        .expect("prompt");
+    collector.await.expect("collector");
+
+    // 返回值只含本次新增；完整历史 = 种子 + 新增
+    assert_eq!(new_messages.len(), 2);
+    let all = agent.messages();
+    assert_eq!(all.len(), history.len() + 2);
+    assert_eq!(&all[..history.len()], history.as_slice());
+    // provider 收到的上下文 = 种子历史 + 新 user 消息
+    assert_eq!(provider.context_lens(), vec![history.len() + 1]);
 }
 
 #[tokio::test]

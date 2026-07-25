@@ -5,6 +5,9 @@
 //! session 持久化（方案 A，事件驱动）：core 零改动，CLI 在事件流中对每条
 //! `MessageEnd`（消息定稿点）调 [`SessionStore::append_message`] 落库；
 //! 持久化失败仅告警不中断运行（store 非权威源）。
+//!
+//! resume：`--continue`/`-c` 恢复最近一次 session，`--session <ID>` 恢复指定
+//! session；历史消息经 [`Agent::with_messages`] 注入，新消息续写到同一 session。
 
 use std::io::Write as _;
 use std::sync::Arc;
@@ -58,6 +61,14 @@ struct Cli {
     /// 追加到系统提示词末尾的文本
     #[arg(long)]
     append_system: Option<String>,
+
+    /// 恢复最近一次 session 继续对话
+    #[arg(long = "continue", short = 'c', conflicts_with = "session")]
+    continue_session: bool,
+
+    /// 恢复指定 id 的 session 继续对话
+    #[arg(long, value_name = "ID")]
+    session: Option<String>,
 }
 
 #[tokio::main]
@@ -92,7 +103,20 @@ async fn main() -> Result<()> {
         timeout_ms: None,
     };
 
-    let (mut agent, mut events) = Agent::new(
+    // session 初始化需在构建 agent 前完成：resume 的历史要注入 agent
+    let (session, history) = match init_session(&cli).await? {
+        Some(init) => {
+            eprintln!(
+                "\x1b[2msession {}（{} 条历史消息）\x1b[0m",
+                init.id,
+                init.history.len()
+            );
+            (Some((init.store, init.id)), init.history)
+        }
+        None => (None, Vec::new()),
+    };
+
+    let (mut agent, mut events) = Agent::with_messages(
         AgentConfig {
             model,
             provider,
@@ -102,6 +126,7 @@ async fn main() -> Result<()> {
         },
         nomic_tools::default_tools(),
         build_system_prompt(cli.append_system.as_deref())?,
+        history,
     );
 
     let cancel = CancellationToken::new();
@@ -111,9 +136,6 @@ async fn main() -> Result<()> {
             cancel_on_sigint.cancel();
         }
     });
-
-    // 打开全局 session 库并创建本次会话；失败时降级为不持久化（仅告警）
-    let session = init_session().await?;
 
     let cancel_for_prompt = cancel.clone();
     let run = tokio::spawn(async move { agent.prompt(&prompt, cancel_for_prompt).await });
@@ -190,20 +212,56 @@ async fn drain_events(
     saw_error
 }
 
-/// 初始化 session 持久化：打开默认库并以当前 cwd 创建 session。
+/// session 初始化结果：store、session id 与恢复的历史消息（新会话为空）。
+struct SessionInit {
+    store: SessionStore,
+    id: String,
+    history: Vec<Message>,
+}
+
+/// 初始化 session：按 `--continue`/`--session` 恢复既有会话，否则新建。
 ///
-/// 失败时降级为不持久化（打告警后返回 `None`），不阻断本次运行。
-async fn init_session() -> Result<Option<(SessionStore, String)>> {
+/// - resume 语义下打开库/加载消息失败直接报错（用户显式要求恢复）
+/// - 新会话语义下降级为不持久化（打告警后返回 `None`），不阻断本次运行
+async fn init_session(cli: &Cli) -> Result<Option<SessionInit>> {
+    let resume = cli.continue_session || cli.session.is_some();
     let store = match SessionStore::open_default().await {
         Ok(store) => store,
         Err(error) => {
+            if resume {
+                return Err(error).context("打开 session 库失败，无法恢复会话");
+            }
             eprintln!("\x1b[33m⚠ 打开 session 库失败，本次运行不持久化：{error}\x1b[0m");
             return Ok(None);
         }
     };
+
+    if resume {
+        let id = match &cli.session {
+            Some(id) => id.clone(),
+            None => store
+                .list_sessions()
+                .await
+                .context("列出 session 失败")?
+                .into_iter()
+                .next()
+                .map(|summary| summary.id)
+                .context("没有可恢复的 session")?,
+        };
+        let history = store
+            .load_messages(&id)
+            .await
+            .with_context(|| format!("加载 session {id} 失败"))?;
+        return Ok(Some(SessionInit { store, id, history }));
+    }
+
     let cwd = std::env::current_dir().context("get cwd")?;
     match store.create_session(&cwd).await {
-        Ok(id) => Ok(Some((store, id))),
+        Ok(id) => Ok(Some(SessionInit {
+            store,
+            id,
+            history: Vec::new(),
+        })),
         Err(error) => {
             eprintln!("\x1b[33m⚠ 创建 session 失败，本次运行不持久化：{error}\x1b[0m");
             Ok(None)

@@ -142,12 +142,25 @@ impl Agent {
         tools: Vec<DynTool>,
         system_prompt: impl Into<String>,
     ) -> (Self, mpsc::UnboundedReceiver<AgentEvent>) {
+        Self::with_messages(config, tools, system_prompt, Vec::new())
+    }
+
+    /// 创建携带既有消息历史的 agent（session resume 场景）。
+    ///
+    /// `messages` 按序作为上下文起点，后续 `prompt` 追加在其后；
+    /// 调用方负责保证顺序与来源（如 session store 的 `load_messages` 输出）。
+    pub fn with_messages(
+        config: AgentConfig,
+        tools: Vec<DynTool>,
+        system_prompt: impl Into<String>,
+        messages: Vec<Message>,
+    ) -> (Self, mpsc::UnboundedReceiver<AgentEvent>) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         (
             Self {
                 config,
                 system_prompt: system_prompt.into(),
-                messages: Vec::new(),
+                messages,
                 tools,
                 event_tx,
             },

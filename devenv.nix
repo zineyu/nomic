@@ -12,6 +12,7 @@
     toolchainFile = ./rust-toolchain.toml;
     # 使用 mold 链接器加速本地构建
     mold.enable = pkgs.stdenv.isLinux;
+    lsp.enable = true;
   };
 
   # ── 质量工具 ───────────────────────────────────────────────────────────────

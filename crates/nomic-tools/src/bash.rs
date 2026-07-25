@@ -1,5 +1,6 @@
 //! `bash` 工具：超时、尾部截断、完整输出落临时文件、100ms 节流进度（契约与 pi 一致）。
 
+use std::mem;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -109,7 +110,7 @@ impl AgentTool for BashTool {
         drop(progress_tx);
         let _ = progress_task.await;
 
-        let full_output = std::mem::take(
+        let full_output = mem::take(
             &mut *buffer
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),

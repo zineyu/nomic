@@ -2,7 +2,8 @@
 
 use std::convert::Infallible;
 
-use eventsource_stream::Eventsource;
+use eventsource_stream::{Event, EventStreamError, Eventsource};
+use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
 use super::*;
@@ -11,19 +12,12 @@ use crate::{ToolResultMessage, UserMessage, UserMessageContent};
 
 fn fixture_events(
     text: &'static str,
-) -> std::pin::Pin<
-    Box<
-        dyn futures::Stream<
-                Item = Result<
-                    eventsource_stream::Event,
-                    eventsource_stream::EventStreamError<Infallible>,
-                >,
-            > + Send,
-    >,
-> {
+) -> BoxStream<'static, Result<Event, EventStreamError<Infallible>>> {
     // SSE 事件以空行分隔；末尾补一个空行确保最后一条事件被分发
     let bytes = format!("{text}\n").into_bytes();
-    Box::pin(futures::stream::once(async move { Ok::<_, Infallible>(bytes) }).eventsource())
+    futures::stream::once(async move { Ok::<_, Infallible>(bytes) })
+        .eventsource()
+        .boxed()
 }
 
 async fn run_fixture(text: &'static str) -> (Vec<AssistantEvent>, AssistantMessage) {

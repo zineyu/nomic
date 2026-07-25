@@ -14,6 +14,7 @@ repository = "https://github.com/zine/nomic"
 # ── 内部 crate ──────────────────────────────────────────────────────────────
 nomic-ai = { path = "crates/nomic-ai", version = "0.1.0" }
 nomic-core = { path = "crates/nomic-core", version = "0.1.0" }
+nomic-session = { path = "crates/nomic-session", version = "0.1.0" }
 nomic-tools = { path = "crates/nomic-tools", version = "0.1.0" }
 
 # ── 异步运行时与工具 ─────────────────────────────────────────────────────────
@@ -47,6 +48,16 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 schemars = "1.2"
 
+# ── 持久化（nomic-session）──────────────────────────────────────────────────
+# 不用 query! 编译期宏，无需 DATABASE_URL；migrate 用于内嵌迁移
+sqlx = { version = "0.8", default-features = false, features = [
+  "runtime-tokio-rustls",
+  "sqlite",
+  "migrate",
+  "macros",
+] }
+uuid = { version = "1", features = ["v7"] }
+
 # ── 错误处理 ────────────────────────────────────────────────────────────────
 anyhow = "1.0"
 thiserror = "2.0"
@@ -60,6 +71,7 @@ unicode-normalization = "0.1"
 
 # ── 测试 ────────────────────────────────────────────────────────────────────
 tokio-test = "0.4"
+tempfile = "3"
 
 # ── Lint 配置：严格但实用 ────────────────────────────────────────────────────
 # 所有 crate 通过 `[lints] workspace = true` 继承。

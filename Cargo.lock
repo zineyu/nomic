@@ -1213,6 +1213,7 @@ dependencies = [
  "clap",
  "nomic-ai",
  "nomic-core",
+ "nomic-session",
  "nomic-tools",
  "serde_json",
  "tokio",

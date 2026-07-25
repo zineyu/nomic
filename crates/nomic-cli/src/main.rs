@@ -1,6 +1,10 @@
 //! nomic：Rust 编码 agent CLI（pi-coding-agent 的 Rust 复刻，见 docs/adr/0001）。
 //!
 //! M1：print 模式（`-p`），流式输出到 stdout，工具执行摘要到 stderr。
+//!
+//! session 持久化（方案 A，事件驱动）：core 零改动，CLI 在事件流中对每条
+//! `MessageEnd`（消息定稿点）调 [`SessionStore::append_message`] 落库；
+//! 持久化失败仅告警不中断运行（store 非权威源）。
 
 use std::io::Write as _;
 use std::sync::Arc;
@@ -12,6 +16,7 @@ use nomic_ai::{
     providers::{AnthropicProvider, OpenAiCompat, OpenAiProvider},
 };
 use nomic_core::{Agent, AgentConfig, AgentEvent, ExecutionMode, NoopHooks};
+use nomic_session::SessionStore;
 use tokio_util::sync::CancellationToken;
 
 /// Rust 编码 agent（pi-coding-agent 的 Rust 复刻）。
@@ -107,17 +112,38 @@ async fn main() -> Result<()> {
         }
     });
 
+    // 打开全局 session 库并创建本次会话；失败时降级为不持久化（仅告警）
+    let session = init_session().await?;
+
     let cancel_for_prompt = cancel.clone();
     let run = tokio::spawn(async move { agent.prompt(&prompt, cancel_for_prompt).await });
 
+    let saw_error = drain_events(&mut events, session.as_ref()).await;
+
+    let result = run.await.context("prompt task panicked")?;
+    if let Err(error) = result {
+        bail!("agent loop failed: {error}");
+    }
+    if let Some(error) = saw_error {
+        bail!("{error}");
+    }
+    Ok(())
+}
+
+/// 消费 agent 事件流：流式输出到 stdout/stderr，消息定稿点落库。
+///
+/// 返回运行中见过的 provider 错误（编码在 assistant 消息里）。
+async fn drain_events(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    session: Option<&(SessionStore, String)>,
+) -> Option<String> {
     let mut saw_error: Option<String> = None;
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
     while let Some(event) = events.recv().await {
         match event {
             AgentEvent::MessageUpdate(AssistantEvent::TextDelta { delta, .. }) => {
+                // 锁不跨 await 持有（StdoutLock 非 Send）
                 print!("{delta}");
-                let _ = out.flush();
+                let _ = std::io::stdout().flush();
             }
             AgentEvent::MessageUpdate(AssistantEvent::ThinkingDelta { delta, .. }) => {
                 eprint!("\x1b[2m{delta}\x1b[0m");
@@ -140,6 +166,12 @@ async fn main() -> Result<()> {
                 eprintln!("{mark} {tool_name}\x1b[0m");
             }
             AgentEvent::MessageEnd(message) => {
+                // 消息定稿点：按事件顺序追加（parent_id=None 自动链到最新 entry）
+                if let Some((store, session_id)) = session {
+                    if let Err(error) = store.append_message(session_id, None, &message).await {
+                        eprintln!("\x1b[33m⚠ session 落库失败：{error}\x1b[0m");
+                    }
+                }
                 if let Message::Assistant(assistant) = *message {
                     if matches!(
                         assistant.stop_reason,
@@ -155,15 +187,28 @@ async fn main() -> Result<()> {
             _ => {}
         }
     }
+    saw_error
+}
 
-    let result = run.await.context("prompt task panicked")?;
-    if let Err(error) = result {
-        bail!("agent loop failed: {error}");
+/// 初始化 session 持久化：打开默认库并以当前 cwd 创建 session。
+///
+/// 失败时降级为不持久化（打告警后返回 `None`），不阻断本次运行。
+async fn init_session() -> Result<Option<(SessionStore, String)>> {
+    let store = match SessionStore::open_default().await {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("\x1b[33m⚠ 打开 session 库失败，本次运行不持久化：{error}\x1b[0m");
+            return Ok(None);
+        }
+    };
+    let cwd = std::env::current_dir().context("get cwd")?;
+    match store.create_session(&cwd).await {
+        Ok(id) => Ok(Some((store, id))),
+        Err(error) => {
+            eprintln!("\x1b[33m⚠ 创建 session 失败，本次运行不持久化：{error}\x1b[0m");
+            Ok(None)
+        }
     }
-    if let Some(error) = saw_error {
-        bail!("{error}");
-    }
-    Ok(())
 }
 
 /// 解析模型：内置预设 + provider 默认值兜底。

@@ -35,6 +35,24 @@ nomic --continue        # 最近一次 session
 nomic --session <ID>    # 指定 session
 ```
 
+## 配置文件
+
+可选的用户级配置：`$XDG_CONFIG_HOME/nomic/config.toml`（缺省 `~/.config/nomic/config.toml`）。
+全部字段可选；优先级为 CLI 参数 > 环境变量 > 配置文件 > 内置默认。
+未知键或非法取值（provider / reasoning）会在启动时硬报错。
+
+```toml
+# ~/.config/nomic/config.toml
+provider = "openai"
+model = "deepseek-chat"
+base_url = "https://your.gateway/v1"
+reasoning = "low"            # minimal / low / medium / high
+temperature = 0.7
+max_tokens = 8192
+append_system = "总是用中文回复。"
+# api_key = "..."           # 最低优先级兜底，建议优先用环境变量
+```
+
 ## 本地检查
 
 ```bash

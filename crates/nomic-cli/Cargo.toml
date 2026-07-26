@@ -23,7 +23,12 @@ nomic-core.workspace = true
 nomic-session.workspace = true
 nomic-tools.workspace = true
 ratatui.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+toml.workspace = true
 unicode-width.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

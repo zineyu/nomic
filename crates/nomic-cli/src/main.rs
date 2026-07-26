@@ -8,6 +8,7 @@
 //! `bootstrap`，print 模式在 `print`，交互模式在 `tui`。
 
 mod bootstrap;
+mod config;
 mod print;
 mod tui;
 

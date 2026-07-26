@@ -11,6 +11,7 @@ use nomic_ai::{
 use nomic_session::SessionStore;
 
 use crate::Cli;
+use crate::config::Config;
 
 /// 初始化完成的运行时上下文：构建 agent 所需的全部零件 + 持久化句柄与恢复历史。
 pub struct Bootstrap {
@@ -24,32 +25,59 @@ pub struct Bootstrap {
     pub history: Vec<Message>,
 }
 
-/// 按 CLI 参数初始化运行时上下文。
+/// 按 CLI 参数与环境初始化运行时上下文。
+///
+/// 可配置项统一按 CLI 参数 > 环境变量 > 配置文件 > 内置默认 的优先级解析；
+/// 配置文件存在但非法时硬报错（见 [`config`][crate::config]）。
 pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
-    let provider_kind = cli.provider.clone().unwrap_or_else(|| {
-        if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-            "anthropic".to_string()
-        } else {
-            "openai".to_string()
-        }
-    });
-    let model = resolve_model(&provider_kind, cli);
+    let config = crate::config::load()?;
+    let provider_kind = cli
+        .provider
+        .clone()
+        .or_else(|| config.as_ref().and_then(|c| c.provider.clone()))
+        .unwrap_or_else(|| {
+            if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+                "anthropic".to_string()
+            } else {
+                "openai".to_string()
+            }
+        });
+    let model = resolve_model(&provider_kind, cli, config.as_ref());
+    // api_key 显式分层解析（provider 内部的 env 回退发生在请求时，
+    // 若把配置文件值直接交给构造器会抢到环境变量前面）。
+    let api_key = cli
+        .api_key
+        .clone()
+        .or_else(|| std::env::var(api_key_env(model.api)).ok())
+        .or_else(|| config.as_ref().and_then(|c| c.api_key.clone()));
     let provider: Arc<dyn Provider> = match model.api {
-        ApiKind::AnthropicMessages => Arc::new(AnthropicProvider::new(cli.api_key.clone())),
+        ApiKind::AnthropicMessages => Arc::new(AnthropicProvider::new(api_key.clone())),
         ApiKind::OpenAiCompletions => Arc::new(OpenAiProvider::new(
-            cli.api_key.clone(),
+            api_key.clone(),
             OpenAiCompat::default(),
         )),
     };
     let stream_options = StreamOptions {
-        temperature: cli.temperature,
-        max_tokens: cli.max_tokens,
-        reasoning: cli.reasoning.as_deref().map(parse_reasoning),
-        api_key: cli.api_key.clone(),
+        temperature: cli
+            .temperature
+            .or_else(|| config.as_ref().and_then(|c| c.temperature)),
+        max_tokens: cli
+            .max_tokens
+            .or_else(|| config.as_ref().and_then(|c| c.max_tokens)),
+        reasoning: cli
+            .reasoning
+            .as_deref()
+            .or_else(|| config.as_ref().and_then(|c| c.reasoning.as_deref()))
+            .map(parse_reasoning),
+        api_key,
         headers: Vec::new(),
         timeout_ms: None,
     };
-    let system_prompt = build_system_prompt(cli.append_system.as_deref())?;
+    let append_system = cli
+        .append_system
+        .as_deref()
+        .or_else(|| config.as_ref().and_then(|c| c.append_system.as_deref()));
+    let system_prompt = build_system_prompt(append_system)?;
     let session = init_session(cli).await?;
     let history = session
         .as_ref()
@@ -122,8 +150,16 @@ async fn init_session(cli: &Cli) -> Result<Option<SessionInit>> {
     }
 }
 
-/// 解析模型：内置预设 + provider 默认值兜底。
-fn resolve_model(provider_kind: &str, cli: &Cli) -> Model {
+/// provider 各 API 家族对应的环境变量名（`api_key` 分层解析用）。
+const fn api_key_env(api: ApiKind) -> &'static str {
+    match api {
+        ApiKind::AnthropicMessages => "ANTHROPIC_API_KEY",
+        ApiKind::OpenAiCompletions => "OPENAI_API_KEY",
+    }
+}
+
+/// 解析模型：内置预设 + 配置文件 + provider 默认值兜底。
+fn resolve_model(provider_kind: &str, cli: &Cli, config: Option<&Config>) -> Model {
     let (api, default_model, default_base_url, reasoning, context_window, max_tokens, costs) =
         match provider_kind {
             "anthropic" => (
@@ -153,10 +189,12 @@ fn resolve_model(provider_kind: &str, cli: &Cli) -> Model {
                 .ok()
                 .filter(|_| api == ApiKind::OpenAiCompletions)
         })
+        .or_else(|| config.and_then(|c| c.base_url.clone()))
         .unwrap_or_else(|| default_base_url.to_string());
     let id = cli
         .model
         .clone()
+        .or_else(|| config.and_then(|c| c.model.clone()))
         .unwrap_or_else(|| default_model.to_string());
     Model {
         name: id.clone(),

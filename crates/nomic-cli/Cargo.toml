@@ -16,10 +16,14 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+crossterm.workspace = true
+futures.workspace = true
 nomic-ai.workspace = true
 nomic-core.workspace = true
 nomic-session.workspace = true
 nomic-tools.workspace = true
+ratatui.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+unicode-width.workspace = true

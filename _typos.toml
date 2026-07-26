@@ -12,3 +12,4 @@ extend-exclude = [
 # 项目专有词汇白名单（被误报时追加）
 [default.extend-words]
 nomic = "nomic"
+ratatui = "ratatui"

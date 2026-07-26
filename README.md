@@ -12,17 +12,27 @@ devenv shell        # 进入开发 shell（工具链版本由 rust-toolchain.tom
 direnv allow        # 或使用 direnv 自动进入
 ```
 
-## 使用（M1：print 模式）
+## 使用
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...     # 或 OPENAI_API_KEY / OPENAI_BASE_URL
-cargo run -p nomic-cli -- -p "列出当前目录的文件"
+
+# 交互 TUI（缺省，设计见 docs/adr/0002）
+cargo run -p nomic-cli
+# 键位：Enter 发送 · Esc 取消运行 · Ctrl+C 退出 · ↑/↓/PgUp/PgDn/滚轮滚动
+
+# print 模式（非交互，管道可用）
+nomic -p "列出当前目录的文件"
 
 # OpenAI 兼容端点（DeepSeek、代理网关等）
 nomic -p "..." --provider openai --base-url https://your.gateway/v1 --model deepseek-chat
 
 # 推理模型
 nomic -p "..." --reasoning low
+
+# 恢复会话（两种模式通用）
+nomic --continue        # 最近一次 session
+nomic --session <ID>    # 指定 session
 ```
 
 ## 本地检查
@@ -36,14 +46,14 @@ check               # 与 CI 等价的全部检查：fmt / clippy / nextest / do
 - `crates/nomic-ai`：统一消息模型 + 流式事件协议 + provider 实现（Anthropic Messages、OpenAI Completions 兼容）
 - `crates/nomic-core`：agent loop（四层生命周期事件、parallel 工具执行、hooks）+ 工具抽象（schemars + serde 即校验）
 - `crates/nomic-tools`：read/write/edit/bash 四工具（截断、模糊匹配、BOM/CRLF 保留、文件变更队列）
-- `crates/nomic-cli`：`nomic` 二进制（M1 仅 print 模式）
+- `crates/nomic-cli`：`nomic` 二进制（print 模式 + ratatui 交互 TUI）
 - `docs/adr/`：架构决策记录
 
 ## 路线图（ADR-0001 锚定）
 
 - M2：SQLite session（树结构 + branching）、prompt caching
 - M3：compaction、skills / prompt templates / AGENTS.md 加载
-- M4：交互 TUI、图片输入
+- M4：图片输入
 
 ## 新增 crate
 

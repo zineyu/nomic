@@ -13,6 +13,7 @@ use nomic_session::SessionStore;
 
 use crate::Cli;
 use crate::config::Config;
+use crate::context_files::{ContextFile, discover_agents_files};
 
 /// 初始化完成的运行时上下文：构建 agent 所需的全部零件 + 持久化句柄与恢复历史。
 pub struct Bootstrap {
@@ -84,8 +85,10 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
         .append_system
         .as_deref()
         .or_else(|| config.as_ref().and_then(|c| c.append_system.as_deref()));
-    let system_prompt = build_system_prompt(append_system)?;
-    let session = init_session(cli).await?;
+    let cwd = std::env::current_dir().context("get cwd")?;
+    let context_files = discover_agents_files(&cwd);
+    let system_prompt = build_system_prompt(&cwd, append_system, &context_files);
+    let session = init_session(cli, &cwd).await?;
     let history = session
         .as_ref()
         .map(|init| init.history.clone())
@@ -112,7 +115,7 @@ struct SessionInit {
 ///
 /// - resume 语义下打开库/加载消息失败直接报错（用户显式要求恢复）
 /// - 新会话语义下降级为不持久化（打告警后返回 `None`），不阻断本次运行
-async fn init_session(cli: &Cli) -> Result<Option<SessionInit>> {
+async fn init_session(cli: &Cli, cwd: &Path) -> Result<Option<SessionInit>> {
     let resume = cli.continue_session || cli.session.is_some();
     let store = match SessionStore::open_default().await {
         Ok(store) => store,
@@ -124,8 +127,7 @@ async fn init_session(cli: &Cli) -> Result<Option<SessionInit>> {
             return Ok(None);
         }
     };
-    let cwd = std::env::current_dir().context("get cwd")?;
-    init_session_in(cli, &cwd, store).await
+    init_session_in(cli, cwd, store).await
 }
 
 /// 在指定 cwd 与 store 下初始化 session（`init_session` 的可测试内核）。
@@ -291,12 +293,9 @@ fn parse_reasoning(level: &str) -> ThinkingLevel {
     }
 }
 
-/// 系统提示词（对齐 pi 的结构与措辞）。
-fn build_system_prompt(append: Option<&str>) -> Result<String> {
-    let cwd = std::env::current_dir()
-        .context("get cwd")?
-        .display()
-        .to_string();
+/// 系统提示词（对齐 pi 的结构与措辞）：基础契约 → AGENTS.md（根到叶）→
+/// `append_system` → 当前工作目录脚注。
+fn build_system_prompt(cwd: &Path, append: Option<&str>, context_files: &[ContextFile]) -> String {
     let mut prompt = "You are an expert coding assistant operating inside nomic, a coding agent harness. \
          You help users by reading files, executing commands, editing code, and writing new files.\n\n\
          Available tools:\n\
@@ -310,15 +309,24 @@ fn build_system_prompt(append: Option<&str>) -> Result<String> {
          - Be concise in your responses\n\
          - Show file paths clearly when working with files"
         .to_string();
+    for file in context_files {
+        use std::fmt::Write as _;
+        let _ = write!(
+            prompt,
+            "\n\n<project_instructions path=\"{}\">\n{}\n</project_instructions>",
+            file.path.display(),
+            file.content.trim_end()
+        );
+    }
     if let Some(extra) = append {
         prompt.push_str("\n\n");
         prompt.push_str(extra);
     }
     {
         use std::fmt::Write as _;
-        let _ = write!(prompt, "\n\nCurrent working directory: {cwd}");
+        let _ = write!(prompt, "\n\nCurrent working directory: {}", cwd.display());
     }
-    Ok(prompt)
+    prompt
 }
 
 #[cfg(test)]
@@ -425,6 +433,51 @@ mod tests {
             .expect("session");
         assert_eq!(resumed.id, created.id);
         assert_eq!(resumed.history.len(), 1);
+    }
+
+    // ── 系统提示词：AGENTS.md 注入 ──────────────────────────────────────
+
+    fn context_file(path: &str, content: &str) -> ContextFile {
+        ContextFile {
+            path: PathBuf::from(path),
+            content: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn prompt_injects_context_files_root_to_leaf() {
+        let files = [
+            context_file("/repo/AGENTS.md", "root rules"),
+            context_file("/repo/sub/AGENTS.md", "sub rules"),
+        ];
+        let prompt = build_system_prompt(Path::new("/repo/sub"), None, &files);
+
+        let root_at = prompt.find("root rules").expect("root 内容");
+        let sub_at = prompt.find("sub rules").expect("sub 内容");
+        assert!(root_at < sub_at, "根到叶顺序");
+        // 每份文件都带绝对路径标签
+        assert!(prompt.contains("<project_instructions path=\"/repo/AGENTS.md\">"));
+        assert!(prompt.contains("<project_instructions path=\"/repo/sub/AGENTS.md\">"));
+        assert_eq!(prompt.matches("</project_instructions>").count(), 2);
+    }
+
+    #[test]
+    fn prompt_keeps_append_and_cwd_without_context_files() {
+        let prompt = build_system_prompt(Path::new("/repo"), Some("额外指令"), &[]);
+        assert!(!prompt.contains("project_instructions"));
+        assert!(prompt.contains("额外指令"));
+        assert!(prompt.contains("Current working directory: /repo"));
+    }
+
+    #[test]
+    fn prompt_orders_base_context_append_cwd() {
+        let files = [context_file("/repo/AGENTS.md", "root rules")];
+        let prompt = build_system_prompt(Path::new("/repo"), Some("额外指令"), &files);
+        let base_at = prompt.find("Available tools").expect("base");
+        let ctx_at = prompt.find("root rules").expect("context");
+        let append_at = prompt.find("额外指令").expect("append");
+        let cwd_at = prompt.find("Current working directory").expect("cwd");
+        assert!(base_at < ctx_at && ctx_at < append_at && append_at < cwd_at);
     }
 
     // ── 配置分层：CLI > 环境变量 > 配置文件 > 内置默认 ───────────────────────

@@ -56,6 +56,19 @@ append_system = "总是用中文回复。"
 # api_key = "..."           # 最低优先级兜底，建议优先用环境变量
 ```
 
+## AGENTS.md
+
+启动时从当前目录一路向上走到文件系统根，加载沿途每个目录的 `AGENTS.md`，
+作为系统提示词的一部分注入（`<project_instructions path="...">` 块）。
+按**根到叶**排序：越靠近当前目录的指令越靠后，可细化上层（如工作区级）约定。
+缺失或空白文件跳过；文件不可读时告警后继续，不阻断启动。
+
+```markdown
+# 项目根 AGENTS.md 示例
+- 代码改动后运行 `check`。
+- 不要在本地执行生产迁移。
+```
+
 ## 本地检查
 
 ```bash
@@ -77,11 +90,12 @@ check               # 与 CI 等价的全部检查：fmt / clippy / nextest / do
 
 - M1：agent loop + 四工具 + print 模式（ADR-0001）
 - M2（部分）：SQLite session 存储与 resume（树形 schema 已就位）、交互 TUI（ADR-0002）、用户级配置文件
+- M3（部分）：AGENTS.md 加载（向上发现，注入系统提示词）
 
 待完成：
 
 - M2（剩余）：显式 branch 创建/选择/浏览（active leaf 语义未定，见 ADR-0001 修订）、prompt caching
-- M3：compaction、skills / prompt templates / AGENTS.md 加载
+- M3（剩余）：compaction、skills / prompt templates
 - M4：图片输入（provider 与消息类型已预留，缺 CLI/agent 入口）
 
 ## 新增 crate

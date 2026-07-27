@@ -10,6 +10,7 @@
 
 mod bootstrap;
 mod config;
+mod context_files;
 mod print;
 mod sessions;
 mod tui;

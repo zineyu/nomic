@@ -69,6 +69,51 @@ append_system = "总是用中文回复。"
 - 不要在本地执行生产迁移。
 ```
 
+## Skills
+
+skill 是包含 `SKILL.md` 的目录，可放在项目或用户级目录中：
+
+```text
+# 项目级（从 cwd 向上发现，越近优先级越高）
+.nomic/skills/<name>/SKILL.md
+.agents/skills/<name>/SKILL.md
+
+# 用户级（项目级覆盖用户级；nomic 目录优先于通用 agent 目录）
+$XDG_CONFIG_HOME/nomic/skills/<name>/SKILL.md
+~/.config/nomic/skills/<name>/SKILL.md
+~/.agents/skills/<name>/SKILL.md
+```
+
+`SKILL.md` 可带 frontmatter：
+
+```markdown
+---
+description: Review Rust changes
+triggers: [rust, review]
+---
+
+# Review steps
+...
+```
+
+启动时 nomic 将 skill 的名称、描述与 triggers 注入系统提示词；模型可通过
+`read` 工具按需读取完整指令：
+
+```text
+read({"path": "skill://rust-review"})
+read({"path": "skill://rust-review", "offset": 20, "limit": 50})
+```
+
+也可以在启动时显式激活，完整正文会注入系统提示词：
+
+```bash
+nomic --skill rust-review
+nomic -p "按 skill 审查" --skill rust-review
+```
+
+`skill://` 是只读资源；如需修改 skill，请显式编辑其 backing file。设计见
+[docs/adr/0003](docs/adr/0003-skills-system.md)。
+
 ## 本地检查
 
 ```bash
@@ -81,6 +126,7 @@ check               # 与 CI 等价的全部检查：fmt / clippy / nextest / do
 - `crates/nomic-core`：agent loop（四层生命周期事件、parallel 工具执行、hooks）+ 工具抽象（schemars + serde 即校验）
 - `crates/nomic-tools`：read/write/edit/bash 四工具（截断、模糊匹配、BOM/CRLF 保留、文件变更队列）
 - `crates/nomic-session`：SQLite session 存储（树形 entries、resume、`sessions list`）
+- `crates/nomic-skills`：skill 发现、frontmatter 元数据、覆盖规则与显式激活
 - `crates/nomic-cli`：`nomic` 二进制（print 模式 + ratatui 交互 TUI + sessions 子命令）
 - `docs/adr/`：架构决策记录
 
@@ -90,12 +136,12 @@ check               # 与 CI 等价的全部检查：fmt / clippy / nextest / do
 
 - M1：agent loop + 四工具 + print 模式（ADR-0001）
 - M2（部分）：SQLite session 存储与 resume（树形 schema 已就位）、交互 TUI（ADR-0002）、用户级配置文件
-- M3（部分）：AGENTS.md 加载（向上发现，注入系统提示词）
+- M3（部分）：AGENTS.md 加载（向上发现，注入系统提示词）、skills（ADR-0003）
 
 待完成：
 
 - M2（剩余）：显式 branch 创建/选择/浏览（active leaf 语义未定，见 ADR-0001 修订）、prompt caching
-- M3（剩余）：compaction、skills / prompt templates
+- M3（剩余）：compaction、prompt templates
 - M4：图片输入（provider 与消息类型已预留，缺 CLI/agent 入口）
 
 ## 新增 crate

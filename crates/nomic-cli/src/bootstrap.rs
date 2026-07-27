@@ -10,6 +10,7 @@ use nomic_ai::{
     providers::{AnthropicProvider, OpenAiCompat, OpenAiProvider},
 };
 use nomic_session::SessionStore;
+use nomic_skills::{ActivatedSkill, SkillResolver};
 
 use crate::Cli;
 use crate::config::Config;
@@ -25,6 +26,8 @@ pub struct Bootstrap {
     pub session: Option<(SessionStore, String)>,
     /// resume 恢复的历史消息（新会话为空）
     pub history: Vec<Message>,
+    /// skill 解析器（同时注入 read 工具）
+    pub skill_resolver: SkillResolver,
 }
 
 /// 按 CLI 参数与环境初始化运行时上下文。
@@ -87,7 +90,23 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
         .or_else(|| config.as_ref().and_then(|c| c.append_system.as_deref()));
     let cwd = std::env::current_dir().context("get cwd")?;
     let context_files = discover_agents_files(&cwd);
-    let system_prompt = build_system_prompt(&cwd, append_system, &context_files);
+    let skill_resolver = SkillResolver::for_cwd(&cwd).context("初始化 skills 目录失败")?;
+    let active_skills = cli
+        .skill
+        .iter()
+        .map(|name| {
+            skill_resolver
+                .activate(name)
+                .with_context(|| format!("激活 skill {name:?} 失败"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let system_prompt = build_system_prompt(
+        &cwd,
+        append_system,
+        &context_files,
+        &skill_resolver,
+        &active_skills,
+    );
     let session = init_session(cli, &cwd).await?;
     let history = session
         .as_ref()
@@ -100,6 +119,7 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
         system_prompt,
         session: session.map(|init| (init.store, init.id)),
         history,
+        skill_resolver,
     })
 }
 
@@ -295,17 +315,25 @@ fn parse_reasoning(level: &str) -> ThinkingLevel {
 
 /// 系统提示词（对齐 pi 的结构与措辞）：基础契约 → AGENTS.md（根到叶）→
 /// `append_system` → 当前工作目录脚注。
-fn build_system_prompt(cwd: &Path, append: Option<&str>, context_files: &[ContextFile]) -> String {
+fn build_system_prompt(
+    cwd: &Path,
+    append: Option<&str>,
+    context_files: &[ContextFile],
+    skill_resolver: &SkillResolver,
+    active_skills: &[ActivatedSkill],
+) -> String {
     let mut prompt = "You are an expert coding assistant operating inside nomic, a coding agent harness. \
-         You help users by reading files, executing commands, editing code, and writing new files.\n\n\
+         You help users by reading files, executing commands, editing code, and writing new files.\n\
          Available tools:\n\
-         - read: Read file contents\n\
+         - read: Read file contents and skill://<name> instructions\n\
          - bash: Execute bash commands (ls, rg, find, etc.)\n\
          - edit: Make precise file edits with exact text replacement\n\
          - write: Create or overwrite files\n\n\
          Guidelines:\n\
          - Use bash for file operations like ls, rg, find\n\
          - Use read to examine files instead of cat or sed\n\
+         - Skills are reusable instruction documents; read skill://<name> before following one\n\
+         - Do not write or edit skill:// resources; edit their backing files only when the user asks\n\
          - Be concise in your responses\n\
          - Show file paths clearly when working with files"
         .to_string();
@@ -316,6 +344,22 @@ fn build_system_prompt(cwd: &Path, append: Option<&str>, context_files: &[Contex
             "\n\n<project_instructions path=\"{}\">\n{}\n</project_instructions>",
             file.path.display(),
             file.content.trim_end()
+        );
+    }
+    if let Ok(Some(catalog)) = skill_resolver.prompt_catalog() {
+        prompt.push_str("\n\n<available_skills>\n");
+        prompt.push_str(&catalog);
+        prompt.push_str("\n</available_skills>");
+    }
+    for skill in active_skills {
+        use std::fmt::Write as _;
+        let _ = write!(
+            prompt,
+            "\n\n<active_skill name=\"{}\" scope=\"{}\" path=\"{}\">\n{}\n</active_skill>",
+            skill.name,
+            skill.scope,
+            skill.path.display(),
+            skill.instructions
         );
     }
     if let Some(extra) = append {
@@ -444,13 +488,28 @@ mod tests {
         }
     }
 
+    fn empty_skill_resolver() -> SkillResolver {
+        SkillResolver::new(
+            Path::new("/repo"),
+            nomic_skills::ProjectDiscovery::Roots(Vec::new()),
+            Vec::new(),
+        )
+        .expect("empty skill resolver")
+    }
+
     #[test]
     fn prompt_injects_context_files_root_to_leaf() {
         let files = [
             context_file("/repo/AGENTS.md", "root rules"),
             context_file("/repo/sub/AGENTS.md", "sub rules"),
         ];
-        let prompt = build_system_prompt(Path::new("/repo/sub"), None, &files);
+        let prompt = build_system_prompt(
+            Path::new("/repo/sub"),
+            None,
+            &files,
+            &empty_skill_resolver(),
+            &[],
+        );
 
         let root_at = prompt.find("root rules").expect("root 内容");
         let sub_at = prompt.find("sub rules").expect("sub 内容");
@@ -463,7 +522,13 @@ mod tests {
 
     #[test]
     fn prompt_keeps_append_and_cwd_without_context_files() {
-        let prompt = build_system_prompt(Path::new("/repo"), Some("额外指令"), &[]);
+        let prompt = build_system_prompt(
+            Path::new("/repo"),
+            Some("额外指令"),
+            &[],
+            &empty_skill_resolver(),
+            &[],
+        );
         assert!(!prompt.contains("project_instructions"));
         assert!(prompt.contains("额外指令"));
         assert!(prompt.contains("Current working directory: /repo"));
@@ -472,12 +537,54 @@ mod tests {
     #[test]
     fn prompt_orders_base_context_append_cwd() {
         let files = [context_file("/repo/AGENTS.md", "root rules")];
-        let prompt = build_system_prompt(Path::new("/repo"), Some("额外指令"), &files);
+        let prompt = build_system_prompt(
+            Path::new("/repo"),
+            Some("额外指令"),
+            &files,
+            &empty_skill_resolver(),
+            &[],
+        );
         let base_at = prompt.find("Available tools").expect("base");
         let ctx_at = prompt.find("root rules").expect("context");
         let append_at = prompt.find("额外指令").expect("append");
         let cwd_at = prompt.find("Current working directory").expect("cwd");
         assert!(base_at < ctx_at && ctx_at < append_at && append_at < cwd_at);
+    }
+
+    #[test]
+    fn prompt_injects_skill_catalog_and_active_skill() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("skills").join("rust-review");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(
+            root.join("SKILL.md"),
+            "---\ndescription: Review Rust code\ntriggers: [rust, review]\n---\n# Review\nCheck unsafe code.",
+        )
+        .expect("write skill");
+        let resolver = SkillResolver::new(
+            dir.path(),
+            nomic_skills::ProjectDiscovery::Roots(Vec::new()),
+            vec![nomic_skills::SkillRoot {
+                path: dir.path().join("skills"),
+                scope: nomic_skills::SkillScope::Project,
+            }],
+        )
+        .expect("resolver");
+        let active = resolver.activate("rust-review").expect("activate");
+
+        let prompt = build_system_prompt(
+            dir.path(),
+            None,
+            &[],
+            &resolver,
+            std::slice::from_ref(&active),
+        );
+        assert!(prompt.contains("<available_skills>"));
+        assert!(prompt.contains("skill://rust-review"));
+        assert!(prompt.contains("Review Rust code"));
+        assert!(prompt.contains("triggers: rust, review"));
+        assert!(prompt.contains("<active_skill name=\"rust-review\""));
+        assert!(prompt.contains("Check unsafe code."));
     }
 
     // ── 配置分层：CLI > 环境变量 > 配置文件 > 内置默认 ───────────────────────

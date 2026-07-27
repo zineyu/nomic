@@ -58,6 +58,10 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) append_system: Option<String>,
 
+    /// 显式激活一个 skill（可重复传入）
+    #[arg(long, value_name = "NAME")]
+    pub(crate) skill: Vec<String>,
+
     /// 恢复最近一次 session 继续对话
     #[arg(long = "continue", short = 'c', conflicts_with = "session")]
     pub(crate) continue_session: bool,

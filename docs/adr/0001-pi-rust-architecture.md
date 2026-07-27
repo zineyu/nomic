@@ -225,5 +225,9 @@ ADR-0001 的里程碑边界描述已成历史，以下为当前实际状态，�
 - **session 恢复语义**：`--continue` 按当前 cwd 隔离恢复（只选本目录最近的 session，
   避免跨项目误恢复）；`--session <ID>` 可显式跨目录恢复并有提示；新增
   `nomic sessions list` 子命令。
+- **skills**：「skills/prompt templates 后续里程碑再做」中 skills 已由
+  [ADR-0003](0003-skills-system.md) 落地 —— 新增 `nomic-skills` crate，支持项目/
+  用户/通用 agent 目录发现、frontmatter 元数据、system prompt 清单、CLI `--skill`
+  显式激活，以及 `read` 的只读 `skill://<name>` 分页读取。prompt templates 仍未实现。
 - **测试策略**：「所有测试基于 fixture」不再准确 —— core/tools/session/CLI 均有
   直接构造的单元与集成测试（含进程级 CLI 测试）；provider 协议层仍为 fixture 回放。

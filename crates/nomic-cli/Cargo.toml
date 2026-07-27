@@ -21,6 +21,7 @@ futures.workspace = true
 nomic-ai.workspace = true
 nomic-core.workspace = true
 nomic-session.workspace = true
+nomic-skills.workspace = true
 nomic-tools.workspace = true
 ratatui.workspace = true
 serde.workspace = true

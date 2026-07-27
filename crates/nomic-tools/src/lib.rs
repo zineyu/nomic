@@ -22,7 +22,19 @@ pub use write::WriteTool;
 /// 创建默认四件套的 [`nomic_core::DynTool`] 列表。
 pub fn default_tools() -> Vec<nomic_core::DynTool> {
     vec![
-        nomic_core::DynTool::new(ReadTool),
+        nomic_core::DynTool::new(ReadTool::new()),
+        nomic_core::DynTool::new(WriteTool),
+        nomic_core::DynTool::new(EditTool),
+        nomic_core::DynTool::new(BashTool),
+    ]
+}
+
+/// 创建支持 `skill://` 的默认四件套。
+pub fn default_tools_with_skills(
+    skill_resolver: nomic_skills::SkillResolver,
+) -> Vec<nomic_core::DynTool> {
+    vec![
+        nomic_core::DynTool::new(ReadTool::with_skill_resolver(skill_resolver)),
         nomic_core::DynTool::new(WriteTool),
         nomic_core::DynTool::new(EditTool),
         nomic_core::DynTool::new(BashTool),

@@ -1628,6 +1628,7 @@ dependencies = [
  "nomic-ai",
  "nomic-core",
  "nomic-session",
+ "nomic-skills",
  "nomic-tools",
  "ratatui",
  "serde",
@@ -1669,12 +1670,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomic-skills"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "nomic-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "nomic-ai",
  "nomic-core",
+ "nomic-skills",
  "schemars",
  "serde",
  "serde_json",

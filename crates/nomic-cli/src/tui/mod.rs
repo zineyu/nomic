@@ -57,7 +57,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
             hooks: Arc::new(NoopHooks),
             tool_execution: ExecutionMode::Parallel,
         },
-        nomic_tools::default_tools(),
+        nomic_tools::default_tools_with_skills(boot.skill_resolver),
         boot.system_prompt,
         boot.history,
     );

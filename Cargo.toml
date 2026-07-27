@@ -75,6 +75,9 @@ clap = { version = "4.5", features = ["derive"] }
 similar = "3"
 unicode-normalization = "0.1"
 
+# ── 时间展示（nomic-cli sessions list）──────────────────────────────────────
+time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
+
 # ── 测试 ────────────────────────────────────────────────────────────────────
 tokio-test = "0.4"
 tempfile = "3"

@@ -5,15 +5,17 @@
 //! - 交互 TUI（缺省）：ratatui 全屏界面（见 docs/adr/0002）
 //!
 //! 本文件只做 CLI 解析与模式分发；共享的 provider/model/session 初始化在
-//! `bootstrap`，print 模式在 `print`，交互模式在 `tui`。
+//! `bootstrap`，print 模式在 `print`，交互模式在 `tui`，session 管理子命令在
+//! `sessions`。
 
 mod bootstrap;
 mod config;
 mod print;
+mod sessions;
 mod tui;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 /// Rust 编码 agent（pi-coding-agent 的 Rust 复刻）。
 #[derive(Debug, Parser)]
@@ -62,14 +64,42 @@ pub(crate) struct Cli {
     /// 恢复指定 id 的 session 继续对话
     #[arg(long, value_name = "ID")]
     pub(crate) session: Option<String>,
+
+    /// 子命令（session 管理等）
+    #[command(subcommand)]
+    pub(crate) command: Option<Commands>,
+}
+
+/// 顶层子命令。
+#[derive(Debug, Subcommand)]
+pub(crate) enum Commands {
+    /// 管理历史 session
+    Sessions {
+        #[command(subcommand)]
+        command: SessionsCommand,
+    },
+}
+
+/// `nomic sessions` 子命令。
+#[derive(Debug, Subcommand)]
+pub(crate) enum SessionsCommand {
+    /// 列出全部 session（id、最后更新时间、消息数、目录）
+    List,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    if let Some(prompt) = &cli.print {
-        print::run(&cli, prompt).await
-    } else {
-        tui::run(&cli).await
+    match &cli.command {
+        Some(Commands::Sessions {
+            command: SessionsCommand::List,
+        }) => sessions::list().await,
+        None => {
+            if let Some(prompt) = &cli.print {
+                print::run(&cli, prompt).await
+            } else {
+                tui::run(&cli).await
+            }
+        }
     }
 }

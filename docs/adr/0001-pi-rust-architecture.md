@@ -203,3 +203,27 @@ M1 只实现 `before_tool_call` / `after_tool_call`（权限门控的挂点）�
 | JSONL session 文件 | SQLite（M2） | 需求方选择；查询/并发更好 |
 | TS extensions | 不做 | Rust 无法照搬动态加载；声明式定制先行 |
 | OAuth 订阅登录 | 不做（M1 仅 API key 环境变量） | 工作量与价值不匹配 |
+
+## Amendments（现状修订，不改写历史决策）
+
+### 2026-07-27：实现进度与决策漂移说明
+
+ADR-0001 的里程碑边界描述已成历史，以下为当前实际状态，阅读本文时请以此为准：
+
+- **配置文件**：「M1 不引入配置文件」已被取代 —— 现已支持
+  `$XDG_CONFIG_HOME/nomic/config.toml`，优先级 CLI 参数 > 环境变量 > 配置文件 > 内置默认。
+- **交互 TUI**：已由 [ADR-0002](0002-interactive-tui.md) 落地（ratatui），`nomic-cli`
+  不再是纯 print 模式。
+- **依赖方向**：实际为组装式而非严格链式 —— `nomic-cli` 直接依赖
+  `nomic-ai` / `nomic-core` / `nomic-session` / `nomic-tools`；core/tools/ai 之间仍保持单向。
+- **消息模型**：`AssistantContent` 实际为 `Text | Thinking | ToolCall`（无 `Image`）；
+  图片只存在于 `UserContent`。
+- **session**：SQLite 存储（`nomic-session`）已实现并接入 CLI 的创建/落库/resume；
+  树形 schema（`parent_id`）已就位，但**显式 branching 产品能力未实现**——当前
+  「每层最新子节点」仅是默认分支加载策略，active leaf / 分支命名等语义尚未定义，
+  实现 branching 前需先决策该模型。
+- **session 恢复语义**：`--continue` 按当前 cwd 隔离恢复（只选本目录最近的 session，
+  避免跨项目误恢复）；`--session <ID>` 可显式跨目录恢复并有提示；新增
+  `nomic sessions list` 子命令。
+- **测试策略**：「所有测试基于 fixture」不再准确 —— core/tools/session/CLI 均有
+  直接构造的单元与集成测试（含进程级 CLI 测试）；provider 协议层仍为 fixture 回放。

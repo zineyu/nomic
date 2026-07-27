@@ -31,8 +31,11 @@ nomic -p "..." --provider openai --base-url https://your.gateway/v1 --model deep
 nomic -p "..." --reasoning low
 
 # 恢复会话（两种模式通用）
-nomic --continue        # 最近一次 session
-nomic --session <ID>    # 指定 session
+nomic --continue        # 当前目录下最近的 session（按 cwd 隔离）
+nomic --session <ID>    # 指定 session（可跨目录，会有提示）
+
+# 查看历史 session（id、最后更新时间、消息数、目录）
+nomic sessions list
 ```
 
 ## 配置文件
@@ -64,14 +67,22 @@ check               # 与 CI 等价的全部检查：fmt / clippy / nextest / do
 - `crates/nomic-ai`：统一消息模型 + 流式事件协议 + provider 实现（Anthropic Messages、OpenAI Completions 兼容）
 - `crates/nomic-core`：agent loop（四层生命周期事件、parallel 工具执行、hooks）+ 工具抽象（schemars + serde 即校验）
 - `crates/nomic-tools`：read/write/edit/bash 四工具（截断、模糊匹配、BOM/CRLF 保留、文件变更队列）
-- `crates/nomic-cli`：`nomic` 二进制（print 模式 + ratatui 交互 TUI）
+- `crates/nomic-session`：SQLite session 存储（树形 entries、resume、`sessions list`）
+- `crates/nomic-cli`：`nomic` 二进制（print 模式 + ratatui 交互 TUI + sessions 子命令）
 - `docs/adr/`：架构决策记录
 
-## 路线图（ADR-0001 锚定）
+## 路线图
 
-- M2：SQLite session（树结构 + branching）、prompt caching
+已完成：
+
+- M1：agent loop + 四工具 + print 模式（ADR-0001）
+- M2（部分）：SQLite session 存储与 resume（树形 schema 已就位）、交互 TUI（ADR-0002）、用户级配置文件
+
+待完成：
+
+- M2（剩余）：显式 branch 创建/选择/浏览（active leaf 语义未定，见 ADR-0001 修订）、prompt caching
 - M3：compaction、skills / prompt templates / AGENTS.md 加载
-- M4：图片输入
+- M4：图片输入（provider 与消息类型已预留，缺 CLI/agent 入口）
 
 ## 新增 crate
 

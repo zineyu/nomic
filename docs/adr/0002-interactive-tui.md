@@ -86,3 +86,20 @@ session 持久化（SQLite、resume）已落地。现在实现交互模式：无
   ui 渲染用 ratatui `TestBackend` 做快照式冒烟测试。
 - 后续增强（slash 命令、多行输入、markdown 渲染）都可在 `tui/` 模块内演进，
   不影响 core。
+
+## Amendments（现状修订，不改写历史决策）
+
+### 2026-07-28：slash 命令与自动补全落地
+
+「Non-goals」中的 slash 命令与 autocomplete 已实现，自此移出非目标：
+
+- **命令集（最小版）**：`/help`（列出命令）、`/new`（清空 agent 上下文并新建
+  session 续写落库）、`/quit`（别名 `/exit`）。命令注册表是补全候选与 `/help`
+  输出的唯一来源。
+- **补全交互**：输入以 `/` 开头（命令名阶段、光标在末尾）时在输入框上方弹出
+  候选；`Tab` 接受选中项/循环，`↑/↓` 移动选中（此时让位于聊天滚动），`Enter`
+  在未精确匹配时先填入候选，`Esc` 优先关闭弹层再取消运行。
+- **支撑改动**：`nomic-core` 新增 `Agent::clear_messages()`；driver 任务的消息
+  类型由 prompt 元组改为 `DriverJob { Prompt, Clear }` 枚举；`ChatItem` 新增
+  `System` 变体承载本地命令输出（不进上下文、不落库）。
+- `/resume` 会话树浏览、多行编辑器、markdown 渲染仍为非目标。

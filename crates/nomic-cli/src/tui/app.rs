@@ -19,6 +19,8 @@ pub(super) enum ChatItem {
     Assistant(AssistantItem),
     /// 一次工具执行
     Tool(ToolItem),
+    /// 本地系统提示（slash 命令输出等，不进上下文）
+    System(String),
 }
 
 /// assistant 消息条目：有序内容块 + 定稿状态。
@@ -58,6 +60,103 @@ pub(super) struct ToolItem {
     pub(super) detail: Option<String>,
 }
 
+/// 一条 slash 命令的静态描述。
+#[derive(Debug)]
+pub(super) struct SlashCommand {
+    pub(super) name: &'static str,
+    pub(super) aliases: &'static [&'static str],
+    pub(super) summary: &'static str,
+}
+
+/// 全部 slash 命令（补全候选与 `/help` 输出的唯一来源）。
+pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
+    SlashCommand {
+        name: "help",
+        aliases: &[],
+        summary: "显示可用命令",
+    },
+    SlashCommand {
+        name: "new",
+        aliases: &[],
+        summary: "清空上下文，开启新对话（新 session）",
+    },
+    SlashCommand {
+        name: "quit",
+        aliases: &["exit"],
+        summary: "退出 TUI",
+    },
+];
+
+/// slash 命令解析结果。
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum SlashParse {
+    /// 输入不以 `/` 开头，按普通 prompt 处理
+    NotCommand,
+    /// 已知命令
+    Known(SlashAction),
+    /// 未知命令名（不含 `/` 前缀）
+    Unknown(String),
+}
+
+/// 已知 slash 命令的动作。
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum SlashAction {
+    Help,
+    New,
+    Quit,
+}
+
+/// 解析一行输入为 slash 命令。
+pub(super) fn parse_slash(input: &str) -> SlashParse {
+    let Some(rest) = input.trim().strip_prefix('/') else {
+        return SlashParse::NotCommand;
+    };
+    // 最小版命令均无参数；带参数输入取首个空白前的命令名
+    let name = rest.split_whitespace().next().unwrap_or_default();
+    for command in SLASH_COMMANDS {
+        if command.name == name || command.aliases.contains(&name) {
+            return SlashParse::Known(match command.name {
+                "help" => SlashAction::Help,
+                "new" => SlashAction::New,
+                _ => SlashAction::Quit,
+            });
+        }
+    }
+    SlashParse::Unknown(name.to_string())
+}
+
+/// `/help` 的输出文本。
+pub(super) fn help_text() -> String {
+    use std::fmt::Write as _;
+    let mut text = "可用命令：".to_string();
+    for command in SLASH_COMMANDS {
+        let aliases = if command.aliases.is_empty() {
+            String::new()
+        } else {
+            let list = command
+                .aliases
+                .iter()
+                .map(|alias| format!("/{alias}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("（别名：{list}）")
+        };
+        let _ = write!(
+            text,
+            "\n  /{} — {}{}",
+            command.name, command.summary, aliases
+        );
+    }
+    text
+}
+
+/// 补全弹层状态：候选列表 + 当前选中项。
+#[derive(Debug)]
+pub(super) struct Completion {
+    pub(super) candidates: Vec<&'static SlashCommand>,
+    pub(super) selected: usize,
+}
+
 /// TUI 应用状态。
 #[derive(Debug)]
 pub(super) struct App {
@@ -66,6 +165,8 @@ pub(super) struct App {
     input: String,
     /// 光标位置（字节索引，始终落在 char 边界）
     cursor: usize,
+    /// slash 命令补全弹层（输入以 `/` 开头时出现）
+    completion: Option<Completion>,
     /// 从底部向上滚动的行数（0 = 跟随最新内容）
     pub(super) scroll: u16,
     pub(super) running: bool,
@@ -84,6 +185,7 @@ impl App {
             items: Vec::new(),
             input: String::new(),
             cursor: 0,
+            completion: None,
             scroll: 0,
             running: false,
             should_quit: false,
@@ -258,6 +360,7 @@ impl App {
     pub(super) fn insert_char(&mut self, c: char) {
         self.input.insert(self.cursor, c);
         self.cursor += c.len_utf8();
+        self.refresh_completion();
     }
 
     pub(super) fn backspace(&mut self) {
@@ -270,6 +373,7 @@ impl App {
             .map_or(0, |(index, _)| index);
         self.input.replace_range(prev..self.cursor, "");
         self.cursor = prev;
+        self.refresh_completion();
     }
 
     pub(super) fn cursor_left(&mut self) {
@@ -278,21 +382,25 @@ impl App {
                 .char_indices()
                 .last()
                 .map_or(0, |(index, _)| index);
+            self.refresh_completion();
         }
     }
 
     pub(super) fn cursor_right(&mut self) {
         if let Some(c) = self.input[self.cursor..].chars().next() {
             self.cursor += c.len_utf8();
+            self.refresh_completion();
         }
     }
 
-    pub(super) const fn cursor_home(&mut self) {
+    pub(super) fn cursor_home(&mut self) {
         self.cursor = 0;
+        self.refresh_completion();
     }
 
-    pub(super) const fn cursor_end(&mut self) {
+    pub(super) fn cursor_end(&mut self) {
         self.cursor = self.input.len();
+        self.refresh_completion();
     }
 
     /// 取出待提交的输入并清空缓冲；空输入返回 `None`。
@@ -303,7 +411,123 @@ impl App {
         }
         self.input.clear();
         self.cursor = 0;
+        self.completion = None;
         Some(text)
+    }
+
+    // ── slash 命令补全 ──────────────────────────────────────────────────────
+
+    /// 当前补全弹层（渲染用）。
+    pub(super) const fn completion(&self) -> Option<&Completion> {
+        self.completion.as_ref()
+    }
+
+    /// 按当前输入重算补全候选：仅在「以 `/` 开头、光标在末尾、命令名
+    /// 未输入完整参数（无空白）」时弹出；候选按前缀匹配命令名与别名。
+    fn refresh_completion(&mut self) {
+        let fragment = self.slash_fragment();
+        self.completion = fragment.and_then(|fragment| {
+            let mut candidates: Vec<&'static SlashCommand> = SLASH_COMMANDS
+                .iter()
+                .filter(|command| {
+                    command.name.starts_with(fragment)
+                        || command.aliases.iter().any(|a| a.starts_with(fragment))
+                })
+                .collect();
+            if candidates.is_empty() {
+                return None;
+            }
+            candidates.sort_by_key(|command| command.name);
+            // 输入已精确匹配某命令时选中它，Tab 从它开始循环
+            let selected = candidates
+                .iter()
+                .position(|command| command.name == fragment)
+                .unwrap_or(0);
+            Some(Completion {
+                candidates,
+                selected,
+            })
+        });
+    }
+
+    /// 光标位于末尾且输入是「无参数的 slash 前缀」时，返回命令名片段。
+    fn slash_fragment(&self) -> Option<&str> {
+        let rest = self.input.strip_prefix('/')?;
+        if self.cursor != self.input.len() || rest.contains(char::is_whitespace) {
+            return None;
+        }
+        Some(rest)
+    }
+
+    /// Tab：接受当前选中候选；输入已等于选中项时循环到下一个。
+    pub(super) fn tab_complete(&mut self) {
+        let Some(completion) = &self.completion else {
+            return;
+        };
+        let current = completion.candidates[completion.selected];
+        let selected = if self.input == format!("/{}", current.name) {
+            (completion.selected + 1) % completion.candidates.len()
+        } else {
+            completion.selected
+        };
+        let name = completion.candidates[selected].name;
+        self.input = format!("/{name}");
+        self.cursor = self.input.len();
+        self.refresh_completion();
+    }
+
+    /// 补全弹层中选择下一个/上一个候选（环形）。
+    pub(super) const fn completion_select(&mut self, delta: isize) {
+        if let Some(completion) = &mut self.completion {
+            let len = completion.candidates.len();
+            let step = delta.unsigned_abs() % len;
+            completion.selected = if delta < 0 {
+                (completion.selected + len - step) % len
+            } else {
+                (completion.selected + step) % len
+            };
+        }
+    }
+
+    /// Esc：关闭补全弹层；返回是否确有弹层被关闭（否则调用方走取消语义）。
+    pub(super) fn dismiss_completion(&mut self) -> bool {
+        self.completion.take().is_some()
+    }
+
+    /// Enter 且补全弹层可见时的智能接受：输入未精确匹配任何命令时
+    /// 填入选中候选（返回 `true`，不提交）；已精确匹配则返回 `false` 正常提交。
+    pub(super) fn accept_completion_on_enter(&mut self) -> bool {
+        let Some(fragment) = self.slash_fragment() else {
+            return false;
+        };
+        if self.completion.is_none() {
+            return false;
+        }
+        let exact = self.completion.as_ref().is_some_and(|completion| {
+            completion
+                .candidates
+                .iter()
+                .any(|command| command.name == fragment || command.aliases.contains(&fragment))
+        });
+        if exact {
+            return false;
+        }
+        self.tab_complete();
+        true
+    }
+
+    // ── slash 命令反馈 ──────────────────────────────────────────────────────
+
+    /// 追加一条本地系统提示（不进上下文、不落库）。
+    pub(super) fn push_system(&mut self, text: impl Into<String>) {
+        self.items.push(ChatItem::System(text.into()));
+        self.scroll_to_bottom();
+    }
+
+    /// 清空聊天区（`/new` 开启新对话）。
+    pub(super) fn clear_items(&mut self) {
+        self.items.clear();
+        self.scroll_to_bottom();
     }
 
     // ── 滚动 ────────────────────────────────────────────────────────────────
@@ -547,6 +771,95 @@ mod tests {
         assert_eq!(app.input(), "好");
         assert_eq!(app.take_input().as_deref(), Some("好"));
         assert!(app.take_input().is_none());
+    }
+
+    #[test]
+    fn slash_completion_filters_by_prefix_and_tab_cycles() {
+        let mut app = app();
+        app.insert_char('/');
+        let completion = app.completion().expect("/ 即弹出全部候选");
+        assert_eq!(completion.candidates.len(), SLASH_COMMANDS.len());
+
+        app.insert_char('n');
+        let completion = app.completion().expect("/n 匹配 new");
+        assert_eq!(
+            completion
+                .candidates
+                .iter()
+                .map(|command| command.name)
+                .collect::<Vec<_>>(),
+            vec!["new"]
+        );
+
+        // Tab 接受候选
+        app.tab_complete();
+        assert_eq!(app.input(), "/new");
+        // 精确匹配后仍显示（展示描述），且选中该项
+        let completion = app.completion().expect("精确匹配仍显示候选");
+        assert_eq!(completion.candidates[completion.selected].name, "new");
+
+        // 输入空格（进入参数区）后弹层消失
+        app.insert_char(' ');
+        assert!(app.completion().is_none());
+    }
+
+    #[test]
+    fn slash_completion_matches_alias_and_enter_accepts() {
+        let mut app = app();
+        for c in "/ex".chars() {
+            app.insert_char(c);
+        }
+        let completion = app.completion().expect("/ex 匹配别名 exit");
+        assert_eq!(completion.candidates[completion.selected].name, "quit");
+
+        // 未精确匹配时 Enter 先填入候选，不提交
+        assert!(app.accept_completion_on_enter());
+        assert_eq!(app.input(), "/quit");
+        // 精确匹配后 Enter 放行提交
+        assert!(!app.accept_completion_on_enter());
+    }
+
+    #[test]
+    fn parse_slash_dispatches_known_unknown_and_plain() {
+        assert_eq!(parse_slash("hello"), SlashParse::NotCommand);
+        assert_eq!(parse_slash("/help"), SlashParse::Known(SlashAction::Help));
+        assert_eq!(parse_slash("/new"), SlashParse::Known(SlashAction::New));
+        assert_eq!(parse_slash("/quit"), SlashParse::Known(SlashAction::Quit));
+        assert_eq!(parse_slash("/exit"), SlashParse::Known(SlashAction::Quit));
+        assert_eq!(
+            parse_slash("/foobar"),
+            SlashParse::Unknown("foobar".to_string())
+        );
+        // 首尾空白容错
+        assert_eq!(parse_slash("  /new  "), SlashParse::Known(SlashAction::New));
+    }
+
+    #[test]
+    fn system_item_and_clear_items() {
+        let mut app = app();
+        app.push_system(help_text());
+        assert_eq!(app.items.len(), 1);
+        let ChatItem::System(text) = &app.items[0] else {
+            panic!("expected system item");
+        };
+        assert!(text.contains("/help"));
+        assert!(text.contains("/new"));
+        assert!(text.contains("/quit"));
+        assert!(text.contains("/exit"));
+        app.clear_items();
+        assert!(app.items.is_empty());
+    }
+
+    #[test]
+    fn dismiss_completion_reports_whether_popup_was_open() {
+        let mut app = app();
+        assert!(!app.dismiss_completion());
+        app.insert_char('/');
+        assert!(app.dismiss_completion());
+        assert!(app.completion().is_none());
+        // 关闭后下次编辑会重新计算
+        app.insert_char('n');
+        assert!(app.completion().is_some());
     }
 
     #[test]

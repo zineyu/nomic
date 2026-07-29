@@ -173,6 +173,13 @@ impl Agent {
         &self.messages
     }
 
+    /// 清空消息历史（交互端「开启新对话」语义，如 TUI 的 `/new`）。
+    ///
+    /// 系统提示词、工具与配置保留；应在非运行状态（`prompt` 返回后）调用。
+    pub fn clear_messages(&mut self) {
+        self.messages.clear();
+    }
+
     /// 发送一个用户 prompt 并运行 loop 直到完成，返回本次新增的消息。
     ///
     /// provider 错误不会让这里返回 `Err`（编码在 assistant 消息中）；

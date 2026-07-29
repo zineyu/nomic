@@ -32,12 +32,17 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use app::App;
+use app::{App, SlashAction, SlashParse};
 
 use crate::{Cli, bootstrap};
 
-/// 提交给 agent driver 的一次运行：prompt 文本 + 本轮取消令牌。
-type PromptJob = (String, CancellationToken);
+/// 提交给 agent driver 的任务。
+enum DriverJob {
+    /// 运行一轮 prompt（附本轮取消令牌）
+    Prompt(String, CancellationToken),
+    /// 清空 agent 上下文（`/new`）
+    Clear,
+}
 
 /// 运行交互 TUI。
 pub async fn run(cli: &Cli) -> Result<()> {
@@ -67,24 +72,31 @@ pub async fn run(cli: &Cli) -> Result<()> {
         Terminal::new(CrosstermBackend::new(io::stdout())).context("创建终端后端失败")?;
 
     // agent driver：持有 Agent，串行执行 prompt，完成后回传结果
-    let (job_tx, mut job_rx) = mpsc::unbounded_channel::<PromptJob>();
+    let (job_tx, mut job_rx) = mpsc::unbounded_channel::<DriverJob>();
     let (done_tx, mut done_rx) = mpsc::unbounded_channel::<Result<(), String>>();
     tokio::spawn(async move {
         let mut agent = agent;
-        while let Some((text, cancel)) = job_rx.recv().await {
-            let result = agent
-                .prompt(&text, cancel)
-                .await
-                .map(|_| ())
-                .map_err(|error| error.to_string());
-            if done_tx.send(result).is_err() {
-                return;
+        while let Some(job) = job_rx.recv().await {
+            match job {
+                DriverJob::Prompt(text, cancel) => {
+                    let result = agent
+                        .prompt(&text, cancel)
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string());
+                    if done_tx.send(result).is_err() {
+                        return;
+                    }
+                }
+                DriverJob::Clear => agent.clear_messages(),
             }
         }
     });
 
     let mut term_events = EventStream::new();
     let mut current_cancel: Option<CancellationToken> = None;
+    let mut session = boot.session;
+    let cwd = std::env::current_dir().context("get cwd")?;
     loop {
         terminal
             .draw(|frame| ui::draw(frame, &mut app))
@@ -92,7 +104,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
         tokio::select! {
             maybe_event = term_events.next() => match maybe_event {
                 Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => {
-                    handle_key(&mut app, &mut current_cancel, &job_tx, key);
+                    handle_key(&mut app, &mut current_cancel, &job_tx, &mut session, &cwd, key).await;
                 }
                 Some(Ok(Event::Mouse(mouse))) => match mouse.kind {
                     MouseEventKind::ScrollUp => app.scroll_up(3),
@@ -106,7 +118,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
             maybe_event = events.recv() => {
                 let Some(event) = maybe_event else { break };
                 if let AgentEvent::MessageEnd(message) = &event {
-                    persist(boot.session.as_ref(), message, &mut app).await;
+                    persist(session.as_ref(), message, &mut app).await;
                 }
                 app.handle_event(&event);
             }
@@ -127,10 +139,12 @@ pub async fn run(cli: &Cli) -> Result<()> {
 }
 
 /// 键位处理（最小集，见 ADR-0002）。
-fn handle_key(
+async fn handle_key(
     app: &mut App,
     current_cancel: &mut Option<CancellationToken>,
-    job_tx: &mpsc::UnboundedSender<PromptJob>,
+    job_tx: &mpsc::UnboundedSender<DriverJob>,
+    session: &mut Option<(SessionStore, String)>,
+    cwd: &std::path::Path,
     key: KeyEvent,
 ) {
     let cancel_running = |cancel: &Option<CancellationToken>| {
@@ -147,20 +161,34 @@ fn handle_key(
             }
         }
         (KeyCode::Esc, _) => {
-            if app.running {
+            // 补全弹层可见时优先关闭弹层，否则取消当前运行
+            if !app.dismiss_completion() && app.running {
                 cancel_running(current_cancel);
             }
         }
+        (KeyCode::Tab, _) => app.tab_complete(),
         (KeyCode::Enter, _) => {
             if app.running {
                 app.notice = Some("运行中，等待结束后再发送".to_string());
+            } else if app.accept_completion_on_enter() {
+                // 已填入补全候选；再次 Enter 提交
             } else if let Some(text) = app.take_input() {
-                let token = CancellationToken::new();
-                *current_cancel = Some(token.clone());
-                // AgentStart 事件也会置位；先置避免提交空窗期重复提交
-                app.running = true;
-                app.notice = None;
-                let _ = job_tx.send((text, token));
+                match app::parse_slash(&text) {
+                    SlashParse::NotCommand => {
+                        let token = CancellationToken::new();
+                        *current_cancel = Some(token.clone());
+                        // AgentStart 事件也会置位；先置避免提交空窗期重复提交
+                        app.running = true;
+                        app.notice = None;
+                        let _ = job_tx.send(DriverJob::Prompt(text, token));
+                    }
+                    SlashParse::Known(action) => {
+                        handle_slash(app, job_tx, session, cwd, action).await;
+                    }
+                    SlashParse::Unknown(name) => {
+                        app.notice = Some(format!("未知命令 /{name}，输入 /help 查看可用命令"));
+                    }
+                }
             }
         }
         (KeyCode::Backspace, _) => app.backspace(),
@@ -168,12 +196,57 @@ fn handle_key(
         (KeyCode::Right, _) => app.cursor_right(),
         (KeyCode::Home, _) => app.cursor_home(),
         (KeyCode::End, _) => app.cursor_end(),
-        (KeyCode::Up, _) => app.scroll_up(1),
-        (KeyCode::Down, _) => app.scroll_down(1),
+        // 补全弹层可见时 ↑/↓ 移动选中项，否则滚动聊天区
+        (KeyCode::Up, _) => {
+            if app.completion().is_some() {
+                app.completion_select(-1);
+            } else {
+                app.scroll_up(1);
+            }
+        }
+        (KeyCode::Down, _) => {
+            if app.completion().is_some() {
+                app.completion_select(1);
+            } else {
+                app.scroll_down(1);
+            }
+        }
         (KeyCode::PageUp, _) => app.scroll_up(ui::page_scroll()),
         (KeyCode::PageDown, _) => app.scroll_down(ui::page_scroll()),
         (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => app.insert_char(c),
         _ => {}
+    }
+}
+
+/// 执行已知 slash 命令。
+async fn handle_slash(
+    app: &mut App,
+    job_tx: &mpsc::UnboundedSender<DriverJob>,
+    session: &mut Option<(SessionStore, String)>,
+    cwd: &std::path::Path,
+    action: SlashAction,
+) {
+    match action {
+        SlashAction::Help => app.push_system(app::help_text()),
+        SlashAction::Quit => app.should_quit = true,
+        SlashAction::New => {
+            // driver 串行处理任务；slash 命令仅在空闲时可提交，无需排队等待
+            let _ = job_tx.send(DriverJob::Clear);
+            app.clear_items();
+            app.push_system("已开启新对话，上下文已清空。");
+            if let Some((store, id)) = session {
+                match store.create_session(cwd).await {
+                    Ok(new_id) => {
+                        id.clone_from(&new_id);
+                        app.session_id = Some(new_id);
+                    }
+                    Err(error) => {
+                        app.notice =
+                            Some(format!("创建新 session 失败，续写当前 session：{error}"));
+                    }
+                }
+            }
+        }
     }
 }
 

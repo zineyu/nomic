@@ -290,6 +290,31 @@ async fn resume_with_seeded_history() {
 }
 
 #[tokio::test]
+async fn clear_messages_resets_context() {
+    let provider = MockProvider::new(vec![text_done("hello"), text_done("world")]);
+    let (mut agent, rx) = make_agent(provider.clone(), vec![DynTool::new(EchoTool)]);
+
+    let collector = tokio::spawn(collect_events(rx));
+    agent
+        .prompt("hi", CancellationToken::new())
+        .await
+        .expect("prompt");
+    collector.await.expect("collector");
+    assert_eq!(agent.messages().len(), 2);
+
+    agent.clear_messages();
+    assert!(agent.messages().is_empty());
+
+    // 新一轮：provider 上下文只含新 user 消息，不带清空前的历史。
+    // 事件接收端已随第一个 collector 关闭，emit 静默丢弃，不影响 loop。
+    agent
+        .prompt("again", CancellationToken::new())
+        .await
+        .expect("prompt");
+    assert_eq!(provider.context_lens(), vec![1, 1]);
+}
+
+#[tokio::test]
 async fn tool_call_then_text_two_turns() {
     let provider = MockProvider::new(vec![
         tool_call_done("c1", "echo", serde_json::json!({"text": "from tool"})),

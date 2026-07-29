@@ -9,7 +9,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthChar;
 
-use super::app::{App, Block, ChatItem, ToolStatus};
+use super::app::{App, Block, ChatItem, Completion, ToolStatus};
 
 /// 单页滚动的行数。
 const PAGE_SCROLL: u16 = 10;
@@ -27,6 +27,9 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     draw_chat(frame, app, chunks[0]);
     draw_input(frame, app, chunks[1]);
     draw_status(frame, app, chunks[2]);
+    if let Some(completion) = app.completion() {
+        draw_completion(frame, completion, chunks[1]);
+    }
 }
 
 /// 聊天区：历史条目 + 流式累积，软换行，`scroll` 从底部向上计。
@@ -73,6 +76,15 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 if !assistant.blocks.is_empty() || assistant.error.is_some() {
                     lines.push(Line::default());
                 }
+            }
+            ChatItem::System(text) => {
+                lines.extend(text.lines().map(|line| {
+                    Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    ))
+                }));
+                lines.push(Line::default());
             }
             ChatItem::Tool(tool) => {
                 let (mark, color) = match tool.status {
@@ -199,6 +211,46 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+/// slash 命令补全弹层：贴在输入框上方，选中项高亮。
+fn draw_completion(frame: &mut Frame<'_>, completion: &Completion, input_area: Rect) {
+    let lines: Vec<Line<'static>> = completion
+        .candidates
+        .iter()
+        .enumerate()
+        .map(|(index, command)| {
+            let style = if index == completion.selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            Line::from(Span::styled(
+                format!("/{:<6} {}", command.name, command.summary),
+                style,
+            ))
+        })
+        .collect();
+    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let width = lines
+        .iter()
+        .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
+        .max()
+        .unwrap_or(0)
+        .min(input_area.width);
+    // 贴输入框顶边向上弹出；空间不足时压到聊天区顶部为止
+    let y = input_area.y.saturating_sub(height);
+    let area = Rect {
+        x: input_area.x,
+        y,
+        width,
+        height: height.min(input_area.y),
+    };
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 /// PgUp/PgDn 的滚动步长（供事件循环使用）。
 pub(super) const fn page_scroll() -> u16 {
     PAGE_SCROLL
@@ -247,5 +299,31 @@ mod tests {
         assert!(compact.contains("bash"));
         assert!(compact.contains("test-model"));
         assert!(compact.contains("abcd1234"));
+    }
+
+    /// 补全弹层与 System 条目也能无 panic 绘制。
+    #[test]
+    fn renders_completion_popup_and_system_item() {
+        let mut app = App::new("test-model".to_string(), None);
+        app.push_system(crate::tui::app::help_text());
+        for c in "/n".chars() {
+            app.insert_char(c);
+        }
+        assert!(app.completion().is_some());
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let compact: String = buffer
+            .content()
+            .iter()
+            .flat_map(|cell| cell.symbol().chars())
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        // 弹层候选与 System 条目均可见
+        assert!(compact.contains("/new"));
+        assert!(compact.contains("/help"));
     }
 }

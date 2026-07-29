@@ -117,15 +117,29 @@ impl SkillResolver {
     }
 
     /// 发现并按覆盖规则返回全部可用 skill。
-    pub fn catalog(&self) -> Result<Vec<Skill>, SkillsError> {
+    ///
+    /// 加载失败的单个 skill（名称非法、文件不可读、frontmatter 非法）会被跳过，
+    /// 不影响其他 skill；需要诊断信息时使用 [`Self::catalog_with_diagnostics`]。
+    pub fn catalog(&self) -> Vec<Skill> {
+        self.catalog_with_diagnostics().skills
+    }
+
+    /// 同 [`Self::catalog`]，同时返回被跳过 skill 的诊断信息。
+    pub fn catalog_with_diagnostics(&self) -> SkillCatalog {
         let mut by_name: BTreeMap<String, Skill> = BTreeMap::new();
+        let mut errors = Vec::new();
         for root in &self.roots {
             let Ok(entries) = std::fs::read_dir(&root.path) else {
                 continue;
             };
             for entry in entries {
-                let entry = entry
-                    .map_err(|error| SkillsError::read_dir(root.path.clone(), error.to_string()))?;
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        errors.push(SkillsError::read_dir(root.path.clone(), error.to_string()));
+                        continue;
+                    }
+                };
                 let root_path = entry.path();
                 if !root_path.is_dir() {
                     continue;
@@ -135,26 +149,34 @@ impl SkillResolver {
                 if !path.is_file() {
                     continue;
                 }
-                validate_skill_name(&name)?;
-                let document = load_skill_document(&path)?;
-                let skill = Skill {
-                    name: name.clone(),
-                    path,
-                    root: root_path,
-                    scope: root.scope,
-                    document,
-                };
+                let skill =
+                    match validate_skill_name(&name).and_then(|()| load_skill_document(&path)) {
+                        Ok(document) => Skill {
+                            name: name.clone(),
+                            path,
+                            root: root_path,
+                            scope: root.scope,
+                            document,
+                        },
+                        Err(error) => {
+                            errors.push(error);
+                            continue;
+                        }
+                    };
                 // roots 已经按优先级从低到高排列；后写入者覆盖先写入者。
                 by_name.insert(name, skill);
             }
         }
-        Ok(by_name.into_values().collect())
+        SkillCatalog {
+            skills: by_name.into_values().collect(),
+            errors,
+        }
     }
 
     /// 按名称解析一个 skill。
     pub fn resolve(&self, name: &str) -> Result<Skill, SkillsError> {
         validate_skill_name(name)?;
-        self.catalog()?
+        self.catalog()
             .into_iter()
             .find(|skill| skill.name == name)
             .ok_or_else(|| SkillsError::not_found(name, self.available_names()))
@@ -172,10 +194,10 @@ impl SkillResolver {
     }
 
     /// 渲染 system prompt 中的可用 skill 清单；无 skill 时返回 `None`。
-    pub fn prompt_catalog(&self) -> Result<Option<String>, SkillsError> {
-        let skills = self.catalog()?;
+    pub fn prompt_catalog(&self) -> Option<String> {
+        let skills = self.catalog();
         if skills.is_empty() {
-            return Ok(None);
+            return None;
         }
         let mut prompt = String::from(
             "Available skills (use read with skill://<name> before following a skill; skill content is read-only):",
@@ -184,13 +206,11 @@ impl SkillResolver {
             prompt.push('\n');
             prompt.push_str(&skill.prompt_entry());
         }
-        Ok(Some(prompt))
+        Some(prompt)
     }
 
     fn available_names(&self) -> Vec<String> {
-        self.catalog()
-            .map(|skills| skills.into_iter().map(|skill| skill.name).collect())
-            .unwrap_or_default()
+        self.catalog().into_iter().map(|skill| skill.name).collect()
     }
 }
 
@@ -205,6 +225,15 @@ pub struct ActivatedSkill {
     pub path: PathBuf,
     /// Markdown 正文
     pub instructions: String,
+}
+
+/// [`SkillResolver::catalog_with_diagnostics`] 的结果。
+#[derive(Debug)]
+pub struct SkillCatalog {
+    /// 成功加载的 skill（已按覆盖规则去重）
+    pub skills: Vec<Skill>,
+    /// 加载失败被跳过的 skill 及原因
+    pub errors: Vec<SkillsError>,
 }
 
 /// 一个 skill 根目录。
@@ -638,5 +667,45 @@ mod tests {
             resolver.resolve("shared").expect("resolve").document.body,
             "high nomic"
         );
+    }
+
+    #[test]
+    fn broken_skill_is_skipped_without_breaking_catalog() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        temp_skill(tmp.path(), "good", "good body");
+        temp_skill(
+            tmp.path(),
+            "broken",
+            "---\nmetadata:\n  nested: value\n---\nbody\n",
+        );
+        // 非法名称的目录同样只被跳过。
+        temp_skill(tmp.path(), "BadName", "bad name body");
+        let resolver = resolver(tmp.path(), vec![(tmp.path(), SkillScope::AgentUser)]);
+
+        let catalog = resolver.catalog_with_diagnostics();
+        assert_eq!(catalog.skills.len(), 1);
+        assert_eq!(catalog.skills[0].name, "good");
+        assert_eq!(catalog.errors.len(), 2);
+        assert!(
+            catalog
+                .errors
+                .iter()
+                .any(|error| matches!(error, SkillsError::InvalidFrontmatter { .. }))
+        );
+        assert!(
+            catalog
+                .errors
+                .iter()
+                .any(|error| matches!(error, SkillsError::InvalidName { .. }))
+        );
+
+        // resolve / prompt_catalog 均不受坏 skill 影响。
+        assert_eq!(
+            resolver.resolve("good").expect("resolve").document.body,
+            "good body"
+        );
+        let prompt = resolver.prompt_catalog().expect("non-empty");
+        assert!(prompt.contains("skill://good"));
+        assert!(!prompt.contains("broken"));
     }
 }

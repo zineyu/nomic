@@ -346,7 +346,7 @@ fn build_system_prompt(
             file.content.trim_end()
         );
     }
-    if let Ok(Some(catalog)) = skill_resolver.prompt_catalog() {
+    if let Some(catalog) = skill_resolver.prompt_catalog() {
         prompt.push_str("\n\n<available_skills>\n");
         prompt.push_str(&catalog);
         prompt.push_str("\n</available_skills>");

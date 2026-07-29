@@ -109,8 +109,10 @@ impl SkillResolver {
             return Err(SkillsError::RelativeCwd(cwd.to_path_buf()));
         }
         let project_roots = discover_project_roots(cwd, project_discovery);
-        let mut roots = project_roots;
-        roots.extend(user_roots);
+        // roots 按低优先级到高优先级排列（catalog 中后写入者覆盖先写入者）：
+        // 用户级在前，项目级在后，保证项目级 skill 覆盖同名用户级 skill。
+        let mut roots = user_roots;
+        roots.extend(project_roots);
         Ok(Self { roots })
     }
 
@@ -302,13 +304,19 @@ fn default_user_roots() -> Vec<SkillRoot> {
 
 /// 发现项目级 skill 根。返回顺序从低优先级到高优先级。
 fn discover_project_roots(cwd: &Path, discovery: ProjectDiscovery) -> Vec<SkillRoot> {
+    // 统一按低优先级到高优先级遍历项目根：Ancestors 模式从文件系统根到 cwd
+    //（越靠近 cwd 越优先），Roots 模式由调用方按低优先级到高优先级传入。
     let roots = match discovery {
-        ProjectDiscovery::Ancestors => cwd.ancestors().map(Path::to_path_buf).collect::<Vec<_>>(),
+        ProjectDiscovery::Ancestors => {
+            let mut ancestors = cwd.ancestors().map(Path::to_path_buf).collect::<Vec<_>>();
+            ancestors.reverse();
+            ancestors
+        }
         ProjectDiscovery::Roots(roots) => roots,
     };
     let mut discovered = Vec::new();
-    // 越靠近 cwd 的项目目录越优先；先反向收集，最后整体反转。
-    for root in roots.into_iter().rev() {
+    for root in roots {
+        // 同级同层中 .nomic/skills 优先于 .agents/skills（后写入者覆盖先写入者）。
         discovered.push(SkillRoot {
             path: root.join(".agents").join("skills"),
             scope: SkillScope::Project,
@@ -318,7 +326,6 @@ fn discover_project_roots(cwd: &Path, discovery: ProjectDiscovery) -> Vec<SkillR
             scope: SkillScope::Project,
         });
     }
-    discovered.reverse();
     discovered
 }
 
@@ -562,5 +569,74 @@ mod tests {
             .resolve("plain")
             .expect("resolve");
         assert_eq!(skill.document.description, "Do useful work");
+    }
+
+    #[test]
+    fn project_skill_overrides_user_skill() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let project = tmp.path().join("project");
+        let user = tmp.path().join("user");
+        temp_skill(&project.join(".nomic/skills"), "shared", "project body");
+        temp_skill(&user, "shared", "user body");
+        let resolver = SkillResolver::new(
+            &project,
+            ProjectDiscovery::Roots(vec![project.clone()]),
+            vec![SkillRoot {
+                path: user,
+                scope: SkillScope::NomicUser,
+            }],
+        )
+        .expect("resolver");
+        let skill = resolver.resolve("shared").expect("resolve");
+        assert_eq!(skill.document.body, "project body");
+        assert_eq!(skill.scope, SkillScope::Project);
+    }
+
+    #[test]
+    fn ancestors_mode_prefers_nearer_dir_and_nomic_dir() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let outer = tmp.path().join("outer");
+        let inner = outer.join("inner");
+        temp_skill(&outer.join(".agents/skills"), "shared", "outer agents");
+        temp_skill(&outer.join(".nomic/skills"), "shared", "outer nomic");
+        temp_skill(&inner.join(".agents/skills"), "shared", "inner agents");
+        temp_skill(&inner.join(".nomic/skills"), "shared", "inner nomic");
+        // 只在父级 .agents 与 .nomic 中同时存在：同层 .nomic 应优先。
+        temp_skill(&outer.join(".agents/skills"), "outer-only", "outer agents");
+        temp_skill(&outer.join(".nomic/skills"), "outer-only", "outer nomic");
+        let resolver =
+            SkillResolver::new(&inner, ProjectDiscovery::Ancestors, Vec::new()).expect("resolver");
+        assert_eq!(
+            resolver.resolve("shared").expect("resolve").document.body,
+            "inner nomic"
+        );
+        assert_eq!(
+            resolver
+                .resolve("outer-only")
+                .expect("resolve")
+                .document
+                .body,
+            "outer nomic"
+        );
+    }
+
+    #[test]
+    fn roots_mode_prefers_later_root_and_nomic_dir() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let low = tmp.path().join("low");
+        let high = tmp.path().join("high");
+        temp_skill(&low.join(".nomic/skills"), "shared", "low nomic");
+        temp_skill(&high.join(".agents/skills"), "shared", "high agents");
+        temp_skill(&high.join(".nomic/skills"), "shared", "high nomic");
+        let resolver = SkillResolver::new(
+            tmp.path(),
+            ProjectDiscovery::Roots(vec![low, high]),
+            Vec::new(),
+        )
+        .expect("resolver");
+        assert_eq!(
+            resolver.resolve("shared").expect("resolve").document.body,
+            "high nomic"
+        );
     }
 }

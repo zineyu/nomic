@@ -9,7 +9,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthChar;
 
 use super::{
-    app::{App, Block, ChatItem, Completion, CompletionCandidate, ToolStatus},
+    app::{App, Block, ChatItem, Completion, CompletionCandidate, ToolItem, ToolStatus},
     theme,
 };
 
@@ -93,31 +93,7 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 lines.push(Line::default());
             }
             ChatItem::Tool(tool) => {
-                // 树形条目：状态色标记 + 加粗工具名 + 暗色 (参数)，结果行缩进对齐
-                let (mark, mark_style, name_style) = match tool.status {
-                    ToolStatus::Running => (spinner, theme::busy(), theme::bold()),
-                    ToolStatus::Ok => ("⏺", theme::ok(), theme::bold()),
-                    ToolStatus::Failed => ("⏺", theme::err(), theme::err_bold()),
-                };
-                let mut spans = vec![
-                    Span::styled(format!("{mark} "), mark_style),
-                    Span::styled(tool.name.clone(), name_style),
-                ];
-                if !tool.args.is_empty() {
-                    spans.push(Span::styled(format!("({})", tool.args), theme::dim()));
-                }
-                lines.push(Line::from(spans));
-                if let Some(detail) = &tool.detail {
-                    let detail_style = if tool.status == ToolStatus::Failed {
-                        theme::err()
-                    } else {
-                        theme::dim()
-                    };
-                    lines.push(Line::from(Span::styled(
-                        format!("  ⎿ {detail}"),
-                        detail_style,
-                    )));
-                }
+                lines.extend(tool_lines(tool, spinner));
             }
         }
     }
@@ -140,6 +116,39 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let offset = u16::try_from(offset).unwrap_or(u16::MAX);
     let paragraph = Paragraph::new(lines).scroll((offset, 0));
     frame.render_widget(paragraph, area);
+}
+
+/// 工具条目的渲染行：状态色标记 + 加粗工具名 + 暗色 (参数)，
+/// 结果摘要首行 `⎿` 引导、后续行对齐缩进，保持树形层次。
+fn tool_lines(tool: &ToolItem, spinner: &str) -> Vec<Line<'static>> {
+    let (mark, mark_style, name_style) = match tool.status {
+        ToolStatus::Running => (spinner, theme::busy(), theme::bold()),
+        ToolStatus::Ok => ("⏺", theme::ok(), theme::bold()),
+        ToolStatus::Failed => ("⏺", theme::err(), theme::err_bold()),
+    };
+    let mut spans = vec![
+        Span::styled(format!("{mark} "), mark_style),
+        Span::styled(tool.name.clone(), name_style),
+    ];
+    if !tool.args.is_empty() {
+        spans.push(Span::styled(format!("({})", tool.args), theme::dim()));
+    }
+    let mut lines = vec![Line::from(spans)];
+    if !tool.detail.is_empty() {
+        let detail_style = if tool.status == ToolStatus::Failed {
+            theme::err()
+        } else {
+            theme::dim()
+        };
+        for (index, detail) in tool.detail.iter().enumerate() {
+            let prefix = if index == 0 { "  ⎿ " } else { "    " };
+            lines.push(Line::from(Span::styled(
+                format!("{prefix}{detail}"),
+                detail_style,
+            )));
+        }
+    }
+    lines
 }
 
 /// 空状态欢迎页：居中 logo + 键位速查。
@@ -361,7 +370,7 @@ pub(super) const fn page_scroll() -> u16 {
 #[cfg(test)]
 mod tests {
     use nomic_ai::Message;
-    use nomic_core::AgentEvent;
+    use nomic_core::{AgentEvent, ToolResult};
     use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
@@ -437,6 +446,40 @@ mod tests {
         assert!(compact.contains("生成中"), "{compact}");
         assert!(compact.contains("运行中"), "{compact}");
         assert!(compact.contains(app.spinner()), "{compact}");
+    }
+
+    /// 工具条目树形渲染：参数用语义摘要，多行结果首行 `⎿`、后续行对齐。
+    #[test]
+    fn renders_tool_tree_with_multiline_detail() {
+        let mut app = App::new("test-model".to_string(), None);
+        app.handle_event(&AgentEvent::ToolExecutionStart {
+            tool_call_id: "t1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command": "cargo test"}),
+        });
+        app.handle_event(&AgentEvent::ToolExecutionEnd {
+            tool_call_id: "t1".to_string(),
+            tool_name: "bash".to_string(),
+            result: ToolResult::text("line1\nline2\nline3"),
+            is_error: false,
+        });
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let width = usize::from(buffer.area.width);
+        let rows: Vec<String> = buffer
+            .content()
+            .chunks(width)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+            .collect();
+        let text = rows.join("\n");
+        assert!(text.contains("bash(cargo test)"), "{text}");
+        assert!(text.contains("  ⎿ line1"), "{text}");
+        assert!(text.contains("    line2"), "{text}");
+        assert!(text.contains("    line3"), "{text}");
     }
 
     /// 空状态绘制欢迎页：logo、模型名与键位速查均可见。

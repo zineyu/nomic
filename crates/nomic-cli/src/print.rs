@@ -85,7 +85,10 @@ async fn drain_events(
             AgentEvent::ToolExecutionStart {
                 tool_name, args, ..
             } => {
-                eprintln!("\n\x1b[36m▶ {tool_name}\x1b[0m {}", brief_args(&args));
+                eprintln!(
+                    "\n\x1b[36m▶ {tool_name}\x1b[0m {}",
+                    brief_args(&tool_name, &args)
+                );
             }
             AgentEvent::ToolExecutionEnd {
                 tool_name,
@@ -125,9 +128,34 @@ async fn drain_events(
 }
 
 /// 工具参数的简短摘要（stderr / TUI 展示）。
-pub fn brief_args(args: &serde_json::Value) -> String {
+///
+/// 已知工具取关键字段（bash→command，read/write/edit→path），避免直接展示
+/// 原始 JSON；未知工具回退为截断 JSON。多行文本压缩为单行。
+pub fn brief_args(tool_name: &str, args: &serde_json::Value) -> String {
     const MAX: usize = 120;
-    let text = args.to_string();
+    let key_field = match tool_name {
+        "bash" => args.get("command").and_then(|v| v.as_str()),
+        "read" | "write" => args.get("path").and_then(|v| v.as_str()),
+        "edit" => args.get("path").and_then(|v| v.as_str()),
+        _ => None,
+    };
+    let text = match (tool_name, key_field) {
+        ("edit", Some(path)) => {
+            let count = args
+                .get("edits")
+                .and_then(|v| v.as_array())
+                .map_or(1, Vec::len);
+            if count > 1 {
+                format!("{path} · {count} 处编辑")
+            } else {
+                path.to_string()
+            }
+        }
+        (_, Some(field)) => field.to_string(),
+        _ => args.to_string(),
+    };
+    // 压缩空白（含换行），避免多行 command 破坏单行展示
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.len() <= MAX {
         return text;
     }
@@ -136,4 +164,62 @@ pub fn brief_args(args: &serde_json::Value) -> String {
         index -= 1;
     }
     format!("{}…", &text[..index])
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::brief_args;
+
+    #[test]
+    fn brief_args_extracts_key_field_per_tool() {
+        assert_eq!(
+            brief_args("bash", &json!({"command": "ls -la", "timeout": 30})),
+            "ls -la"
+        );
+        assert_eq!(
+            brief_args("read", &json!({"path": "src/main.rs", "offset": 10})),
+            "src/main.rs"
+        );
+        assert_eq!(
+            brief_args("write", &json!({"path": "a.md", "content": "…"})),
+            "a.md"
+        );
+        assert_eq!(
+            brief_args(
+                "edit",
+                &json!({"path": "a.rs", "edits": [{"oldText": "x", "newText": "y"}]})
+            ),
+            "a.rs"
+        );
+        assert_eq!(
+            brief_args(
+                "edit",
+                &json!({"path": "a.rs", "edits": [
+                    {"oldText": "x", "newText": "y"},
+                    {"oldText": "p", "newText": "q"},
+                ]})
+            ),
+            "a.rs · 2 处编辑"
+        );
+    }
+
+    #[test]
+    fn brief_args_falls_back_to_json_for_unknown_tool() {
+        let args = json!({"query": "rust"});
+        assert_eq!(brief_args("web_search", &args), args.to_string());
+    }
+
+    #[test]
+    fn brief_args_squashes_multiline_and_truncates() {
+        assert_eq!(
+            brief_args("bash", &json!({"command": "cargo build\n  && cargo test"})),
+            "cargo build && cargo test"
+        );
+        let long = "x".repeat(200);
+        let summary = brief_args("bash", &json!({"command": long}));
+        assert!(summary.ends_with('…'));
+        assert!(summary.len() <= 123); // 120 + '…'（3 字节）
+    }
 }

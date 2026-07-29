@@ -60,8 +60,8 @@ pub(super) struct ToolItem {
     /// 参数摘要（截断）
     pub(super) args: String,
     pub(super) status: ToolStatus,
-    /// 进度/结果的一行摘要
-    pub(super) detail: Option<String>,
+    /// 进度/结果的尾部摘要（最多 `DETAIL_LINES` 行）
+    pub(super) detail: Vec<String>,
 }
 
 /// 一条 slash 命令的静态描述。
@@ -360,9 +360,9 @@ impl App {
                 self.items.push(ChatItem::Tool(ToolItem {
                     id: tool_call_id.clone(),
                     name: tool_name.clone(),
-                    args: brief_args(args),
+                    args: brief_args(tool_name, args),
                     status: ToolStatus::Running,
-                    detail: None,
+                    detail: Vec::new(),
                 }));
                 self.scroll_to_bottom();
             }
@@ -763,17 +763,30 @@ fn blocks_text(blocks: &[UserContent]) -> String {
         .collect::<String>()
 }
 
-/// 提取工具输出的一行摘要（最后一行非空文本，截断到 80 列）。
-fn result_summary(blocks: &[UserContent]) -> Option<String> {
-    const MAX: usize = 80;
+/// 工具结果摘要的最大行数（聊天区保持紧凑，只留尾部上下文）。
+const DETAIL_LINES: usize = 3;
+
+/// 提取工具输出的尾部摘要：非空行 trim 后取最后 `DETAIL_LINES` 行，
+/// 每行截断到 120 字符（超长由渲染层折行兜底，这里先压住极端长行）。
+fn result_summary(blocks: &[UserContent]) -> Vec<String> {
+    const MAX_LINE: usize = 120;
     let text = blocks_text(blocks);
-    let line = text.lines().rev().find(|line| !line.trim().is_empty())?;
-    let line = line.trim();
-    if line.chars().count() <= MAX {
-        return Some(line.to_string());
-    }
-    let truncated: String = line.chars().take(MAX).collect();
-    Some(format!("{truncated}…"))
+    let mut tail: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    tail = tail.split_off(tail.len().saturating_sub(DETAIL_LINES));
+    tail.into_iter()
+        .map(|line| {
+            if line.chars().count() <= MAX_LINE {
+                line.to_string()
+            } else {
+                let truncated: String = line.chars().take(MAX_LINE).collect();
+                format!("{truncated}…")
+            }
+        })
+        .collect()
 }
 
 fn assistant_error(stop_reason: StopReason, error_message: Option<&str>) -> Option<String> {
@@ -926,8 +939,23 @@ mod tests {
             panic!("expected tool item");
         };
         assert_eq!(tool.status, ToolStatus::Ok);
-        assert_eq!(tool.detail.as_deref(), Some("done"));
-        assert!(tool.args.contains("ls"));
+        assert_eq!(tool.detail, ["done"]);
+        assert_eq!(tool.args, "ls");
+    }
+
+    #[test]
+    fn result_summary_keeps_last_lines() {
+        let blocks = vec![UserContent::Text(TextContent {
+            text: "l1\n\n  l2  \nl3\nl4\nl5\n\n".to_string(),
+            text_signature: None,
+        })];
+        assert_eq!(result_summary(&blocks), ["l3", "l4", "l5"]);
+
+        let empty = vec![UserContent::Text(TextContent {
+            text: "\n  \n".to_string(),
+            text_signature: None,
+        })];
+        assert!(result_summary(&empty).is_empty());
     }
 
     #[test]

@@ -10,7 +10,7 @@ use unicode_width::UnicodeWidthChar;
 
 use super::{
     app::{App, Block, ChatItem, Completion, CompletionCandidate, ToolItem, ToolStatus},
-    theme,
+    markdown, theme,
 };
 
 /// 单页滚动的行数。
@@ -63,7 +63,8 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 for block in &assistant.blocks {
                     match block {
                         Block::Text(text) => {
-                            lines.extend(text.lines().map(|line| Line::from(line.to_string())));
+                            // assistant 输出按 Markdown 渲染（标题/列表/代码块等）
+                            lines.extend(markdown::render(text, area.width));
                         }
                         Block::Thinking(thinking) => {
                             lines.extend(thinking.lines().map(|line| {
@@ -512,6 +513,62 @@ mod tests {
         assert_eq!(end - start, 10);
         // 末尾选中贴底
         assert_eq!(visible_window(20, 19, 10), (10, 20));
+    }
+
+    /// assistant 文本块按 Markdown 渲染：标记符号不原样上屏，样式落到 cell。
+    #[test]
+    fn renders_assistant_markdown_with_styles() {
+        let mut app = App::new("test-model".to_string(), None);
+        app.handle_event(&AgentEvent::MessageStart(Box::new(Message::Assistant(
+            nomic_ai::AssistantMessage {
+                content: Vec::new(),
+                api: nomic_ai::ApiKind::AnthropicMessages,
+                provider: "anthropic".to_string(),
+                model: "claude".to_string(),
+                response_model: None,
+                response_id: None,
+                usage: nomic_ai::Usage::default(),
+                stop_reason: nomic_ai::StopReason::Stop,
+                error_message: None,
+                timestamp: 0,
+            },
+        ))));
+        app.handle_event(&AgentEvent::MessageUpdate(
+            nomic_ai::AssistantEvent::TextStart { index: 0 },
+        ));
+        app.handle_event(&AgentEvent::MessageUpdate(
+            nomic_ai::AssistantEvent::TextDelta {
+                index: 0,
+                delta: "# 标题\n\n- 项一\n- 项二".to_string(),
+            },
+        ));
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let compact: String = buffer
+            .content()
+            .iter()
+            .flat_map(|cell| cell.symbol().chars())
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        // Markdown 标记不原样上屏，列表项带渲染后的符号
+        assert!(compact.contains("标题"), "{compact}");
+        assert!(!compact.contains("#标题"), "{compact}");
+        assert!(compact.contains("•项一"), "{compact}");
+        // 标题 cell 带加粗样式
+        let heading_cell = buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "标")
+            .expect("heading cell");
+        assert!(
+            heading_cell
+                .modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
     }
 
     /// 补全弹层与 System 条目也能无 panic 绘制。

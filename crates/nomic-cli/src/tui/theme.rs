@@ -16,6 +16,8 @@ pub(super) const OK: Color = Color::Green;
 pub(super) const ERR: Color = Color::Red;
 /// 进行中 / 警告。
 pub(super) const BUSY: Color = Color::Yellow;
+/// 代码文本（行内代码与代码块，与 BUSY 同色但语义独立）。
+pub(super) const CODE: Color = Color::Yellow;
 
 /// 加粗正文（工具名等）。
 pub(super) const fn bold() -> Style {
@@ -83,4 +85,29 @@ pub(super) const fn selected() -> Style {
         .fg(Color::Black)
         .bg(ACCENT)
         .add_modifier(Modifier::BOLD)
+}
+
+/// Markdown 标题：accent + 加粗。
+pub(super) const fn heading() -> Style {
+    Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
+}
+
+/// 行内代码 / 代码块文本。
+pub(super) const fn code() -> Style {
+    Style::new().fg(CODE)
+}
+
+/// 斜体强调。
+pub(super) const fn italic() -> Style {
+    Style::new().add_modifier(Modifier::ITALIC)
+}
+
+/// 删除线。
+pub(super) const fn strikethrough() -> Style {
+    Style::new().add_modifier(Modifier::CROSSED_OUT)
+}
+
+/// 链接文本：accent + 下划线。
+pub(super) const fn link() -> Style {
+    Style::new().fg(ACCENT).add_modifier(Modifier::UNDERLINED)
 }

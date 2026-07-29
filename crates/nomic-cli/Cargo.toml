@@ -23,6 +23,7 @@ nomic-core.workspace = true
 nomic-session.workspace = true
 nomic-skills.workspace = true
 nomic-tools.workspace = true
+pulldown-cmark.workspace = true
 ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true

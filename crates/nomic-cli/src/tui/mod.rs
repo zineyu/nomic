@@ -10,6 +10,7 @@
 //! channel 回流；`MessageEnd` 定稿点复用事件驱动落库。
 
 mod app;
+mod markdown;
 mod theme;
 mod ui;
 

@@ -19,7 +19,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 /// Rust 编码 agent（pi-coding-agent 的 Rust 复刻）。
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[command(name = "nomic", version, about)]
 pub(crate) struct Cli {
     /// 要发送的 prompt（print 模式，非交互；缺省进入交互 TUI）
@@ -76,8 +76,10 @@ pub(crate) struct Cli {
 }
 
 /// 顶层子命令。
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Clone, Subcommand)]
 pub(crate) enum Commands {
+    /// 交互选择并恢复历史 session
+    Resume,
     /// 管理历史 session
     Sessions {
         #[command(subcommand)]
@@ -86,7 +88,7 @@ pub(crate) enum Commands {
 }
 
 /// `nomic sessions` 子命令。
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Clone, Subcommand)]
 pub(crate) enum SessionsCommand {
     /// 列出全部 session（id、最后更新时间、消息数、目录）
     List,
@@ -96,15 +98,19 @@ pub(crate) enum SessionsCommand {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.command {
+        Some(Commands::Resume) => sessions::resume(&cli).await,
         Some(Commands::Sessions {
             command: SessionsCommand::List,
         }) => sessions::list().await,
-        None => {
-            if let Some(prompt) = &cli.print {
-                print::run(&cli, prompt).await
-            } else {
-                tui::run(&cli).await
-            }
-        }
+        None => dispatch(&cli).await,
+    }
+}
+
+/// 无子命令时的常规对话分发：print 模式或交互 TUI。
+pub(crate) async fn dispatch(cli: &Cli) -> Result<()> {
+    if let Some(prompt) = &cli.print {
+        print::run(cli, prompt).await
+    } else {
+        tui::run(cli).await
     }
 }

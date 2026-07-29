@@ -34,6 +34,7 @@ nomic -p "..." --reasoning low
 # 恢复会话（两种模式通用）
 nomic --continue        # 当前目录下最近的 session（按 cwd 隔离）
 nomic --session <ID>    # 指定 session（可跨目录，会有提示）
+nomic resume            # 交互选择器（↑/↓ 或 j/k 移动，Enter 确认，Esc/q 取消）
 
 # 查看历史 session（id、最后更新时间、消息数、目录）
 nomic sessions list

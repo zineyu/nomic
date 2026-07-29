@@ -137,6 +137,34 @@ async fn seed_two_projects(tmp: &Path) -> (std::path::PathBuf, std::path::PathBu
     (project_a, project_b, session_a, session_b)
 }
 
+#[test]
+fn resume_empty_database_reports_no_sessions() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let output = run(&["resume"], tmp.path());
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(stdout(&output).contains("没有历史 session"));
+}
+
+#[tokio::test]
+async fn resume_requires_tty_for_picker() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = SessionStore::open(tmp.path().join("nomic").join("sessions.db"))
+        .await
+        .expect("open db");
+    store
+        .create_session(Path::new("/tmp/project-alpha"))
+        .await
+        .expect("create session");
+    drop(store);
+
+    // 测试进程 stdout 是管道（非 TTY）：选择器不可用，必须报错并给出替代路径
+    let output = run(&["resume"], tmp.path());
+    assert!(!output.status.success(), "非 TTY 应失败");
+    let err = stderr(&output);
+    assert!(err.contains("--session"), "应提示 --session：{err}");
+    assert!(err.contains("sessions list"), "应提示 sessions list：{err}");
+}
+
 #[tokio::test]
 async fn continue_resumes_session_of_current_directory() {
     let tmp = tempfile::tempdir().expect("tempdir");

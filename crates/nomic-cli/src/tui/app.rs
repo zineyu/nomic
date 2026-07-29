@@ -6,6 +6,7 @@ use nomic_ai::{
     AssistantContent, AssistantEvent, Message, StopReason, UserContent, UserMessageContent,
 };
 use nomic_core::AgentEvent;
+use nomic_skills::{ActivatedSkill, Skill};
 use unicode_width::UnicodeWidthStr;
 
 use crate::print::brief_args;
@@ -66,6 +67,8 @@ pub(super) struct SlashCommand {
     pub(super) name: &'static str,
     pub(super) aliases: &'static [&'static str],
     pub(super) summary: &'static str,
+    /// 参数形式非法时的用法提示
+    pub(super) usage: &'static str,
 }
 
 /// 全部 slash 命令（补全候选与 `/help` 输出的唯一来源）。
@@ -74,16 +77,25 @@ pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
         name: "help",
         aliases: &[],
         summary: "显示可用命令",
+        usage: "/help",
     },
     SlashCommand {
         name: "new",
         aliases: &[],
         summary: "清空上下文，开启新对话（新 session）",
+        usage: "/new",
+    },
+    SlashCommand {
+        name: "skill",
+        aliases: &[],
+        summary: "手动载入 skill 到当前对话（/skill:<name>；无参列出可用 skill）",
+        usage: "/skill:<name>（/skill 列出可用 skill）",
     },
     SlashCommand {
         name: "quit",
         aliases: &["exit"],
         summary: "退出 TUI",
+        usage: "/quit",
     },
 ];
 
@@ -94,6 +106,8 @@ pub(super) enum SlashParse {
     NotCommand,
     /// 已知命令
     Known(SlashAction),
+    /// 命令存在但参数形式非法（携带用法提示）
+    InvalidUsage(&'static str),
     /// 未知命令名（不含 `/` 前缀）
     Unknown(String),
 }
@@ -104,22 +118,45 @@ pub(super) enum SlashAction {
     Help,
     New,
     Quit,
+    /// `/skill`（None）列出可用 skill；`/skill:<name>` 载入指定 skill
+    Skill(Option<String>),
 }
 
 /// 解析一行输入为 slash 命令。
+///
+/// 参数只支持 `/name:arg` 冒号形式（如 `/skill:jujutsu`）；
+/// `/cmd extra` 视为参数形式非法。
 pub(super) fn parse_slash(input: &str) -> SlashParse {
     let Some(rest) = input.trim().strip_prefix('/') else {
         return SlashParse::NotCommand;
     };
-    // 最小版命令均无参数；带参数输入取首个空白前的命令名
-    let name = rest.split_whitespace().next().unwrap_or_default();
+    let (name, arg, junk) = if let Some((name, arg)) = rest.split_once(':') {
+        (
+            name.trim(),
+            Some(arg.trim()).filter(|arg| !arg.is_empty()),
+            false,
+        )
+    } else {
+        let mut parts = rest.split_whitespace();
+        let name = parts.next().unwrap_or_default();
+        let junk = parts.next().is_some();
+        (name, None, junk)
+    };
     for command in SLASH_COMMANDS {
         if command.name == name || command.aliases.contains(&name) {
-            return SlashParse::Known(match command.name {
-                "help" => SlashAction::Help,
-                "new" => SlashAction::New,
-                _ => SlashAction::Quit,
-            });
+            let action = match command.name {
+                "skill" => {
+                    if junk || arg.is_some_and(|arg| arg.contains(char::is_whitespace)) {
+                        return SlashParse::InvalidUsage(command.usage);
+                    }
+                    SlashAction::Skill(arg.map(str::to_string))
+                }
+                "help" if !junk && arg.is_none() => SlashAction::Help,
+                "new" if !junk && arg.is_none() => SlashAction::New,
+                "quit" if !junk && arg.is_none() => SlashAction::Quit,
+                _ => return SlashParse::InvalidUsage(command.usage),
+            };
+            return SlashParse::Known(action);
         }
     }
     SlashParse::Unknown(name.to_string())
@@ -150,10 +187,44 @@ pub(super) fn help_text() -> String {
     text
 }
 
+/// 补全候选：slash 命令或 `/skill:` 后的 skill 名。
+#[derive(Debug)]
+pub(super) enum CompletionCandidate {
+    Command(&'static SlashCommand),
+    Skill(SkillEntry),
+}
+
+impl CompletionCandidate {
+    /// 候选对应的输入片段（不含 `/` 前缀），用于精确匹配、排序与填入。
+    fn fragment(&self) -> String {
+        match self {
+            Self::Command(command) => command.name.to_string(),
+            Self::Skill(entry) => format!("skill:{}", entry.name),
+        }
+    }
+
+    /// 输入片段是否精确对应该候选（Enter 是否可直接提交）。
+    fn matches_fragment(&self, fragment: &str) -> bool {
+        match self {
+            Self::Command(command) => {
+                command.name == fragment || command.aliases.contains(&fragment)
+            }
+            Self::Skill(_) => self.fragment() == fragment,
+        }
+    }
+}
+
+/// 可用于 `/skill:` 补全的 skill 元数据（启动时从 resolver catalog 快照）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SkillEntry {
+    pub(super) name: String,
+    pub(super) description: String,
+}
+
 /// 补全弹层状态：候选列表 + 当前选中项。
 #[derive(Debug)]
 pub(super) struct Completion {
-    pub(super) candidates: Vec<&'static SlashCommand>,
+    pub(super) candidates: Vec<CompletionCandidate>,
     pub(super) selected: usize,
 }
 
@@ -177,6 +248,8 @@ pub(super) struct App {
     pub(super) session_id: Option<String>,
     /// 状态栏一次性提示（告警等）
     pub(super) notice: Option<String>,
+    /// `/skill:` 补全用的可用 skill 快照
+    skills: Vec<SkillEntry>,
 }
 
 impl App {
@@ -192,14 +265,20 @@ impl App {
             model_name,
             session_id,
             notice: None,
+            skills: Vec::new(),
         }
+    }
+
+    /// 设置 `/skill:` 补全用的可用 skill 快照（启动时从 resolver catalog 取）。
+    pub(super) fn set_available_skills(&mut self, skills: Vec<SkillEntry>) {
+        self.skills = skills;
     }
 
     /// 把 resume 恢复的历史消息渲染为聊天条目。
     pub(super) fn load_history(&mut self, messages: &[Message]) {
         for message in messages {
             match message {
-                Message::User(user) => self.items.push(ChatItem::User(user_text(&user.content))),
+                Message::User(user) => self.push_user_text(user_text(&user.content)),
                 Message::Assistant(assistant) => {
                     let error =
                         assistant_error(assistant.stop_reason, assistant.error_message.as_deref());
@@ -244,8 +323,7 @@ impl App {
             AgentEvent::AgentStart => self.running = true,
             AgentEvent::MessageStart(message) => match message.as_ref() {
                 Message::User(user) => {
-                    self.items.push(ChatItem::User(user_text(&user.content)));
-                    self.scroll_to_bottom();
+                    self.push_user_text(user_text(&user.content));
                 }
                 Message::Assistant(_) => {
                     self.items
@@ -423,31 +501,64 @@ impl App {
     }
 
     /// 按当前输入重算补全候选：仅在「以 `/` 开头、光标在末尾、命令名
-    /// 未输入完整参数（无空白）」时弹出；候选按前缀匹配命令名与别名。
+    /// 未输入完整参数（无空白）」时弹出；`/skill:` 后切换为 skill 名候选。
     fn refresh_completion(&mut self) {
-        let fragment = self.slash_fragment();
-        self.completion = fragment.and_then(|fragment| {
-            let mut candidates: Vec<&'static SlashCommand> = SLASH_COMMANDS
-                .iter()
-                .filter(|command| {
-                    command.name.starts_with(fragment)
-                        || command.aliases.iter().any(|a| a.starts_with(fragment))
-                })
-                .collect();
-            if candidates.is_empty() {
-                return None;
-            }
-            candidates.sort_by_key(|command| command.name);
-            // 输入已精确匹配某命令时选中它，Tab 从它开始循环
-            let selected = candidates
-                .iter()
-                .position(|command| command.name == fragment)
-                .unwrap_or(0);
-            Some(Completion {
-                candidates,
-                selected,
+        let Some(fragment) = self.slash_fragment().map(str::to_string) else {
+            self.completion = None;
+            return;
+        };
+        self.completion = if let Some(name_fragment) = fragment.strip_prefix("skill:") {
+            self.skill_candidates(name_fragment)
+        } else {
+            Self::command_candidates(&fragment)
+        };
+    }
+
+    /// slash 命令候选（按命令名/别名前缀匹配，按名称排序）。
+    fn command_candidates(fragment: &str) -> Option<Completion> {
+        let mut candidates: Vec<CompletionCandidate> = SLASH_COMMANDS
+            .iter()
+            .filter(|command| {
+                command.name.starts_with(fragment)
+                    || command.aliases.iter().any(|a| a.starts_with(fragment))
             })
-        });
+            .map(CompletionCandidate::Command)
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        candidates.sort_by_key(CompletionCandidate::fragment);
+        // 输入已精确匹配某命令时选中它，Tab 从它开始循环
+        let selected = candidates
+            .iter()
+            .position(|candidate| candidate.fragment() == fragment)
+            .unwrap_or(0);
+        Some(Completion {
+            candidates,
+            selected,
+        })
+    }
+
+    /// `/skill:` 后的 skill 名候选（按名称前缀匹配）。
+    fn skill_candidates(&self, name_fragment: &str) -> Option<Completion> {
+        let mut candidates: Vec<CompletionCandidate> = self
+            .skills
+            .iter()
+            .filter(|entry| entry.name.starts_with(name_fragment))
+            .map(|entry| CompletionCandidate::Skill(entry.clone()))
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        candidates.sort_by_key(CompletionCandidate::fragment);
+        let selected = candidates
+            .iter()
+            .position(|candidate| candidate.fragment() == format!("skill:{name_fragment}"))
+            .unwrap_or(0);
+        Some(Completion {
+            candidates,
+            selected,
+        })
     }
 
     /// 光标位于末尾且输入是「无参数的 slash 前缀」时，返回命令名片段。
@@ -464,14 +575,14 @@ impl App {
         let Some(completion) = &self.completion else {
             return;
         };
-        let current = completion.candidates[completion.selected];
-        let selected = if self.input == format!("/{}", current.name) {
+        let current = completion.candidates[completion.selected].fragment();
+        let selected = if self.input == format!("/{current}") {
             (completion.selected + 1) % completion.candidates.len()
         } else {
             completion.selected
         };
-        let name = completion.candidates[selected].name;
-        self.input = format!("/{name}");
+        let fragment = completion.candidates[selected].fragment();
+        self.input = format!("/{fragment}");
         self.cursor = self.input.len();
         self.refresh_completion();
     }
@@ -494,21 +605,19 @@ impl App {
         self.completion.take().is_some()
     }
 
-    /// Enter 且补全弹层可见时的智能接受：输入未精确匹配任何命令时
+    /// Enter 且补全弹层可见时的智能接受：输入未精确匹配任何候选时
     /// 填入选中候选（返回 `true`，不提交）；已精确匹配则返回 `false` 正常提交。
     pub(super) fn accept_completion_on_enter(&mut self) -> bool {
         let Some(fragment) = self.slash_fragment() else {
             return false;
         };
-        if self.completion.is_none() {
+        let Some(completion) = &self.completion else {
             return false;
-        }
-        let exact = self.completion.as_ref().is_some_and(|completion| {
-            completion
-                .candidates
-                .iter()
-                .any(|command| command.name == fragment || command.aliases.contains(&fragment))
-        });
+        };
+        let exact = completion
+            .candidates
+            .iter()
+            .any(|candidate| candidate.matches_fragment(fragment));
         if exact {
             return false;
         }
@@ -517,6 +626,16 @@ impl App {
     }
 
     // ── slash 命令反馈 ──────────────────────────────────────────────────────
+
+    /// 追加一条 user 聊天条目；skill 注入消息压缩为系统提示样式的一行。
+    fn push_user_text(&mut self, text: String) {
+        if let Some(notice) = skill_load_notice(&text) {
+            self.items.push(ChatItem::System(notice));
+        } else {
+            self.items.push(ChatItem::User(text));
+        }
+        self.scroll_to_bottom();
+    }
 
     /// 追加一条本地系统提示（不进上下文、不落库）。
     pub(super) fn push_system(&mut self, text: impl Into<String>) {
@@ -559,6 +678,60 @@ fn user_text(content: &UserMessageContent) -> String {
     }
 }
 
+// ── skill 手动载入（`/skill:<name>`）────────────────────────────────────────
+
+/// 构造手动载入 skill 的注入文本（作为 user 消息进入上下文，随 session 落库）。
+///
+/// 标签格式与 bootstrap 中 `--skill` 注入 system prompt 的 `<active_skill>` 一致，
+/// 模型侧无需区分来源。
+pub(super) fn skill_load_message(skill: &ActivatedSkill) -> String {
+    format!(
+        "<active_skill name=\"{}\" scope=\"{}\" path=\"{}\">\n{}\n</active_skill>\n\n\
+         The user manually loaded this skill into the conversation. \
+         Follow its instructions for the subsequent work.",
+        skill.name,
+        skill.scope,
+        skill.path.display(),
+        skill.instructions
+    )
+}
+
+/// `/skill` 无参时展示的可用 skill 清单（本地展示，不进上下文）。
+pub(super) fn skill_list_text(skills: &[Skill]) -> String {
+    use std::fmt::Write as _;
+    if skills.is_empty() {
+        return "没有可用的 skill（查找 .nomic/skills、.agents/skills 与用户配置目录）。"
+            .to_string();
+    }
+    let mut text = "可用 skill（/skill:<name> 载入）：".to_string();
+    for skill in skills {
+        let _ = write!(
+            text,
+            "\n  {} — {}（{}）",
+            skill.name, skill.document.description, skill.scope
+        );
+    }
+    text
+}
+
+/// 聊天区压缩展示注入的 skill 消息：返回 `Some` 表示该 user 文本是 skill 注入。
+fn skill_load_notice(text: &str) -> Option<String> {
+    let header = text.strip_prefix("<active_skill ")?;
+    let name = xml_attr(header, "name")?;
+    Some(match xml_attr(header, "path") {
+        Some(path) => format!("已载入 skill `{name}`（{path}）"),
+        None => format!("已载入 skill `{name}`"),
+    })
+}
+
+/// 从 `<active_skill ...>` 头中提取属性值（仅用于展示，解析失败回退完整文本）。
+fn xml_attr(header: &str, key: &str) -> Option<String> {
+    let needle = format!("{key}=\"");
+    let start = header.find(&needle)? + needle.len();
+    let end = header[start..].find('"')? + start;
+    Some(header[start..end].to_string())
+}
+
 fn blocks_text(blocks: &[UserContent]) -> String {
     blocks
         .iter()
@@ -592,8 +765,11 @@ fn assistant_error(stop_reason: StopReason, error_message: Option<&str>) -> Opti
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use nomic_ai::{ApiKind, AssistantMessage, TextContent, ThinkingContent, Usage, UserMessage};
     use nomic_core::{ToolResult, ToolUpdate};
+    use nomic_skills::{SkillDocument, SkillScope};
 
     use super::*;
 
@@ -782,25 +958,27 @@ mod tests {
 
         app.insert_char('n');
         let completion = app.completion().expect("/n 匹配 new");
-        assert_eq!(
-            completion
-                .candidates
-                .iter()
-                .map(|command| command.name)
-                .collect::<Vec<_>>(),
-            vec!["new"]
-        );
+        assert_eq!(candidate_fragments(completion), vec!["new"]);
 
         // Tab 接受候选
         app.tab_complete();
         assert_eq!(app.input(), "/new");
         // 精确匹配后仍显示（展示描述），且选中该项
         let completion = app.completion().expect("精确匹配仍显示候选");
-        assert_eq!(completion.candidates[completion.selected].name, "new");
+        assert_eq!(completion.candidates[completion.selected].fragment(), "new");
 
         // 输入空格（进入参数区）后弹层消失
         app.insert_char(' ');
         assert!(app.completion().is_none());
+    }
+
+    /// 候选的输入片段列表（不含 `/` 前缀），测试断言用。
+    fn candidate_fragments(completion: &Completion) -> Vec<String> {
+        completion
+            .candidates
+            .iter()
+            .map(CompletionCandidate::fragment)
+            .collect()
     }
 
     #[test]
@@ -810,7 +988,10 @@ mod tests {
             app.insert_char(c);
         }
         let completion = app.completion().expect("/ex 匹配别名 exit");
-        assert_eq!(completion.candidates[completion.selected].name, "quit");
+        assert_eq!(
+            completion.candidates[completion.selected].fragment(),
+            "quit"
+        );
 
         // 未精确匹配时 Enter 先填入候选，不提交
         assert!(app.accept_completion_on_enter());
@@ -835,6 +1016,145 @@ mod tests {
     }
 
     #[test]
+    fn parse_slash_skill_uses_colon_argument() {
+        assert_eq!(
+            parse_slash("/skill"),
+            SlashParse::Known(SlashAction::Skill(None))
+        );
+        assert_eq!(
+            parse_slash("/skill:jujutsu"),
+            SlashParse::Known(SlashAction::Skill(Some("jujutsu".to_string())))
+        );
+        // 空参数等价于无参（列出清单）
+        assert_eq!(
+            parse_slash("/skill:"),
+            SlashParse::Known(SlashAction::Skill(None))
+        );
+        // 空白分隔的参数与带空格的参数均属于非法用法
+        assert!(matches!(
+            parse_slash("/skill jujutsu"),
+            SlashParse::InvalidUsage(_)
+        ));
+        assert!(matches!(
+            parse_slash("/skill:a b"),
+            SlashParse::InvalidUsage(_)
+        ));
+        // 无参命令带参数同样报用法错误
+        assert!(matches!(parse_slash("/new x"), SlashParse::InvalidUsage(_)));
+        assert!(matches!(
+            parse_slash("/quit:now"),
+            SlashParse::InvalidUsage(_)
+        ));
+        // 未知命令带冒号参数仍报未知
+        assert_eq!(
+            parse_slash("/foo:bar"),
+            SlashParse::Unknown("foo".to_string())
+        );
+    }
+
+    #[test]
+    fn skill_completion_after_colon_prefix() {
+        let mut app = app();
+        app.set_available_skills(vec![
+            SkillEntry {
+                name: "jujutsu".to_string(),
+                description: "jj vcs".to_string(),
+            },
+            SkillEntry {
+                name: "rust-review".to_string(),
+                description: "review rust".to_string(),
+            },
+        ]);
+        for c in "/skill:".chars() {
+            app.insert_char(c);
+        }
+        let completion = app.completion().expect("/skill: 弹出全部 skill");
+        assert_eq!(
+            candidate_fragments(completion),
+            vec!["skill:jujutsu", "skill:rust-review"]
+        );
+
+        // Tab 接受选中项；接受后候选收敛到精确匹配项，再次 Tab 保持不变
+        app.tab_complete();
+        assert_eq!(app.input(), "/skill:jujutsu");
+        app.tab_complete();
+        assert_eq!(app.input(), "/skill:jujutsu");
+
+        // 前缀过滤后 Enter 填入唯一候选，再次 Enter 精确匹配放行提交
+        app.take_input();
+        for c in "/skill:juj".chars() {
+            app.insert_char(c);
+        }
+        let completion = app.completion().expect("前缀过滤");
+        assert_eq!(candidate_fragments(completion), vec!["skill:jujutsu"]);
+        assert!(app.accept_completion_on_enter());
+        assert_eq!(app.input(), "/skill:jujutsu");
+        assert!(!app.accept_completion_on_enter());
+    }
+
+    #[test]
+    fn skill_load_message_renders_compactly_in_chat_and_history() {
+        let skill = ActivatedSkill {
+            name: "jujutsu".to_string(),
+            scope: SkillScope::Project,
+            path: PathBuf::from("/repo/.agents/skills/jujutsu/SKILL.md"),
+            instructions: "do jj things".to_string(),
+        };
+        let message = skill_load_message(&skill);
+        assert!(
+            message.starts_with(
+                "<active_skill name=\"jujutsu\" scope=\"project\" \
+                 path=\"/repo/.agents/skills/jujutsu/SKILL.md\">"
+            ),
+            "{message}"
+        );
+        assert!(message.contains("do jj things"));
+        assert!(message.contains("manually loaded"));
+
+        // 运行中注入：聊天区压缩为一行系统样式提示
+        let mut chat = app();
+        chat.handle_event(&AgentEvent::MessageStart(user_message(&message)));
+        assert_eq!(chat.items.len(), 1);
+        let ChatItem::System(text) = &chat.items[0] else {
+            panic!("expected compact system item");
+        };
+        assert!(text.contains("jujutsu"), "{text}");
+        assert!(text.contains("SKILL.md"), "{text}");
+
+        // resume 恢复历史时同样压缩
+        let mut resumed = app();
+        resumed.load_history(&[Message::User(UserMessage {
+            content: UserMessageContent::Text(message),
+            timestamp: 0,
+        })]);
+        assert!(matches!(resumed.items[0], ChatItem::System(_)));
+
+        // 普通 user 消息不受影响
+        let mut plain = app();
+        plain.handle_event(&AgentEvent::MessageStart(user_message("普通问题")));
+        assert!(matches!(plain.items[0], ChatItem::User(_)));
+    }
+
+    #[test]
+    fn skill_list_text_lists_names_or_reports_empty() {
+        assert!(skill_list_text(&[]).contains("没有可用的 skill"));
+        let skill = Skill {
+            name: "jujutsu".to_string(),
+            path: PathBuf::from("/repo/.agents/skills/jujutsu/SKILL.md"),
+            root: PathBuf::from("/repo/.agents/skills/jujutsu"),
+            scope: SkillScope::Project,
+            document: SkillDocument {
+                description: "jj vcs".to_string(),
+                triggers: Vec::new(),
+                body: "body".to_string(),
+            },
+        };
+        let text = skill_list_text(&[skill]);
+        assert!(text.contains("/skill:<name>"), "{text}");
+        assert!(text.contains("jujutsu — jj vcs（project）"), "{text}");
+    }
+
+    #[test]
     fn system_item_and_clear_items() {
         let mut app = app();
         app.push_system(help_text());
@@ -844,6 +1164,7 @@ mod tests {
         };
         assert!(text.contains("/help"));
         assert!(text.contains("/new"));
+        assert!(text.contains("/skill"));
         assert!(text.contains("/quit"));
         assert!(text.contains("/exit"));
         app.clear_items();

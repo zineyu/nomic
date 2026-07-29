@@ -28,11 +28,12 @@ use futures::StreamExt as _;
 use nomic_ai::Message;
 use nomic_core::{Agent, AgentConfig, AgentEvent, ExecutionMode, NoopHooks};
 use nomic_session::SessionStore;
+use nomic_skills::SkillResolver;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use app::{App, SlashAction, SlashParse};
+use app::{App, SkillEntry, SlashAction, SlashParse};
 
 use crate::{Cli, bootstrap};
 
@@ -40,6 +41,8 @@ use crate::{Cli, bootstrap};
 enum DriverJob {
     /// 运行一轮 prompt（附本轮取消令牌）
     Prompt(String, CancellationToken),
+    /// 向 agent 历史注入一条 user 消息（`/skill:<name>` 手动载入），不启动 run
+    Inject(String),
     /// 清空 agent 上下文（`/new`）
     Clear,
 }
@@ -53,6 +56,17 @@ pub async fn run(cli: &Cli) -> Result<()> {
         boot.session.as_ref().map(|(_, id)| id.clone()),
     );
     app.load_history(&boot.history);
+    let skill_resolver = boot.skill_resolver.clone();
+    app.set_available_skills(
+        skill_resolver
+            .catalog()
+            .into_iter()
+            .map(|skill| SkillEntry {
+                name: skill.name,
+                description: skill.document.description,
+            })
+            .collect(),
+    );
 
     let (agent, mut events) = Agent::with_messages(
         AgentConfig {
@@ -88,6 +102,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
                         return;
                     }
                 }
+                DriverJob::Inject(text) => agent.inject_user_message(&text),
                 DriverJob::Clear => agent.clear_messages(),
             }
         }
@@ -104,7 +119,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
         tokio::select! {
             maybe_event = term_events.next() => match maybe_event {
                 Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => {
-                    handle_key(&mut app, &mut current_cancel, &job_tx, &mut session, &cwd, key).await;
+                    handle_key(&mut app, &mut current_cancel, &job_tx, &mut session, &cwd, &skill_resolver, key).await;
                 }
                 Some(Ok(Event::Mouse(mouse))) => match mouse.kind {
                     MouseEventKind::ScrollUp => app.scroll_up(3),
@@ -145,6 +160,7 @@ async fn handle_key(
     job_tx: &mpsc::UnboundedSender<DriverJob>,
     session: &mut Option<(SessionStore, String)>,
     cwd: &std::path::Path,
+    skill_resolver: &SkillResolver,
     key: KeyEvent,
 ) {
     let cancel_running = |cancel: &Option<CancellationToken>| {
@@ -183,7 +199,10 @@ async fn handle_key(
                         let _ = job_tx.send(DriverJob::Prompt(text, token));
                     }
                     SlashParse::Known(action) => {
-                        handle_slash(app, job_tx, session, cwd, action).await;
+                        handle_slash(app, job_tx, session, cwd, skill_resolver, action).await;
+                    }
+                    SlashParse::InvalidUsage(usage) => {
+                        app.notice = Some(format!("参数形式不对，用法：{usage}"));
                     }
                     SlashParse::Unknown(name) => {
                         app.notice = Some(format!("未知命令 /{name}，输入 /help 查看可用命令"));
@@ -224,11 +243,35 @@ async fn handle_slash(
     job_tx: &mpsc::UnboundedSender<DriverJob>,
     session: &mut Option<(SessionStore, String)>,
     cwd: &std::path::Path,
+    skill_resolver: &SkillResolver,
     action: SlashAction,
 ) {
     match action {
         SlashAction::Help => app.push_system(app::help_text()),
         SlashAction::Quit => app.should_quit = true,
+        SlashAction::Skill(None) => {
+            // 列出时顺带刷新补全快照：会话期间新增的 skill 也能被 Tab 补全
+            let catalog = skill_resolver.catalog();
+            app.set_available_skills(
+                catalog
+                    .iter()
+                    .map(|skill| SkillEntry {
+                        name: skill.name.clone(),
+                        description: skill.document.description.clone(),
+                    })
+                    .collect(),
+            );
+            app.push_system(app::skill_list_text(&catalog));
+        }
+        SlashAction::Skill(Some(name)) => match skill_resolver.activate(&name) {
+            Ok(skill) => {
+                // 注入消息经事件管线回流：聊天区压缩展示 + session 落库自动生效
+                let _ = job_tx.send(DriverJob::Inject(app::skill_load_message(&skill)));
+            }
+            Err(error) => {
+                app.notice = Some(format!("载入 skill {name:?} 失败：{error}"));
+            }
+        },
         SlashAction::New => {
             // driver 串行处理任务；slash 命令仅在空闲时可提交，无需排队等待
             let _ = job_tx.send(DriverJob::Clear);

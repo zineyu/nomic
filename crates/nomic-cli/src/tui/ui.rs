@@ -9,7 +9,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthChar;
 
-use super::app::{App, Block, ChatItem, Completion, ToolStatus};
+use super::app::{App, Block, ChatItem, Completion, CompletionCandidate, ToolStatus};
 
 /// 单页滚动的行数。
 const PAGE_SCROLL: u16 = 10;
@@ -211,13 +211,13 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// slash 命令补全弹层：贴在输入框上方，选中项高亮。
+/// slash 命令 / skill 名补全弹层：贴在输入框上方，选中项高亮。
 fn draw_completion(frame: &mut Frame<'_>, completion: &Completion, input_area: Rect) {
     let lines: Vec<Line<'static>> = completion
         .candidates
         .iter()
         .enumerate()
-        .map(|(index, command)| {
+        .map(|(index, candidate)| {
             let style = if index == completion.selected {
                 Style::default()
                     .fg(Color::Black)
@@ -226,10 +226,15 @@ fn draw_completion(frame: &mut Frame<'_>, completion: &Completion, input_area: R
             } else {
                 Style::default().fg(Color::Gray)
             };
-            Line::from(Span::styled(
-                format!("/{:<6} {}", command.name, command.summary),
-                style,
-            ))
+            let text = match candidate {
+                CompletionCandidate::Command(command) => {
+                    format!("/{:<6} {}", command.name, command.summary)
+                }
+                CompletionCandidate::Skill(entry) => {
+                    format!("/skill:{:<6} {}", entry.name, entry.description)
+                }
+            };
+            Line::from(Span::styled(text, style))
         })
         .collect();
     let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);

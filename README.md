@@ -112,6 +112,14 @@ nomic --skill rust-review
 nomic -p "按 skill 审查" --skill rust-review
 ```
 
+交互 TUI 中可随时手动载入，skill 正文作为一条 user 消息进入上下文（随
+session 落库，resume 后仍然有效）：
+
+```text
+/skill              # 列出可用 skill
+/skill:rust-review  # 载入指定 skill（输入 /skill: 后可 Tab 补全名称）
+```
+
 `skill://` 是只读资源；如需修改 skill，请显式编辑其 backing file。设计见
 [docs/adr/0003](docs/adr/0003-skills-system.md)。
 

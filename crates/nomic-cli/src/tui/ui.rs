@@ -3,13 +3,15 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Position, Rect},
-    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block as Border, Clear, Paragraph},
 };
 use unicode_width::UnicodeWidthChar;
 
-use super::app::{App, Block, ChatItem, Completion, CompletionCandidate, ToolStatus};
+use super::{
+    app::{App, Block, ChatItem, Completion, CompletionCandidate, ToolStatus},
+    theme,
+};
 
 /// 单页滚动的行数。
 const PAGE_SCROLL: u16 = 10;
@@ -38,15 +40,17 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     for item in &app.items {
         match item {
             ChatItem::User(text) => {
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        "❯ ",
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(text.clone(), Style::default().fg(Color::Cyan)),
-                ]));
+                // 左侧 accent 竖条把整条用户消息包成视觉块，多轮对话里可扫读
+                let mut text_lines = text.lines().peekable();
+                if text_lines.peek().is_none() {
+                    lines.push(Line::from(Span::styled("▌", theme::user_marker())));
+                }
+                for line in text_lines {
+                    lines.push(Line::from(vec![
+                        Span::styled("▌ ", theme::user_marker()),
+                        Span::styled(line.to_string(), theme::user_text()),
+                    ]));
+                }
                 lines.push(Line::default());
             }
             ChatItem::Assistant(assistant) => {
@@ -57,59 +61,49 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                         }
                         Block::Thinking(thinking) => {
                             lines.extend(thinking.lines().map(|line| {
-                                Line::from(Span::styled(
-                                    line.to_string(),
-                                    Style::default()
-                                        .fg(Color::DarkGray)
-                                        .add_modifier(Modifier::ITALIC),
-                                ))
+                                Line::from(Span::styled(line.to_string(), theme::thinking()))
                             }));
                         }
                     }
                 }
                 if let Some(error) = &assistant.error {
-                    lines.push(Line::from(Span::styled(
-                        format!("✗ {error}"),
-                        Style::default().fg(Color::Red),
-                    )));
+                    lines.push(Line::from(Span::styled(format!("✗ {error}"), theme::err())));
                 }
                 if !assistant.blocks.is_empty() || assistant.error.is_some() {
                     lines.push(Line::default());
                 }
             }
             ChatItem::System(text) => {
-                lines.extend(text.lines().map(|line| {
-                    Line::from(Span::styled(
-                        line.to_string(),
-                        Style::default().fg(Color::DarkGray),
-                    ))
-                }));
+                lines.extend(
+                    text.lines()
+                        .map(|line| Line::from(Span::styled(line.to_string(), theme::dim()))),
+                );
                 lines.push(Line::default());
             }
             ChatItem::Tool(tool) => {
-                let (mark, color) = match tool.status {
-                    ToolStatus::Running => ("▶", Color::Yellow),
-                    ToolStatus::Ok => ("✓", Color::Green),
-                    ToolStatus::Failed => ("✗", Color::Red),
+                // 树形条目：状态色 ⏺ + 加粗工具名 + 暗色 (参数)，结果行缩进对齐
+                let (mark_style, name_style) = match tool.status {
+                    ToolStatus::Running => (theme::busy(), theme::bold()),
+                    ToolStatus::Ok => (theme::ok(), theme::bold()),
+                    ToolStatus::Failed => (theme::err(), theme::err_bold()),
                 };
                 let mut spans = vec![
-                    Span::styled(format!("{mark} "), Style::default().fg(color)),
-                    Span::styled(
-                        tool.name.clone(),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled("⏺ ", mark_style),
+                    Span::styled(tool.name.clone(), name_style),
                 ];
                 if !tool.args.is_empty() {
-                    spans.push(Span::styled(
-                        format!(" {}", tool.args),
-                        Style::default().fg(Color::DarkGray),
-                    ));
+                    spans.push(Span::styled(format!("({})", tool.args), theme::dim()));
                 }
                 lines.push(Line::from(spans));
                 if let Some(detail) = &tool.detail {
+                    let detail_style = if tool.status == ToolStatus::Failed {
+                        theme::err()
+                    } else {
+                        theme::dim()
+                    };
                     lines.push(Line::from(Span::styled(
                         format!("  ⎿ {detail}"),
-                        Style::default().fg(Color::DarkGray),
+                        detail_style,
                     )));
                 }
             }
@@ -118,7 +112,7 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     if app.items.is_empty() {
         lines.push(Line::from(Span::styled(
             "输入 prompt 开始对话。Enter 发送，Ctrl+C 退出。",
-            Style::default().fg(Color::DarkGray),
+            theme::dim(),
         )));
     }
 
@@ -187,26 +181,17 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
             format!("session {}", &id[..id.len().min(8)])
         });
     let mut spans = vec![
-        Span::styled(
-            format!(" {} ", app.model_name),
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!(" {session} "), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" {} ", app.model_name), theme::selected()),
+        Span::styled(format!(" {session} "), theme::dim()),
     ];
     if app.scroll > 0 {
         spans.push(Span::styled(
             format!("↑ 上滚 {} 行（PgDn 回到底部） ", app.scroll),
-            Style::default().fg(Color::Yellow),
+            theme::warn(),
         ));
     }
     if let Some(notice) = &app.notice {
-        spans.push(Span::styled(
-            format!("⚠ {notice} "),
-            Style::default().fg(Color::Yellow),
-        ));
+        spans.push(Span::styled(format!("⚠ {notice} "), theme::warn()));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -219,12 +204,9 @@ fn draw_completion(frame: &mut Frame<'_>, completion: &Completion, input_area: R
         .enumerate()
         .map(|(index, candidate)| {
             let style = if index == completion.selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                theme::selected()
             } else {
-                Style::default().fg(Color::Gray)
+                theme::subtle()
             };
             let text = match candidate {
                 CompletionCandidate::Command(command) => {

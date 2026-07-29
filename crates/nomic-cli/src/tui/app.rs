@@ -89,6 +89,12 @@ pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
         usage: "/new",
     },
     SlashCommand {
+        name: "resume",
+        aliases: &[],
+        summary: "选择并恢复历史 session（切换上下文与落库目标）",
+        usage: "/resume",
+    },
+    SlashCommand {
         name: "skill",
         aliases: &[],
         summary: "手动载入 skill 到当前对话（/skill:<name>；无参列出可用 skill）",
@@ -120,6 +126,7 @@ pub(super) enum SlashParse {
 pub(super) enum SlashAction {
     Help,
     New,
+    Resume,
     Quit,
     /// `/skill`（None）列出可用 skill；`/skill:<name>` 载入指定 skill
     Skill(Option<String>),
@@ -156,6 +163,7 @@ pub(super) fn parse_slash(input: &str) -> SlashParse {
                 }
                 "help" if !junk && arg.is_none() => SlashAction::Help,
                 "new" if !junk && arg.is_none() => SlashAction::New,
+                "resume" if !junk && arg.is_none() => SlashAction::Resume,
                 "quit" if !junk && arg.is_none() => SlashAction::Quit,
                 _ => return SlashParse::InvalidUsage(command.usage),
             };
@@ -231,6 +239,20 @@ pub(super) struct Completion {
     pub(super) selected: usize,
 }
 
+/// `/resume` 选择器的一行：session id + 预生成的展示文本（渲染零计算）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ResumeRow {
+    pub(super) id: String,
+    pub(super) text: String,
+}
+
+/// `/resume` session 选择器状态：候选行 + 当前选中项（移动到底/顶钳制，不循环）。
+#[derive(Debug)]
+pub(super) struct ResumePicker {
+    pub(super) rows: Vec<ResumeRow>,
+    pub(super) selected: usize,
+}
+
 /// TUI 应用状态。
 #[derive(Debug)]
 pub(super) struct App {
@@ -241,6 +263,8 @@ pub(super) struct App {
     cursor: usize,
     /// slash 命令补全弹层（输入以 `/` 开头时出现）
     completion: Option<Completion>,
+    /// `/resume` session 选择器（打开时接管键位）
+    resume_picker: Option<ResumePicker>,
     /// 从底部向上滚动的行数（0 = 跟随最新内容）
     pub(super) scroll: u16,
     /// 聊天区最大可上滚行数（渲染时更新，状态栏滚动位置显示用）
@@ -266,6 +290,7 @@ impl App {
             input: String::new(),
             cursor: 0,
             completion: None,
+            resume_picker: None,
             scroll: 0,
             scroll_max: 0,
             running: false,
@@ -632,6 +657,38 @@ impl App {
         }
         self.tab_complete();
         true
+    }
+
+    // ── /resume session 选择器 ──────────────────────────────────────────────
+
+    /// 打开 `/resume` 选择器；调用方保证候选非空。
+    pub(super) fn open_resume_picker(&mut self, rows: Vec<ResumeRow>) {
+        debug_assert!(!rows.is_empty());
+        self.resume_picker = Some(ResumePicker { rows, selected: 0 });
+    }
+
+    /// 当前选择器（渲染与键位路由用）。
+    pub(super) const fn resume_picker(&self) -> Option<&ResumePicker> {
+        self.resume_picker.as_ref()
+    }
+
+    /// 关闭选择器（Esc/q 取消）。
+    pub(super) fn close_resume_picker(&mut self) {
+        self.resume_picker = None;
+    }
+
+    /// 移动选中项（到底/顶钳制，不循环）。
+    pub(super) fn resume_select(&mut self, delta: isize) {
+        if let Some(picker) = &mut self.resume_picker {
+            let last = picker.rows.len() - 1;
+            picker.selected = picker.selected.saturating_add_signed(delta).min(last);
+        }
+    }
+
+    /// Enter 确认：取出选中 session id 并关闭选择器。
+    pub(super) fn take_resume_selection(&mut self) -> Option<String> {
+        let picker = self.resume_picker.take()?;
+        Some(picker.rows[picker.selected].id.clone())
     }
 
     // ── slash 命令反馈 ──────────────────────────────────────────────────────
@@ -1050,10 +1107,40 @@ mod tests {
     }
 
     #[test]
+    fn resume_picker_clamps_selection_and_take_closes() {
+        let mut app = app();
+        let rows = (0..3)
+            .map(|i| ResumeRow {
+                id: format!("id-{i}"),
+                text: format!("row {i}"),
+            })
+            .collect();
+        app.open_resume_picker(rows);
+
+        // 到底/顶钳制，不循环
+        app.resume_select(1);
+        app.resume_select(1);
+        app.resume_select(1);
+        assert_eq!(app.resume_picker().expect("picker").selected, 2);
+        app.resume_select(-5);
+        assert_eq!(app.resume_picker().expect("picker").selected, 0);
+
+        // Enter 确认：返回选中 id 并关闭；关闭后再次确认为 None
+        app.resume_select(1);
+        assert_eq!(app.take_resume_selection().as_deref(), Some("id-1"));
+        assert!(app.resume_picker().is_none());
+        assert!(app.take_resume_selection().is_none());
+    }
+
+    #[test]
     fn parse_slash_dispatches_known_unknown_and_plain() {
         assert_eq!(parse_slash("hello"), SlashParse::NotCommand);
         assert_eq!(parse_slash("/help"), SlashParse::Known(SlashAction::Help));
         assert_eq!(parse_slash("/new"), SlashParse::Known(SlashAction::New));
+        assert_eq!(
+            parse_slash("/resume"),
+            SlashParse::Known(SlashAction::Resume)
+        );
         assert_eq!(parse_slash("/quit"), SlashParse::Known(SlashAction::Quit));
         assert_eq!(parse_slash("/exit"), SlashParse::Known(SlashAction::Quit));
         assert_eq!(
@@ -1090,6 +1177,10 @@ mod tests {
         ));
         // 无参命令带参数同样报用法错误
         assert!(matches!(parse_slash("/new x"), SlashParse::InvalidUsage(_)));
+        assert!(matches!(
+            parse_slash("/resume:abc"),
+            SlashParse::InvalidUsage(_)
+        ));
         assert!(matches!(
             parse_slash("/quit:now"),
             SlashParse::InvalidUsage(_)

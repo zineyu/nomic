@@ -9,7 +9,9 @@ use ratatui::{
 use unicode_width::UnicodeWidthChar;
 
 use super::{
-    app::{App, Block, ChatItem, Completion, CompletionCandidate, ToolItem, ToolStatus},
+    app::{
+        App, Block, ChatItem, Completion, CompletionCandidate, ResumePicker, ToolItem, ToolStatus,
+    },
     markdown, theme,
 };
 
@@ -31,6 +33,9 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     draw_status(frame, app, chunks[2]);
     if let Some(completion) = app.completion() {
         draw_completion(frame, completion, chunks[1]);
+    }
+    if let Some(picker) = app.resume_picker() {
+        draw_resume_picker(frame, picker, chunks[1]);
     }
 }
 
@@ -224,6 +229,14 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ]),
             theme::busy(),
         )
+    } else if app.resume_picker().is_some() {
+        (
+            Line::from(Span::styled(
+                "恢复 session · ↑/↓ 选择 · Enter 确认 · Esc 取消",
+                theme::accent(),
+            )),
+            theme::accent(),
+        )
     } else if app.completion().is_some() {
         (
             Line::from(Span::styled("输入 · Tab 补全", theme::accent())),
@@ -344,6 +357,56 @@ fn draw_completion(frame: &mut Frame<'_>, completion: &Completion, input_area: R
         .border_style(theme::accent())
         .title(Span::styled(title, theme::accent()));
     // 宽度对齐最长候选 + 边框与右留白；高度 = 可见候选 + 上下边框
+    let max_line_width = lines
+        .iter()
+        .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
+        .max()
+        .unwrap_or(0);
+    let width = max_line_width.saturating_add(3).min(input_area.width);
+    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX) + 2;
+    // 贴输入框顶边向上弹出；空间不足时压到聊天区顶部为止
+    let y = input_area.y.saturating_sub(height);
+    let area = Rect {
+        x: input_area.x,
+        y,
+        width,
+        height: height.min(input_area.y),
+    };
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// `/resume` session 选择器弹层：与补全弹层同构，贴在输入框上方。
+fn draw_resume_picker(frame: &mut Frame<'_>, picker: &ResumePicker, input_area: Rect) {
+    let total = picker.rows.len();
+    let (start, end) = visible_window(total, picker.selected, COMPLETION_MAX_VISIBLE);
+    let lines: Vec<Line<'static>> = picker.rows[start..end]
+        .iter()
+        .enumerate()
+        .map(|(offset, row)| {
+            if start + offset == picker.selected {
+                Line::from(vec![
+                    Span::styled("❯ ", theme::user_marker()),
+                    Span::styled(row.text.clone(), theme::accent()),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(row.text.clone(), theme::subtle()),
+                ])
+            }
+        })
+        .collect();
+    let title = if total > COMPLETION_MAX_VISIBLE {
+        format!("恢复 session {}/{total}", picker.selected + 1)
+    } else {
+        "恢复 session".to_string()
+    };
+    let block = Border::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(theme::accent())
+        .title(Span::styled(title, theme::accent()));
+    // 宽度对齐最长行 + 边框与右留白；高度 = 可见行 + 上下边框
     let max_line_width = lines
         .iter()
         .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
@@ -501,6 +564,39 @@ mod tests {
         assert!(compact.contains("nomic"), "{compact}");
         assert!(compact.contains("test-model"), "{compact}");
         assert!(compact.contains("/help"), "{compact}");
+    }
+
+    /// `/resume` 选择器弹层：session 行、标题与选中标记均可见。
+    #[test]
+    fn renders_resume_picker() {
+        use super::super::app::ResumeRow;
+
+        let mut app = App::new("test-model".to_string(), None);
+        app.open_resume_picker(vec![
+            ResumeRow {
+                id: "01999999-aaaa".to_string(),
+                text: "01999999  2026-07-26 14:48    3 条消息  /tmp/a".to_string(),
+            },
+            ResumeRow {
+                id: "02888888-bbbb".to_string(),
+                text: "02888888  2026-07-25 09:00   12 条消息  /tmp/b".to_string(),
+            },
+        ]);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let compact: String = buffer
+            .content()
+            .iter()
+            .flat_map(|cell| cell.symbol().chars())
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(compact.contains("恢复session"), "{compact}");
+        assert!(compact.contains("01999999"), "{compact}");
+        assert!(compact.contains("02888888"), "{compact}");
     }
 
     /// 补全弹层滚动窗口：不超限全量显示；超限时选中项保持在窗内。

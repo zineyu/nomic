@@ -20,7 +20,7 @@ export ANTHROPIC_API_KEY=sk-ant-...     # 或 OPENAI_API_KEY / OPENAI_BASE_URL
 # 交互 TUI（缺省，设计见 docs/adr/0002）
 cargo run -p nomic-cli
 # 键位：Enter 发送 · Tab 补全 · Esc 取消运行 · Ctrl+C 退出 · ↑/↓/PgUp/PgDn/滚轮滚动
-# 命令：/help 查看全部（/new 开启新对话，/quit 退出），输入 / 自动补全
+# 命令：/help 查看全部（/new 开启新对话，/resume 恢复历史 session，/quit 退出），输入 / 自动补全
 
 # print 模式（非交互，管道可用）
 nomic -p "列出当前目录的文件"
@@ -35,6 +35,8 @@ nomic -p "..." --reasoning low
 nomic --continue        # 当前目录下最近的 session（按 cwd 隔离）
 nomic --session <ID>    # 指定 session（可跨目录，会有提示）
 nomic resume            # 交互选择器（↑/↓ 或 j/k 移动，Enter 确认，Esc/q 取消）
+
+# TUI 内随时可用 /resume 打开同一选择器：选中后替换当前上下文并切换落库目标
 
 # 查看历史 session（id、最后更新时间、消息数、目录）
 nomic sessions list

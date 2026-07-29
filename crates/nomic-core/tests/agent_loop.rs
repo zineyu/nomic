@@ -315,6 +315,37 @@ async fn clear_messages_resets_context() {
 }
 
 #[tokio::test]
+async fn restore_messages_replaces_context_without_events() {
+    let provider = MockProvider::new(vec![text_done("hello"), text_done("world")]);
+    let (mut agent, mut rx) = make_agent(provider.clone(), vec![]);
+
+    agent
+        .prompt("hi", CancellationToken::new())
+        .await
+        .expect("prompt");
+    assert_eq!(agent.messages().len(), 2);
+    // 清掉首轮事件，隔离观察 restore 本身
+    while rx.try_recv().is_ok() {}
+
+    // session resume 语义：整体替换历史；静默，不发出事件
+    // （历史已在来源 session 渲染/落库，重放会造成交互端重复渲染与重复落库）
+    let restored = vec![Message::User(nomic_ai::UserMessage {
+        content: nomic_ai::UserMessageContent::Text("old".to_string()),
+        timestamp: now_millis(),
+    })];
+    agent.restore_messages(restored.clone());
+    assert_eq!(agent.messages(), restored.as_slice());
+    assert!(rx.try_recv().is_err(), "restore 不应发出任何事件");
+
+    // 新一轮：provider 上下文 = 恢复的历史 + 新 user 消息
+    agent
+        .prompt("again", CancellationToken::new())
+        .await
+        .expect("prompt");
+    assert_eq!(provider.context_lens(), vec![1, 2]);
+}
+
+#[tokio::test]
 async fn inject_user_message_joins_history_and_emits_events() {
     let provider = MockProvider::new(vec![text_done("ok")]);
     let (mut agent, rx) = make_agent(provider.clone(), vec![]);

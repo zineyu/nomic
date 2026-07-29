@@ -286,7 +286,8 @@ fn clear_picker(stdout: &mut impl Write, printed: u16) -> io::Result<()> {
 }
 
 /// 一行的展示文本：短 id、最后更新时间、消息数与启动目录。
-fn row_text(summary: &SessionSummary) -> String {
+/// CLI 选择器与 TUI `/resume` 弹层共用。
+pub fn row_text(summary: &SessionSummary) -> String {
     format!(
         "{}  {}  {:>4} 条消息  {}",
         short_id(&summary.id),
@@ -297,7 +298,7 @@ fn row_text(summary: &SessionSummary) -> String {
 }
 
 /// UUID 取前 8 位用于紧凑展示（选择器内无需完整 id）。
-fn short_id(id: &str) -> &str {
+pub fn short_id(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
 

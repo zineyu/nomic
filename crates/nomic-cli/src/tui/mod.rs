@@ -47,6 +47,8 @@ enum DriverJob {
     Inject(String),
     /// 清空 agent 上下文（`/new`）
     Clear,
+    /// 整体替换 agent 上下文（`/resume` 恢复历史 session）
+    Restore(Vec<Message>),
 }
 
 /// 运行交互 TUI。
@@ -106,6 +108,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
                 }
                 DriverJob::Inject(text) => agent.inject_user_message(&text),
                 DriverJob::Clear => agent.clear_messages(),
+                DriverJob::Restore(messages) => agent.restore_messages(messages),
             }
         }
     });
@@ -251,6 +254,12 @@ async fn handle_key(
             token.cancel();
         }
     };
+    // `/resume` 选择器打开时接管键位（slash 命令仅在空闲时可提交，
+    // 此时 agent 必空闲，无运行可取消）
+    if app.resume_picker().is_some() {
+        handle_resume_key(app, job_tx, session, key).await;
+        return;
+    }
     match (key.code, key.modifiers) {
         (KeyCode::Char('c' | 'd'), KeyModifiers::CONTROL) => {
             if app.running {
@@ -332,6 +341,25 @@ async fn handle_slash(
     match action {
         SlashAction::Help => app.push_system(app::help_text()),
         SlashAction::Quit => app.should_quit = true,
+        SlashAction::Resume => match session_store(session.as_ref()).await {
+            Err(error) => app.notice = Some(format!("{error:#}")),
+            Ok(store) => match store.list_sessions().await {
+                Err(error) => app.notice = Some(format!("列出 session 失败：{error}")),
+                Ok(sessions) if sessions.is_empty() => {
+                    app.push_system("没有历史 session。");
+                }
+                Ok(sessions) => {
+                    let rows = sessions
+                        .iter()
+                        .map(|summary| app::ResumeRow {
+                            id: summary.id.clone(),
+                            text: crate::sessions::row_text(summary),
+                        })
+                        .collect();
+                    app.open_resume_picker(rows);
+                }
+            },
+        },
         SlashAction::Skill(None) => {
             // 列出时顺带刷新补全快照：会话期间新增的 skill 也能被 Tab 补全
             let catalog = skill_resolver.catalog();
@@ -372,6 +400,77 @@ async fn handle_slash(
                     }
                 }
             }
+        }
+    }
+}
+
+/// 取可用 session store：优先复用当前 session 的；未持久化（启动时打开失败）
+/// 时按需重开——`/resume` 成功后该 store 会随恢复的 session 一同被采用。
+async fn session_store(session: Option<&(SessionStore, String)>) -> Result<SessionStore> {
+    match session {
+        Some((store, _)) => Ok(store.clone()),
+        None => SessionStore::open_default()
+            .await
+            .context("打开 session 库失败"),
+    }
+}
+
+/// `/resume` 选择器打开时的键位：↑/↓/j/k 移动，Enter 恢复选中 session，
+/// Esc/q 取消；Ctrl+C/D 保持全局退出，其余输入忽略（避免污染输入缓冲）。
+async fn handle_resume_key(
+    app: &mut App,
+    job_tx: &mpsc::UnboundedSender<DriverJob>,
+    session: &mut Option<(SessionStore, String)>,
+    key: KeyEvent,
+) {
+    match (key.code, key.modifiers) {
+        (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => app.resume_select(-1),
+        (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => app.resume_select(1),
+        (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => app.close_resume_picker(),
+        (KeyCode::Char('c' | 'd'), KeyModifiers::CONTROL) => app.should_quit = true,
+        (KeyCode::Enter, _) => {
+            if let Some(id) = app.take_resume_selection() {
+                resume_session(app, job_tx, session, id).await;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 恢复选中 session：加载历史 → 替换 agent 上下文与聊天区 → 切换落库目标。
+async fn resume_session(
+    app: &mut App,
+    job_tx: &mpsc::UnboundedSender<DriverJob>,
+    session: &mut Option<(SessionStore, String)>,
+    id: String,
+) {
+    let loaded = async {
+        let store = session_store(session.as_ref()).await?;
+        let messages = store
+            .load_messages(&id)
+            .await
+            .with_context(|| format!("加载 session {id} 失败"))?;
+        Ok::<_, anyhow::Error>((store, messages))
+    }
+    .await;
+    match loaded {
+        Err(error) => app.notice = Some(format!("恢复 session 失败：{error:#}")),
+        Ok((store, messages)) => {
+            // driver 串行处理任务：紧随其后的 prompt 一定排在 Restore 之后，
+            // 不会出现「新 prompt 跑在旧上下文」的交错
+            let _ = job_tx.send(DriverJob::Restore(messages.clone()));
+            app.clear_items();
+            app.load_history(&messages);
+            match session {
+                Some((_, current)) => current.clone_from(&id),
+                current @ None => *current = Some((store, id.clone())),
+            }
+            app.session_id = Some(id.clone());
+            app.push_system(format!(
+                "已恢复 session {}（{} 条消息），后续对话续写该 session。",
+                crate::sessions::short_id(&id),
+                messages.len()
+            ));
         }
     }
 }

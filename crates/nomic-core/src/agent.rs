@@ -180,6 +180,16 @@ impl Agent {
         self.messages.clear();
     }
 
+    /// 以既有消息历史整体替换当前上下文（session resume 语义，如 TUI 的 `/resume`）。
+    ///
+    /// 与 [`Self::with_messages`] 同样的调用契约：`messages` 按序作为上下文起点，
+    /// 调用方负责保证顺序与来源（如 session store 的 `load_messages` 输出）。
+    /// 静默替换，不发出事件（历史已在来源 session 渲染/落库）；
+    /// 应在非运行状态（`prompt` 返回后）调用。
+    pub fn restore_messages(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
+    }
+
     /// 在两轮 prompt 之间向历史注入一条 user 消息（手动载入 skill、外部指令等）。
     ///
     /// 与 [`Self::clear_messages`] 同样的调用契约：仅在非运行状态

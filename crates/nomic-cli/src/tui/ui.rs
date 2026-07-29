@@ -2,7 +2,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Position, Rect},
+    layout::{Alignment, Constraint, Layout, Position, Rect},
     text::{Line, Span},
     widgets::{Block as Border, BorderType, Clear, Paragraph},
 };
@@ -36,6 +36,11 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
 
 /// 聊天区：历史条目 + 流式累积，软换行，`scroll` 从底部向上计。
 fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    if app.items.is_empty() {
+        app.scroll_max = 0;
+        draw_welcome(frame, app, area);
+        return;
+    }
     let spinner = app.spinner();
     let mut lines: Vec<Line<'static>> = Vec::new();
     for item in &app.items {
@@ -130,10 +135,44 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     app.scroll = app
         .scroll
         .min(u16::try_from(max_scroll).unwrap_or(u16::MAX));
+    app.scroll_max = u16::try_from(max_scroll).unwrap_or(u16::MAX);
     let offset = max_scroll.saturating_sub(usize::from(app.scroll));
     let offset = u16::try_from(offset).unwrap_or(u16::MAX);
     let paragraph = Paragraph::new(lines).scroll((offset, 0));
     frame.render_widget(paragraph, area);
+}
+
+/// 空状态欢迎页：居中 logo + 键位速查。
+fn draw_welcome(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("▌ nomic v{}", env!("CARGO_PKG_VERSION")),
+            theme::user_marker(),
+        )),
+        Line::from(Span::styled(
+            format!("agent TUI · {}", app.model_name),
+            theme::dim(),
+        )),
+        Line::default(),
+        Line::from(Span::styled(
+            "Enter 发送 · / 命令（Tab 补全，/help 查看全部）",
+            theme::dim(),
+        )),
+        Line::from(Span::styled(
+            "↑↓/PgUp/PgDn 滚动 · Esc 取消 · Ctrl+C 退出",
+            theme::dim(),
+        )),
+    ];
+    // 垂直居中（空间不足时贴顶），水平居中由 Paragraph 对齐负责
+    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let centered = Rect {
+        x: area.x,
+        y,
+        width: area.width,
+        height: height.min(area.height),
+    };
+    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), centered);
 }
 
 /// 把逻辑行按显示宽度折成物理行（保留 span 样式）。
@@ -207,7 +246,7 @@ const PROMPT: &str = "❯ ";
 /// 提示符的显示宽度（`❯` + 空格）。
 const PROMPT_WIDTH: u16 = 2;
 
-/// 状态栏：模型 / session / 滚动提示 / 告警。
+/// 状态栏：左侧模型徽标 + session + 告警；右侧滚动位置 + 键位提示。
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let session = app
         .session_id
@@ -215,52 +254,93 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .map_or("无 session".to_string(), |id| {
             format!("session {}", &id[..id.len().min(8)])
         });
-    let mut spans = vec![
+    let mut left = vec![
         Span::styled(format!(" {} ", app.model_name), theme::selected()),
         Span::styled(format!(" {session} "), theme::dim()),
     ];
+    if let Some(notice) = &app.notice {
+        left.push(Span::styled(format!("⚠ {notice} "), theme::warn()));
+    }
+    let mut right = Vec::new();
     if app.scroll > 0 {
-        spans.push(Span::styled(
-            format!("↑ 上滚 {} 行（PgDn 回到底部） ", app.scroll),
+        right.push(Span::styled(
+            format!("↑ {}/{} ", app.scroll, app.scroll_max),
             theme::warn(),
         ));
     }
-    if let Some(notice) = &app.notice {
-        spans.push(Span::styled(format!("⚠ {notice} "), theme::warn()));
+    right.push(Span::styled(
+        "/ 命令 · Enter 发送 · Ctrl+C 退出 ",
+        theme::dim(),
+    ));
+    let left_line = Line::from(left);
+    let right_line = Line::from(right);
+    // 宽度不足时省略右侧提示，避免与左侧信息交叠
+    if left_line.width() + right_line.width() <= usize::from(area.width) {
+        frame.render_widget(Paragraph::new(right_line).alignment(Alignment::Right), area);
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    frame.render_widget(Paragraph::new(left_line), area);
 }
 
-/// slash 命令 / skill 名补全弹层：贴在输入框上方，选中项高亮。
+/// 补全弹层可见候选数上限，超出时内部滚动窗口。
+const COMPLETION_MAX_VISIBLE: usize = 10;
+
+/// 弹层可见窗口：总数超过上限时让选中项大致居中。
+fn visible_window(total: usize, selected: usize, max: usize) -> (usize, usize) {
+    if total <= max {
+        return (0, total);
+    }
+    let start = selected.saturating_sub(max / 2).min(total - max);
+    (start, start + max)
+}
+
+/// slash 命令 / skill 名补全弹层：带边框贴在输入框上方，选中项以 `❯` 前缀标出。
 fn draw_completion(frame: &mut Frame<'_>, completion: &Completion, input_area: Rect) {
-    let lines: Vec<Line<'static>> = completion
-        .candidates
+    let total = completion.candidates.len();
+    let (start, end) = visible_window(total, completion.selected, COMPLETION_MAX_VISIBLE);
+    let lines: Vec<Line<'static>> = completion.candidates[start..end]
         .iter()
         .enumerate()
-        .map(|(index, candidate)| {
-            let style = if index == completion.selected {
-                theme::selected()
-            } else {
-                theme::subtle()
-            };
+        .map(|(offset, candidate)| {
             let text = match candidate {
                 CompletionCandidate::Command(command) => {
                     format!("/{:<6} {}", command.name, command.summary)
                 }
                 CompletionCandidate::Skill(entry) => {
-                    format!("/skill:{:<6} {}", entry.name, entry.description)
+                    format!("{:<10} {}", entry.name, entry.description)
                 }
             };
-            Line::from(Span::styled(text, style))
+            if start + offset == completion.selected {
+                Line::from(vec![
+                    Span::styled("❯ ", theme::user_marker()),
+                    Span::styled(text, theme::accent()),
+                ])
+            } else {
+                Line::from(vec![Span::raw("  "), Span::styled(text, theme::subtle())])
+            }
         })
         .collect();
-    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    let width = lines
+    let kind = match completion.candidates.first() {
+        Some(CompletionCandidate::Command(_)) => "命令",
+        Some(CompletionCandidate::Skill(_)) => "skill",
+        None => "补全",
+    };
+    let title = if total > COMPLETION_MAX_VISIBLE {
+        format!("{kind} {}/{total}", completion.selected + 1)
+    } else {
+        kind.to_string()
+    };
+    let block = Border::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(theme::accent())
+        .title(Span::styled(title, theme::accent()));
+    // 宽度对齐最长候选 + 边框与右留白；高度 = 可见候选 + 上下边框
+    let max_line_width = lines
         .iter()
         .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
         .max()
-        .unwrap_or(0)
-        .min(input_area.width);
+        .unwrap_or(0);
+    let width = max_line_width.saturating_add(3).min(input_area.width);
+    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX) + 2;
     // 贴输入框顶边向上弹出；空间不足时压到聊天区顶部为止
     let y = input_area.y.saturating_sub(height);
     let area = Rect {
@@ -270,7 +350,7 @@ fn draw_completion(frame: &mut Frame<'_>, completion: &Completion, input_area: R
         height: height.min(input_area.y),
     };
     frame.render_widget(Clear, area);
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// PgUp/PgDn 的滚动步长（供事件循环使用）。
@@ -357,6 +437,38 @@ mod tests {
         assert!(compact.contains("生成中"), "{compact}");
         assert!(compact.contains("运行中"), "{compact}");
         assert!(compact.contains(app.spinner()), "{compact}");
+    }
+
+    /// 空状态绘制欢迎页：logo、模型名与键位速查均可见。
+    #[test]
+    fn renders_welcome_when_empty() {
+        let mut app = App::new("test-model".to_string(), None);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let compact: String = buffer
+            .content()
+            .iter()
+            .flat_map(|cell| cell.symbol().chars())
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(compact.contains("nomic"), "{compact}");
+        assert!(compact.contains("test-model"), "{compact}");
+        assert!(compact.contains("/help"), "{compact}");
+    }
+
+    /// 补全弹层滚动窗口：不超限全量显示；超限时选中项保持在窗内。
+    #[test]
+    fn completion_visible_window_keeps_selected_visible() {
+        assert_eq!(visible_window(5, 3, 10), (0, 5));
+        assert_eq!(visible_window(20, 0, 10), (0, 10));
+        let (start, end) = visible_window(20, 12, 10);
+        assert!(start <= 12 && 12 < end);
+        assert_eq!(end - start, 10);
+        // 末尾选中贴底
+        assert_eq!(visible_window(20, 19, 10), (10, 20));
     }
 
     /// 补全弹层与 System 条目也能无 panic 绘制。

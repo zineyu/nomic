@@ -243,6 +243,8 @@ pub(super) struct App {
     completion: Option<Completion>,
     /// 从底部向上滚动的行数（0 = 跟随最新内容）
     pub(super) scroll: u16,
+    /// 聊天区最大可上滚行数（渲染时更新，状态栏滚动位置显示用）
+    pub(super) scroll_max: u16,
     pub(super) running: bool,
     pub(super) should_quit: bool,
     /// 模型展示名
@@ -265,6 +267,7 @@ impl App {
             cursor: 0,
             completion: None,
             scroll: 0,
+            scroll_max: 0,
             running: false,
             should_quit: false,
             model_name,

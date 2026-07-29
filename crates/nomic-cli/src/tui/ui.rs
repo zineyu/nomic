@@ -4,7 +4,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Position, Rect},
     text::{Line, Span},
-    widgets::{Block as Border, Clear, Paragraph},
+    widgets::{Block as Border, BorderType, Clear, Paragraph},
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -36,6 +36,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
 
 /// 聊天区：历史条目 + 流式累积，软换行，`scroll` 从底部向上计。
 fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    let spinner = app.spinner();
     let mut lines: Vec<Line<'static>> = Vec::new();
     for item in &app.items {
         match item {
@@ -68,6 +69,12 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 }
                 if let Some(error) = &assistant.error {
                     lines.push(Line::from(Span::styled(format!("✗ {error}"), theme::err())));
+                } else if !assistant.done {
+                    // 流式指示：消息未定稿时提示仍在生成，避免长 thinking 看似卡死
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{spinner} "), theme::busy()),
+                        Span::styled("生成中…", theme::dim()),
+                    ]));
                 }
                 if !assistant.blocks.is_empty() || assistant.error.is_some() {
                     lines.push(Line::default());
@@ -81,14 +88,14 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 lines.push(Line::default());
             }
             ChatItem::Tool(tool) => {
-                // 树形条目：状态色 ⏺ + 加粗工具名 + 暗色 (参数)，结果行缩进对齐
-                let (mark_style, name_style) = match tool.status {
-                    ToolStatus::Running => (theme::busy(), theme::bold()),
-                    ToolStatus::Ok => (theme::ok(), theme::bold()),
-                    ToolStatus::Failed => (theme::err(), theme::err_bold()),
+                // 树形条目：状态色标记 + 加粗工具名 + 暗色 (参数)，结果行缩进对齐
+                let (mark, mark_style, name_style) = match tool.status {
+                    ToolStatus::Running => (spinner, theme::busy(), theme::bold()),
+                    ToolStatus::Ok => ("⏺", theme::ok(), theme::bold()),
+                    ToolStatus::Failed => ("⏺", theme::err(), theme::err_bold()),
                 };
                 let mut spans = vec![
-                    Span::styled("⏺ ", mark_style),
+                    Span::styled(format!("{mark} "), mark_style),
                     Span::styled(tool.name.clone(), name_style),
                 ];
                 if !tool.args.is_empty() {
@@ -159,18 +166,46 @@ fn wrap_lines(lines: &[Line<'static>], width: u16) -> Vec<Line<'static>> {
 
 /// 输入框（单行）+ 光标定位。
 fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let title = if app.running {
-        "运行中…（Esc 取消）"
+    // 三态边框：运行中（黄 + spinner）/ 补全打开（accent）/ 空闲（暗色）
+    let (title, border_style) = if app.running {
+        (
+            Line::from(vec![
+                Span::styled(format!("{} ", app.spinner()), theme::busy()),
+                Span::styled("运行中 · Esc 取消", theme::busy()),
+            ]),
+            theme::busy(),
+        )
+    } else if app.completion().is_some() {
+        (
+            Line::from(Span::styled("输入 · Tab 补全", theme::accent())),
+            theme::accent(),
+        )
     } else {
-        "输入（Enter 发送）"
+        (
+            Line::from(Span::styled("输入 · Enter 发送", theme::dim())),
+            theme::dim(),
+        )
     };
-    let border = Border::bordered().title(title);
+    let border = Border::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(border_style)
+        .title(title);
     let inner = border.inner(area);
-    frame.render_widget(Paragraph::new(app.input().to_string()).block(border), area);
-    // 光标定位在框内文本处；单行输入，宽度即列偏移（贴边截断，最小版不横向滚动）
-    let x = inner.x + app.cursor_width().min(inner.width.saturating_sub(1));
+    let content = Line::from(vec![
+        Span::styled(PROMPT, theme::user_marker()),
+        Span::raw(app.input().to_string()),
+    ]);
+    frame.render_widget(Paragraph::new(content).block(border), area);
+    // 光标定位在提示符之后的文本处；单行输入，贴右边界截断（不横向滚动）
+    let text_width = inner.width.saturating_sub(PROMPT_WIDTH);
+    let x = inner.x + PROMPT_WIDTH + app.cursor_width().min(text_width.saturating_sub(1));
     frame.set_cursor_position(Position::new(x, inner.y));
 }
+
+/// 输入框内的提示符。
+const PROMPT: &str = "❯ ";
+/// 提示符的显示宽度（`❯` + 空格）。
+const PROMPT_WIDTH: u16 = 2;
 
 /// 状态栏：模型 / session / 滚动提示 / 告警。
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -286,6 +321,42 @@ mod tests {
         assert!(compact.contains("bash"));
         assert!(compact.contains("test-model"));
         assert!(compact.contains("abcd1234"));
+    }
+
+    /// 未定稿的 assistant 消息显示流式指示；运行中输入框标题含 spinner 与提示。
+    #[test]
+    fn shows_streaming_indicator_and_running_input_state() {
+        let mut app = App::new("test-model".to_string(), None);
+        app.handle_event(&AgentEvent::MessageStart(Box::new(Message::Assistant(
+            nomic_ai::AssistantMessage {
+                content: Vec::new(),
+                api: nomic_ai::ApiKind::AnthropicMessages,
+                provider: "anthropic".to_string(),
+                model: "claude".to_string(),
+                response_model: None,
+                response_id: None,
+                usage: nomic_ai::Usage::default(),
+                stop_reason: nomic_ai::StopReason::Stop,
+                error_message: None,
+                timestamp: 0,
+            },
+        ))));
+        app.running = true;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let compact: String = buffer
+            .content()
+            .iter()
+            .flat_map(|cell| cell.symbol().chars())
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(compact.contains("生成中"), "{compact}");
+        assert!(compact.contains("运行中"), "{compact}");
+        assert!(compact.contains(app.spinner()), "{compact}");
     }
 
     /// 补全弹层与 System 条目也能无 panic 绘制。

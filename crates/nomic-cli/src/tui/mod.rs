@@ -110,48 +110,129 @@ pub async fn run(cli: &Cli) -> Result<()> {
     });
 
     let mut term_events = EventStream::new();
-    let mut current_cancel: Option<CancellationToken> = None;
-    let mut session = boot.session;
-    let cwd = std::env::current_dir().context("get cwd")?;
+    // spinner 帧推进：仅运行中需要动画，空闲时分支挂起不唤醒事件循环
+    let mut spinner_ticker = tokio::time::interval(std::time::Duration::from_millis(100));
+    let mut driver = Driver {
+        job_tx,
+        current_cancel: None,
+        session: boot.session,
+        cwd: std::env::current_dir().context("get cwd")?,
+        skill_resolver,
+    };
     loop {
         terminal
             .draw(|frame| ui::draw(frame, &mut app))
             .context("绘制失败")?;
-        tokio::select! {
-            maybe_event = term_events.next() => match maybe_event {
-                Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => {
-                    handle_key(&mut app, &mut current_cancel, &job_tx, &mut session, &cwd, &skill_resolver, key).await;
-                }
-                Some(Ok(Event::Mouse(mouse))) => match mouse.kind {
-                    MouseEventKind::ScrollUp => app.scroll_up(3),
-                    MouseEventKind::ScrollDown => app.scroll_down(3),
-                    _ => {}
-                },
-                // resize 等：下一轮循环自然重绘
-                Some(Ok(_)) => {}
-                Some(Err(_)) | None => break,
-            },
-            maybe_event = events.recv() => {
-                let Some(event) = maybe_event else { break };
-                if let AgentEvent::MessageEnd(message) = &event {
-                    persist(session.as_ref(), message, &mut app).await;
-                }
-                app.handle_event(&event);
-            }
-            maybe_done = done_rx.recv() => {
-                let Some(done) = maybe_done else { break };
-                app.running = false;
-                current_cancel = None;
-                if let Err(error) = done {
-                    app.notice = Some(format!("agent loop 失败：{error}"));
-                }
-            }
-        }
-        if app.should_quit {
+        let wake = next_wake(
+            app.running,
+            &mut term_events,
+            &mut spinner_ticker,
+            &mut events,
+            &mut done_rx,
+        )
+        .await;
+        if handle_wake(wake, &mut app, &mut driver).await || app.should_quit {
             break;
         }
     }
     Ok(())
+}
+
+/// 事件循环持有的驱动端资源。
+struct Driver {
+    job_tx: mpsc::UnboundedSender<DriverJob>,
+    current_cancel: Option<CancellationToken>,
+    session: Option<(SessionStore, String)>,
+    cwd: std::path::PathBuf,
+    skill_resolver: SkillResolver,
+}
+
+/// 事件循环单次等待的结果。
+enum Wake {
+    /// 按键（Press/Repeat）
+    Key(KeyEvent),
+    /// 鼠标滚轮
+    ScrollUp,
+    ScrollDown,
+    /// agent 事件
+    AgentEvent(AgentEvent),
+    /// 本轮 prompt 完成（Err 为 agent loop 错误）
+    AgentDone(Result<(), String>),
+    /// spinner 帧推进
+    Tick,
+    /// 仅需重绘（resize、其他鼠标事件）
+    Redraw,
+    /// 任一事件流关闭：退出循环
+    Closed,
+}
+
+/// 处理一次唤醒；返回 `true` 表示事件流关闭、退出循环。
+async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
+    match wake {
+        Wake::Key(key) => {
+            handle_key(
+                app,
+                &mut driver.current_cancel,
+                &driver.job_tx,
+                &mut driver.session,
+                &driver.cwd,
+                &driver.skill_resolver,
+                key,
+            )
+            .await;
+        }
+        Wake::ScrollUp => app.scroll_up(3),
+        Wake::ScrollDown => app.scroll_down(3),
+        Wake::AgentEvent(event) => {
+            if let AgentEvent::MessageEnd(message) = &event {
+                persist(driver.session.as_ref(), message, app).await;
+            }
+            app.handle_event(&event);
+        }
+        Wake::AgentDone(done) => {
+            app.running = false;
+            driver.current_cancel = None;
+            if let Err(error) = done {
+                app.notice = Some(format!("agent loop 失败：{error}"));
+            }
+        }
+        Wake::Tick => app.tick(),
+        Wake::Redraw => {}
+        Wake::Closed => return true,
+    }
+    false
+}
+
+/// 等待下一个唤醒源：按键 / 鼠标 / agent 事件 / 本轮完成 / spinner 帧。
+async fn next_wake(
+    running: bool,
+    term_events: &mut EventStream,
+    spinner_ticker: &mut tokio::time::Interval,
+    events: &mut mpsc::UnboundedReceiver<AgentEvent>,
+    done_rx: &mut mpsc::UnboundedReceiver<Result<(), String>>,
+) -> Wake {
+    tokio::select! {
+        // spinner 动画仅在运行中推进；空闲时此分支永久挂起，不空转重绘
+        () = async {
+            if running {
+                spinner_ticker.tick().await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        } => Wake::Tick,
+        maybe_event = term_events.next() => match maybe_event {
+            Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => Wake::Key(key),
+            Some(Ok(Event::Mouse(mouse))) => match mouse.kind {
+                MouseEventKind::ScrollUp => Wake::ScrollUp,
+                MouseEventKind::ScrollDown => Wake::ScrollDown,
+                _ => Wake::Redraw,
+            },
+            Some(Ok(_)) => Wake::Redraw,
+            Some(Err(_)) | None => Wake::Closed,
+        },
+        maybe_event = events.recv() => maybe_event.map_or(Wake::Closed, Wake::AgentEvent),
+        maybe_done = done_rx.recv() => maybe_done.map_or(Wake::Closed, Wake::AgentDone),
+    }
 }
 
 /// 键位处理（最小集，见 ADR-0002）。

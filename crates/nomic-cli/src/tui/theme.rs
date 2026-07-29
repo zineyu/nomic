@@ -37,6 +37,11 @@ pub(super) const fn thinking() -> Style {
     dim().add_modifier(Modifier::ITALIC)
 }
 
+/// 强调文本（焦点边框标题等）。
+pub(super) const fn accent() -> Style {
+    Style::new().fg(ACCENT)
+}
+
 /// 用户消息左侧竖条标记。
 pub(super) const fn user_marker() -> Style {
     Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)

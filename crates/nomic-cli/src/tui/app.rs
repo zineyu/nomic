@@ -11,6 +11,9 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::print::brief_args;
 
+/// braille spinner 帧序列（运行中工具与流式指示共用）。
+const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 /// 聊天区条目。
 #[derive(Debug)]
 pub(super) enum ChatItem {
@@ -248,6 +251,8 @@ pub(super) struct App {
     pub(super) session_id: Option<String>,
     /// 状态栏一次性提示（告警等）
     pub(super) notice: Option<String>,
+    /// spinner 帧序号（仅运行中由事件循环周期推进）
+    spinner: usize,
     /// `/skill:` 补全用的可用 skill 快照
     skills: Vec<SkillEntry>,
 }
@@ -265,6 +270,7 @@ impl App {
             model_name,
             session_id,
             notice: None,
+            spinner: 0,
             skills: Vec::new(),
         }
     }
@@ -647,6 +653,18 @@ impl App {
     pub(super) fn clear_items(&mut self) {
         self.items.clear();
         self.scroll_to_bottom();
+    }
+
+    // ── spinner ─────────────────────────────────────────────────────────────
+
+    /// 推进 spinner 一帧（事件循环在运行中周期调用）。
+    pub(super) const fn tick(&mut self) {
+        self.spinner = self.spinner.wrapping_add(1);
+    }
+
+    /// 当前 spinner 帧字符。
+    pub(super) const fn spinner(&self) -> &'static str {
+        SPINNER_FRAMES[self.spinner % SPINNER_FRAMES.len()]
     }
 
     // ── 滚动 ────────────────────────────────────────────────────────────────
@@ -1181,6 +1199,14 @@ mod tests {
         // 关闭后下次编辑会重新计算
         app.insert_char('n');
         assert!(app.completion().is_some());
+    }
+
+    #[test]
+    fn tick_advances_spinner_frame() {
+        let mut app = app();
+        let first = app.spinner();
+        app.tick();
+        assert_ne!(app.spinner(), first);
     }
 
     #[test]

@@ -315,6 +315,29 @@ async fn clear_messages_resets_context() {
 }
 
 #[tokio::test]
+async fn inject_user_message_joins_history_and_emits_events() {
+    let provider = MockProvider::new(vec![text_done("ok")]);
+    let (mut agent, rx) = make_agent(provider.clone(), vec![]);
+
+    let collector = tokio::spawn(collect_events(rx));
+    agent.inject_user_message("<active_skill name=\"demo\">body</active_skill>");
+    assert_eq!(agent.messages().len(), 1);
+    assert!(matches!(agent.messages()[0], Message::User(_)));
+
+    // 后续 prompt 的上下文 = 注入消息 + 本次 user 消息
+    agent
+        .prompt("hi", CancellationToken::new())
+        .await
+        .expect("prompt");
+    let events = collector.await.expect("collector");
+    assert_eq!(provider.context_lens(), vec![2]);
+    // 注入消息的事件先于 AgentStart 发出（驱动端不启动新 run）
+    assert!(matches!(events[0], AgentEvent::MessageStart(_)));
+    assert!(matches!(events[1], AgentEvent::MessageEnd(_)));
+    assert!(matches!(events[2], AgentEvent::AgentStart));
+}
+
+#[tokio::test]
 async fn tool_call_then_text_two_turns() {
     let provider = MockProvider::new(vec![
         tool_call_done("c1", "echo", serde_json::json!({"text": "from tool"})),

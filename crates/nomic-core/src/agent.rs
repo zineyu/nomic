@@ -180,6 +180,21 @@ impl Agent {
         self.messages.clear();
     }
 
+    /// 在两轮 prompt 之间向历史注入一条 user 消息（手动载入 skill、外部指令等）。
+    ///
+    /// 与 [`Self::clear_messages`] 同样的调用契约：仅在非运行状态
+    /// （`prompt` 返回后）调用。会发出 `MessageStart`/`MessageEnd` 事件，
+    /// 交互端渲染与 session 落库经既有事件管线自动生效。
+    pub fn inject_user_message(&mut self, text: &str) {
+        let user = Message::User(nomic_ai::UserMessage {
+            content: nomic_ai::UserMessageContent::Text(text.to_string()),
+            timestamp: now_millis(),
+        });
+        self.emit(AgentEvent::MessageStart(Box::new(user.clone())));
+        self.messages.push(user.clone());
+        self.emit(AgentEvent::MessageEnd(Box::new(user)));
+    }
+
     /// 发送一个用户 prompt 并运行 loop 直到完成，返回本次新增的消息。
     ///
     /// provider 错误不会让这里返回 `Err`（编码在 assistant 消息中）；

@@ -2,7 +2,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout, Position, Rect},
+    layout::{Alignment, Constraint, Layout, Margin, Position, Rect},
     text::{Line, Span},
     widgets::{Block as Border, BorderType, Clear, Paragraph},
 };
@@ -18,6 +18,9 @@ use super::{
 /// 单页滚动的行数。
 const PAGE_SCROLL: u16 = 10;
 
+/// 聊天区左右留白列数，避免输出紧贴屏幕边缘。
+const CHAT_H_MARGIN: u16 = 1;
+
 /// 绘制整帧。
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let chunks = Layout::vertical([
@@ -28,7 +31,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     .split(frame.area());
     // Paragraph 不清理文本以外的单元格；先 Clear 避免长行残留
     frame.render_widget(Clear, frame.area());
-    draw_chat(frame, app, chunks[0]);
+    draw_chat(frame, app, chunks[0].inner(Margin::new(CHAT_H_MARGIN, 0)));
     draw_input(frame, app, chunks[1]);
     draw_status(frame, app, chunks[2]);
     if let Some(completion) = app.completion() {
@@ -662,6 +665,52 @@ mod tests {
             heading_cell
                 .modifier
                 .contains(ratatui::style::Modifier::BOLD)
+        );
+    }
+
+    /// 聊天区左右留白：assistant 输出不紧贴屏幕左缘。
+    #[test]
+    fn chat_content_has_left_margin() {
+        let mut app = App::new("test-model".to_string(), None);
+        app.handle_event(&AgentEvent::MessageStart(Box::new(Message::Assistant(
+            nomic_ai::AssistantMessage {
+                content: Vec::new(),
+                api: nomic_ai::ApiKind::AnthropicMessages,
+                provider: "anthropic".to_string(),
+                model: "claude".to_string(),
+                response_model: None,
+                response_id: None,
+                usage: nomic_ai::Usage::default(),
+                stop_reason: nomic_ai::StopReason::Stop,
+                error_message: None,
+                timestamp: 0,
+            },
+        ))));
+        app.handle_event(&AgentEvent::MessageUpdate(
+            nomic_ai::AssistantEvent::TextStart { index: 0 },
+        ));
+        app.handle_event(&AgentEvent::MessageUpdate(
+            nomic_ai::AssistantEvent::TextDelta {
+                index: 0,
+                delta: "输出内容".to_string(),
+            },
+        ));
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let width = usize::from(buffer.area.width);
+        let index = buffer
+            .content()
+            .iter()
+            .position(|cell| cell.symbol() == "输")
+            .expect("assistant text cell");
+        let x = u16::try_from(index % width).expect("column fits u16");
+        assert_eq!(
+            x, CHAT_H_MARGIN,
+            "assistant 输出应距左缘 {CHAT_H_MARGIN} 列"
         );
     }
 

@@ -13,3 +13,5 @@ extend-exclude = [
 [default.extend-words]
 nomic = "nomic"
 ratatui = "ratatui"
+# config 测试中故意拼错的键名（验证 deny_unknown_fields 硬报错）
+contex = "contex"

@@ -60,6 +60,45 @@ append_system = "总是用中文回复。"
 # api_key = "..."           # 最低优先级兜底，建议优先用环境变量
 ```
 
+### 多 provider 与模型规格
+
+`[providers.<名字>]` 定义多个 provider，`[providers.<名字>.models."<模型id>"]`
+覆盖单个模型的规格字段（全部可选，只写要覆盖的）。
+provider 与 base_url 永远来自用户指定；模型规格字段逐字段按
+**配置 > [models.dev](https://models.dev) > 内置默认** 解析：
+
+```toml
+provider = "deepseek"
+model = "deepseek-chat"
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com"
+# api 可省略：anthropic→anthropic_messages，openai→open_ai_completions
+
+[providers.anthropic.models."claude-sonnet-4-5"]
+reasoning = true
+context_window = 200000
+max_tokens = 64000
+cost_input = 3.0
+cost_output = 15.0
+cost_cache_read = 0.3
+cost_cache_write = 3.75
+
+# 自定义 provider：api 必填
+[providers.deepseek]
+api = "open_ai_completions"
+base_url = "https://api.deepseek.com/v1"
+api_key = "sk-..."
+
+# 只写要覆盖的字段，其余走 models.dev → 内置默认
+[providers.deepseek.models."deepseek-chat"]
+max_tokens = 8192
+```
+
+models.dev 目录按模型 id 查询（约 3MB 的 api.json），缓存到
+`$XDG_CACHE_HOME/nomic/models-dev-api.json`（24h 有效期，网络失败时用过期缓存兜底）；
+配置已给全规格字段时不读缓存、不联网。models.dev 与缓存都不可用时回落到内置默认值。
+
 ## AGENTS.md
 
 启动时从当前目录一路向上走到文件系统根，加载沿途每个目录的 `AGENTS.md`，

@@ -1,12 +1,17 @@
 //! 两种模式共享的运行时初始化：provider/model 解析、stream options、系统提示词、
 //! session 新建/恢复。
+//!
+//! provider / base_url / api_key 等连接参数按 CLI 参数 > 环境变量 >
+//! `providers.<名字>.*` > 平铺配置 > 内置默认 解析（永远来自用户指定）；
+//! 模型规格字段（展示名、推理能力、上下文/输出上限、费率）逐字段按
+//! 配置 `providers.<名字>.models.<模型id>` > models.dev > 内置预设 解析。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use nomic_ai::{
-    ApiKind, Message, Model, Provider, StreamOptions, ThinkingLevel,
+    ApiKind, Catalog, Message, Model, ModelSpec, Provider, StreamOptions, ThinkingLevel,
     providers::{AnthropicProvider, OpenAiCompat, OpenAiProvider},
 };
 use nomic_session::SessionStore;
@@ -48,17 +53,26 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
                 "openai".to_string()
             }
         });
+    let model_id_hint = cli
+        .model
+        .clone()
+        .or_else(|| config.as_ref().and_then(|c| c.model.clone()));
+    let catalog =
+        load_catalog_unless_complete(config.as_ref(), &provider_kind, model_id_hint.as_deref())
+            .await;
     let model = resolve_model(
         &provider_kind,
         cli,
         config.as_ref(),
         env_openai_base_url.as_deref(),
-    );
+        catalog.as_ref(),
+    )?;
     // api_key 显式分层解析（provider 内部的 env 回退发生在请求时，
     // 若把配置文件值直接交给构造器会抢到环境变量前面）。
     let api_key = resolve_api_key(
         cli.api_key.as_deref(),
         std::env::var(api_key_env(model.api)).ok().as_deref(),
+        provider_config(config.as_ref(), &provider_kind).and_then(|p| p.api_key.as_deref()),
         config.as_ref().and_then(|c| c.api_key.as_deref()),
     );
     let provider: Arc<dyn Provider> = match model.api {
@@ -240,39 +254,146 @@ const fn api_key_env(api: ApiKind) -> &'static str {
     }
 }
 
-/// 解析 api_key：CLI 参数 > 环境变量 > 配置文件。
-fn resolve_api_key(cli: Option<&str>, env: Option<&str>, config: Option<&str>) -> Option<String> {
-    cli.or(env).or(config).map(str::to_string)
+/// 解析 api_key：CLI 参数 > 环境变量 > `providers.<名字>.api_key` > 平铺配置文件。
+fn resolve_api_key(
+    cli: Option<&str>,
+    env: Option<&str>,
+    provider: Option<&str>,
+    config: Option<&str>,
+) -> Option<String> {
+    cli.or(env).or(provider).or(config).map(str::to_string)
 }
 
-/// 解析模型：内置预设 + CLI 参数 > 环境变量 > 配置文件 > provider 默认值。
+/// 取 `providers.<名字>` 定义。
+fn provider_config<'c>(
+    config: Option<&'c Config>,
+    provider_kind: &str,
+) -> Option<&'c crate::config::ProviderConfig> {
+    config
+        .and_then(|c| c.providers.as_ref())
+        .and_then(|providers| providers.get(provider_kind))
+}
+
+/// 取配置中 `providers.<名字>.models.<模型id>` 的规格覆盖。
+fn model_spec_from_config<'c>(
+    config: Option<&'c Config>,
+    provider_kind: &str,
+    model_id: Option<&str>,
+) -> Option<&'c ModelSpec> {
+    provider_config(config, provider_kind)
+        .and_then(|p| p.models.as_ref())
+        .and_then(|models| model_id.and_then(|id| models.get(id)))
+}
+
+/// 加载 models.dev 目录；配置已给全规格字段时跳过（不读缓存、不联网），
+/// 目录不可用时告警并返回 `None`（调用方落到内置预设）。
+async fn load_catalog_unless_complete(
+    config: Option<&Config>,
+    provider_kind: &str,
+    model_id_hint: Option<&str>,
+) -> Option<Catalog> {
+    let complete = model_spec_from_config(config, provider_kind, model_id_hint)
+        .is_some_and(ModelSpec::is_complete);
+    if complete {
+        return None;
+    }
+    let catalog = nomic_ai::models_dev::load().await;
+    if catalog.is_none() {
+        eprintln!("\x1b[33m⚠ models.dev 目录不可用，模型规格回落到内置默认值\x1b[0m");
+    }
+    catalog
+}
+
+/// provider 内置预设：分层解析的最底层（「全局默认值」）。
+struct Preset {
+    /// 默认模型 id（自定义 provider 无内置默认，必须显式指定）
+    default_model: Option<&'static str>,
+    /// 默认 base URL
+    default_base_url: &'static str,
+    /// 规格默认值（除 `name` 外全字段有值；`name` 缺省回退为模型 id）
+    spec: ModelSpec,
+}
+
+/// 内置 provider（anthropic / openai）的预设。
+fn builtin_preset(provider_kind: &str) -> Option<Preset> {
+    match provider_kind {
+        "anthropic" => Some(Preset {
+            default_model: Some("claude-sonnet-4-5"),
+            default_base_url: "https://api.anthropic.com",
+            spec: ModelSpec {
+                name: None,
+                reasoning: Some(true),
+                context_window: Some(200_000),
+                max_tokens: Some(64_000),
+                cost_input: Some(3.0),
+                cost_output: Some(15.0),
+                cost_cache_read: Some(0.3),
+                cost_cache_write: Some(3.75),
+            },
+        }),
+        "openai" => Some(Preset {
+            default_model: Some("gpt-5.2"),
+            default_base_url: "https://api.openai.com/v1",
+            spec: ModelSpec {
+                name: None,
+                reasoning: Some(true),
+                context_window: Some(400_000),
+                max_tokens: Some(128_000),
+                cost_input: Some(0.0),
+                cost_output: Some(0.0),
+                cost_cache_read: Some(0.0),
+                cost_cache_write: Some(0.0),
+            },
+        }),
+        _ => None,
+    }
+}
+
+/// 自定义 provider 的中性预设：无默认模型，规格字段全为保守值。
+const fn neutral_preset(api: ApiKind) -> Preset {
+    Preset {
+        default_model: None,
+        default_base_url: match api {
+            ApiKind::AnthropicMessages => "https://api.anthropic.com",
+            ApiKind::OpenAiCompletions => "https://api.openai.com/v1",
+        },
+        spec: ModelSpec {
+            name: None,
+            reasoning: Some(false),
+            context_window: Some(0),
+            max_tokens: Some(0),
+            cost_input: Some(0.0),
+            cost_output: Some(0.0),
+            cost_cache_read: Some(0.0),
+            cost_cache_write: Some(0.0),
+        },
+    }
+}
+
+/// 解析模型。
+///
+/// - `provider` / `base_url` 永远来自用户指定：CLI 参数 > 环境变量 >
+///   `providers.<名字>.*` > 平铺配置 > 内置默认，不经由 models.dev
+/// - 规格字段（`name` / `reasoning` / `context_window` / `max_tokens` / `cost_*`）
+///   逐字段分层：配置 `providers.<名字>.models.<模型id>` > models.dev > 内置预设
 fn resolve_model(
     provider_kind: &str,
     cli: &Cli,
     config: Option<&Config>,
     env_openai_base_url: Option<&str>,
-) -> Model {
-    let (api, default_model, default_base_url, reasoning, context_window, max_tokens, costs) =
-        match provider_kind {
-            "anthropic" => (
-                ApiKind::AnthropicMessages,
-                "claude-sonnet-4-5",
-                "https://api.anthropic.com",
-                true,
-                200_000,
-                64_000,
-                (3.0, 15.0, 0.3, 3.75),
-            ),
-            _ => (
-                ApiKind::OpenAiCompletions,
-                "gpt-5.2",
-                "https://api.openai.com/v1",
-                true,
-                400_000,
-                128_000,
-                (0.0, 0.0, 0.0, 0.0),
-            ),
-        };
+    catalog: Option<&Catalog>,
+) -> Result<Model> {
+    let provider_config = provider_config(config, provider_kind);
+    let api = provider_config
+        .and_then(|p| p.api)
+        .or_else(|| crate::config::infer_api(provider_kind))
+        .with_context(|| {
+            format!(
+                "未知 provider {provider_kind:?}：请使用 anthropic / openai，\
+                 或在 config.toml 的 [providers.{provider_kind}] 中定义并指定 api"
+            )
+        })?;
+    let preset = builtin_preset(provider_kind).unwrap_or_else(|| neutral_preset(api));
     let base_url = cli
         .base_url
         .clone()
@@ -281,27 +402,41 @@ fn resolve_model(
                 .filter(|_| api == ApiKind::OpenAiCompletions)
                 .map(str::to_string)
         })
+        .or_else(|| provider_config.and_then(|p| p.base_url.clone()))
         .or_else(|| config.and_then(|c| c.base_url.clone()))
-        .unwrap_or_else(|| default_base_url.to_string());
+        .unwrap_or_else(|| preset.default_base_url.to_string());
     let id = cli
         .model
         .clone()
         .or_else(|| config.and_then(|c| c.model.clone()))
-        .unwrap_or_else(|| default_model.to_string());
-    Model {
-        name: id.clone(),
+        .or_else(|| preset.default_model.map(str::to_string))
+        .with_context(|| {
+            format!("provider {provider_kind:?} 没有内置默认模型，请用 --model 或配置 model 指定")
+        })?;
+    let spec = model_spec_from_config(config, provider_kind, Some(&id))
+        .cloned()
+        .unwrap_or_default()
+        .or_fill(
+            &catalog
+                .and_then(|c| c.lookup(Some(provider_kind), &id))
+                .cloned()
+                .unwrap_or_default(),
+        )
+        .or_fill(&preset.spec);
+    Ok(Model {
+        name: spec.name.unwrap_or_else(|| id.clone()),
         id,
         api,
         provider: provider_kind.to_string(),
         base_url,
-        reasoning,
-        context_window,
-        max_tokens,
-        cost_input: costs.0,
-        cost_output: costs.1,
-        cost_cache_read: costs.2,
-        cost_cache_write: costs.3,
-    }
+        reasoning: spec.reasoning.unwrap_or(false),
+        context_window: spec.context_window.unwrap_or(0),
+        max_tokens: spec.max_tokens.unwrap_or(0),
+        cost_input: spec.cost_input.unwrap_or(0.0),
+        cost_output: spec.cost_output.unwrap_or(0.0),
+        cost_cache_read: spec.cost_cache_read.unwrap_or(0.0),
+        cost_cache_write: spec.cost_cache_write.unwrap_or(0.0),
+    })
 }
 
 fn parse_reasoning(level: &str) -> ThinkingLevel {
@@ -589,6 +724,47 @@ mod tests {
 
     // ── 配置分层：CLI > 环境变量 > 配置文件 > 内置默认 ───────────────────────
 
+    /// 裁剪的 models.dev api.json fixture。
+    const MODELS_DEV_FIXTURE: &str = r#"{
+        "deepseek": {
+            "id": "deepseek",
+            "models": {
+                "deepseek-chat": {
+                    "id": "deepseek-chat",
+                    "name": "DeepSeek Chat",
+                    "reasoning": false,
+                    "limit": { "context": 128000, "output": 8192 },
+                    "cost": { "input": 0.27, "output": 1.1, "cache_read": 0.07, "cache_write": 0.27 }
+                }
+            }
+        },
+        "openai": {
+            "id": "openai",
+            "models": {
+                "gpt-5.2": {
+                    "id": "gpt-5.2",
+                    "name": "GPT-5.2",
+                    "reasoning": true,
+                    "limit": { "context": 400000, "output": 128000 }
+                }
+            }
+        }
+    }"#;
+
+    fn catalog() -> Catalog {
+        Catalog::parse(MODELS_DEV_FIXTURE).expect("catalog fixture")
+    }
+
+    fn resolve(
+        provider_kind: &str,
+        cli: &Cli,
+        config: Option<&Config>,
+        env_openai_base_url: Option<&str>,
+        catalog: Option<&Catalog>,
+    ) -> Model {
+        resolve_model(provider_kind, cli, config, env_openai_base_url, catalog).expect("resolve")
+    }
+
     #[test]
     fn model_prefers_cli_over_config() {
         let cli = cli(&["--model", "cli-model"]);
@@ -596,7 +772,7 @@ mod tests {
             model: Some("config-model".to_string()),
             ..Config::default()
         };
-        let model = resolve_model("openai", &cli, Some(&config), None);
+        let model = resolve("openai", &cli, Some(&config), None, None);
         assert_eq!(model.id, "cli-model");
     }
 
@@ -609,30 +785,171 @@ mod tests {
         let with_flag = cli(&["--base-url", "https://cli"]);
         let plain = cli(&[]);
         // CLI 参数最高
-        let model = resolve_model("openai", &with_flag, Some(&config), Some("https://env"));
+        let model = resolve(
+            "openai",
+            &with_flag,
+            Some(&config),
+            Some("https://env"),
+            None,
+        );
         assert_eq!(model.base_url, "https://cli");
         // 环境变量次之
-        let model = resolve_model("openai", &plain, Some(&config), Some("https://env"));
+        let model = resolve("openai", &plain, Some(&config), Some("https://env"), None);
         assert_eq!(model.base_url, "https://env");
         // 配置文件再次
-        let model = resolve_model("openai", &plain, Some(&config), None);
+        let model = resolve("openai", &plain, Some(&config), None, None);
         assert_eq!(model.base_url, "https://config");
         // 内置默认兜底
-        let model = resolve_model("openai", &plain, None, None);
+        let model = resolve("openai", &plain, None, None, None);
         assert_eq!(model.base_url, "https://api.openai.com/v1");
         // OPENAI_BASE_URL 对 anthropic 不生效
-        let model = resolve_model("anthropic", &plain, None, Some("https://env"));
+        let model = resolve("anthropic", &plain, None, Some("https://env"), None);
         assert_eq!(model.base_url, "https://api.anthropic.com");
     }
 
     #[test]
-    fn api_key_precedence_cli_env_config() {
-        let key = resolve_api_key(Some("cli"), Some("env"), Some("config"));
+    fn provider_table_base_url_beats_flat_config() {
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert(
+            "openai".to_string(),
+            crate::config::ProviderConfig {
+                base_url: Some("https://provider-table".to_string()),
+                ..crate::config::ProviderConfig::default()
+            },
+        );
+        let config = Config {
+            base_url: Some("https://flat".to_string()),
+            providers: Some(providers),
+            ..Config::default()
+        };
+        let model = resolve("openai", &cli(&[]), Some(&config), None, None);
+        assert_eq!(model.base_url, "https://provider-table");
+    }
+
+    #[test]
+    fn api_key_precedence_cli_env_provider_config() {
+        let key = resolve_api_key(Some("cli"), Some("env"), Some("provider"), Some("config"));
         assert_eq!(key.as_deref(), Some("cli"));
-        let key = resolve_api_key(None, Some("env"), Some("config"));
+        let key = resolve_api_key(None, Some("env"), Some("provider"), Some("config"));
         assert_eq!(key.as_deref(), Some("env"));
-        let key = resolve_api_key(None, None, Some("config"));
+        let key = resolve_api_key(None, None, Some("provider"), Some("config"));
+        assert_eq!(key.as_deref(), Some("provider"));
+        let key = resolve_api_key(None, None, None, Some("config"));
         assert_eq!(key.as_deref(), Some("config"));
-        assert_eq!(resolve_api_key(None, None, None), None);
+        assert_eq!(resolve_api_key(None, None, None, None), None);
+    }
+
+    // ── 规格字段分层：配置 > models.dev > 内置预设 ──────────────────────────
+
+    #[test]
+    fn spec_from_catalog_fills_fields_preset_is_last_resort() {
+        let plain = cli(&[]);
+        // models.dev 命中：gpt-5.2 有 limit 但无 cost → cost 落预设（openai 预设为 0）
+        let model = resolve("openai", &plain, None, None, Some(&catalog()));
+        assert_eq!(model.id, "gpt-5.2");
+        assert_eq!(model.name, "GPT-5.2", "展示名来自 models.dev");
+        assert_eq!(model.context_window, 400_000);
+        assert_eq!(model.max_tokens, 128_000);
+        assert!(model.reasoning);
+        assert_eq!(
+            Some(model.cost_input),
+            Some(0.0),
+            "models.dev 缺 cost 时落预设"
+        );
+        // 无 models.dev：保持今天的内置默认行为
+        let model = resolve("openai", &plain, None, None, None);
+        assert_eq!(model.name, "gpt-5.2", "name 兜底为模型 id");
+        assert_eq!(model.context_window, 400_000);
+        let model = resolve("anthropic", &plain, None, None, None);
+        assert_eq!(model.context_window, 200_000);
+        assert_eq!(Some(model.cost_input), Some(3.0));
+    }
+
+    #[test]
+    fn config_spec_overrides_catalog_per_field() {
+        let mut models = std::collections::BTreeMap::new();
+        models.insert(
+            "gpt-5.2".to_string(),
+            ModelSpec {
+                max_tokens: Some(8192),
+                ..ModelSpec::default()
+            },
+        );
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert(
+            "openai".to_string(),
+            crate::config::ProviderConfig {
+                models: Some(models),
+                ..crate::config::ProviderConfig::default()
+            },
+        );
+        let config = Config {
+            providers: Some(providers),
+            ..Config::default()
+        };
+        let model = resolve("openai", &cli(&[]), Some(&config), None, Some(&catalog()));
+        assert_eq!(model.max_tokens, 8192, "配置覆盖 models.dev");
+        assert_eq!(model.context_window, 400_000, "未覆盖字段仍来自 models.dev");
+        assert_eq!(model.name, "GPT-5.2");
+    }
+
+    // ── 自定义 provider ────────────────────────────────────────────────────
+
+    fn deepseek_config() -> Config {
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert(
+            "deepseek".to_string(),
+            crate::config::ProviderConfig {
+                api: Some(ApiKind::OpenAiCompletions),
+                base_url: Some("https://api.deepseek.com/v1".to_string()),
+                api_key: Some("sk-deepseek".to_string()),
+                models: None,
+            },
+        );
+        Config {
+            model: Some("deepseek-chat".to_string()),
+            providers: Some(providers),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn custom_provider_resolves_via_config_and_global_catalog_scan() {
+        let config = deepseek_config();
+        // 即便 provider 名不是 models.dev 的一级键，也按模型 id 全局扫描命中
+        let model = resolve("deepseek", &cli(&[]), Some(&config), None, Some(&catalog()));
+        assert_eq!(model.api, ApiKind::OpenAiCompletions);
+        assert_eq!(model.provider, "deepseek");
+        assert_eq!(model.base_url, "https://api.deepseek.com/v1");
+        assert_eq!(model.name, "DeepSeek Chat");
+        assert_eq!(model.context_window, 128_000);
+        assert_eq!(Some(model.cost_output), Some(1.1));
+        assert!(!model.reasoning);
+    }
+
+    #[test]
+    fn custom_provider_without_catalog_uses_neutral_defaults() {
+        let config = deepseek_config();
+        let model = resolve("deepseek", &cli(&[]), Some(&config), None, None);
+        assert_eq!(model.name, "deepseek-chat");
+        assert_eq!(model.context_window, 0);
+        assert!(!model.reasoning);
+        assert_eq!(Some(model.cost_input), Some(0.0));
+    }
+
+    #[test]
+    fn custom_provider_requires_explicit_model() {
+        let mut config = deepseek_config();
+        config.model = None;
+        let error = resolve_model("deepseek", &cli(&[]), Some(&config), None, None)
+            .expect_err("自定义 provider 无默认模型，必须显式指定");
+        assert!(format!("{error:#}").contains("没有内置默认模型"));
+    }
+
+    #[test]
+    fn unknown_provider_requires_config_definition() {
+        let error = resolve_model("gemini", &cli(&[]), None, None, None)
+            .expect_err("未知 provider 必须报错");
+        assert!(format!("{error:#}").contains("未知 provider"));
     }
 }

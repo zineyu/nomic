@@ -5,10 +5,24 @@
 //! CLI 参数 > 环境变量 > 配置文件 > 内置默认，本模块只负责「配置文件」这一层，
 //! 分层合并在 `bootstrap` 完成。
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
+use nomic_ai::{ApiKind, ModelSpec};
 use serde::Deserialize;
+
+/// 内置 provider 名（`api` 可省略自动推断）。
+const BUILTIN_PROVIDERS: [&str; 2] = ["anthropic", "openai"];
+
+/// 按 provider 名推断 API 种类；内置以外的名字返回 `None`（需在配置中显式指定 `api`）。
+pub fn infer_api(provider: &str) -> Option<ApiKind> {
+    match provider {
+        "anthropic" => Some(ApiKind::AnthropicMessages),
+        "openai" => Some(ApiKind::OpenAiCompletions),
+        _ => None,
+    }
+}
 
 /// 用户级配置（`config.toml` 的反序列化目标）。
 ///
@@ -17,7 +31,7 @@ use serde::Deserialize;
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// provider：anthropic 或 openai（兼容端点）
+    /// provider：anthropic、openai，或下方 `[providers]` 表中定义的自定义名字
     pub provider: Option<String>,
     /// 模型 id
     pub model: Option<String>,
@@ -33,14 +47,42 @@ pub struct Config {
     pub max_tokens: Option<u64>,
     /// 追加到系统提示词末尾的文本
     pub append_system: Option<String>,
+    /// provider 定义表（`[providers.<名字>]`，含嵌套的模型规格覆盖）
+    pub providers: Option<BTreeMap<String, ProviderConfig>>,
+}
+
+/// 单个 provider 的定义（`[providers.<名字>]`）。
+///
+/// `provider` 与 `base_url` 永远来自用户指定，不经由 models.dev。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderConfig {
+    /// API 种类：anthropic_messages / open_ai_completions；
+    /// anthropic、openai 可省略自动推断，自定义 provider 必填
+    pub api: Option<ApiKind>,
+    /// API base URL（优先级高于平铺的顶层 `base_url`）
+    pub base_url: Option<String>,
+    /// API key（优先级高于平铺的顶层 `api_key`，低于环境变量）
+    pub api_key: Option<String>,
+    /// 模型规格覆盖表（`[providers.<名字>.models."<模型id>"]`），全部字段可选；
+    /// 缺失的字段继续向 models.dev、内置默认解析
+    pub models: Option<BTreeMap<String, ModelSpec>>,
 }
 
 impl Config {
     /// 校验枚举类字段的取值，非法值硬报错并指出配置键名。
     fn validate(&self) -> Result<()> {
         if let Some(provider) = &self.provider {
-            if !matches!(provider.as_str(), "anthropic" | "openai") {
-                bail!("配置项 provider 取值非法：{provider:?}（可选 anthropic / openai）");
+            let known = BUILTIN_PROVIDERS.contains(&provider.as_str())
+                || self
+                    .providers
+                    .as_ref()
+                    .is_some_and(|providers| providers.contains_key(provider));
+            if !known {
+                bail!(
+                    "配置项 provider 取值非法：{provider:?}\
+                     （可选 anthropic / openai，或在 [providers] 表中定义）"
+                );
             }
         }
         if let Some(reasoning) = &self.reasoning {
@@ -48,6 +90,13 @@ impl Config {
                 bail!(
                     "配置项 reasoning 取值非法：{reasoning:?}（可选 minimal / low / medium / high）"
                 );
+            }
+        }
+        if let Some(providers) = &self.providers {
+            for (name, provider) in providers {
+                if provider.api.is_none() && infer_api(name).is_none() {
+                    bail!("自定义 provider {name:?} 必须在 providers.{name}.api 中指定 API 种类");
+                }
             }
         }
         Ok(())
@@ -170,5 +219,105 @@ append_system = "Always reply in Chinese."
         let (_dir, path) = write_temp("reasoning = \"extreme\"\n");
         let error = load_from(&path).expect_err("invalid reasoning must fail");
         assert!(format!("{error:#}").contains("reasoning"));
+    }
+
+    // ── [providers.*] 嵌套 models 配置 ─────────────────────────────────────
+
+    #[test]
+    fn parses_providers_with_nested_model_specs() {
+        let (_dir, path) = write_temp(
+            r#"
+provider = "deepseek"
+model = "deepseek-chat"
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com"
+api_key = "sk-ant-test"
+
+[providers.anthropic.models."claude-sonnet-4-5"]
+name = "Claude Sonnet 4.5"
+reasoning = true
+context_window = 200000
+max_tokens = 64000
+cost_input = 3.0
+cost_output = 15.0
+cost_cache_read = 0.3
+cost_cache_write = 3.75
+
+[providers.deepseek]
+api = "open_ai_completions"
+base_url = "https://api.deepseek.com/v1"
+
+[providers.deepseek.models."deepseek-chat"]
+max_tokens = 8192
+"#,
+        );
+        let config = load_from(&path).expect("load").expect("some");
+        let providers = config.providers.as_ref().expect("providers");
+
+        let anthropic = providers.get("anthropic").expect("anthropic");
+        assert_eq!(anthropic.api, None, "内置 provider 的 api 可省略");
+        assert_eq!(
+            anthropic.base_url.as_deref(),
+            Some("https://api.anthropic.com")
+        );
+        let spec = anthropic
+            .models
+            .as_ref()
+            .and_then(|m| m.get("claude-sonnet-4-5"))
+            .expect("model spec");
+        assert_eq!(spec.context_window, Some(200_000));
+        assert_eq!(spec.cost_cache_write, Some(3.75));
+        assert!(spec.is_complete());
+
+        let deepseek = providers.get("deepseek").expect("deepseek");
+        assert_eq!(deepseek.api, Some(ApiKind::OpenAiCompletions));
+        let spec = deepseek
+            .models
+            .as_ref()
+            .and_then(|m| m.get("deepseek-chat"))
+            .expect("model spec");
+        assert_eq!(spec.max_tokens, Some(8192));
+        assert!(!spec.is_complete(), "只写部分字段时不完整");
+    }
+
+    #[test]
+    fn custom_provider_without_api_is_rejected() {
+        let (_dir, path) = write_temp(
+            r#"
+[providers.deepseek]
+base_url = "https://api.deepseek.com/v1"
+"#,
+        );
+        let error = load_from(&path).expect_err("custom provider without api must fail");
+        assert!(format!("{error:#}").contains("deepseek"));
+        assert!(format!("{error:#}").contains("api"));
+    }
+
+    #[test]
+    fn provider_selector_may_reference_defined_custom_provider() {
+        let (_dir, path) = write_temp(
+            r#"
+provider = "deepseek"
+
+[providers.deepseek]
+api = "open_ai_completions"
+base_url = "https://api.deepseek.com/v1"
+"#,
+        );
+        let config = load_from(&path).expect("load").expect("some");
+        assert_eq!(config.provider.as_deref(), Some("deepseek"));
+    }
+
+    #[test]
+    fn unknown_field_in_model_spec_is_rejected() {
+        let (_dir, path) = write_temp(
+            r#"
+[providers.openai.models."gpt-5.2"]
+contex_window = 400000
+"#,
+        );
+        let error = load_from(&path).expect_err("typo in model spec must fail");
+        assert!(format!("{error:#}").contains("解析配置文件失败"));
     }
 }

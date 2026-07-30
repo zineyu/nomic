@@ -26,8 +26,8 @@ pub(crate) struct Cli {
     #[arg(short, long, value_name = "TEXT")]
     pub(crate) print: Option<String>,
 
-    /// provider：anthropic 或 openai（兼容端点）
-    #[arg(long, value_parser = ["anthropic", "openai"])]
+    /// provider：anthropic、openai，或 config.toml 的 `[providers]` 中定义的自定义名字
+    #[arg(long)]
     pub(crate) provider: Option<String>,
 
     /// 模型 id（缺省按 provider 选择默认模型）

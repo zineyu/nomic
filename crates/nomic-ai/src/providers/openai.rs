@@ -9,12 +9,13 @@
 //! M1 未实现：Responses API、grammar tools、deferred tools（见 ADR-0001）。
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::stream::{AssistantStream, Provider, StreamOptions, channel};
 use crate::types::{
@@ -110,30 +111,54 @@ impl Provider for OpenAiProvider {
         };
         let model_for_cost = model.clone();
         let cancel_for_run = cancel.clone();
+        let span = tracing::info_span!(
+            "llm_request",
+            provider = %model.provider,
+            model = %model.id,
+            base_url = %model.base_url,
+        );
 
-        tokio::spawn(async move {
-            let result = run(&client, &call, cancel_for_run, &mut output, &tx).await;
-            match result {
-                Ok(()) => {
-                    model_for_cost.calculate_cost(&mut output.usage);
-                    let _ = tx.send(AssistantEvent::Done {
-                        message: Box::new(output),
-                    });
-                }
-                Err(error) => {
-                    model_for_cost.calculate_cost(&mut output.usage);
-                    output.stop_reason = if cancel.is_cancelled() {
-                        StopReason::Aborted
-                    } else {
-                        StopReason::Error
-                    };
-                    output.error_message = Some(error);
-                    let _ = tx.send(AssistantEvent::Error {
-                        message: Box::new(output),
-                    });
+        tokio::spawn(
+            async move {
+                let started = Instant::now();
+                let result = run(&client, &call, cancel_for_run, &mut output, &tx).await;
+                let elapsed_ms = started.elapsed().as_millis();
+                match result {
+                    Ok(()) => {
+                        model_for_cost.calculate_cost(&mut output.usage);
+                        tracing::debug!(
+                            stop_reason = ?output.stop_reason,
+                            input_tokens = output.usage.input,
+                            output_tokens = output.usage.output,
+                            cache_read_tokens = output.usage.cache_read,
+                            elapsed_ms,
+                            "llm request finished"
+                        );
+                        let _ = tx.send(AssistantEvent::Done {
+                            message: Box::new(output),
+                        });
+                    }
+                    Err(error) => {
+                        model_for_cost.calculate_cost(&mut output.usage);
+                        if cancel.is_cancelled() {
+                            tracing::debug!(elapsed_ms, "llm request aborted");
+                        } else {
+                            tracing::warn!(%error, elapsed_ms, "llm request failed");
+                        }
+                        output.stop_reason = if cancel.is_cancelled() {
+                            StopReason::Aborted
+                        } else {
+                            StopReason::Error
+                        };
+                        output.error_message = Some(error);
+                        let _ = tx.send(AssistantEvent::Error {
+                            message: Box::new(output),
+                        });
+                    }
                 }
             }
-        });
+            .instrument(span),
+        );
 
         stream
     }

@@ -266,10 +266,10 @@ impl SessionStore {
 ///
 /// 手写解析 XDG，不引入 `dirs` 依赖；无 `HOME` 时返回 [`SessionError::Io`]。
 pub fn default_db_path() -> Result<PathBuf, SessionError> {
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-        if !xdg.is_empty() {
-            return Ok(PathBuf::from(xdg).join("nomic").join("sessions.db"));
-        }
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME")
+        && !xdg.is_empty()
+    {
+        return Ok(PathBuf::from(xdg).join("nomic").join("sessions.db"));
     }
     let home = std::env::var_os("HOME").ok_or_else(|| {
         std::io::Error::new(

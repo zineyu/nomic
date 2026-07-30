@@ -231,13 +231,13 @@ async fn warn_if_cross_cwd(store: &SessionStore, id: &str, cwd: &Path) {
     let Ok(sessions) = store.list_sessions().await else {
         return;
     };
-    if let Some(summary) = sessions.iter().find(|s| s.id == id) {
-        if normalize_path(&summary.cwd) != normalize_path(cwd) {
-            eprintln!(
-                "\x1b[33m⚠ session 属于 {}，与当前目录不同\x1b[0m",
-                summary.cwd.display()
-            );
-        }
+    if let Some(summary) = sessions.iter().find(|s| s.id == id)
+        && normalize_path(&summary.cwd) != normalize_path(cwd)
+    {
+        eprintln!(
+            "\x1b[33m⚠ session 属于 {}，与当前目录不同\x1b[0m",
+            summary.cwd.display()
+        );
     }
 }
 

@@ -168,7 +168,7 @@ fn spawn_progress_task(
         while progress_rx.changed().await.is_ok() {
             let elapsed = last.elapsed();
             if elapsed < UPDATE_THROTTLE {
-                tokio::time::sleep(UPDATE_THROTTLE - elapsed).await;
+                tokio::time::sleep(UPDATE_THROTTLE.checked_sub(elapsed).unwrap()).await;
             }
             last = Instant::now();
             let output = buffer

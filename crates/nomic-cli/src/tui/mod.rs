@@ -477,10 +477,10 @@ async fn resume_session(
 
 /// `MessageEnd` 定稿点落库；失败仅提示不中断（store 非权威源）。
 async fn persist(session: Option<&(SessionStore, String)>, message: &Message, app: &mut App) {
-    if let Some((store, session_id)) = session {
-        if let Err(error) = store.append_message(session_id, None, message).await {
-            app.notice = Some(format!("session 落库失败：{error}"));
-        }
+    if let Some((store, session_id)) = session
+        && let Err(error) = store.append_message(session_id, None, message).await
+    {
+        app.notice = Some(format!("session 落库失败：{error}"));
     }
 }
 

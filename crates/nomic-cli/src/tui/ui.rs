@@ -271,12 +271,10 @@ const PROMPT_WIDTH: u16 = 2;
 
 /// 状态栏：左侧模型徽标 + session + 告警；右侧滚动位置 + 键位提示。
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let session = app
-        .session_id
-        .as_deref()
-        .map_or("无 session".to_string(), |id| {
-            format!("session {}", &id[..id.len().min(8)])
-        });
+    let session = app.session_id.as_deref().map_or_else(
+        || "无 session".to_string(),
+        |id| format!("session {}", &id[..id.len().min(8)]),
+    );
     let mut left = vec![
         Span::styled(format!(" {} ", app.model_name), theme::selected()),
         Span::styled(format!(" {session} "), theme::dim()),

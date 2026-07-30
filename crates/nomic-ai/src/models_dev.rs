@@ -15,7 +15,7 @@ use serde::Deserialize;
 /// api.json 端点。
 const API_URL: &str = "https://models.dev/api.json";
 /// 磁盘缓存有效期。
-const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const CACHE_TTL: Duration = Duration::from_hours(24);
 /// 网络拉取总超时（启动路径上的阻塞上限）。
 const FETCH_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -153,10 +153,10 @@ impl Catalog {
     ///
     /// `provider_hint` 只影响匹配优先级；它本身永远来自用户配置而非 models.dev。
     pub fn lookup(&self, provider_hint: Option<&str>, model_id: &str) -> Option<&ModelSpec> {
-        if let Some(models) = provider_hint.and_then(|hint| self.providers.get(hint)) {
-            if let Some(spec) = models.get(model_id) {
-                return Some(spec);
-            }
+        if let Some(models) = provider_hint.and_then(|hint| self.providers.get(hint))
+            && let Some(spec) = models.get(model_id)
+        {
+            return Some(spec);
         }
         self.providers
             .values()
@@ -178,13 +178,13 @@ where
     if let Some(catalog) = cache_path.and_then(|path| read_fresh_cache(path, now)) {
         return Some(catalog);
     }
-    if let Some(text) = fetch().await {
-        if let Ok(catalog) = Catalog::parse(&text) {
-            if let Some(path) = cache_path {
-                write_cache(path, &text);
-            }
-            return Some(catalog);
+    if let Some(text) = fetch().await
+        && let Ok(catalog) = Catalog::parse(&text)
+    {
+        if let Some(path) = cache_path {
+            write_cache(path, &text);
         }
+        return Some(catalog);
     }
     cache_path.and_then(read_stale_cache)
 }
@@ -239,10 +239,10 @@ fn write_cache(path: &Path, text: &str) {
 /// 缓存路径：`$XDG_CACHE_HOME/nomic/models-dev-api.json`，
 /// fallback `~/.cache/nomic/models-dev-api.json`（与 `config` 模块的手写 XDG 解析一致）。
 fn cache_path() -> std::io::Result<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME") {
-        if !xdg.is_empty() {
-            return Ok(PathBuf::from(xdg).join("nomic").join("models-dev-api.json"));
-        }
+    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME")
+        && !xdg.is_empty()
+    {
+        return Ok(PathBuf::from(xdg).join("nomic").join("models-dev-api.json"));
     }
     let home = std::env::var_os("HOME").ok_or_else(|| {
         std::io::Error::new(
@@ -402,7 +402,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = write_cache_file(&dir, FIXTURE);
         // now 取文件写入 48h 之后，使缓存过期
-        let now = SystemTime::now() + Duration::from_secs(48 * 3600);
+        let now = SystemTime::now() + Duration::from_hours(48);
         let catalog = load_with(Some(&path), now, || async { None }).await;
         assert!(catalog.is_some(), "网络失败时应回退到过期缓存");
     }

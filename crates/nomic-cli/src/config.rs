@@ -85,12 +85,10 @@ impl Config {
                 );
             }
         }
-        if let Some(reasoning) = &self.reasoning {
-            if !matches!(reasoning.as_str(), "minimal" | "low" | "medium" | "high") {
-                bail!(
-                    "配置项 reasoning 取值非法：{reasoning:?}（可选 minimal / low / medium / high）"
-                );
-            }
+        if let Some(reasoning) = &self.reasoning
+            && !matches!(reasoning.as_str(), "minimal" | "low" | "medium" | "high")
+        {
+            bail!("配置项 reasoning 取值非法：{reasoning:?}（可选 minimal / low / medium / high）");
         }
         if let Some(providers) = &self.providers {
             for (name, provider) in providers {
@@ -131,10 +129,10 @@ fn load_from(path: &Path) -> Result<Option<Config>> {
 /// 手写解析 XDG，不引入 `dirs` 依赖（与 `nomic-session` 的 `default_db_path` 一致）；
 /// 无 `HOME` 时返回 io 错误。
 fn default_config_path() -> Result<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        if !xdg.is_empty() {
-            return Ok(PathBuf::from(xdg).join("nomic").join("config.toml"));
-        }
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
+        && !xdg.is_empty()
+    {
+        return Ok(PathBuf::from(xdg).join("nomic").join("config.toml"));
     }
     let home = std::env::var_os("HOME").ok_or_else(|| {
         std::io::Error::new(

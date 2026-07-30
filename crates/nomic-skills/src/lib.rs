@@ -393,17 +393,16 @@ fn load_skill_document(path: &Path) -> Result<SkillDocument, SkillsError> {
             path: path.to_path_buf(),
             message,
         })?;
-    let mut description = None;
-    let mut triggers = Vec::new();
-    if let Some(frontmatter) = frontmatter {
+    let (description, triggers) = if let Some(frontmatter) = frontmatter {
         let parsed =
             parse_frontmatter(frontmatter).map_err(|message| SkillsError::InvalidFrontmatter {
                 path: path.to_path_buf(),
                 message,
             })?;
-        description = parsed.description;
-        triggers = parsed.triggers;
-    }
+        (parsed.description, parsed.triggers)
+    } else {
+        (None, Vec::new())
+    };
     let body = body.trim().to_string();
     let description = description
         .filter(|value| !value.trim().is_empty())

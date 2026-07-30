@@ -104,10 +104,10 @@ async fn drain_events(
             }
             AgentEvent::MessageEnd(message) => {
                 // 消息定稿点：按事件顺序追加（parent_id=None 自动链到最新 entry）
-                if let Some((store, session_id)) = session {
-                    if let Err(error) = store.append_message(session_id, None, &message).await {
-                        eprintln!("\x1b[33m⚠ session 落库失败：{error}\x1b[0m");
-                    }
+                if let Some((store, session_id)) = session
+                    && let Err(error) = store.append_message(session_id, None, &message).await
+                {
+                    eprintln!("\x1b[33m⚠ session 落库失败：{error}\x1b[0m");
                 }
                 if let Message::Assistant(assistant) = *message {
                     if matches!(

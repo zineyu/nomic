@@ -2,7 +2,7 @@
 # - devenv 通过 rust-overlay 自动读取本文件提供 rustc/cargo
 # - GitHub Actions 通过 dtolnay/rust-toolchain 读取本文件
 [toolchain]
-channel = "1.88.0"
+channel = "1.97.0"
 components = [
   "rustfmt",
   "clippy",

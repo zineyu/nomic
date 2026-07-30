@@ -367,14 +367,12 @@ impl App {
             },
             AgentEvent::MessageUpdate(delta) => self.apply_delta(delta),
             AgentEvent::MessageEnd(message) => {
-                if let Message::Assistant(assistant) = message.as_ref() {
-                    if let Some(ChatItem::Assistant(item)) = self.items.last_mut() {
-                        item.done = true;
-                        item.error = assistant_error(
-                            assistant.stop_reason,
-                            assistant.error_message.as_deref(),
-                        );
-                    }
+                if let Message::Assistant(assistant) = message.as_ref()
+                    && let Some(ChatItem::Assistant(item)) = self.items.last_mut()
+                {
+                    item.done = true;
+                    item.error =
+                        assistant_error(assistant.stop_reason, assistant.error_message.as_deref());
                 }
             }
             AgentEvent::ToolExecutionStart {

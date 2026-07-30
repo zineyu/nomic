@@ -45,6 +45,7 @@ nomic sessions list
 ## 配置文件
 
 可选的用户级配置：`$XDG_CONFIG_HOME/nomic/config.toml`（缺省 `~/.config/nomic/config.toml`）。
+仓库根目录的 [`config.example.toml`](config.example.toml) 是带注释的完整示例，复制后按需修改。
 全部字段可选；优先级为 CLI 参数 > 环境变量 > 配置文件 > 内置默认。
 未知键或非法取值（provider / reasoning）会在启动时硬报错。
 

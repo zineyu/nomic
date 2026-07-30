@@ -1,0 +1,73 @@
+# nomic 示例配置文件
+#
+# 复制为 $XDG_CONFIG_HOME/nomic/config.toml（缺省 ~/.config/nomic/config.toml）后按需修改。
+# 全部字段可选；未知键或非法取值会在启动时硬报错（防拼写错误）。
+#
+# 优先级总览：
+#   连接参数（provider / base_url / api_key）：CLI 参数 > 环境变量 > providers 表 > 平铺配置 > 内置默认
+#   模型规格（name / reasoning 能力 / context_window / max_tokens / cost_*）：
+#     providers.<名字>.models."<模型id>" > models.dev > 内置默认
+
+# ── 选择器 ──────────────────────────────────────────────────────────────────
+
+# 当前使用的 provider：anthropic、openai，或下方 [providers] 表中定义的自定义名字
+provider = "anthropic"
+
+# 当前使用的模型 id（缺省按 provider 的内置默认：anthropic→claude-sonnet-4-5，openai→gpt-5.2）
+model = "claude-sonnet-4-5"
+
+# ── 平铺连接/请求参数 ────────────────────────────────────────────────────────
+
+# API base URL（优先级低于 [providers.<名字>].base_url；openai 系也可用 OPENAI_BASE_URL）
+# base_url = "https://your.gateway/v1"
+
+# API key（最低优先级兜底；优先级：--api-key > ANTHROPIC_API_KEY/OPENAI_API_KEY >
+# [providers.<名字>].api_key > 本键。建议优先用环境变量，避免明文落盘）
+# api_key = "sk-..."
+
+# 思考级别（请求参数，不是模型能力）：minimal / low / medium / high；缺省不开启
+# reasoning = "low"
+
+# 采样温度（请求参数）
+# temperature = 0.7
+
+# 单次请求最大输出 token 数（请求参数，不是模型能力上限）
+# max_tokens = 8192
+
+# 追加到系统提示词末尾的文本
+# append_system = "总是用中文回复。"
+
+# ── provider 定义 ────────────────────────────────────────────────────────────
+# provider 与 base_url 永远来自这里的用户指定，不经由 models.dev。
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com"
+# api 可省略：anthropic→anthropic_messages，openai→open_ai_completions 自动推断
+# api_key = "sk-ant-..."
+
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+
+# 自定义 provider（兼容端点）：api 必填
+[providers.deepseek]
+api = "open_ai_completions"              # 或 anthropic_messages
+base_url = "https://api.deepseek.com/v1"
+# api_key = "sk-..."
+
+# ── 模型规格覆盖 ─────────────────────────────────────────────────────────────
+# 全部字段可选，只写要覆盖的；缺失字段继续向 models.dev、内置默认解析。
+# 写全 8 个字段后不再访问 models.dev（不读缓存、不联网）。
+
+[providers.anthropic.models."claude-sonnet-4-5"]
+name = "Claude Sonnet 4.5" # 展示名
+reasoning = true           # 模型能力：是否支持推理/思考
+context_window = 200000    # 上下文窗口 token 数
+max_tokens = 64000         # 模型最大输出 token 数
+cost_input = 3.0           # 每百万 token 费率：输入
+cost_output = 15.0         # 每百万 token 费率：输出
+cost_cache_read = 0.3      # 每百万 token 费率：缓存读取
+cost_cache_write = 3.75    # 每百万 token 费率：缓存写入
+
+# 只覆盖一个字段，其余走 models.dev → 内置默认
+[providers.deepseek.models."deepseek-chat"]
+max_tokens = 8192

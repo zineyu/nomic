@@ -17,6 +17,7 @@ use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use crate::providers::retry::{RequestError, RetryPolicy, sleep_or_cancel};
 use crate::stream::{AssistantStream, Provider, StreamOptions, channel};
 use crate::types::{
     AssistantContent, AssistantMessage, Context, Message, Model, StopReason, TextContent,
@@ -58,6 +59,8 @@ pub struct OpenAiProvider {
     api_key: Option<String>,
     /// 兼容端点修补
     compat: OpenAiCompat,
+    /// 失败重试策略
+    retry_policy: RetryPolicy,
 }
 
 impl std::fmt::Debug for OpenAiProvider {
@@ -77,6 +80,7 @@ impl OpenAiProvider {
             client,
             api_key,
             compat,
+            retry_policy: RetryPolicy::default(),
         }
     }
 
@@ -110,7 +114,7 @@ impl Provider for OpenAiProvider {
             timeout_ms: options.timeout_ms,
         };
         let model_for_cost = model.clone();
-        let cancel_for_run = cancel.clone();
+        let retry_policy = self.retry_policy;
         let span = tracing::info_span!(
             "llm_request",
             provider = %model.provider,
@@ -121,7 +125,36 @@ impl Provider for OpenAiProvider {
         tokio::spawn(
             async move {
                 let started = Instant::now();
-                let result = run(&client, &call, cancel_for_run, &mut output, &tx).await;
+                let mut retries = 0u32;
+                let result = loop {
+                    let attempt = run(&client, &call, cancel.clone(), &mut output, &tx).await;
+                    let Err(error) = attempt else {
+                        break Ok(());
+                    };
+                    // 只重试流建立前的瞬时错误（见 retry 模块文档）；
+                    // 取消与致命错误直接终止
+                    if !error.retryable
+                        || retries >= retry_policy.max_retries
+                        || cancel.is_cancelled()
+                    {
+                        break Err(error.message);
+                    }
+                    retries += 1;
+                    let delay = retry_policy.delay(retries);
+                    tracing::warn!(
+                        error = %error.message,
+                        retry = retries,
+                        max_retries = retry_policy.max_retries,
+                        delay_ms = delay.as_millis(),
+                        "llm request failed, retrying"
+                    );
+                    if sleep_or_cancel(delay, &cancel).await {
+                        break Err("request aborted".to_string());
+                    }
+                    // 防御性重置：重试边界保证失败时未发出任何事件，
+                    // output 应未被触碰；重置使该不变式显式成立
+                    output = empty_output(&model_for_cost);
+                };
                 let elapsed_ms = started.elapsed().as_millis();
                 match result {
                     Ok(()) => {
@@ -440,7 +473,7 @@ async fn run(
     cancel: CancellationToken,
     output: &mut AssistantMessage,
     tx: &tokio::sync::mpsc::UnboundedSender<AssistantEvent>,
-) -> Result<(), String> {
+) -> Result<(), RequestError> {
     let mut builder = client
         .post(format!("{}/chat/completions", call.base_url))
         .header("content-type", "application/json");
@@ -453,18 +486,21 @@ async fn run(
 
     let response = tokio::select! {
         biased;
-        () = cancel.cancelled() => return Err("request aborted".to_string()),
-        result = builder.json(&call.request).send() => result.map_err(|e| format!("request failed: {e}"))?,
+        () = cancel.cancelled() => return Err(RequestError::fatal("request aborted".to_string())),
+        result = builder.json(&call.request).send() => result.map_err(|e| RequestError::from_reqwest(&e))?,
     };
 
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("HTTP {status}: {body}"));
+        return Err(RequestError::from_status(status, &body));
     }
 
     let _ = tx.send(AssistantEvent::Start);
-    process_events(response.bytes_stream().eventsource(), cancel, output, tx).await
+    // Start 已发出，流中错误不得重试（会产生重复事件）
+    process_events(response.bytes_stream().eventsource(), cancel, output, tx)
+        .await
+        .map_err(RequestError::fatal)
 }
 
 /// 消费 SSE 事件流并映射为 [`AssistantEvent`]；与 HTTP 解耦以便 fixture 回放测试。

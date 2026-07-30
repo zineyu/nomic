@@ -13,94 +13,35 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# 工具链版本统一由仓库根目录 rust-toolchain.toml 决定，
-# dtolnay/rust-toolchain 在未指定 toolchain 输入时自动读取它。
+# CI 与本地开发共用同一份 devenv 环境：
+# - 工具链 / 检查工具版本由 rust-toolchain.toml 与 devenv.lock 唯一决定
+# - 检查项由 devenv.nix 中的 `check` 脚本定义，本地 `check` 与 CI 完全等价
+# 参考：https://devenv.sh/integrations/github-actions/
 
 jobs:
-  fmt:
-    name: rustfmt
+  check:
+    name: devenv check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-      - run: cargo fmt --all -- --check
+      - uses: actions/checkout@v5
 
-  clippy:
-    name: clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - uses: cachix/install-nix-action@v31
 
-  test:
-    name: test (nextest)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-nextest
-      - run: cargo nextest run --workspace --all-features --locked
-      - name: doctests
-        run: cargo test --workspace --doc --locked
-
-  doc:
-    name: rustdoc
-    runs-on: ubuntu-latest
-    env:
-      RUSTDOCFLAGS: -D warnings
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --workspace --no-deps --locked
-
-  deny:
-    name: cargo-deny
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
-
-  audit:
-    name: cargo-audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
+      # 使用 devenv 官方公共二进制缓存，加速 shell 构建
+      - uses: cachix/cachix-action@v16
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          name: devenv
 
-  machete:
-    name: unused deps
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-      - uses: taiki-e/install-action@cargo-machete
-      - run: cargo machete --with-metadata
+      # 缓存 cargo registry 与 target 目录（nix store 由 cachix 覆盖）
+      - uses: Swatinem/rust-cache@v2
 
-  toml:
-    name: taplo (TOML)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: taiki-e/install-action@taplo
-      - run: taplo fmt --check
+      - name: Install devenv.sh
+        run: nix profile add nixpkgs#devenv
 
-  typos:
-    name: spellcheck
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: crate-ci/typos@v1
+      # 运行 git-hooks（rustfmt/taplo/typos/trailing-whitespace/EOF 等提交前检查）
+      - name: Run git hooks
+        run: devenv test
 
-  # 汇总门禁：分支保护只需勾选这一个检查
-  ci-success:
-    name: CI success
-    runs-on: ubuntu-latest
-    needs: [fmt, clippy, test, doc, deny, audit, machete, toml, typos]
-    steps:
-      - run: echo "All checks passed"
+      # 运行与本地完全一致的完整检查（fmt/clippy/test/doctest/doc/deny/audit/machete/taplo/typos）
+      - name: Run checks
+        run: devenv shell check

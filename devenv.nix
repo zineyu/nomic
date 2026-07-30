@@ -35,10 +35,12 @@
   scripts.check.exec = ''
     set -e
     echo "== fmt =="       && cargo fmt --all -- --check
-    echo "== clippy =="    && cargo clippy --workspace --all-targets --all-features -- -D warnings
-    echo "== test =="      && cargo nextest run --workspace --all-features
-    echo "== doc =="       && RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+    echo "== clippy =="    && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    echo "== test =="      && cargo nextest run --workspace --all-features --locked
+    echo "== doctest =="   && cargo test --workspace --doc --locked
+    echo "== doc =="       && RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
     echo "== deny =="      && cargo deny check
+    echo "== audit =="     && cargo audit
     echo "== machete =="   && cargo machete --with-metadata
     echo "== taplo =="     && taplo fmt --check
     echo "== typos =="     && typos

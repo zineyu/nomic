@@ -28,8 +28,8 @@ use crossterm::{
 };
 use futures::StreamExt as _;
 use nomic_ai::Message;
-use nomic_core::{Agent, AgentConfig, AgentEvent, CompactionSettings, ExecutionMode, NoopHooks};
-use nomic_session::SessionStore;
+use nomic_core::{Agent, AgentConfig, AgentEvent, Compaction, ExecutionMode, NoopHooks};
+use nomic_session::{CompactionRecord, SessionStore};
 use nomic_skills::SkillResolver;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
@@ -43,12 +43,22 @@ use crate::{Cli, bootstrap};
 enum DriverJob {
     /// 运行一轮 prompt（附本轮取消令牌）
     Prompt(String, CancellationToken),
+    /// 手动压缩上下文（`/compact [聚焦指令]`，附本轮取消令牌）
+    Compact(Option<String>, CancellationToken),
     /// 向 agent 历史注入一条 user 消息（`/skill:<name>` 手动载入），不启动 run
     Inject(String),
     /// 清空 agent 上下文（`/new`）
     Clear,
     /// 整体替换 agent 上下文（`/resume` 恢复历史 session）
     Restore(Vec<Message>),
+}
+
+/// agent driver 完成的任务回执。
+enum DriverDone {
+    /// 一轮 prompt 结束（Err 为 agent loop 错误）
+    Prompt(Result<(), String>),
+    /// 一次手动压缩结束（Ok(None) 表示无可压缩内容；Err 为摘要失败）
+    Compact(Result<Option<Compaction>, String>),
 }
 
 /// 运行交互 TUI。
@@ -79,7 +89,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
             stream_options: boot.stream_options,
             hooks: Arc::new(NoopHooks),
             tool_execution: ExecutionMode::Parallel,
-            compaction: CompactionSettings::default(),
+            compaction: boot.compaction,
         },
         nomic_tools::default_tools_with_skills(boot.skill_resolver),
         boot.system_prompt,
@@ -92,7 +102,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
 
     // agent driver：持有 Agent，串行执行 prompt，完成后回传结果
     let (job_tx, mut job_rx) = mpsc::unbounded_channel::<DriverJob>();
-    let (done_tx, mut done_rx) = mpsc::unbounded_channel::<Result<(), String>>();
+    let (done_tx, mut done_rx) = mpsc::unbounded_channel::<DriverDone>();
     tokio::spawn(async move {
         let mut agent = agent;
         while let Some(job) = job_rx.recv().await {
@@ -103,7 +113,16 @@ pub async fn run(cli: &Cli) -> Result<()> {
                         .await
                         .map(|_| ())
                         .map_err(|error| error.to_string());
-                    if done_tx.send(result).is_err() {
+                    if done_tx.send(DriverDone::Prompt(result)).is_err() {
+                        return;
+                    }
+                }
+                DriverJob::Compact(instructions, cancel) => {
+                    let result = agent
+                        .compact(instructions.as_deref(), cancel)
+                        .await
+                        .map_err(|error| error.to_string());
+                    if done_tx.send(DriverDone::Compact(result)).is_err() {
                         return;
                     }
                 }
@@ -161,8 +180,8 @@ enum Wake {
     ScrollDown,
     /// agent 事件
     AgentEvent(AgentEvent),
-    /// 本轮 prompt 完成（Err 为 agent loop 错误）
-    AgentDone(Result<(), String>),
+    /// driver 任务完成（prompt 或手动压缩）
+    AgentDone(DriverDone),
     /// spinner 帧推进
     Tick,
     /// 仅需重绘（resize、其他鼠标事件）
@@ -189,16 +208,44 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
         Wake::ScrollUp => app.scroll_up(3),
         Wake::ScrollDown => app.scroll_down(3),
         Wake::AgentEvent(event) => {
-            if let AgentEvent::MessageEnd(message) = &event {
-                persist(driver.session.as_ref(), message, app).await;
+            match &event {
+                AgentEvent::MessageEnd(message) => {
+                    persist(driver.session.as_ref(), message, app).await;
+                }
+                AgentEvent::CompactionEnd {
+                    summary,
+                    tokens_before,
+                    kept_count,
+                    ..
+                } => {
+                    persist_compaction(
+                        driver.session.as_ref(),
+                        summary,
+                        *tokens_before,
+                        *kept_count,
+                        app,
+                    )
+                    .await;
+                }
+                _ => {}
             }
             app.handle_event(&event);
         }
         Wake::AgentDone(done) => {
             app.running = false;
             driver.current_cancel = None;
-            if let Err(error) = done {
-                app.notice = Some(format!("agent loop 失败：{error}"));
+            match done {
+                DriverDone::Prompt(Ok(())) | DriverDone::Compact(Ok(Some(_))) => {}
+                DriverDone::Prompt(Err(error)) => {
+                    app.notice = Some(format!("agent loop 失败：{error}"));
+                }
+                // 压缩成功经 CompactionEnd 事件渲染与落库，这里无需重复处理
+                DriverDone::Compact(Ok(None)) => {
+                    app.notice = Some("上下文很短，没有可压缩的内容。".to_string());
+                }
+                DriverDone::Compact(Err(error)) => {
+                    app.notice = Some(format!("压缩失败，上下文保持不变：{error}"));
+                }
             }
         }
         Wake::Tick => app.tick(),
@@ -214,7 +261,7 @@ async fn next_wake(
     term_events: &mut EventStream,
     spinner_ticker: &mut tokio::time::Interval,
     events: &mut mpsc::UnboundedReceiver<AgentEvent>,
-    done_rx: &mut mpsc::UnboundedReceiver<Result<(), String>>,
+    done_rx: &mut mpsc::UnboundedReceiver<DriverDone>,
 ) -> Wake {
     tokio::select! {
         // spinner 动画仅在运行中推进；空闲时此分支永久挂起，不空转重绘
@@ -292,7 +339,16 @@ async fn handle_key(
                         let _ = job_tx.send(DriverJob::Prompt(text, token));
                     }
                     SlashParse::Known(action) => {
-                        handle_slash(app, job_tx, session, cwd, skill_resolver, action).await;
+                        handle_slash(
+                            app,
+                            job_tx,
+                            current_cancel,
+                            session,
+                            cwd,
+                            skill_resolver,
+                            action,
+                        )
+                        .await;
                     }
                     SlashParse::InvalidUsage(usage) => {
                         app.notice = Some(format!("参数形式不对，用法：{usage}"));
@@ -334,6 +390,7 @@ async fn handle_key(
 async fn handle_slash(
     app: &mut App,
     job_tx: &mpsc::UnboundedSender<DriverJob>,
+    current_cancel: &mut Option<CancellationToken>,
     session: &mut Option<(SessionStore, String)>,
     cwd: &std::path::Path,
     skill_resolver: &SkillResolver,
@@ -342,6 +399,14 @@ async fn handle_slash(
     match action {
         SlashAction::Help => app.push_system(app::help_text()),
         SlashAction::Quit => app.should_quit = true,
+        SlashAction::Compact(instructions) => {
+            // 压缩是一次 LLM 调用：按 mini-run 处理，Esc 可取消
+            let token = CancellationToken::new();
+            *current_cancel = Some(token.clone());
+            app.running = true;
+            app.notice = None;
+            let _ = job_tx.send(DriverJob::Compact(instructions, token));
+        }
         SlashAction::Resume => match session_store(session.as_ref()).await {
             Err(error) => app.notice = Some(format!("{error:#}")),
             Ok(store) => match store.list_sessions().await {
@@ -482,6 +547,27 @@ async fn persist(session: Option<&(SessionStore, String)>, message: &Message, ap
         && let Err(error) = store.append_message(session_id, None, message).await
     {
         app.notice = Some(format!("session 落库失败：{error}"));
+    }
+}
+
+/// `CompactionEnd` 落库压缩条目；失败仅提示不中断（与消息落库同一策略）。
+async fn persist_compaction(
+    session: Option<&(SessionStore, String)>,
+    summary: &str,
+    tokens_before: u64,
+    kept_count: usize,
+    app: &mut App,
+) {
+    let Some((store, session_id)) = session else {
+        return;
+    };
+    let record = CompactionRecord {
+        summary: summary.to_string(),
+        kept_count: kept_count as u64,
+        tokens_before,
+    };
+    if let Err(error) = store.append_compaction(session_id, &record).await {
+        app.notice = Some(format!("compaction 落库失败：{error}"));
     }
 }
 

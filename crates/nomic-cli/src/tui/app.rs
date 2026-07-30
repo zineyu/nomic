@@ -95,6 +95,12 @@ pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
         usage: "/resume",
     },
     SlashCommand {
+        name: "compact",
+        aliases: &[],
+        summary: "压缩上下文为摘要（可带聚焦指令：/compact 专注某部分）",
+        usage: "/compact [聚焦指令]",
+    },
+    SlashCommand {
         name: "skill",
         aliases: &[],
         summary: "手动载入 skill 到当前对话（/skill:<name>；无参列出可用 skill）",
@@ -130,6 +136,8 @@ pub(super) enum SlashAction {
     Quit,
     /// `/skill`（None）列出可用 skill；`/skill:<name>` 载入指定 skill
     Skill(Option<String>),
+    /// `/compact [聚焦指令]` 手动压缩上下文
+    Compact(Option<String>),
 }
 
 /// 解析一行输入为 slash 命令。
@@ -140,6 +148,20 @@ pub(super) fn parse_slash(input: &str) -> SlashParse {
     let Some(rest) = input.trim().strip_prefix('/') else {
         return SlashParse::NotCommand;
     };
+    // `/compact` 特判：参数是自由文本（可含空格），`/compact 指令` 与
+    // `/compact:指令` 两种形式都接受
+    if let Some(tail) = rest.strip_prefix("compact") {
+        if tail.is_empty() {
+            return SlashParse::Known(SlashAction::Compact(None));
+        }
+        if let Some(instructions) = tail.strip_prefix(':').or_else(|| tail.strip_prefix(' ')) {
+            let instructions = instructions.trim();
+            return SlashParse::Known(SlashAction::Compact(
+                (!instructions.is_empty()).then(|| instructions.to_string()),
+            ));
+        }
+        // `/compactxxx`：落入常规解析报未知命令
+    }
     let (name, arg, junk) = if let Some((name, arg)) = rest.split_once(':') {
         (
             name.trim(),
@@ -413,11 +435,21 @@ impl App {
                     tool.detail = result_summary(&result.content);
                 }
             }
-            AgentEvent::AgentEnd { .. }
-            | AgentEvent::TurnStart
-            | AgentEvent::TurnEnd { .. }
-            | AgentEvent::CompactionStart { .. }
-            | AgentEvent::CompactionEnd { .. } => {}
+            AgentEvent::CompactionStart { tokens_before } => {
+                // 用一次性提示而非聊天条目：压缩失败时提示自然消失，不残留
+                self.notice = Some(format!("正在压缩上下文（约 {tokens_before} tokens）…"));
+            }
+            AgentEvent::CompactionEnd {
+                tokens_before,
+                kept_count,
+                ..
+            } => {
+                self.notice = None;
+                self.push_system(format!(
+                    "上下文已压缩：约 {tokens_before} tokens → 摘要 + {kept_count} 条近期消息。"
+                ));
+            }
+            AgentEvent::AgentEnd { .. } | AgentEvent::TurnStart | AgentEvent::TurnEnd { .. } => {}
         }
     }
 
@@ -695,10 +727,14 @@ impl App {
 
     // ── slash 命令反馈 ──────────────────────────────────────────────────────
 
-    /// 追加一条 user 聊天条目；skill 注入消息压缩为系统提示样式的一行。
+    /// 追加一条 user 聊天条目；skill 注入消息与压缩摘要消息压缩为系统提示样式的一行。
     fn push_user_text(&mut self, text: String) {
         if let Some(notice) = skill_load_notice(&text) {
             self.items.push(ChatItem::System(notice));
+        } else if text.starts_with(nomic_ai::SUMMARY_PREFIX) {
+            self.items.push(ChatItem::System(
+                "更早的对话已压缩为摘要注入上下文。".to_string(),
+            ));
         } else {
             self.items.push(ChatItem::User(text));
         }
@@ -1192,6 +1228,77 @@ mod tests {
             parse_slash("/foo:bar"),
             SlashParse::Unknown("foo".to_string())
         );
+    }
+
+    #[test]
+    fn parse_slash_compact_takes_free_text_instructions() {
+        assert_eq!(
+            parse_slash("/compact"),
+            SlashParse::Known(SlashAction::Compact(None))
+        );
+        // 空白分隔的自由文本（可含空格）
+        assert_eq!(
+            parse_slash("/compact 专注 测试 部分"),
+            SlashParse::Known(SlashAction::Compact(Some("专注 测试 部分".to_string())))
+        );
+        // 冒号形式同样接受
+        assert_eq!(
+            parse_slash("/compact:focus on tests"),
+            SlashParse::Known(SlashAction::Compact(Some("focus on tests".to_string())))
+        );
+        // 空参数等价于无参
+        assert_eq!(
+            parse_slash("/compact "),
+            SlashParse::Known(SlashAction::Compact(None))
+        );
+        // 前缀不等于命令名：/compactx 报未知
+        assert_eq!(
+            parse_slash("/compactx"),
+            SlashParse::Unknown("compactx".to_string())
+        );
+    }
+
+    #[test]
+    fn compaction_events_render_as_system_lines() {
+        let mut app = app();
+        app.handle_event(&AgentEvent::CompactionStart {
+            tokens_before: 150_000,
+        });
+        // 压缩中只置状态栏提示，不进聊天区（失败时不残留）
+        assert!(app.items.is_empty());
+        assert!(app.notice.as_deref().is_some_and(|n| n.contains("压缩")));
+        app.handle_event(&AgentEvent::CompactionEnd {
+            summary: "## Goal\nwork".to_string(),
+            tokens_before: 150_000,
+            kept_count: 7,
+            usage: Usage::default(),
+        });
+        assert!(app.notice.is_none());
+        let system_lines: Vec<&str> = app
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ChatItem::System(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(system_lines.len(), 1, "{system_lines:?}");
+        assert!(system_lines[0].contains("150000"), "{system_lines:?}");
+        assert!(system_lines[0].contains('7'), "{system_lines:?}");
+    }
+
+    #[test]
+    fn summary_message_renders_compactly_in_history() {
+        let mut app = app();
+        app.load_history(&[
+            nomic_ai::summary_message("## Goal\nearlier work", 1_000),
+            Message::User(UserMessage {
+                content: UserMessageContent::Text("recent question".to_string()),
+                timestamp: 2_000,
+            }),
+        ]);
+        assert!(matches!(&app.items[0], ChatItem::System(text) if text.contains("已压缩")));
+        assert!(matches!(&app.items[1], ChatItem::User(text) if text == "recent question"));
     }
 
     #[test]

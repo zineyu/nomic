@@ -34,7 +34,7 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
             stream_options: boot.stream_options,
             hooks: Arc::new(NoopHooks),
             tool_execution: ExecutionMode::Parallel,
-            compaction: nomic_core::CompactionSettings::default(),
+            compaction: boot.compaction,
         },
         nomic_tools::default_tools_with_skills(boot.skill_resolver),
         boot.system_prompt,
@@ -102,6 +102,29 @@ async fn drain_events(
                     "\x1b[32m✓"
                 };
                 eprintln!("{mark} {tool_name}\x1b[0m");
+            }
+            AgentEvent::CompactionStart { tokens_before } => {
+                eprintln!("\x1b[2m⟳ 压缩上下文（约 {tokens_before} tokens）…\x1b[0m");
+            }
+            AgentEvent::CompactionEnd {
+                summary,
+                tokens_before,
+                kept_count,
+                ..
+            } => {
+                eprintln!(
+                    "\x1b[2m✂ 上下文已压缩：约 {tokens_before} tokens → 摘要 + {kept_count} 条近期消息\x1b[0m"
+                );
+                if let Some((store, session_id)) = session {
+                    let record = nomic_session::CompactionRecord {
+                        summary,
+                        kept_count: kept_count as u64,
+                        tokens_before,
+                    };
+                    if let Err(error) = store.append_compaction(session_id, &record).await {
+                        eprintln!("\x1b[33m⚠ compaction 落库失败：{error}\x1b[0m");
+                    }
+                }
             }
             AgentEvent::MessageEnd(message) => {
                 // 消息定稿点：按事件顺序追加（parent_id=None 自动链到最新 entry）

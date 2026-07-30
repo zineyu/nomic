@@ -49,6 +49,35 @@ pub struct Config {
     pub append_system: Option<String>,
     /// provider 定义表（`[providers.<名字>]`，含嵌套的模型规格覆盖）
     pub providers: Option<BTreeMap<String, ProviderConfig>>,
+    /// 上下文压缩配置（`[compaction]`）
+    pub compaction: Option<CompactionConfig>,
+}
+
+/// 上下文压缩配置（`[compaction]`），全部字段可选，缺省取内置默认
+/// （enabled=true、reserve_tokens=16384、keep_recent_tokens=20000，与 pi 对齐）。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompactionConfig {
+    /// 是否启用自动压缩（手动 `/compact` 不受此开关影响）
+    pub enabled: Option<bool>,
+    /// 为模型响应预留的 token 数
+    pub reserve_tokens: Option<u64>,
+    /// 保留不压缩的近期 token 数（估算口径）
+    pub keep_recent_tokens: Option<u64>,
+}
+
+impl CompactionConfig {
+    /// 合并为 core 的压缩配置：未指定字段取内置默认。
+    pub fn settings(&self) -> nomic_core::CompactionSettings {
+        let defaults = nomic_core::CompactionSettings::default();
+        nomic_core::CompactionSettings {
+            enabled: self.enabled.unwrap_or(defaults.enabled),
+            reserve_tokens: self.reserve_tokens.unwrap_or(defaults.reserve_tokens),
+            keep_recent_tokens: self
+                .keep_recent_tokens
+                .unwrap_or(defaults.keep_recent_tokens),
+        }
+    }
 }
 
 /// 单个 provider 的定义（`[providers.<名字>]`）。
@@ -201,6 +230,26 @@ append_system = "Always reply in Chinese."
     #[test]
     fn unknown_field_is_rejected() {
         let (_dir, path) = write_temp("providr = \"anthropic\"\n");
+        let error = load_from(&path).expect_err("unknown field must fail");
+        assert!(format!("{error:#}").contains("解析配置文件失败"));
+    }
+
+    #[test]
+    fn parses_compaction_section_and_merges_defaults() {
+        let (_dir, path) = write_temp("[compaction]\nreserve_tokens = 8192\n");
+        let config = load_from(&path).expect("load").expect("some");
+        let settings = config.compaction.as_ref().expect("compaction").settings();
+        assert!(settings.enabled, "未指定时取默认 true");
+        assert_eq!(settings.reserve_tokens, 8192);
+        assert_eq!(
+            settings.keep_recent_tokens,
+            nomic_core::CompactionSettings::default().keep_recent_tokens
+        );
+    }
+
+    #[test]
+    fn unknown_field_in_compaction_is_rejected() {
+        let (_dir, path) = write_temp("[compaction]\nreserve_token = 1\n");
         let error = load_from(&path).expect_err("unknown field must fail");
         assert!(format!("{error:#}").contains("解析配置文件失败"));
     }

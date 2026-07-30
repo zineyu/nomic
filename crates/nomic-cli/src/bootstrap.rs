@@ -27,6 +27,8 @@ pub struct Bootstrap {
     pub provider: Arc<dyn Provider>,
     pub stream_options: StreamOptions,
     pub system_prompt: String,
+    /// 上下文压缩配置（`[compaction]` 合并内置默认）
+    pub compaction: nomic_core::CompactionSettings,
     /// `Some((store, session_id))` 时开启落库；session 库不可用时降级为 `None`
     pub session: Option<(SessionStore, String)>,
     /// resume 恢复的历史消息（新会话为空）
@@ -131,10 +133,19 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
         provider,
         stream_options,
         system_prompt,
+        compaction: compaction_settings(config.as_ref()),
         session: session.map(|init| (init.store, init.id)),
         history,
         skill_resolver,
     })
+}
+
+/// 解析压缩配置：`[compaction]` 表逐字段合并内置默认。
+fn compaction_settings(config: Option<&Config>) -> nomic_core::CompactionSettings {
+    config.and_then(|c| c.compaction.as_ref()).map_or_else(
+        nomic_core::CompactionSettings::default,
+        crate::config::CompactionConfig::settings,
+    )
 }
 
 /// session 初始化结果：store、session id 与恢复的历史消息（新会话为空）。

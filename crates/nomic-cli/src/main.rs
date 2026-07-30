@@ -11,12 +11,15 @@
 mod bootstrap;
 mod config;
 mod context_files;
+mod logging;
 mod print;
 mod sessions;
 mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+
+use crate::logging::LogTarget;
 
 /// Rust 编码 agent（pi-coding-agent 的 Rust 复刻）。
 #[derive(Debug, Clone, Parser)]
@@ -70,6 +73,15 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "ID")]
     pub(crate) session: Option<String>,
 
+    /// 日志输出目标：file 默认写入 XDG state 目录并按天滚动；
+    /// terminal 输出到 stderr（TUI 模式下会干扰界面）；off 关闭
+    #[arg(long, value_enum, default_value = "file")]
+    pub(crate) log: LogTarget,
+
+    /// 日志过滤规则（tracing 指令语法，如 debug、nomic=trace；高于 RUST_LOG）
+    #[arg(long, value_name = "FILTER")]
+    pub(crate) log_level: Option<String>,
+
     /// 子命令（session 管理等）
     #[command(subcommand)]
     pub(crate) command: Option<Commands>,
@@ -97,6 +109,13 @@ pub(crate) enum SessionsCommand {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    // guard 必须活到进程退出，否则非阻塞 writer 尾部缓冲丢失
+    let _log_guard = logging::init(cli.log, cli.log_level.as_deref())?;
+    tracing::debug!(
+        version = env!("CARGO_PKG_VERSION"),
+        args = ?std::env::args().collect::<Vec<_>>(),
+        "nomic 启动"
+    );
     match &cli.command {
         Some(Commands::Resume) => sessions::resume(&cli).await,
         Some(Commands::Sessions {

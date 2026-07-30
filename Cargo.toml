@@ -65,6 +65,12 @@ uuid = { version = "1", features = ["v7"] }
 anyhow = "1.0"
 thiserror = "2.0"
 
+# ── 日志（tracing）─────────────────────────────────────────────────────────
+# 库 crate 只依赖 tracing 发事件；subscriber/appender 仅 nomic-cli 装配
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
 # ── TUI（nomic-cli）─────────────────────────────────────────────────────────
 ratatui = "0.30"
 unicode-width = "0.2"

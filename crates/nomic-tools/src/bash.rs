@@ -63,6 +63,8 @@ impl AgentTool for BashTool {
                 "Invalid timeout: must be a finite positive number of seconds",
             ));
         }
+        tracing::debug!(command = %params.command, timeout = ?params.timeout, "bash start");
+        let started = Instant::now();
 
         let mut child = tokio::process::Command::new("bash")
             .arg("-c")
@@ -133,6 +135,12 @@ impl AgentTool for BashTool {
                 ))))
             }
             WaitOutcome::Exited(_) => {
+                tracing::debug!(
+                    exit_code,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    output_bytes = full_output.len(),
+                    "bash finished"
+                );
                 if let Some(code) = exit_code
                     && code != 0
                 {

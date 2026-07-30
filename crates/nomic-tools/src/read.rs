@@ -54,6 +54,7 @@ impl ReadTool {
     }
 
     async fn execute_read(&self, params: ReadParams) -> Result<ToolResult, ToolError> {
+        tracing::debug!(path = %params.path, offset = ?params.offset, limit = ?params.limit, "read");
         if let Some(name) = params.path.strip_prefix(SKILL_SCHEME) {
             let resolver = self.skill_resolver.as_ref().ok_or_else(|| {
                 ToolError::new(format!(

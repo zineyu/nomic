@@ -112,6 +112,7 @@ impl AgentTool for EditTool {
         }
 
         let (diff, first_changed_line) = generate_diff(&base_content, &new_content);
+        tracing::debug!(path = %params.path, blocks = params.edits.len(), "edit applied");
         let mut result = ToolResult::text(format!(
             "Successfully replaced {} block(s) in {}.",
             params.edits.len(),

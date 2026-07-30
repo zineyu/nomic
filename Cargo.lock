@@ -1653,6 +1653,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -1690,6 +1691,7 @@ dependencies = [
  "similar",
  "tokio",
  "tokio-util",
+ "tracing",
  "unicode-normalization",
 ]
 

@@ -209,6 +209,7 @@ impl Agent {
     ///
     /// provider 错误不会让这里返回 `Err`（编码在 assistant 消息中）；
     /// `Err` 仅表示 provider 违反流协议。
+    #[tracing::instrument(name = "agent_prompt", skip_all)]
     pub async fn prompt(
         &mut self,
         text: &str,
@@ -219,17 +220,22 @@ impl Agent {
             content: nomic_ai::UserMessageContent::Text(text.to_string()),
             timestamp: now_millis(),
         });
+        tracing::debug!(prompt_len = text.len(), "agent run started");
         self.emit(AgentEvent::AgentStart);
         self.emit(AgentEvent::MessageStart(Box::new(user.clone())));
         self.messages.push(user.clone());
         new_messages.push(user.clone());
         self.emit(AgentEvent::MessageEnd(Box::new(user)));
 
-        self.run_loop(&mut new_messages, cancel).await?;
+        if let Err(error) = self.run_loop(&mut new_messages, cancel).await {
+            tracing::error!(%error, "agent run failed");
+            return Err(error);
+        }
 
         self.emit(AgentEvent::AgentEnd {
             messages: new_messages.clone(),
         });
+        tracing::info!(new_messages = new_messages.len(), "agent run finished");
         Ok(new_messages)
     }
 
@@ -249,6 +255,11 @@ impl Agent {
             ))));
 
             if matches!(stop_reason, StopReason::Error | StopReason::Aborted) {
+                tracing::warn!(
+                    stop_reason = ?stop_reason,
+                    error = message.error_message.as_deref().unwrap_or(""),
+                    "turn ended abnormally"
+                );
                 self.emit(AgentEvent::TurnEnd {
                     message: Box::new(message),
                     tool_results: Vec::new(),
@@ -264,6 +275,14 @@ impl Agent {
                     _ => None,
                 })
                 .collect();
+            tracing::debug!(
+                stop_reason = ?stop_reason,
+                tool_calls = tool_calls.len(),
+                input_tokens = message.usage.input,
+                output_tokens = message.usage.output,
+                cache_read_tokens = message.usage.cache_read,
+                "turn completed"
+            );
 
             let mut tool_results = Vec::new();
             let mut terminate = false;
@@ -271,6 +290,10 @@ impl Agent {
                 let finalized = if stop_reason == StopReason::Length {
                     // 输出被 token 上限截断：所有工具调用的参数都可能不完整，
                     // 执行不安全，批量失败让模型重新发起（与 pi 一致）
+                    tracing::warn!(
+                        tool_calls = tool_calls.len(),
+                        "response hit output token limit; failing all tool calls"
+                    );
                     tool_calls
                         .iter()
                         .map(|call| FinalizedToolCall {
@@ -289,34 +312,7 @@ impl Agent {
                 };
 
                 terminate = !finalized.is_empty() && finalized.iter().all(|f| f.result.terminate);
-                for f in finalized {
-                    self.emit(AgentEvent::ToolExecutionEnd {
-                        tool_call_id: f.tool_call.id.clone(),
-                        tool_name: f.tool_call.name.clone(),
-                        result: f.result.clone(),
-                        is_error: f.is_error,
-                    });
-                    let result_message = ToolResultMessage {
-                        tool_call_id: f.tool_call.id,
-                        tool_name: f.tool_call.name,
-                        content: f.result.content,
-                        details: f.result.details,
-                        is_error: f.is_error,
-                        timestamp: now_millis(),
-                    };
-                    self.emit(AgentEvent::MessageStart(Box::new(Message::ToolResult(
-                        result_message.clone(),
-                    ))));
-                    self.messages
-                        .push(Message::ToolResult(result_message.clone()));
-                    new_messages.push(Message::ToolResult(result_message.clone()));
-                    tool_results.push(result_message);
-                }
-                for result in &tool_results {
-                    self.emit(AgentEvent::MessageEnd(Box::new(Message::ToolResult(
-                        result.clone(),
-                    ))));
-                }
+                tool_results = self.record_tool_results(new_messages, finalized);
             }
 
             self.emit(AgentEvent::TurnEnd {
@@ -332,6 +328,45 @@ impl Agent {
                 return Ok(());
             }
         }
+    }
+
+    /// 将一批已决工具调用落为 toolResult 消息（历史 + 本次新增），
+    /// 并发出 `ToolExecutionEnd` / `MessageStart` / `MessageEnd` 事件。
+    fn record_tool_results(
+        &mut self,
+        new_messages: &mut Vec<Message>,
+        finalized: Vec<FinalizedToolCall>,
+    ) -> Vec<ToolResultMessage> {
+        let mut tool_results = Vec::new();
+        for f in finalized {
+            self.emit(AgentEvent::ToolExecutionEnd {
+                tool_call_id: f.tool_call.id.clone(),
+                tool_name: f.tool_call.name.clone(),
+                result: f.result.clone(),
+                is_error: f.is_error,
+            });
+            let result_message = ToolResultMessage {
+                tool_call_id: f.tool_call.id,
+                tool_name: f.tool_call.name,
+                content: f.result.content,
+                details: f.result.details,
+                is_error: f.is_error,
+                timestamp: now_millis(),
+            };
+            self.emit(AgentEvent::MessageStart(Box::new(Message::ToolResult(
+                result_message.clone(),
+            ))));
+            self.messages
+                .push(Message::ToolResult(result_message.clone()));
+            new_messages.push(Message::ToolResult(result_message.clone()));
+            tool_results.push(result_message);
+        }
+        for result in &tool_results {
+            self.emit(AgentEvent::MessageEnd(Box::new(Message::ToolResult(
+                result.clone(),
+            ))));
+        }
+        tool_results
     }
 
     /// 流式获取一次 assistant 响应。
@@ -448,6 +483,7 @@ impl Agent {
         call: &'a ToolCall,
     ) -> Result<(&'a ToolCall, DynTool), FinalizedToolCall> {
         let Some(tool) = self.tools.iter().find(|t| t.name() == call.name).cloned() else {
+            tracing::warn!(tool = %call.name, "tool not found");
             return Err(FinalizedToolCall {
                 tool_call: call.clone(),
                 result: ToolResult::text(format!("Tool {} not found", call.name)),
@@ -463,6 +499,7 @@ impl Agent {
             })
             .await;
         if let ToolCallDecision::Block { reason } = decision {
+            tracing::warn!(tool = %call.name, %reason, "tool call blocked by hook");
             return Err(FinalizedToolCall {
                 tool_call: call.clone(),
                 result: ToolResult::text(reason),
@@ -473,6 +510,7 @@ impl Agent {
     }
 
     /// 执行单个工具调用并过 `after_tool_call` 改写。
+    #[tracing::instrument(name = "tool_execution", skip_all, fields(tool = %call.name, id = %call.id))]
     async fn execute_and_finalize(
         &self,
         message: &AssistantMessage,
@@ -480,6 +518,7 @@ impl Agent {
         tool: DynTool,
         cancel: &CancellationToken,
     ) -> FinalizedToolCall {
+        tracing::debug!(args = %call.arguments, "tool call args");
         let event_tx = self.event_tx.clone();
         let update_id = call.id.clone();
         let update_name = call.name.clone();
@@ -496,7 +535,11 @@ impl Agent {
             .await
         {
             Ok(result) => (result, false),
-            Err(error) => (ToolResult::text(error.to_string()), true),
+            Err(error) => {
+                tracing::warn!("tool execution failed");
+                tracing::debug!(error = %error, "tool error detail");
+                (ToolResult::text(error.to_string()), true)
+            }
         };
 
         if let Some(over) = self

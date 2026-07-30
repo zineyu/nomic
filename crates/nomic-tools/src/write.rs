@@ -72,6 +72,7 @@ impl AgentTool for WriteTool {
         if cancel.is_cancelled() {
             return Err(ToolError::new("Operation aborted"));
         }
+        tracing::debug!(path = %params.path, bytes = params.content.len(), "file written");
         Ok(ToolResult::text(format!(
             "Successfully wrote {} bytes to {}",
             params.content.len(),

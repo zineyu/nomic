@@ -45,3 +45,15 @@ jobs:
       # 运行与本地完全一致的完整检查（fmt/clippy/test/doctest/doc/deny/audit/machete/taplo/typos）
       - name: Run checks
         run: devenv shell check
+
+  # 保证 flake.nix 不腐烂：构建 nomic 包并运行 crane check 阶段的测试
+  nix:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: nix flake check
+        run: nix flake check --print-build-logs

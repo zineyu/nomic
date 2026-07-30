@@ -5,6 +5,24 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 但以 Rust 风格实现（serde 即校验、`CancellationToken`、增量式流事件）。设计决策见
 [docs/adr/0001](docs/adr/0001-pi-rust-architecture.md)。
 
+## 安装
+
+### Nix（flake）
+
+```bash
+nix run github:zine/nomic              # 直接运行
+nix profile install github:zine/nomic  # 安装到 profile
+```
+
+构建工具链由 `rust-toolchain.toml` 固定，与 devenv / CI 完全一致；设计见
+[docs/adr/0006](docs/adr/0006-nix-flake-packaging.md)。
+
+### 从源码构建
+
+```bash
+cargo install --path crates/nomic-cli  # 或 cargo build --release -p nomic-cli
+```
+
 ## 开发环境
 
 ```bash

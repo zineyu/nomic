@@ -8,6 +8,10 @@ devenv.local.nix
 .devenv.flake.nix
 .pre-commit-config.yaml
 
+# nix build 输出符号链接
+result
+result-*
+
 # direnv
 .direnv/
 

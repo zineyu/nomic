@@ -13,11 +13,15 @@ use std::sync::Arc;
 
 use nomic_ai::{
     AssistantContent, AssistantEvent, AssistantMessage, Context, Message, Model, Provider,
-    StopReason, StreamOptions, ToolCall, ToolResultMessage, now_millis,
+    StopReason, StreamOptions, ToolCall, ToolResultMessage, Usage, now_millis,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::compaction::{
+    CompactRequest, Compaction, CompactionError, CompactionSettings, compact_messages,
+    estimate_context_tokens, should_compact,
+};
 use crate::hooks::{AfterToolCall, AgentHooks, BeforeToolCall, ToolCallDecision};
 use crate::tool::{DynTool, ExecutionMode, ToolResult, ToolUpdate};
 
@@ -46,6 +50,22 @@ pub enum AgentEvent {
     MessageUpdate(AssistantEvent),
     /// 消息完成
     MessageEnd(Box<Message>),
+    /// 上下文压缩开始（自动阈值或 `/compact` 手动触发）
+    CompactionStart {
+        /// 压缩前的上下文 token 估算
+        tokens_before: u64,
+    },
+    /// 上下文压缩完成（历史已替换为 摘要 + 近期保留消息）
+    CompactionEnd {
+        /// 结构化摘要
+        summary: String,
+        /// 压缩前的上下文 token 估算
+        tokens_before: u64,
+        /// 保留的近期消息条数（session 落库 compaction entry 用）
+        kept_count: usize,
+        /// 摘要请求的 token 用量
+        usage: Usage,
+    },
     /// 工具执行开始
     ToolExecutionStart {
         /// 工具调用 id
@@ -89,6 +109,8 @@ pub struct AgentConfig {
     pub hooks: Arc<dyn AgentHooks>,
     /// 默认工具执行模式（默认 parallel）
     pub tool_execution: ExecutionMode,
+    /// 上下文压缩配置（`enabled` 只控制自动触发，手动 [`Agent::compact`] 不受限）
+    pub compaction: CompactionSettings,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -205,6 +227,59 @@ impl Agent {
         self.emit(AgentEvent::MessageEnd(Box::new(user)));
     }
 
+    /// 手动压缩上下文（`/compact [instructions]` 语义）。
+    ///
+    /// 返回 `Ok(None)` 表示无可压缩内容；失败返回 `Err` 且历史不变。
+    /// 应在非运行状态（`prompt` 返回后）调用；取消经 `cancel` 表达。
+    pub async fn compact(
+        &mut self,
+        instructions: Option<&str>,
+        cancel: CancellationToken,
+    ) -> Result<Option<Compaction>, CompactionError> {
+        self.compact_internal(instructions, cancel).await
+    }
+
+    /// 压缩的实现内核：生成摘要、替换历史、发出事件。
+    async fn compact_internal(
+        &mut self,
+        instructions: Option<&str>,
+        cancel: CancellationToken,
+    ) -> Result<Option<Compaction>, CompactionError> {
+        let event_tx = self.event_tx.clone();
+        let outcome = compact_messages(
+            &self.config.provider,
+            &self.config.model,
+            &self.config.stream_options,
+            &self.config.compaction,
+            &CompactRequest {
+                messages: &self.messages,
+                custom_instructions: instructions,
+            },
+            cancel,
+            move |tokens_before| {
+                let _ = event_tx.send(AgentEvent::CompactionStart { tokens_before });
+            },
+        )
+        .await?;
+        let Some((compaction, new_history)) = outcome else {
+            return Ok(None);
+        };
+        tracing::info!(
+            tokens_before = compaction.tokens_before,
+            kept_count = compaction.kept_count,
+            summarized = self.messages.len() - compaction.kept_count,
+            "context compacted"
+        );
+        self.messages = new_history;
+        self.emit(AgentEvent::CompactionEnd {
+            summary: compaction.summary.clone(),
+            tokens_before: compaction.tokens_before,
+            kept_count: compaction.kept_count,
+            usage: compaction.usage,
+        });
+        Ok(Some(compaction))
+    }
+
     /// 发送一个用户 prompt 并运行 loop 直到完成，返回本次新增的消息。
     ///
     /// provider 错误不会让这里返回 `Err`（编码在 assistant 消息中）；
@@ -245,6 +320,16 @@ impl Agent {
         cancel: CancellationToken,
     ) -> Result<(), AgentError> {
         loop {
+            // 每个 turn 前检查上下文是否逼近窗口（turn 之间压缩，与 pi 一致）；
+            // 压缩失败仅告警，保留原历史继续（fail-safe）
+            if should_compact(
+                estimate_context_tokens(&self.messages),
+                self.config.model.context_window,
+                &self.config.compaction,
+            ) && let Err(error) = self.compact_internal(None, cancel.clone()).await
+            {
+                tracing::warn!(%error, "auto-compaction failed; continuing with full history");
+            }
             self.emit(AgentEvent::TurnStart);
             let message = self.stream_assistant(&cancel).await?;
             let stop_reason = message.stop_reason;
@@ -397,7 +482,7 @@ impl Agent {
                         model: self.config.model.id.clone(),
                         response_model: None,
                         response_id: None,
-                        usage: nomic_ai::Usage::default(),
+                        usage: Usage::default(),
                         stop_reason: StopReason::Stop,
                         error_message: None,
                         timestamp: now_millis(),

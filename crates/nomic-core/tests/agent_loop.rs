@@ -190,6 +190,10 @@ fn make_agent(
             stream_options: StreamOptions::default(),
             hooks: Arc::new(NoopHooks),
             tool_execution: nomic_core::ExecutionMode::Parallel,
+            compaction: nomic_core::CompactionSettings {
+                enabled: false,
+                ..Default::default()
+            },
         },
         tools,
         "test system prompt",
@@ -267,6 +271,10 @@ async fn resume_with_seeded_history() {
             stream_options: StreamOptions::default(),
             hooks: Arc::new(NoopHooks),
             tool_execution: nomic_core::ExecutionMode::Parallel,
+            compaction: nomic_core::CompactionSettings {
+                enabled: false,
+                ..Default::default()
+            },
         },
         vec![DynTool::new(EchoTool)],
         "test system prompt",
@@ -498,6 +506,10 @@ async fn hook_block_produces_error_result_without_executing() {
             stream_options: StreamOptions::default(),
             hooks: Arc::new(BlockAllHooks),
             tool_execution: nomic_core::ExecutionMode::Parallel,
+            compaction: nomic_core::CompactionSettings {
+                enabled: false,
+                ..Default::default()
+            },
         },
         vec![DynTool::new(EchoTool)],
         "sys",

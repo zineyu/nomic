@@ -28,7 +28,7 @@ use crossterm::{
 };
 use futures::StreamExt as _;
 use nomic_ai::Message;
-use nomic_core::{Agent, AgentConfig, AgentEvent, ExecutionMode, NoopHooks};
+use nomic_core::{Agent, AgentConfig, AgentEvent, CompactionSettings, ExecutionMode, NoopHooks};
 use nomic_session::SessionStore;
 use nomic_skills::SkillResolver;
 use ratatui::{Terminal, backend::CrosstermBackend};
@@ -79,6 +79,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
             stream_options: boot.stream_options,
             hooks: Arc::new(NoopHooks),
             tool_execution: ExecutionMode::Parallel,
+            compaction: CompactionSettings::default(),
         },
         nomic_tools::default_tools_with_skills(boot.skill_resolver),
         boot.system_prompt,

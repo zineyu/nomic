@@ -413,7 +413,11 @@ impl App {
                     tool.detail = result_summary(&result.content);
                 }
             }
-            AgentEvent::AgentEnd { .. } | AgentEvent::TurnStart | AgentEvent::TurnEnd { .. } => {}
+            AgentEvent::AgentEnd { .. }
+            | AgentEvent::TurnStart
+            | AgentEvent::TurnEnd { .. }
+            | AgentEvent::CompactionStart { .. }
+            | AgentEvent::CompactionEnd { .. } => {}
         }
     }
 

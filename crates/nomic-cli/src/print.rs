@@ -34,6 +34,7 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
             stream_options: boot.stream_options,
             hooks: Arc::new(NoopHooks),
             tool_execution: ExecutionMode::Parallel,
+            compaction: nomic_core::CompactionSettings::default(),
         },
         nomic_tools::default_tools_with_skills(boot.skill_resolver),
         boot.system_prompt,

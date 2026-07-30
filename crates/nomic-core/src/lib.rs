@@ -5,10 +5,15 @@
 //! - `agent`：事件驱动的 agent loop
 
 mod agent;
+mod compaction;
 mod hooks;
 mod tool;
 
 pub use agent::{Agent, AgentConfig, AgentError, AgentEvent};
+pub use compaction::{
+    CompactRequest, Compaction, CompactionError, CompactionSettings, estimate_context_tokens,
+    is_summary_message, should_compact, summary_message,
+};
 pub use hooks::{
     AfterToolCall, AfterToolCallOverride, AgentHooks, BeforeToolCall, NoopHooks, ToolCallDecision,
 };

@@ -26,9 +26,13 @@ use std::sync::Arc;
 
 use nomic_ai::{
     AssistantContent, Context, Message, Model, Provider, StreamOptions, Usage, UserContent,
-    UserMessage, UserMessageContent, now_millis,
+    UserMessage, UserMessageContent, extract_summary, now_millis,
 };
 use tokio_util::sync::CancellationToken;
+
+// 摘要消息的构造与识别在 nomic-ai（消息模型层）定义，nomic-session 重建上下文时
+// 共享同一实现；此处 re-export 保持 nomic-core 的公开 API 不变。
+pub use nomic_ai::{is_summary_message, summary_message};
 
 /// 压缩配置（默认值与 pi 对齐）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,15 +78,6 @@ pub struct Compaction {
     /// 摘要请求的 token 用量
     pub usage: Usage,
 }
-
-/// 合成摘要消息的包装前缀（与 pi 的 `COMPACTION_SUMMARY_PREFIX` 一致）。
-///
-/// 该前缀同时是识别标记：resume 重建、二次压缩提取 previous summary、
-/// TUI 压缩渲染都靠它判定一条 user 消息是否为压缩摘要。
-pub const SUMMARY_PREFIX: &str = "The conversation history before this point was compacted into the following summary:\n<summary>\n";
-
-/// 合成摘要消息的包装后缀（与 pi 一致）。
-pub const SUMMARY_SUFFIX: &str = "\n</summary>";
 
 /// 摘要请求的系统提示词（逐字复刻 pi 的 `SUMMARIZATION_SYSTEM_PROMPT`）。
 const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
@@ -146,31 +141,6 @@ const TOOL_RESULT_MAX_CHARS: usize = 2000;
 
 /// 图片内容的估算字符数（与 pi 的 `ESTIMATED_IMAGE_CHARS` 一致）。
 const ESTIMATED_IMAGE_CHARS: usize = 4800;
-
-/// 构造合成摘要 user 消息。
-pub fn summary_message(summary: &str) -> Message {
-    Message::User(UserMessage {
-        content: UserMessageContent::Text(format!("{SUMMARY_PREFIX}{summary}{SUMMARY_SUFFIX}")),
-        timestamp: now_millis(),
-    })
-}
-
-/// 判定一条消息是否为压缩摘要（包装前缀识别）。
-pub fn is_summary_message(message: &Message) -> bool {
-    extract_previous_summary(message).is_some()
-}
-
-/// 从合成摘要消息中提取摘要正文（非摘要消息返回 `None`）。
-fn extract_previous_summary(message: &Message) -> Option<&str> {
-    let Message::User(user) = message else {
-        return None;
-    };
-    let UserMessageContent::Text(text) = &user.content else {
-        return None;
-    };
-    text.strip_prefix(SUMMARY_PREFIX)
-        .and_then(|rest| rest.strip_suffix(SUMMARY_SUFFIX))
-}
 
 /// 取 user / toolResult 内容的文本部分（图片折算为占位长度在估算中处理）。
 fn content_text(content: &[UserContent]) -> String {
@@ -609,7 +579,7 @@ pub async fn compact_messages(
     let messages = request.messages;
     // 前次摘要固定在 messages[0]（in-memory 与 resume 重建的一致约定）：
     // 不参与序列化，经 <previous-summary> 走 UPDATE prompt（与 pi 一致）
-    let (offset, previous_summary) = match messages.first().and_then(extract_previous_summary) {
+    let (offset, previous_summary) = match messages.first().and_then(extract_summary) {
         Some(summary) => (1, Some(summary.to_string())),
         None => (0, None),
     };
@@ -641,7 +611,7 @@ pub async fn compact_messages(
 
     let kept_count = messages.len() - cut;
     let mut new_history = Vec::with_capacity(kept_count + 1);
-    new_history.push(summary_message(&summary));
+    new_history.push(summary_message(&summary, now_millis()));
     new_history.extend_from_slice(&messages[cut..]);
 
     let compaction = Compaction {
@@ -811,7 +781,7 @@ mod tests {
 
     #[test]
     fn cut_point_skips_summary_prefix_offset() {
-        let summary = summary_message("previous work");
+        let summary = summary_message("previous work", 0);
         let messages = vec![
             summary,
             user(&"u".repeat(400)),                        // 100 tokens
@@ -896,12 +866,9 @@ mod tests {
 
     #[test]
     fn summary_message_roundtrips_through_marker() {
-        let message = summary_message("## Goal\ndo stuff");
+        let message = summary_message("## Goal\ndo stuff", 0);
         assert!(is_summary_message(&message));
-        assert_eq!(
-            extract_previous_summary(&message),
-            Some("## Goal\ndo stuff")
-        );
+        assert_eq!(extract_summary(&message), Some("## Goal\ndo stuff"));
         assert!(!is_summary_message(&user(
             "The conversation history before this point"
         )));

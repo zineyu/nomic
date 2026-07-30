@@ -4,6 +4,8 @@
 //!   首/末消息时间与启动位置（cwd）
 //! - 消息存 `entries` 表，按 `parent_id` 组织为**树**（为 ADR-0001 的
 //!   branching 目标预留；顺序会话是树的特例）
+//! - 压缩条目（`kind = 'compaction'`）记录上下文压缩结果；加载时按
+//!   「截尾 kept_count + 前置合成摘要」重建有效上下文（见 [`CompactionRecord`]）
 //! - 全局单库，默认位于 XDG data dir：`$XDG_DATA_HOME/nomic/sessions.db`
 //!
 //! 消息 payload 原样存 [`Message`] 的 serde JSON；`role`/`timestamp` 为提取列，
@@ -12,12 +14,32 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use nomic_ai::Message;
+use nomic_ai::{Message, now_millis, summary_message};
+use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row as _, SqlitePool};
 
 /// 内嵌迁移（`crates/nomic-session/migrations/`）。
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
+
+/// 压缩条目（`entries.kind = 'compaction'`）的 payload。
+///
+/// 记录一次上下文压缩的结果：摘要正文、保留的近期消息条数与压缩前的
+/// token 估算。重建语义见 [`SessionStore::load_messages`]：沿默认分支重放时，
+/// 遇到压缩条目就把当前有效上下文截尾到 `kept_count` 条并前置合成摘要消息。
+///
+/// 与 pi 的 `CompactionEntry` 的差异：用 `kept_count`（相对计数）代替
+/// `first_kept_entry_id`（绝对指针）——顺序分支语义下等效且无需 entry id 簿记；
+/// 未来支持 branch 切换时需改回绝对指针（见 docs/adr/0005）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionRecord {
+    /// 结构化摘要（含 `<read-files>` / `<modified-files>` 附加段）
+    pub summary: String,
+    /// 压缩时保留的近期消息条数（相对压缩前的有效上下文计数）
+    pub kept_count: u64,
+    /// 压缩前的上下文 token 估算
+    pub tokens_before: u64,
+}
 
 /// session 存储层的错误。
 #[derive(Debug, thiserror::Error)]
@@ -193,6 +215,60 @@ impl SessionStore {
         Ok(id)
     }
 
+    /// 追加一条压缩条目，返回新 entry id。
+    ///
+    /// 链接语义与 [`Self::append_message`] 一致（链到当前最新 entry）；
+    /// 同事务内更新 `sessions.last_message_at`。
+    pub async fn append_compaction(
+        &self,
+        session_id: &str,
+        record: &CompactionRecord,
+    ) -> Result<String, SessionError> {
+        let mut tx = self.pool.begin().await?;
+
+        if !session_exists(&mut tx, session_id).await? {
+            return Err(SessionError::SessionNotFound(session_id.to_string()));
+        }
+
+        let parent: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM entries WHERE session_id = ? ORDER BY rowid DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
+
+        let id = uuid::Uuid::now_v7().to_string();
+        let payload = serde_json::to_string(record)?;
+        let timestamp = to_i64(now_millis());
+        sqlx::query(
+            "INSERT INTO entries (id, session_id, parent_id, role, timestamp, payload, kind)
+             VALUES (?, ?, ?, 'compaction', ?, ?, 'compaction')",
+        )
+        .bind(&id)
+        .bind(session_id)
+        .bind(parent)
+        .bind(timestamp)
+        .bind(payload)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "UPDATE sessions SET
+                 first_message_at = COALESCE(first_message_at, ?),
+                 last_message_at = ?
+             WHERE id = ?",
+        )
+        .bind(timestamp)
+        .bind(timestamp)
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(id)
+    }
+
     /// 加载默认分支的完整消息序列。
     ///
     /// 取该 session 全部 entries 在内存建树，从根沿"每级最新子节点"走到叶子
@@ -203,7 +279,8 @@ impl SessionStore {
             return Err(SessionError::SessionNotFound(session_id.to_string()));
         }
         let rows = sqlx::query(
-            "SELECT id, parent_id, payload FROM entries WHERE session_id = ? ORDER BY rowid",
+            "SELECT id, parent_id, kind, timestamp, payload FROM entries
+             WHERE session_id = ? ORDER BY rowid",
         )
         .bind(session_id)
         .fetch_all(&mut *tx)
@@ -211,32 +288,53 @@ impl SessionStore {
         tx.commit().await?;
 
         // parent_id -> 按插入序排列的子节点
-        let mut children: HashMap<Option<String>, Vec<(String, String)>> = HashMap::new();
+        let mut children: HashMap<Option<String>, Vec<BranchEntry>> = HashMap::new();
         for row in &rows {
-            let id: String = row.get("id");
-            let parent_id: Option<String> = row.get("parent_id");
-            let payload: String = row.get("payload");
-            children.entry(parent_id).or_default().push((id, payload));
+            let entry = BranchEntry {
+                id: row.get("id"),
+                parent_id: row.get("parent_id"),
+                kind: row.get("kind"),
+                timestamp: to_u64(row.get("timestamp")),
+                payload: row.get("payload"),
+            };
+            children
+                .entry(entry.parent_id.clone())
+                .or_default()
+                .push(entry);
         }
 
-        let mut messages = Vec::new();
+        // 沿「每级最新子节点」走默认分支并重建有效上下文：
+        // message 直接追加；compaction 截尾到 kept_count 条并前置合成摘要消息。
+        // 该递归语义对重复压缩天然成立（第二次的 kept_count 相对第一次重建结果计数）。
+        let mut effective: Vec<Message> = Vec::new();
         let mut cursor: Option<String> = None; // 从根（parent_id IS NULL）出发
         while let Some(siblings) = children.get(&cursor) {
             // 同级取最新子节点（rowid 升序排列的最后一个）
-            let Some((id, payload)) = siblings.last() else {
+            let Some(entry) = siblings.last() else {
                 break;
             };
-            messages.push(serde_json::from_str::<Message>(payload)?);
-            cursor = Some(id.clone());
+            if entry.kind == "compaction" {
+                let record: CompactionRecord = serde_json::from_str(&entry.payload)?;
+                let keep = usize::try_from(record.kept_count)
+                    .unwrap_or(usize::MAX)
+                    .min(effective.len());
+                let tail = effective.split_off(effective.len() - keep);
+                effective = vec![summary_message(&record.summary, entry.timestamp)];
+                effective.extend(tail);
+            } else {
+                effective.push(serde_json::from_str::<Message>(&entry.payload)?);
+            }
+            cursor = Some(entry.id.clone());
         }
-        Ok(messages)
+        Ok(effective)
     }
 
     /// 列出全部 session 摘要（按末条消息时间降序，无消息的排最后）。
     pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>, SessionError> {
         let rows = sqlx::query(
             "SELECT s.id, s.cwd, s.first_message_at, s.last_message_at,
-                    (SELECT COUNT(*) FROM entries e WHERE e.session_id = s.id) AS message_count
+                    (SELECT COUNT(*) FROM entries e
+                     WHERE e.session_id = s.id AND e.kind = 'message') AS message_count
              FROM sessions s
              ORDER BY s.last_message_at IS NULL, s.last_message_at DESC",
         )
@@ -281,6 +379,15 @@ pub fn default_db_path() -> Result<PathBuf, SessionError> {
         .join(".local/share")
         .join("nomic")
         .join("sessions.db"))
+}
+
+/// 分支重放用的一行 entry（`load_messages` 内部）。
+struct BranchEntry {
+    id: String,
+    parent_id: Option<String>,
+    kind: String,
+    timestamp: u64,
+    payload: String,
 }
 
 async fn session_exists(

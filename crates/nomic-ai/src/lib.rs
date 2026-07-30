@@ -17,6 +17,7 @@ pub use models_dev::{Catalog, ModelSpec};
 pub use stream::{AssistantEvent, AssistantStream, Provider, StreamOptions, channel};
 pub use types::{
     ApiKind, AssistantContent, AssistantMessage, Context, Cost, ImageContent, Message, Model,
-    StopReason, TextContent, ThinkingContent, ThinkingLevel, ToolCall, ToolDefinition,
-    ToolResultMessage, Usage, UserContent, UserMessage, UserMessageContent, now_millis,
+    SUMMARY_PREFIX, SUMMARY_SUFFIX, StopReason, TextContent, ThinkingContent, ThinkingLevel,
+    ToolCall, ToolDefinition, ToolResultMessage, Usage, UserContent, UserMessage,
+    UserMessageContent, extract_summary, is_summary_message, now_millis, summary_message,
 };

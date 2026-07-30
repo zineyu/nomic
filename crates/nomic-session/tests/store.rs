@@ -266,3 +266,160 @@ async fn list_sessions_orders_by_last_message_desc() {
         "应按末条消息时间降序，无消息的排最后"
     );
 }
+
+// ── compaction entry ────────────────────────────────────────────────────────
+
+use nomic_ai::{extract_summary, is_summary_message};
+use nomic_session::CompactionRecord;
+
+fn compaction(summary: &str, kept_count: u64) -> CompactionRecord {
+    CompactionRecord {
+        summary: summary.to_string(),
+        kept_count,
+        tokens_before: 12_345,
+    }
+}
+
+#[tokio::test]
+async fn compaction_rebuilds_summary_plus_kept_tail() {
+    let store = SessionStore::in_memory().await.unwrap();
+    let session = store.create_session("/tmp/p").await.unwrap();
+    for (index, timestamp) in [(1, 1_000), (2, 2_000), (3, 3_000), (4, 4_000)] {
+        store
+            .append_message(
+                &session,
+                None,
+                &user_message(&format!("m{index}"), timestamp),
+            )
+            .await
+            .unwrap();
+    }
+    store
+        .append_compaction(&session, &compaction("summary of m1+m2", 2))
+        .await
+        .unwrap();
+
+    let loaded = store.load_messages(&session).await.unwrap();
+    assert_eq!(loaded.len(), 3, "摘要 + 保留的 2 条尾部消息");
+    assert!(is_summary_message(&loaded[0]));
+    assert_eq!(extract_summary(&loaded[0]), Some("summary of m1+m2"));
+    assert_eq!(loaded[1], user_message("m3", 3_000));
+    assert_eq!(loaded[2], user_message("m4", 4_000));
+}
+
+#[tokio::test]
+async fn messages_after_compaction_chain_and_survive_rebuild() {
+    let store = SessionStore::in_memory().await.unwrap();
+    let session = store.create_session("/tmp/p").await.unwrap();
+    store
+        .append_message(&session, None, &user_message("old", 1_000))
+        .await
+        .unwrap();
+    store
+        .append_compaction(&session, &compaction("summary", 0))
+        .await
+        .unwrap();
+    // 压缩后的新消息链在 compaction entry 之后
+    store
+        .append_message(&session, None, &user_message("new", 2_000))
+        .await
+        .unwrap();
+
+    let loaded = store.load_messages(&session).await.unwrap();
+    assert_eq!(loaded.len(), 2);
+    assert!(is_summary_message(&loaded[0]));
+    assert_eq!(loaded[1], user_message("new", 2_000));
+}
+
+#[tokio::test]
+async fn repeated_compaction_rebuilds_recursively() {
+    let store = SessionStore::in_memory().await.unwrap();
+    let session = store.create_session("/tmp/p").await.unwrap();
+    for (index, timestamp) in [(1, 1_000), (2, 2_000), (3, 3_000)] {
+        store
+            .append_message(
+                &session,
+                None,
+                &user_message(&format!("m{index}"), timestamp),
+            )
+            .await
+            .unwrap();
+    }
+    // 第一次压缩：有效上下文 = [summary1, m3]
+    store
+        .append_compaction(&session, &compaction("summary one", 1))
+        .await
+        .unwrap();
+    store
+        .append_message(&session, None, &user_message("m4", 4_000))
+        .await
+        .unwrap();
+    // 第二次压缩：相对当时的有效上下文 [summary1, m3, m4] 保留 2 条
+    store
+        .append_compaction(&session, &compaction("summary two", 2))
+        .await
+        .unwrap();
+
+    let loaded = store.load_messages(&session).await.unwrap();
+    assert_eq!(loaded.len(), 3);
+    assert_eq!(extract_summary(&loaded[0]), Some("summary two"));
+    assert_eq!(loaded[1], user_message("m3", 3_000));
+    assert_eq!(loaded[2], user_message("m4", 4_000));
+}
+
+#[tokio::test]
+async fn compaction_kept_count_clamps_to_effective_len() {
+    let store = SessionStore::in_memory().await.unwrap();
+    let session = store.create_session("/tmp/p").await.unwrap();
+    store
+        .append_message(&session, None, &user_message("only", 1_000))
+        .await
+        .unwrap();
+    store
+        .append_compaction(&session, &compaction("summary", 100))
+        .await
+        .unwrap();
+
+    let loaded = store.load_messages(&session).await.unwrap();
+    assert_eq!(loaded.len(), 2, "kept_count 超过有效长度时钳制");
+    assert!(is_summary_message(&loaded[0]));
+    assert_eq!(loaded[1], user_message("only", 1_000));
+}
+
+#[tokio::test]
+async fn compaction_entry_not_counted_as_message() {
+    let store = SessionStore::in_memory().await.unwrap();
+    let session = store.create_session("/tmp/p").await.unwrap();
+    store
+        .append_message(&session, None, &user_message("hi", 1_000))
+        .await
+        .unwrap();
+    store
+        .append_compaction(&session, &compaction("summary", 1))
+        .await
+        .unwrap();
+
+    let summaries = store.list_sessions().await.unwrap();
+    assert_eq!(summaries[0].message_count, 1, "压缩条目不计入消息数");
+}
+
+#[tokio::test]
+async fn compaction_persists_across_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sessions.db");
+    let store = SessionStore::open(&path).await.unwrap();
+    let session = store.create_session("/tmp/p").await.unwrap();
+    store
+        .append_message(&session, None, &user_message("hi", 1_000))
+        .await
+        .unwrap();
+    store
+        .append_compaction(&session, &compaction("summary", 0))
+        .await
+        .unwrap();
+
+    let reopened = SessionStore::open(&path).await.unwrap();
+    let loaded = reopened.load_messages(&session).await.unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(extract_summary(&loaded[0]), Some("summary"));
+}

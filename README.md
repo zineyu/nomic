@@ -20,7 +20,7 @@ export ANTHROPIC_API_KEY=sk-ant-...     # 或 OPENAI_API_KEY / OPENAI_BASE_URL
 # 交互 TUI（缺省，设计见 docs/adr/0002）
 cargo run -p nomic-cli
 # 键位：Enter 发送 · Tab 补全 · Esc 取消运行 · Ctrl+C 退出 · ↑/↓/PgUp/PgDn/滚轮滚动
-# 命令：/help 查看全部（/new 开启新对话，/resume 恢复历史 session，/quit 退出），输入 / 自动补全
+# 命令：/help 查看全部（/new 开启新对话，/resume 恢复历史 session，/compact 压缩上下文，/quit 退出），输入 / 自动补全
 
 # print 模式（非交互，管道可用）
 nomic -p "列出当前目录的文件"
@@ -41,6 +41,13 @@ nomic resume            # 交互选择器（↑/↓ 或 j/k 移动，Enter 确�
 # 查看历史 session（id、最后更新时间、消息数、目录）
 nomic sessions list
 ```
+
+## 上下文压缩
+
+对话逼近模型上下文窗口时自动把较早消息压缩为结构化摘要（保留近期消息原样，
+设计见 [docs/adr/0005](docs/adr/0005-context-compaction.md)）；TUI 内也可随时用
+`/compact [聚焦指令]` 手动触发。压缩结果落库，resume 后保持压缩状态。
+可在配置文件的 `[compaction]` 表中调整阈值（见 `config.example.toml`）。
 
 ## 配置文件
 
@@ -175,7 +182,7 @@ check               # 与 CI 等价的全部检查：fmt / clippy / nextest / do
 ## 结构
 
 - `crates/nomic-ai`：统一消息模型 + 流式事件协议 + provider 实现（Anthropic Messages、OpenAI Completions 兼容）
-- `crates/nomic-core`：agent loop（四层生命周期事件、parallel 工具执行、hooks）+ 工具抽象（schemars + serde 即校验）
+- `crates/nomic-core`：agent loop（四层生命周期事件、parallel 工具执行、hooks）+ 工具抽象（schemars + serde 即校验）+ 上下文压缩（ADR-0005）
 - `crates/nomic-tools`：read/write/edit/bash 四工具（截断、模糊匹配、BOM/CRLF 保留、文件变更队列）
 - `crates/nomic-session`：SQLite session 存储（树形 entries、resume、`sessions list`）
 - `crates/nomic-skills`：skill 发现、frontmatter 元数据、覆盖规则与显式激活
@@ -187,7 +194,7 @@ check               # 与 CI 等价的全部检查：fmt / clippy / nextest / do
 已完成：
 
 - M1：agent loop + 四工具 + print 模式（ADR-0001）
-- M2（部分）：SQLite session 存储与 resume（树形 schema 已就位）、交互 TUI（ADR-0002）、用户级配置文件
+- M2（部分）：SQLite session 存储与 resume（树形 schema 已就位）、交互 TUI（ADR-0002）、用户级配置文件、上下文压缩（ADR-0005）
 - M3（部分）：AGENTS.md 加载（向上发现，注入系统提示词）、skills（ADR-0003）
 
 待完成：

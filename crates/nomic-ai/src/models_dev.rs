@@ -17,7 +17,10 @@ const API_URL: &str = "https://models.dev/api.json";
 /// 磁盘缓存有效期。
 const CACHE_TTL: Duration = Duration::from_hours(24);
 /// 网络拉取总超时（启动路径上的阻塞上限）。
-const FETCH_TIMEOUT: Duration = Duration::from_secs(3);
+///
+/// api.json 约 3MB，慢网络下 3s 不够（实测部分网络 4s+），放宽到 10s 以
+/// 保证首次拉取能写入缓存；命中缓存的启动不受此影响。
+const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 模型规格：全部字段可选，缺省时由调用方继续向下层（models.dev / 内置默认）解析。
 ///

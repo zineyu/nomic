@@ -1,8 +1,4 @@
-{
-  pkgs,
-  config,
-  ...
-}:
+{ pkgs, ... }:
 {
   # ── Rust 工具链 ────────────────────────────────────────────────────────────
   languages.rust = {
@@ -41,18 +37,17 @@
     echo "== doc =="       && RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
     echo "== deny =="      && cargo deny check
     echo "== audit =="     && cargo audit
-    echo "== machete =="   && cargo machete --with-metadata
+    echo "== machete =="   && cargo-machete --with-metadata
     echo "== taplo =="     && taplo fmt --check
     echo "== typos =="     && typos
   '';
 
   # ── Git hooks（提交前快速检查，重型检查留给 CI）───────────────────────────
+  # 运行器默认为 prek（devenv 2026-02-02 起替代 pre-commit，配置格式兼容）。
   git-hooks.hooks = {
-    rustfmt = {
-      enable = true;
-      # 与 rust-toolchain.toml 保持一致的格式化工具
-      package = config.languages.rust.toolchainPackage;
-    };
+    # devenv 会把 languages.rust.toolchainPackage（由 rust-toolchain.toml 固定）
+    # 注入 git-hooks.tools.rustfmt/cargo，hook 自动使用同一工具链，无需手动覆盖。
+    rustfmt.enable = true;
     taplo.enable = true;
     typos.enable = true;
     check-toml.enable = true;

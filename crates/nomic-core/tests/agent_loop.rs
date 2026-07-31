@@ -249,6 +249,58 @@ async fn text_only_prompt_single_turn() {
 }
 
 #[tokio::test]
+async fn prompt_with_images_builds_blocks_message() {
+    let provider = MockProvider::new(vec![text_done("ok")]);
+    let (mut agent, rx) = make_agent(provider, vec![]);
+
+    let collector = tokio::spawn(collect_events(rx));
+    let images = vec![nomic_ai::ImageContent {
+        data: "aGVsbG8=".to_string(),
+        mime_type: "image/png".to_string(),
+    }];
+    let new_messages = agent
+        .prompt_with_images("描述这张图", &images, CancellationToken::new())
+        .await
+        .expect("prompt");
+    collector.await.expect("collector");
+
+    // user 消息为 图片块在前、文本块在后 的内容块列表，且随历史持久化
+    let Message::User(user) = &new_messages[0] else {
+        panic!("first message must be user");
+    };
+    assert_eq!(
+        user.content,
+        nomic_ai::UserMessageContent::Blocks(vec![
+            nomic_ai::UserContent::Image(images[0].clone()),
+            nomic_ai::UserContent::Text(TextContent {
+                text: "描述这张图".to_string(),
+                text_signature: None,
+            }),
+        ])
+    );
+    assert_eq!(agent.messages()[0], new_messages[0]);
+}
+
+#[tokio::test]
+async fn prompt_with_empty_images_stays_plain_text() {
+    let provider = MockProvider::new(vec![text_done("ok")]);
+    let (mut agent, _rx) = make_agent(provider, vec![]);
+
+    let new_messages = agent
+        .prompt_with_images("hi", &[], CancellationToken::new())
+        .await
+        .expect("prompt");
+
+    let Message::User(user) = &new_messages[0] else {
+        panic!("first message must be user");
+    };
+    assert_eq!(
+        user.content,
+        nomic_ai::UserMessageContent::Text("hi".to_string())
+    );
+}
+
+#[tokio::test]
 async fn resume_with_seeded_history() {
     let provider = MockProvider::new(vec![text_done("world")]);
     let history = vec![

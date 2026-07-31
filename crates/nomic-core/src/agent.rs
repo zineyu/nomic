@@ -12,8 +12,9 @@
 use std::sync::Arc;
 
 use nomic_ai::{
-    AssistantContent, AssistantEvent, AssistantMessage, Context, Message, Model, Provider,
-    StopReason, StreamOptions, ToolCall, ToolResultMessage, Usage, now_millis,
+    AssistantContent, AssistantEvent, AssistantMessage, Context, ImageContent, Message, Model,
+    Provider, StopReason, StreamOptions, TextContent, ToolCall, ToolResultMessage, Usage,
+    UserContent, UserMessage, UserMessageContent, now_millis,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -218,8 +219,8 @@ impl Agent {
     /// （`prompt` 返回后）调用。会发出 `MessageStart`/`MessageEnd` 事件，
     /// 交互端渲染与 session 落库经既有事件管线自动生效。
     pub fn inject_user_message(&mut self, text: &str) {
-        let user = Message::User(nomic_ai::UserMessage {
-            content: nomic_ai::UserMessageContent::Text(text.to_string()),
+        let user = Message::User(UserMessage {
+            content: UserMessageContent::Text(text.to_string()),
             timestamp: now_millis(),
         });
         self.emit(AgentEvent::MessageStart(Box::new(user.clone())));
@@ -280,22 +281,52 @@ impl Agent {
         Ok(Some(compaction))
     }
 
-    /// 发送一个用户 prompt 并运行 loop 直到完成，返回本次新增的消息。
+    /// 发送一个纯文本用户 prompt 并运行 loop 直到完成，返回本次新增的消息。
     ///
+    /// 携带图片附件时用 [`Self::prompt_with_images`]。
     /// provider 错误不会让这里返回 `Err`（编码在 assistant 消息中）；
     /// `Err` 仅表示 provider 违反流协议。
-    #[tracing::instrument(name = "agent_prompt", skip_all)]
     pub async fn prompt(
         &mut self,
         text: &str,
         cancel: CancellationToken,
     ) -> Result<Vec<Message>, AgentError> {
+        self.prompt_with_images(text, &[], cancel).await
+    }
+
+    /// 发送携带图片附件的用户 prompt，运行 loop 直到完成。
+    ///
+    /// 有附件时 user 消息为内容块列表：图片块在前、文本块在后（与 Anthropic
+    /// 官方建议的排序一致），随历史持久化与回放；压缩对图片块按固定成本估算。
+    /// 空附件等价于 [`Self::prompt`]。
+    #[tracing::instrument(name = "agent_prompt", skip_all)]
+    pub async fn prompt_with_images(
+        &mut self,
+        text: &str,
+        images: &[ImageContent],
+        cancel: CancellationToken,
+    ) -> Result<Vec<Message>, AgentError> {
         let mut new_messages = Vec::new();
-        let user = Message::User(nomic_ai::UserMessage {
-            content: nomic_ai::UserMessageContent::Text(text.to_string()),
+        let content = if images.is_empty() {
+            UserMessageContent::Text(text.to_string())
+        } else {
+            let mut blocks: Vec<UserContent> =
+                images.iter().cloned().map(UserContent::Image).collect();
+            blocks.push(UserContent::Text(TextContent {
+                text: text.to_string(),
+                text_signature: None,
+            }));
+            UserMessageContent::Blocks(blocks)
+        };
+        let user = Message::User(UserMessage {
+            content,
             timestamp: now_millis(),
         });
-        tracing::debug!(prompt_len = text.len(), "agent run started");
+        tracing::debug!(
+            prompt_len = text.len(),
+            images = images.len(),
+            "agent run started"
+        );
         self.emit(AgentEvent::AgentStart);
         self.emit(AgentEvent::MessageStart(Box::new(user.clone())));
         self.messages.push(user.clone());

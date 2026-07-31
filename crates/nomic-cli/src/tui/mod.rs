@@ -45,8 +45,8 @@ use crate::{Cli, bootstrap};
 
 /// 提交给 agent driver 的任务。
 enum DriverJob {
-    /// 运行一轮 prompt（附本轮取消令牌）
-    Prompt(String, CancellationToken),
+    /// 运行一轮 prompt（附图片附件与本轮取消令牌）
+    Prompt(String, Vec<nomic_ai::ImageContent>, CancellationToken),
     /// 手动压缩上下文（`/compact [聚焦指令]`，附本轮取消令牌）
     Compact(Option<String>, CancellationToken),
     /// 向 agent 历史注入一条 user 消息（`/skill:<name>` 手动载入），不启动 run
@@ -74,6 +74,8 @@ pub async fn run(cli: &Cli) -> Result<()> {
         boot.session.as_ref().map(|(_, id)| id.clone()),
     );
     app.load_history(&boot.history);
+    // `--image` 附件在 TUI 模式同样生效：作为首轮消息的暂存附件
+    stage_cli_images(&mut app, &cli.image);
     let skill_resolver = boot.skill_resolver.clone();
     app.set_available_skills(
         skill_resolver
@@ -111,9 +113,9 @@ pub async fn run(cli: &Cli) -> Result<()> {
         let mut agent = agent;
         while let Some(job) = job_rx.recv().await {
             match job {
-                DriverJob::Prompt(text, cancel) => {
+                DriverJob::Prompt(text, images, cancel) => {
                     let result = agent
-                        .prompt(&text, cancel)
+                        .prompt_with_images(&text, &images, cancel)
                         .await
                         .map(|_| ())
                         .map_err(|error| error.to_string());
@@ -337,12 +339,13 @@ async fn handle_key(
             } else if let Some(text) = app.take_input() {
                 match app::parse_slash(&text) {
                     SlashParse::NotCommand => {
+                        let images = app.take_attachments();
                         let token = CancellationToken::new();
                         *current_cancel = Some(token.clone());
                         // AgentStart 事件也会置位；先置避免提交空窗期重复提交
                         app.running = true;
                         app.notice = None;
-                        let _ = job_tx.send(DriverJob::Prompt(text, token));
+                        let _ = job_tx.send(DriverJob::Prompt(text, images, token));
                     }
                     SlashParse::Known(action) => {
                         handle_slash(
@@ -363,6 +366,8 @@ async fn handle_key(
                         app.notice = Some(format!("未知命令 /{name}，输入 /help 查看可用命令"));
                     }
                 }
+            } else if app.has_attachments() {
+                app.notice = Some("已附加图片，输入文本后 Enter 一起发送".to_string());
             }
         }
         (KeyCode::Backspace, _) => app.backspace(),
@@ -455,6 +460,21 @@ async fn handle_slash(
                 app.notice = Some(format!("载入 skill {name:?} 失败：{error}"));
             }
         },
+        SlashAction::Image(path) => {
+            let path = std::path::PathBuf::from(path);
+            match crate::images::load_image(&path) {
+                Ok(image) => {
+                    let name = attachment_name(&path);
+                    let count = app.stage_image(name.clone(), image);
+                    app.push_system(format!(
+                        "已附加图片 {name}（共 {count} 张，随下一条消息发送）。"
+                    ));
+                }
+                Err(error) => {
+                    app.notice = Some(format!("附加图片失败：{error:#}"));
+                }
+            }
+        }
         SlashAction::New => {
             // driver 串行处理任务；slash 命令仅在空闲时可提交，无需排队等待
             let _ = job_tx.send(DriverJob::Clear);
@@ -472,6 +492,30 @@ async fn handle_slash(
                     }
                 }
             }
+        }
+    }
+}
+
+/// 附件展示名：取文件名，缺失时回退完整路径。
+fn attachment_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// 把启动参数 `--image` 载入为暂存附件（失败以系统条目提示，不中止启动）。
+fn stage_cli_images(app: &mut App, paths: &[std::path::PathBuf]) {
+    for path in paths {
+        match crate::images::load_image(path) {
+            Ok(image) => {
+                let name = attachment_name(path);
+                let count = app.stage_image(name.clone(), image);
+                app.push_system(format!(
+                    "已附加图片 {name}（共 {count} 张，随下一条消息发送）。"
+                ));
+            }
+            Err(error) => app.push_system(format!("加载图片附件失败：{error:#}")),
         }
     }
 }

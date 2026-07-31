@@ -224,9 +224,9 @@ fn wrap_lines(lines: &[Line<'static>], width: u16) -> Vec<Line<'static>> {
 /// 输入框内容区行数上限：高度随行数伸缩，超过后内部滚动。
 const MAX_INPUT_LINES: u16 = 5;
 
-/// 输入框总高度（含上下边框）：1..=5 行内容 + 2 行边框。
+/// 输入框总高度（含上下边框）：附件行（可选）+ 1..=5 行内容 + 2 行边框。
 fn input_height(app: &App) -> u16 {
-    app.line_count().min(MAX_INPUT_LINES) + 2
+    app.line_count().min(MAX_INPUT_LINES) + 2 + u16::from(app.has_attachments())
 }
 
 /// 输入框（多行，高度随行数变化，最多 5 行）+ 光标定位。
@@ -267,13 +267,29 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .border_style(border_style)
         .title(title);
     let inner = border.inner(area);
+    // 附件行（可选）在输入文本上方：🖼 文件名列表
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if app.has_attachments() {
+        let names = app
+            .attachments
+            .iter()
+            .map(|pending| pending.name.as_str())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        lines.push(Line::from(Span::styled(
+            format!("🖼 {names}"),
+            theme::accent(),
+        )));
+    }
+    lines.extend(
+        app.input()
+            .split('\n')
+            .map(|text| Line::from(Span::raw(text.to_string()))),
+    );
     // 行数超过可见高度时滚动到光标所在行
-    let lines: Vec<Line<'static>> = app
-        .input()
-        .split('\n')
-        .map(|text| Line::from(Span::raw(text.to_string())))
-        .collect();
+    let attachment_offset = u16::from(app.has_attachments());
     let (cursor_row, cursor_col) = app.cursor_position();
+    let cursor_row = cursor_row + attachment_offset;
     let visible = inner.height.max(1);
     let scroll = cursor_row.saturating_sub(visible - 1);
     frame.render_widget(

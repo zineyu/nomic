@@ -107,6 +107,12 @@ pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
         usage: "/skill:<name>（/skill 列出可用 skill）",
     },
     SlashCommand {
+        name: "image",
+        aliases: &[],
+        summary: "为下一条消息附加图片（可多次附加；png/jpeg/gif/webp）",
+        usage: "/image:<路径>（/image <路径> 亦可）",
+    },
+    SlashCommand {
         name: "quit",
         aliases: &["exit"],
         summary: "退出 TUI",
@@ -138,6 +144,8 @@ pub(super) enum SlashAction {
     Skill(Option<String>),
     /// `/compact [聚焦指令]` 手动压缩上下文
     Compact(Option<String>),
+    /// `/image <路径>` 为下一条消息附加图片
+    Image(String),
 }
 
 /// 解析一行输入为 slash 命令。
@@ -161,6 +169,22 @@ pub(super) fn parse_slash(input: &str) -> SlashParse {
             ));
         }
         // `/compactxxx`：落入常规解析报未知命令
+    }
+    // `/image` 特判：参数是文件路径（可含空格），`/image 路径` 与
+    // `/image:路径` 两种形式都接受
+    if let Some(tail) = rest.strip_prefix("image") {
+        if let Some(path) = tail.strip_prefix(':').or_else(|| tail.strip_prefix(' ')) {
+            let path = path.trim();
+            return if path.is_empty() {
+                SlashParse::InvalidUsage(image_usage())
+            } else {
+                SlashParse::Known(SlashAction::Image(path.to_string()))
+            };
+        }
+        if tail.is_empty() {
+            return SlashParse::InvalidUsage(image_usage());
+        }
+        // `/imagexxx`：落入常规解析报未知命令
     }
     let (name, arg, junk) = if let Some((name, arg)) = rest.split_once(':') {
         (
@@ -275,6 +299,15 @@ pub(super) struct ResumePicker {
     pub(super) selected: usize,
 }
 
+/// 暂存的图片附件（`/image <路径>` 载入，随下一条 prompt 一起发送）。
+#[derive(Debug)]
+pub(super) struct PendingImage {
+    /// 展示名（文件名）
+    pub(super) name: String,
+    /// 图片内容块（base64 内联）
+    pub(super) image: nomic_ai::ImageContent,
+}
+
 /// TUI 应用状态。
 #[derive(Debug)]
 pub(super) struct App {
@@ -287,6 +320,8 @@ pub(super) struct App {
     completion: Option<Completion>,
     /// `/resume` session 选择器（打开时接管键位）
     resume_picker: Option<ResumePicker>,
+    /// 暂存的图片附件（随下一条 prompt 发送）
+    pub(super) attachments: Vec<PendingImage>,
     /// 从底部向上滚动的行数（0 = 跟随最新内容）
     pub(super) scroll: u16,
     /// 聊天区最大可上滚行数（渲染时更新，状态栏滚动位置显示用）
@@ -313,6 +348,7 @@ impl App {
             cursor: 0,
             completion: None,
             resume_picker: None,
+            attachments: Vec::new(),
             scroll: 0,
             scroll_max: 0,
             running: false,
@@ -578,6 +614,25 @@ impl App {
         Some(text)
     }
 
+    /// 暂存一张图片附件，返回当前附件总数。
+    pub(super) fn stage_image(&mut self, name: String, image: nomic_ai::ImageContent) -> usize {
+        self.attachments.push(PendingImage { name, image });
+        self.attachments.len()
+    }
+
+    /// 是否有暂存的图片附件。
+    pub(super) const fn has_attachments(&self) -> bool {
+        !self.attachments.is_empty()
+    }
+
+    /// 取出全部暂存附件（prompt 提交时随文本一起带走）。
+    pub(super) fn take_attachments(&mut self) -> Vec<nomic_ai::ImageContent> {
+        self.attachments
+            .drain(..)
+            .map(|pending| pending.image)
+            .collect()
+    }
+
     // ── slash 命令补全 ──────────────────────────────────────────────────────
 
     /// 当前补全弹层（渲染用）。
@@ -804,10 +859,30 @@ fn insert_block(blocks: &mut Vec<Block>, index: usize, block: Block) {
     }
 }
 
+/// `/image` 的用法提示（以 SLASH_COMMANDS 为唯一来源）。
+fn image_usage() -> &'static str {
+    SLASH_COMMANDS
+        .iter()
+        .find(|command| command.name == "image")
+        .map_or("/image:<路径>", |command| command.usage)
+}
+
 fn user_text(content: &UserMessageContent) -> String {
     match content {
         UserMessageContent::Text(text) => text.clone(),
-        UserMessageContent::Blocks(blocks) => blocks_text(blocks),
+        UserMessageContent::Blocks(blocks) => {
+            let text = blocks_text(blocks);
+            let images = blocks
+                .iter()
+                .filter(|block| matches!(block, UserContent::Image(_)))
+                .count();
+            if images == 0 {
+                text
+            } else {
+                // 图片块无法内联渲染，以占位行标示（与块序一致：图片在前）
+                format!("🖼 图片 ×{images}\n{text}")
+            }
+        }
     }
 }
 
@@ -1312,6 +1387,69 @@ mod tests {
             parse_slash("/compactx"),
             SlashParse::Unknown("compactx".to_string())
         );
+    }
+
+    #[test]
+    fn parse_slash_image_takes_path_argument() {
+        assert_eq!(
+            parse_slash("/image:pic.png"),
+            SlashParse::Known(SlashAction::Image("pic.png".to_string()))
+        );
+        // 空白分隔形式同样接受（路径可含空格）
+        assert_eq!(
+            parse_slash("/image my pics/a.png"),
+            SlashParse::Known(SlashAction::Image("my pics/a.png".to_string()))
+        );
+        // 无参数报用法
+        assert!(matches!(parse_slash("/image"), SlashParse::InvalidUsage(_)));
+        assert!(matches!(
+            parse_slash("/image "),
+            SlashParse::InvalidUsage(_)
+        ));
+        // 前缀不等于命令名：/imagex 报未知
+        assert_eq!(
+            parse_slash("/imagex"),
+            SlashParse::Unknown("imagex".to_string())
+        );
+    }
+
+    #[test]
+    fn staged_attachments_follow_next_prompt() {
+        let mut app = app();
+        let image = || nomic_ai::ImageContent {
+            data: "aA==".to_string(),
+            mime_type: "image/png".to_string(),
+        };
+        assert!(!app.has_attachments());
+        assert_eq!(app.stage_image("a.png".to_string(), image()), 1);
+        assert_eq!(app.stage_image("b.png".to_string(), image()), 2);
+        assert!(app.has_attachments());
+        let taken = app.take_attachments();
+        assert_eq!(taken.len(), 2);
+        assert!(!app.has_attachments());
+        // 取空后再次取出为空
+        assert!(app.take_attachments().is_empty());
+    }
+
+    #[test]
+    fn user_message_with_images_shows_placeholder() {
+        let message = UserMessageContent::Blocks(vec![
+            UserContent::Image(nomic_ai::ImageContent {
+                data: "aA==".to_string(),
+                mime_type: "image/png".to_string(),
+            }),
+            UserContent::Text(TextContent {
+                text: "描述这张图".to_string(),
+                text_signature: None,
+            }),
+        ]);
+        assert_eq!(user_text(&message), "🖼 图片 ×1\n描述这张图");
+        // 纯文本块列表不加占位行
+        let text_only = UserMessageContent::Blocks(vec![UserContent::Text(TextContent {
+            text: "hi".to_string(),
+            text_signature: None,
+        })]);
+        assert_eq!(user_text(&text_only), "hi");
     }
 
     #[test]

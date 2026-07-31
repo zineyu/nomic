@@ -60,6 +60,23 @@ nomic resume            # 交互选择器（↑/↓ 或 j/k 移动，Enter 确�
 nomic sessions list
 ```
 
+## 图片输入
+
+print 模式用 `--image` 附带图片（可重复；png/jpeg/gif/webp）：
+
+```bash
+nomic -p "这张截图里有什么错误" --image screenshot.png
+```
+
+交互 TUI 用 `/image` 为下一条消息暂存附件（可多次附加，输入框上方显示
+待发送列表，Enter 随文本一起发送）：
+
+```text
+/image:/tmp/screenshot.png
+```
+
+启动时的 `--image` 在 TUI 模式同样生效，作为首轮消息的暂存附件。
+
 ## 上下文压缩
 
 对话逼近模型上下文窗口时自动把较早消息压缩为结构化摘要（保留近期消息原样，
@@ -214,12 +231,12 @@ check               # 与 CI 等价的全部检查：fmt / clippy / nextest / do
 - M1：agent loop + 四工具 + print 模式（ADR-0001）
 - M2（部分）：SQLite session 存储与 resume（树形 schema 已就位）、交互 TUI（ADR-0002）、用户级配置文件、上下文压缩（ADR-0005）
 - M3（部分）：AGENTS.md 加载（向上发现，注入系统提示词）、skills（ADR-0003）
+- M4：图片输入（`--image <路径>` 附件；TUI `/image <路径>` 为下一条消息暂存图片）
 
 待完成：
 
 - M2（剩余）：显式 branch 创建/选择/浏览（active leaf 语义未定，见 ADR-0001 修订）、prompt caching
 - M3（剩余）：compaction、prompt templates
-- M4：图片输入（provider 与消息类型已预留，缺 CLI/agent 入口）
 
 ## 新增 crate
 

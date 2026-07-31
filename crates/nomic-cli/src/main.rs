@@ -11,6 +11,7 @@
 mod bootstrap;
 mod config;
 mod context_files;
+mod images;
 mod logging;
 mod print;
 mod sessions;
@@ -28,6 +29,10 @@ pub(crate) struct Cli {
     /// 要发送的 prompt（print 模式，非交互；缺省进入交互 TUI）
     #[arg(short, long, value_name = "TEXT")]
     pub(crate) print: Option<String>,
+
+    /// 随 prompt 发送的图片附件（可重复传入；png/jpeg/gif/webp）
+    #[arg(long, value_name = "PATH")]
+    pub(crate) image: Vec<std::path::PathBuf>,
 
     /// provider：anthropic、openai，或 config.toml 的 `[providers]` 中定义的自定义名字
     #[arg(long)]

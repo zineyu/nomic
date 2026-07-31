@@ -19,6 +19,7 @@ use crate::{Cli, bootstrap};
 /// 运行 print 模式。
 pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
     let boot = bootstrap::bootstrap(cli).await?;
+    let images = load_images(&cli.image)?;
     if let Some((_, id)) = &boot.session {
         eprintln!(
             "\x1b[2msession {}（{} 条历史消息）\x1b[0m",
@@ -51,7 +52,11 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
 
     let cancel_for_prompt = cancel.clone();
     let prompt = prompt.to_string();
-    let run = tokio::spawn(async move { agent.prompt(&prompt, cancel_for_prompt).await });
+    let run = tokio::spawn(async move {
+        agent
+            .prompt_with_images(&prompt, &images, cancel_for_prompt)
+            .await
+    });
 
     let saw_error = drain_events(&mut events, boot.session.as_ref()).await;
 
@@ -63,6 +68,14 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
         bail!("{error}");
     }
     Ok(())
+}
+
+/// 加载全部 `--image` 附件；任一失败则整体中止（prompt 未发送）。
+fn load_images(paths: &[std::path::PathBuf]) -> Result<Vec<nomic_ai::ImageContent>> {
+    paths
+        .iter()
+        .map(|path| crate::images::load_image(path))
+        .collect()
 }
 
 /// 消费 agent 事件流：流式输出到 stdout/stderr，消息定稿点落库。

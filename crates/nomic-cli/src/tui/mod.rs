@@ -20,9 +20,10 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use crossterm::{
     event::{
-        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
-        KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseEventKind,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+        KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{
@@ -184,6 +185,8 @@ enum Wake {
     /// 鼠标滚轮
     ScrollUp,
     ScrollDown,
+    /// bracketed paste（终端粘贴/拖入的整段文本）
+    Paste(String),
     /// agent 事件
     AgentEvent(AgentEvent),
     /// driver 任务完成（prompt 或手动压缩）
@@ -213,6 +216,7 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
         }
         Wake::ScrollUp => app.scroll_up(3),
         Wake::ScrollDown => app.scroll_down(3),
+        Wake::Paste(text) => handle_paste(app, &text),
         Wake::AgentEvent(event) => {
             match &event {
                 AgentEvent::MessageEnd(message) => {
@@ -280,6 +284,7 @@ async fn next_wake(
         } => Wake::Tick,
         maybe_event = term_events.next() => match maybe_event {
             Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => Wake::Key(key),
+            Some(Ok(Event::Paste(text))) => Wake::Paste(text),
             Some(Ok(Event::Mouse(mouse))) => match mouse.kind {
                 MouseEventKind::ScrollUp => Wake::ScrollUp,
                 MouseEventKind::ScrollDown => Wake::ScrollDown,
@@ -497,6 +502,69 @@ async fn handle_slash(
     }
 }
 
+/// 粘贴整段文本（bracketed paste）：形似图片路径的转为附件，其余原样插入输入框。
+///
+/// 「形似」只按扩展名初判（裸路径 / `file://` URI / 引号包裹均可），
+/// 能否加载由 [`crate::images::load_image`] 复核；多行或普通文本走插入。
+fn handle_paste(app: &mut App, text: &str) {
+    if let Some(path) = paste_image_path(text) {
+        match crate::images::load_image(&path) {
+            Ok(image) => {
+                let name = attachment_name(&path);
+                let count = app.stage_image(name.clone(), image);
+                app.push_system(format!(
+                    "已附加图片 {name}（共 {count} 张，随下一条消息发送）。"
+                ));
+            }
+            Err(error) => app.notice = Some(format!("附加图片失败：{error:#}")),
+        }
+    } else {
+        app.insert_str(text);
+    }
+}
+
+/// 从粘贴文本中识别图片路径：单行、支持 file:// URI（含百分号解码）与引号包裹。
+fn paste_image_path(text: &str) -> Option<std::path::PathBuf> {
+    let text = text.trim();
+    if text.is_empty() || text.contains(['\n', '\t']) {
+        return None;
+    }
+    let candidate = if let Some(uri) = text.strip_prefix("file://") {
+        // file:///abs/path 与 file://localhost/abs/path
+        let uri = uri.strip_prefix("localhost").unwrap_or(uri);
+        percent_decode(uri)?
+    } else {
+        text.trim_matches(['\'', '"']).to_string()
+    };
+    let path = std::path::PathBuf::from(candidate);
+    if crate::images::is_supported_image_path(&path) {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+/// 百分号解码（file:// URI 中的 %20 等）；非法序列或结果非 UTF-8 返回 None。
+fn percent_decode(input: &str) -> Option<String> {
+    if !input.contains('%') {
+        return Some(input.to_string());
+    }
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = input.get(index + 1..index + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 /// Ctrl+V 粘贴剪贴板：图片暂存为附件，文本插入输入框。
 ///
 /// 剪贴板读取可能阻塞在 X11/Wayland 往返上，放 `spawn_blocking` 中执行；
@@ -649,7 +717,14 @@ struct TerminalGuard;
 impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+        // bracketed paste：终端粘贴/拖入的内容整体作为 Event::Paste 上报，
+        // 便于识别图片路径；不支持的终端忽略该序列，退化为逐键事件
+        execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        )?;
         // 启用 kitty 键盘增强协议，让支持它的终端把 Ctrl+Enter 与 Enter
         // 区分开上报；不支持的终端忽略该序列，Ctrl+Enter 退化为提交
         if matches!(supports_keyboard_enhancement(), Ok(true)) {
@@ -668,6 +743,7 @@ impl TerminalGuard {
             io::stdout(),
             LeaveAlternateScreen,
             DisableMouseCapture,
+            DisableBracketedPaste,
             PopKeyboardEnhancementFlags
         );
     }
@@ -686,4 +762,69 @@ fn install_panic_hook() {
         TerminalGuard::restore();
         default_hook(info);
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{paste_image_path, percent_decode};
+
+    #[test]
+    fn paste_recognizes_plain_image_path() {
+        assert_eq!(
+            paste_image_path("/tmp/pic.png"),
+            Some(PathBuf::from("/tmp/pic.png"))
+        );
+        // 相对路径与大写扩展名
+        assert_eq!(
+            paste_image_path("shots/UPPER.PNG"),
+            Some(PathBuf::from("shots/UPPER.PNG"))
+        );
+    }
+
+    #[test]
+    fn paste_recognizes_file_uri_and_decodes() {
+        assert_eq!(
+            paste_image_path("file:///tmp/my%20pics/a%20b.png"),
+            Some(PathBuf::from("/tmp/my pics/a b.png"))
+        );
+        assert_eq!(
+            paste_image_path("file://localhost/tmp/pic.webp"),
+            Some(PathBuf::from("/tmp/pic.webp"))
+        );
+    }
+
+    #[test]
+    fn paste_recognizes_quoted_path() {
+        assert_eq!(
+            paste_image_path("'/tmp/with space/pic.jpg'"),
+            Some(PathBuf::from("/tmp/with space/pic.jpg"))
+        );
+        assert_eq!(
+            paste_image_path("\"/tmp/pic.gif\""),
+            Some(PathBuf::from("/tmp/pic.gif"))
+        );
+    }
+
+    #[test]
+    fn paste_ignores_non_image_text() {
+        assert_eq!(paste_image_path("hello world"), None);
+        assert_eq!(paste_image_path("/tmp/notes.txt"), None);
+        assert_eq!(paste_image_path("multi\nline /tmp/pic.png"), None);
+        assert_eq!(paste_image_path(""), None);
+        // 非法百分号序列不视为路径
+        assert_eq!(paste_image_path("file:///tmp/%zz.png"), None);
+    }
+
+    #[test]
+    fn percent_decode_roundtrip() {
+        assert_eq!(
+            percent_decode("/a%20b/%E4%B8%AD.png"),
+            Some("/a b/中.png".to_string())
+        );
+        assert_eq!(percent_decode("no-escape"), Some("no-escape".to_string()));
+        assert_eq!(percent_decode("%4"), None);
+        assert_eq!(percent_decode("%xy"), None);
+    }
 }

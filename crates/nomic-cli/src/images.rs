@@ -79,6 +79,11 @@ pub fn image_from_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<ImageCont
     })
 }
 
+/// 路径是否指向支持的图片类型（仅按扩展名初判；内容由 [`load_image`] 复核）。
+pub fn is_supported_image_path(path: &Path) -> bool {
+    extension_mime(path).is_some()
+}
+
 /// 按扩展名初判 MIME（大小写不敏感）。
 fn extension_mime(path: &Path) -> Option<&'static str> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();

@@ -75,6 +75,10 @@ nomic -p "这张截图里有什么错误" --image screenshot.png
 /image:/tmp/screenshot.png
 ```
 
+也可以直接 `Ctrl+V` 粘贴：剪贴板里是图片（截图工具、文件管理器复制的
+图片内容等）时暂存为附件，是文本时插入输入框。支持 macOS / Windows /
+X11 / Wayland。
+
 启动时的 `--image` 在 TUI 模式同样生效，作为首轮消息的暂存附件。
 
 ## 上下文压缩

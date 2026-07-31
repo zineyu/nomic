@@ -557,6 +557,17 @@ impl App {
         self.refresh_completion();
     }
 
+    /// 粘贴一段文本到光标处（可含换行；`\r\n` 统一为 `\n`），随后重算补全。
+    pub(super) fn insert_str(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        if text.is_empty() {
+            return;
+        }
+        self.input.insert_str(self.cursor, &text);
+        self.cursor += text.len();
+        self.refresh_completion();
+    }
+
     /// Shift+Enter 手动换行：换行是空白字符，补全弹层随之关闭。
     pub(super) fn insert_newline(&mut self) {
         self.insert_char('\n');

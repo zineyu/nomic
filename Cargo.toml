@@ -82,6 +82,12 @@ clap = { version = "4.6", features = ["derive"] }
 # ── 图片附件 base64 编码（nomic-cli）────────────────────────────────────────
 base64 = "0.22"
 
+# ── 剪贴板图片粘贴（nomic-cli TUI）──────────────────────────────────────────
+# wayland-data-control：Wayland 剪贴板优先于 X11（运行时 dlopen，无构建期依赖）
+arboard = { version = "3.6", features = ["wayland-data-control"] }
+# 剪贴板 RGBA 像素 → PNG 编码
+png = "0.18"
+
 # ── 文本处理（nomic-tools）─────────────────────────────────────────────────
 similar = "3"
 unicode-normalization = "0.1"

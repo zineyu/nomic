@@ -52,6 +52,33 @@ pub fn load_image(path: &Path) -> Result<ImageContent> {
     })
 }
 
+/// 把剪贴板 RGBA8 像素编码为 PNG 内容块。
+pub fn image_from_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<ImageContent> {
+    let expected = width as usize * height as usize * 4;
+    if rgba.len() != expected {
+        bail!("像素数据长度不符：期望 {expected}，实际 {}", rgba.len());
+    }
+    let mut buf = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut buf, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().context("PNG 编码失败")?;
+        writer.write_image_data(rgba).context("PNG 编码失败")?;
+        writer.finish().context("PNG 编码失败")?;
+    }
+    if buf.len() > MAX_IMAGE_BYTES {
+        bail!(
+            "剪贴板图片超过大小上限（{} MiB）",
+            MAX_IMAGE_BYTES / 1024 / 1024
+        );
+    }
+    Ok(ImageContent {
+        data: STANDARD.encode(&buf),
+        mime_type: "image/png".to_string(),
+    })
+}
+
 /// 按扩展名初判 MIME（大小写不敏感）。
 fn extension_mime(path: &Path) -> Option<&'static str> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
@@ -142,5 +169,23 @@ mod tests {
         let (_dir, path) = write_temp("png", &bytes);
         let error = load_image(&path).expect_err("oversized");
         assert!(error.to_string().contains("大小上限"));
+    }
+
+    #[test]
+    fn rgba_encodes_to_loadable_png() {
+        // 2x1 红点 + 绿点
+        let rgba = [255, 0, 0, 255, 0, 255, 0, 255];
+        let image = image_from_rgba(2, 1, &rgba).expect("encode");
+        assert_eq!(image.mime_type, "image/png");
+        // 编码结果经 load_image 全链路复核（魔数 + base64）
+        let png = STANDARD.decode(&image.data).expect("base64");
+        let (_dir, path) = write_temp("png", &png);
+        let reloaded = load_image(&path).expect("reload");
+        assert_eq!(reloaded, image);
+    }
+
+    #[test]
+    fn rgba_rejects_wrong_length() {
+        assert!(image_from_rgba(2, 2, &[0; 3]).is_err());
     }
 }

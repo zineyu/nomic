@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+arboard.workspace = true
 base64.workspace = true
 clap.workspace = true
 crossterm.workspace = true
@@ -24,6 +25,7 @@ nomic-core.workspace = true
 nomic-session.workspace = true
 nomic-skills.workspace = true
 nomic-tools.workspace = true
+png.workspace = true
 pulldown-cmark.workspace = true
 ratatui.workspace = true
 serde.workspace = true

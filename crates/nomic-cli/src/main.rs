@@ -9,6 +9,7 @@
 //! `sessions`。
 
 mod bootstrap;
+mod clipboard;
 mod config;
 mod context_files;
 mod images;

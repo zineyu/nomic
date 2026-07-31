@@ -329,6 +329,7 @@ async fn handle_key(
             }
         }
         (KeyCode::Tab, _) => app.tab_complete(),
+        (KeyCode::Char('v'), KeyModifiers::CONTROL) => paste_clipboard(app).await,
         // 换行必须在提交之前匹配；依赖 kitty 键盘增强协议区分两者
         (KeyCode::Enter, KeyModifiers::SHIFT) => app.insert_newline(),
         (KeyCode::Enter, _) => {
@@ -493,6 +494,26 @@ async fn handle_slash(
                 }
             }
         }
+    }
+}
+
+/// Ctrl+V 粘贴剪贴板：图片暂存为附件，文本插入输入框。
+///
+/// 剪贴板读取可能阻塞在 X11/Wayland 往返上，放 `spawn_blocking` 中执行；
+/// 期间事件循环不阻塞，结果返回前界面照常重绘。
+async fn paste_clipboard(app: &mut App) {
+    match tokio::task::spawn_blocking(crate::clipboard::read).await {
+        Ok(Ok(Some(crate::clipboard::ClipboardContent::Image(image)))) => {
+            let name = format!("clipboard-{}.png", nomic_ai::now_millis());
+            let count = app.stage_image(name.clone(), image);
+            app.push_system(format!(
+                "已粘贴图片 {name}（共 {count} 张，随下一条消息发送）。"
+            ));
+        }
+        Ok(Ok(Some(crate::clipboard::ClipboardContent::Text(text)))) => app.insert_str(&text),
+        Ok(Ok(None)) => app.notice = Some("剪贴板中没有图片或文本".to_string()),
+        Ok(Err(error)) => app.notice = Some(format!("粘贴失败：{error:#}")),
+        Err(join) => app.notice = Some(format!("粘贴失败：{join}")),
     }
 }
 

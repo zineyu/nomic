@@ -25,7 +25,7 @@ const CHAT_H_MARGIN: u16 = 1;
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let chunks = Layout::vertical([
         Constraint::Min(3),
-        Constraint::Length(3),
+        Constraint::Length(input_height(app)),
         Constraint::Length(1),
     ])
     .split(frame.area());
@@ -221,7 +221,15 @@ fn wrap_lines(lines: &[Line<'static>], width: u16) -> Vec<Line<'static>> {
     out
 }
 
-/// 输入框（单行）+ 光标定位。
+/// 输入框内容区行数上限：高度随行数伸缩，超过后内部滚动。
+const MAX_INPUT_LINES: u16 = 5;
+
+/// 输入框总高度（含上下边框）：1..=5 行内容 + 2 行边框。
+fn input_height(app: &App) -> u16 {
+    app.line_count().min(MAX_INPUT_LINES) + 2
+}
+
+/// 输入框（多行，高度随行数变化，最多 5 行）+ 光标定位。
 fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // 三态边框：运行中（黄 + spinner）/ 补全打开（accent）/ 空闲（暗色）
     let (title, border_style) = if app.running {
@@ -247,7 +255,10 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )
     } else {
         (
-            Line::from(Span::styled("输入 · Enter 发送", theme::dim())),
+            Line::from(Span::styled(
+                "输入 · Enter 发送 · Shift+Enter 换行",
+                theme::dim(),
+            )),
             theme::dim(),
         )
     };
@@ -256,21 +267,24 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .border_style(border_style)
         .title(title);
     let inner = border.inner(area);
-    let content = Line::from(vec![
-        Span::styled(PROMPT, theme::user_marker()),
-        Span::raw(app.input().to_string()),
-    ]);
-    frame.render_widget(Paragraph::new(content).block(border), area);
-    // 光标定位在提示符之后的文本处；单行输入，贴右边界截断（不横向滚动）
-    let text_width = inner.width.saturating_sub(PROMPT_WIDTH);
-    let x = inner.x + PROMPT_WIDTH + app.cursor_width().min(text_width.saturating_sub(1));
-    frame.set_cursor_position(Position::new(x, inner.y));
+    // 行数超过可见高度时滚动到光标所在行
+    let lines: Vec<Line<'static>> = app
+        .input()
+        .split('\n')
+        .map(|text| Line::from(Span::raw(text.to_string())))
+        .collect();
+    let (cursor_row, cursor_col) = app.cursor_position();
+    let visible = inner.height.max(1);
+    let scroll = cursor_row.saturating_sub(visible - 1);
+    frame.render_widget(
+        Paragraph::new(lines).block(border).scroll((scroll, 0)),
+        area,
+    );
+    // 光标定位在文本处；长行贴右边界截断（不横向滚动）
+    let x = inner.x + cursor_col.min(inner.width.saturating_sub(1));
+    let y = inner.y + (cursor_row - scroll).min(visible - 1);
+    frame.set_cursor_position(Position::new(x, y));
 }
-
-/// 输入框内的提示符。
-const PROMPT: &str = "❯ ";
-/// 提示符的显示宽度（`❯` + 空格）。
-const PROMPT_WIDTH: u16 = 2;
 
 /// 状态栏：左侧模型徽标 + session + 告警；右侧滚动位置 + 键位提示。
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {

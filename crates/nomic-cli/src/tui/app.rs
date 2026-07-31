@@ -279,7 +279,7 @@ pub(super) struct ResumePicker {
 #[derive(Debug)]
 pub(super) struct App {
     pub(super) items: Vec<ChatItem>,
-    /// 输入缓冲（单行）
+    /// 输入缓冲（可多行，`\n` 为 Shift+Enter 插入的手动换行）
     input: String,
     /// 光标位置（字节索引，始终落在 char 边界）
     cursor: usize,
@@ -498,15 +498,32 @@ impl App {
         &self.input
     }
 
-    /// 光标前文本的显示宽度（输入框渲染光标用）。
-    pub(super) fn cursor_width(&self) -> u16 {
-        u16::try_from(UnicodeWidthStr::width(&self.input[..self.cursor])).unwrap_or(u16::MAX)
+    /// 光标位置（逻辑行号, 行内显示宽度）：多行输入框渲染光标用。
+    pub(super) fn cursor_position(&self) -> (u16, u16) {
+        let before = &self.input[..self.cursor];
+        let row = before.bytes().filter(|b| *b == b'\n').count();
+        let col = before.rsplit('\n').next().map_or(0, UnicodeWidthStr::width);
+        (
+            u16::try_from(row).unwrap_or(u16::MAX),
+            u16::try_from(col).unwrap_or(u16::MAX),
+        )
+    }
+
+    /// 输入的逻辑行数（空输入为 1），输入框高度据此伸缩。
+    pub(super) fn line_count(&self) -> u16 {
+        let count = self.input.bytes().filter(|b| *b == b'\n').count() + 1;
+        u16::try_from(count).unwrap_or(u16::MAX)
     }
 
     pub(super) fn insert_char(&mut self, c: char) {
         self.input.insert(self.cursor, c);
         self.cursor += c.len_utf8();
         self.refresh_completion();
+    }
+
+    /// Shift+Enter 手动换行：换行是空白字符，补全弹层随之关闭。
+    pub(super) fn insert_newline(&mut self) {
+        self.insert_char('\n');
     }
 
     pub(super) fn backspace(&mut self) {
@@ -1075,6 +1092,45 @@ mod tests {
         };
         assert_eq!(first.status, ToolStatus::Failed);
         assert_eq!(second.status, ToolStatus::Running);
+    }
+
+    #[test]
+    fn multiline_input_tracks_lines_and_cursor() {
+        let mut app = app();
+        assert_eq!(app.line_count(), 1);
+        assert_eq!(app.cursor_position(), (0, 0));
+
+        for c in "你好".chars() {
+            app.insert_char(c);
+        }
+        app.insert_newline();
+        for c in "ab".chars() {
+            app.insert_char(c);
+        }
+        assert_eq!(app.input(), "你好\nab");
+        assert_eq!(app.line_count(), 2);
+        // 光标在第二行末尾：行号 1，行内宽度 2
+        assert_eq!(app.cursor_position(), (1, 2));
+
+        // 光标移回第一行行尾（CJK 宽度 4）
+        app.cursor_left();
+        app.cursor_left();
+        app.cursor_left();
+        assert_eq!(app.cursor_position(), (0, 4));
+
+        // 多行输入可整体提交
+        assert_eq!(app.take_input().as_deref(), Some("你好\nab"));
+        assert_eq!(app.line_count(), 1);
+    }
+
+    #[test]
+    fn newline_dismisses_completion() {
+        let mut app = app();
+        app.insert_char('/');
+        assert!(app.completion().is_some());
+        // 换行是空白字符，slash 补全随之关闭
+        app.insert_newline();
+        assert!(app.completion().is_none());
     }
 
     #[test]

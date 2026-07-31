@@ -21,10 +21,14 @@ use anyhow::{Context as _, Result};
 use crossterm::{
     event::{
         DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
-        KeyEventKind, KeyModifiers, MouseEventKind,
+        KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseEventKind,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+        supports_keyboard_enhancement,
+    },
 };
 use futures::StreamExt as _;
 use nomic_ai::Message;
@@ -323,6 +327,8 @@ async fn handle_key(
             }
         }
         (KeyCode::Tab, _) => app.tab_complete(),
+        // 换行必须在提交之前匹配；依赖 kitty 键盘增强协议区分两者
+        (KeyCode::Enter, KeyModifiers::SHIFT) => app.insert_newline(),
         (KeyCode::Enter, _) => {
             if app.running {
                 app.notice = Some("运行中，等待结束后再发送".to_string());
@@ -579,13 +585,26 @@ impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
         execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+        // 启用 kitty 键盘增强协议，让支持它的终端把 Ctrl+Enter 与 Enter
+        // 区分开上报；不支持的终端忽略该序列，Ctrl+Enter 退化为提交
+        if matches!(supports_keyboard_enhancement(), Ok(true)) {
+            execute!(
+                io::stdout(),
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            )?;
+        }
         install_panic_hook();
         Ok(Self)
     }
 
     fn restore() {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        let _ = execute!(
+            io::stdout(),
+            LeaveAlternateScreen,
+            DisableMouseCapture,
+            PopKeyboardEnhancementFlags
+        );
     }
 }
 

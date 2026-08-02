@@ -15,7 +15,7 @@ pub use agent::{Agent, AgentError, AgentEvent};
 pub use builder::{AgentBuilder, Set, Unset};
 pub use compaction::{
     CompactRequest, Compaction, CompactionError, CompactionSettings, estimate_context_tokens,
-    is_summary_message, should_compact, summary_message,
+    is_summary_message, should_compact, summary_message, usage_context_tokens,
 };
 pub use hooks::{
     AfterToolCall, AfterToolCallOverride, AgentHooks, BeforeToolCall, NoopHooks, ToolCallDecision,

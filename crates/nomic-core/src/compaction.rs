@@ -191,7 +191,9 @@ fn estimate_tokens(message: &Message) -> u64 {
 }
 
 /// 一次 assistant 响应代表的总上下文 token（与 pi 的 `calculateContextTokens` 一致）。
-const fn usage_tokens(usage: &Usage) -> u64 {
+///
+/// 除压缩估算外，交互端（如 TUI 状态栏的上下文用量显示）也以此为锚点口径。
+pub const fn usage_context_tokens(usage: &Usage) -> u64 {
     if usage.total_tokens > 0 {
         usage.total_tokens
     } else {
@@ -210,7 +212,7 @@ pub fn estimate_context_tokens(messages: &[Message]) -> u64 {
                 if !matches!(
                     assistant.stop_reason,
                     nomic_ai::StopReason::Error | nomic_ai::StopReason::Aborted
-                ) && usage_tokens(&assistant.usage) > 0
+                ) && usage_context_tokens(&assistant.usage) > 0
         )
     });
     let Some(index) = anchor else {
@@ -219,7 +221,7 @@ pub fn estimate_context_tokens(messages: &[Message]) -> u64 {
     let Message::Assistant(assistant) = &messages[index] else {
         unreachable!("anchor is an assistant message");
     };
-    usage_tokens(&assistant.usage)
+    usage_context_tokens(&assistant.usage)
         + messages[index + 1..]
             .iter()
             .map(estimate_tokens)

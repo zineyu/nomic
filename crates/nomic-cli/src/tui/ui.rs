@@ -297,7 +297,7 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.set_cursor_position(Position::new(x, y));
 }
 
-/// 状态栏：左侧模型徽标 + session + 告警；右侧滚动位置 + 键位提示。
+/// 状态栏：左侧模型徽标 + session + 上下文用量 + 告警；右侧滚动位置 + 键位提示。
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let session = app.session_id().map_or_else(
         || "无 session".to_string(),
@@ -306,6 +306,7 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mut left = vec![
         Span::styled(format!(" {} ", app.model_name()), theme::selected()),
         Span::styled(format!(" {session} "), theme::dim()),
+        context_usage_span(app),
     ];
     if let Some(notice) = app.notice() {
         left.push(Span::styled(format!("⚠ {notice} "), theme::warn()));
@@ -328,6 +329,41 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         frame.render_widget(Paragraph::new(right_line).alignment(Alignment::Right), area);
     }
     frame.render_widget(Paragraph::new(left_line), area);
+}
+
+/// 状态栏上下文用量：`ctx 12.3k/200k·6%`；窗口未知（0）时不显示占比。
+/// 用量逼近窗口（≥80%）时以警告色提示。
+fn context_usage_span(app: &App) -> Span<'static> {
+    let tokens = app.context_tokens();
+    let window = app.context_window();
+    if window == 0 {
+        return Span::styled(format!(" ctx {} ", format_tokens(tokens)), theme::dim());
+    }
+    let percent = tokens.saturating_mul(100) / window;
+    let text = format!(
+        " ctx {}/{}·{}% ",
+        format_tokens(tokens),
+        format_tokens(window),
+        percent
+    );
+    let style = if percent >= 80 {
+        theme::warn()
+    } else {
+        theme::dim()
+    };
+    Span::styled(text, style)
+}
+
+/// token 数紧凑格式：<1k 原样，<10k 一位小数（`8.4k`），其余取整（`200k`）。
+fn format_tokens(tokens: u64) -> String {
+    if tokens < 1_000 {
+        tokens.to_string()
+    } else if tokens < 10_000 {
+        let deci_k = tokens / 100;
+        format!("{}.{}k", deci_k / 10, deci_k % 10)
+    } else {
+        format!("{}k", tokens / 1_000)
+    }
 }
 
 /// 补全弹层可见候选数上限，超出时内部滚动窗口。
@@ -466,6 +502,7 @@ mod tests {
         let mut app = App::new(
             "test-model".to_string(),
             Some("abcd1234-session".to_string()),
+            200_000,
         );
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -500,7 +537,7 @@ mod tests {
     /// 未定稿的 assistant 消息显示流式指示；运行中输入框标题含 spinner 与提示。
     #[test]
     fn shows_streaming_indicator_and_running_input_state() {
-        let mut app = App::new("test-model".to_string(), None);
+        let mut app = App::new("test-model".to_string(), None, 200_000);
         app.handle_event(&AgentEvent::MessageStart(Box::new(Message::Assistant(
             nomic_ai::AssistantMessage {
                 content: Vec::new(),
@@ -536,7 +573,7 @@ mod tests {
     /// 工具条目树形渲染：参数用语义摘要，多行结果首行 `⎿`、后续行对齐。
     #[test]
     fn renders_tool_tree_with_multiline_detail() {
-        let mut app = App::new("test-model".to_string(), None);
+        let mut app = App::new("test-model".to_string(), None, 200_000);
         app.handle_event(&AgentEvent::ToolExecutionStart {
             tool_call_id: "t1".to_string(),
             tool_name: "bash".to_string(),
@@ -570,7 +607,7 @@ mod tests {
     /// thinking 块渲染为块引用结构：`✻ Thinking` 标题 + `│` gutter，区别于工具详情。
     #[test]
     fn renders_thinking_block_with_header_and_gutter() {
-        let mut app = App::new("test-model".to_string(), None);
+        let mut app = App::new("test-model".to_string(), None, 200_000);
         app.handle_event(&AgentEvent::MessageStart(Box::new(Message::Assistant(
             nomic_ai::AssistantMessage {
                 content: Vec::new(),
@@ -614,7 +651,7 @@ mod tests {
     /// 空状态绘制欢迎页：logo、模型名与键位速查均可见。
     #[test]
     fn renders_welcome_when_empty() {
-        let mut app = App::new("test-model".to_string(), None);
+        let mut app = App::new("test-model".to_string(), None, 200_000);
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
@@ -636,7 +673,7 @@ mod tests {
     fn renders_resume_picker() {
         use super::super::app::ResumeRow;
 
-        let mut app = App::new("test-model".to_string(), None);
+        let mut app = App::new("test-model".to_string(), None, 200_000);
         app.open_resume_picker(vec![
             ResumeRow {
                 id: "01999999-aaaa".to_string(),
@@ -679,7 +716,7 @@ mod tests {
     /// assistant 文本块按 Markdown 渲染：标记符号不原样上屏，样式落到 cell。
     #[test]
     fn renders_assistant_markdown_with_styles() {
-        let mut app = App::new("test-model".to_string(), None);
+        let mut app = App::new("test-model".to_string(), None, 200_000);
         app.handle_event(&AgentEvent::MessageStart(Box::new(Message::Assistant(
             nomic_ai::AssistantMessage {
                 content: Vec::new(),
@@ -735,7 +772,7 @@ mod tests {
     /// 聊天区左右留白：assistant 输出不紧贴屏幕左缘。
     #[test]
     fn chat_content_has_left_margin() {
-        let mut app = App::new("test-model".to_string(), None);
+        let mut app = App::new("test-model".to_string(), None, 200_000);
         app.handle_event(&AgentEvent::MessageStart(Box::new(Message::Assistant(
             nomic_ai::AssistantMessage {
                 content: Vec::new(),
@@ -781,7 +818,7 @@ mod tests {
     /// 补全弹层与 System 条目也能无 panic 绘制。
     #[test]
     fn renders_completion_popup_and_system_item() {
-        let mut app = App::new("test-model".to_string(), None);
+        let mut app = App::new("test-model".to_string(), None, 200_000);
         app.push_system("本地系统提示");
         app.paste_text("/n");
         assert!(app.completion().is_some());
@@ -800,5 +837,36 @@ mod tests {
         // 弹层候选与 System 条目均可见
         assert!(compact.contains("/new"));
         assert!(compact.contains("本地系统提示"));
+    }
+
+    /// token 数紧凑格式：<1k 原样，<10k 一位小数，其余取整。
+    #[test]
+    fn formats_tokens_compactly() {
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(843), "843");
+        assert_eq!(format_tokens(1_000), "1.0k");
+        assert_eq!(format_tokens(8_432), "8.4k");
+        assert_eq!(format_tokens(12_300), "12k");
+        assert_eq!(format_tokens(200_000), "200k");
+    }
+
+    /// 状态栏显示上下文用量：token 估算 / 窗口 / 占比。
+    #[test]
+    fn status_bar_shows_context_usage() {
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        app.set_context_tokens(8_432);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let compact: String = buffer
+            .content()
+            .iter()
+            .flat_map(|cell| cell.symbol().chars())
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(compact.contains("ctx8.4k/200k·4%"), "{compact}");
     }
 }

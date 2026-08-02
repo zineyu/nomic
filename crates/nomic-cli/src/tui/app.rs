@@ -7,7 +7,7 @@
 use nomic_ai::{
     AssistantContent, AssistantEvent, Message, StopReason, UserContent, UserMessageContent,
 };
-use nomic_core::AgentEvent;
+use nomic_core::{AgentEvent, estimate_context_tokens, usage_context_tokens};
 use nomic_skills::{ActivatedSkill, SkillScope, parse_active_skill_tag};
 use unicode_width::UnicodeWidthStr;
 
@@ -402,6 +402,10 @@ pub(super) struct App {
     model_name: String,
     /// 当前 session id（未持久化时为 None）
     session_id: Option<String>,
+    /// 上下文 token 估算（状态栏用量显示；与自动压缩同一估算口径）
+    context_tokens: u64,
+    /// 模型上下文窗口（0 = 规格未知，状态栏不显示占比）
+    context_window: u64,
     /// 状态栏一次性提示（告警等）
     notice: Option<String>,
     /// spinner 帧序号（仅运行中由事件循环周期推进）
@@ -411,7 +415,11 @@ pub(super) struct App {
 }
 
 impl App {
-    pub(super) const fn new(model_name: String, session_id: Option<String>) -> Self {
+    pub(super) const fn new(
+        model_name: String,
+        session_id: Option<String>,
+        context_window: u64,
+    ) -> Self {
         Self {
             items: Vec::new(),
             input: String::new(),
@@ -425,6 +433,8 @@ impl App {
             should_quit: false,
             model_name,
             session_id,
+            context_tokens: 0,
+            context_window,
             notice: None,
             spinner: 0,
             skills: Vec::new(),
@@ -438,6 +448,7 @@ impl App {
 
     /// 把 resume 恢复的历史消息渲染为聊天条目。
     pub(super) fn load_history(&mut self, messages: &[Message]) {
+        self.context_tokens = estimate_context_tokens(messages);
         for message in messages {
             match message {
                 Message::User(user) => self.push_user_text(user_text(&user.content)),
@@ -495,12 +506,25 @@ impl App {
             },
             AgentEvent::MessageUpdate(delta) => self.apply_delta(delta),
             AgentEvent::MessageEnd(message) => {
-                if let Message::Assistant(assistant) = message.as_ref()
-                    && let Some(ChatItem::Assistant(item)) = self.items.last_mut()
-                {
-                    item.done = true;
-                    item.error =
-                        assistant_error(assistant.stop_reason, assistant.error_message.as_deref());
+                if let Message::Assistant(assistant) = message.as_ref() {
+                    // 与 estimate_context_tokens 同一锚点规则：有效响应的实际
+                    // usage 即当时上下文总量（错误/中断响应不代表有效上下文）
+                    if !matches!(
+                        assistant.stop_reason,
+                        StopReason::Error | StopReason::Aborted
+                    ) {
+                        let tokens = usage_context_tokens(&assistant.usage);
+                        if tokens > 0 {
+                            self.context_tokens = tokens;
+                        }
+                    }
+                    if let Some(ChatItem::Assistant(item)) = self.items.last_mut() {
+                        item.done = true;
+                        item.error = assistant_error(
+                            assistant.stop_reason,
+                            assistant.error_message.as_deref(),
+                        );
+                    }
                 }
             }
             AgentEvent::ToolExecutionStart {
@@ -800,6 +824,7 @@ impl App {
     /// [`Self::set_session`] / [`Self::warn`] 回报。
     pub(super) fn start_new_conversation(&mut self) {
         self.clear_items();
+        self.context_tokens = 0;
         self.push_system("已开启新对话，上下文已清空。");
     }
 
@@ -1210,6 +1235,21 @@ impl App {
         self.session_id.as_deref()
     }
 
+    /// 状态栏：当前上下文 token 估算。
+    pub(super) const fn context_tokens(&self) -> u64 {
+        self.context_tokens
+    }
+
+    /// 状态栏：模型上下文窗口（0 = 规格未知）。
+    pub(super) const fn context_window(&self) -> u64 {
+        self.context_window
+    }
+
+    /// 更新上下文 token 估算（driver 每个 job 后回报，事件循环接线）。
+    pub(super) const fn set_context_tokens(&mut self, tokens: u64) {
+        self.context_tokens = tokens;
+    }
+
     /// 状态栏一次性提示。
     pub(super) fn notice(&self) -> Option<&str> {
         self.notice.as_deref()
@@ -1395,7 +1435,7 @@ mod tests {
     }
 
     fn app() -> App {
-        App::new("test-model".to_string(), None)
+        App::new("test-model".to_string(), None, 200_000)
     }
 
     #[test]
@@ -1460,6 +1500,53 @@ mod tests {
             panic!("expected assistant item");
         };
         assert_eq!(item.error.as_deref(), Some("rate limited"));
+    }
+
+    /// 有效 assistant 响应的 usage 即上下文总量锚点；错误/中断响应不作锚点。
+    #[test]
+    fn message_end_usage_updates_context_tokens() {
+        let mut app = app();
+        assert_eq!(app.context_tokens(), 0);
+
+        let mut message = assistant_message(Vec::new(), StopReason::Stop, None);
+        let Message::Assistant(assistant) = message.as_mut() else {
+            unreachable!()
+        };
+        assistant.usage = Usage {
+            total_tokens: 12_345,
+            ..Usage::default()
+        };
+        app.handle_event(&AgentEvent::MessageEnd(message));
+        assert_eq!(app.context_tokens(), 12_345);
+
+        let mut failed = assistant_message(Vec::new(), StopReason::Error, Some("boom".to_string()));
+        let Message::Assistant(assistant) = failed.as_mut() else {
+            unreachable!()
+        };
+        assistant.usage = Usage {
+            total_tokens: 99_000,
+            ..Usage::default()
+        };
+        app.handle_event(&AgentEvent::MessageEnd(failed));
+        assert_eq!(app.context_tokens(), 12_345);
+    }
+
+    /// 恢复历史（启动 / `/resume`）时按估算口径初始化上下文用量。
+    #[test]
+    fn load_history_estimates_context_tokens() {
+        let mut app = app();
+        let text = "a".repeat(400);
+        app.load_history(&[*user_message(&text)]);
+        assert_eq!(app.context_tokens(), 100);
+    }
+
+    /// `/new` 开启新对话时上下文用量清零。
+    #[test]
+    fn new_conversation_resets_context_tokens() {
+        let mut app = app();
+        app.set_context_tokens(12_345);
+        app.start_new_conversation();
+        assert_eq!(app.context_tokens(), 0);
     }
 
     #[test]

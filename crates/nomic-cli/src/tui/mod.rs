@@ -39,7 +39,7 @@ use crossterm::{
 };
 use futures::StreamExt as _;
 use nomic_ai::Message;
-use nomic_core::{Agent, AgentEvent, Compaction};
+use nomic_core::{Agent, AgentEvent, Compaction, estimate_context_tokens};
 use nomic_session::{CompactionRecord, SessionStore};
 use nomic_skills::SkillResolver;
 use ratatui::{Terminal, backend::CrosstermBackend};
@@ -70,6 +70,8 @@ enum DriverDone {
     Prompt(Result<(), String>),
     /// 一次手动压缩结束（Ok(None) 表示无可压缩内容；Err 为摘要失败）
     Compact(Result<Option<Compaction>, String>),
+    /// 上下文 token 估算回报（每个 job 处理后发送，状态栏用量显示用）
+    Context(u64),
 }
 
 /// 运行交互 TUI。
@@ -79,6 +81,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
     let mut app = App::new(
         boot.model.name.clone(),
         boot.session.as_ref().map(|(_, id)| id.clone()),
+        boot.model.context_window,
     );
     app.load_history(&boot.history);
     // `--image` 附件在 TUI 模式同样生效：作为首轮消息的暂存附件
@@ -139,6 +142,11 @@ pub async fn run(cli: &Cli) -> Result<()> {
                 DriverJob::Inject(text) => agent.inject_user_message(&text),
                 DriverJob::Clear => agent.clear_messages(),
                 DriverJob::Restore(messages) => agent.restore_messages(messages),
+            }
+            // 每个 job 都可能改变上下文：回报最新 token 估算（与自动压缩同一口径）
+            let tokens = estimate_context_tokens(agent.messages());
+            if done_tx.send(DriverDone::Context(tokens)).is_err() {
+                return;
             }
         }
     });
@@ -254,19 +262,26 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
             }
             app.handle_event(&event);
         }
-        Wake::AgentDone(done) => {
-            driver.current_cancel = None;
-            let notice = match done {
-                DriverDone::Prompt(Ok(())) | DriverDone::Compact(Ok(Some(_))) => None,
-                DriverDone::Prompt(Err(error)) => Some(format!("agent loop 失败：{error}")),
-                // 压缩成功经 CompactionEnd 事件渲染与落库，这里无需重复处理
-                DriverDone::Compact(Ok(None)) => Some("上下文很短，没有可压缩的内容。".to_string()),
-                DriverDone::Compact(Err(error)) => {
-                    Some(format!("压缩失败，上下文保持不变：{error}"))
-                }
-            };
-            app.finish_run(notice);
-        }
+        Wake::AgentDone(done) => match done {
+            DriverDone::Prompt(result) => {
+                driver.current_cancel = None;
+                let notice = result
+                    .err()
+                    .map(|error| format!("agent loop 失败：{error}"));
+                app.finish_run(notice);
+            }
+            DriverDone::Compact(result) => {
+                driver.current_cancel = None;
+                let notice = match result {
+                    // 压缩成功经 CompactionEnd 事件渲染与落库，这里无需重复处理
+                    Ok(Some(_)) => None,
+                    Ok(None) => Some("上下文很短，没有可压缩的内容。".to_string()),
+                    Err(error) => Some(format!("压缩失败，上下文保持不变：{error}")),
+                };
+                app.finish_run(notice);
+            }
+            DriverDone::Context(tokens) => app.set_context_tokens(tokens),
+        },
         Wake::Tick => app.tick(),
         Wake::Redraw => {}
         Wake::DriverFailed(detail) => {

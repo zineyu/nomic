@@ -15,7 +15,6 @@ mod theme;
 mod ui;
 
 use std::io;
-use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use crossterm::{
@@ -33,7 +32,7 @@ use crossterm::{
 };
 use futures::StreamExt as _;
 use nomic_ai::Message;
-use nomic_core::{Agent, AgentConfig, AgentEvent, Compaction, ExecutionMode, NoopHooks};
+use nomic_core::{Agent, AgentEvent, Compaction};
 use nomic_session::{CompactionRecord, SessionStore};
 use nomic_skills::SkillResolver;
 use ratatui::{Terminal, backend::CrosstermBackend};
@@ -89,19 +88,15 @@ pub async fn run(cli: &Cli) -> Result<()> {
             .collect(),
     );
 
-    let (agent, mut events) = Agent::with_messages(
-        AgentConfig {
-            model: boot.model,
-            provider: boot.provider,
-            stream_options: boot.stream_options,
-            hooks: Arc::new(NoopHooks),
-            tool_execution: ExecutionMode::Parallel,
-            compaction: boot.compaction,
-        },
-        nomic_tools::default_tools_with_skills(boot.skill_resolver),
-        boot.system_prompt,
-        boot.history,
-    );
+    let (agent, mut events) = Agent::builder()
+        .model(boot.model)
+        .provider(boot.provider)
+        .system_prompt(boot.system_prompt)
+        .tools(nomic_tools::default_tools_with_skills(boot.skill_resolver))
+        .messages(boot.history)
+        .stream_options(boot.stream_options)
+        .compaction(boot.compaction)
+        .build();
 
     let _guard = TerminalGuard::enter().context("初始化终端失败")?;
     let mut terminal =

@@ -9,8 +9,8 @@ use nomic_ai::{
     StopReason, StreamOptions, TextContent, ToolCall, Usage, now_millis,
 };
 use nomic_core::{
-    Agent, AgentConfig, AgentEvent, AgentHooks, AgentTool, BeforeToolCall, DynTool, NoopHooks,
-    ToolCallDecision, ToolError, ToolResult,
+    Agent, AgentEvent, AgentHooks, AgentTool, BeforeToolCall, DynTool, ToolCallDecision, ToolError,
+    ToolResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -183,21 +183,16 @@ fn make_agent(
     provider: Arc<MockProvider>,
     tools: Vec<DynTool>,
 ) -> (Agent, tokio::sync::mpsc::UnboundedReceiver<AgentEvent>) {
-    Agent::new(
-        AgentConfig {
-            model: model(),
-            provider,
-            stream_options: StreamOptions::default(),
-            hooks: Arc::new(NoopHooks),
-            tool_execution: nomic_core::ExecutionMode::Parallel,
-            compaction: nomic_core::CompactionSettings {
-                enabled: false,
-                ..Default::default()
-            },
-        },
-        tools,
-        "test system prompt",
-    )
+    Agent::builder()
+        .model(model())
+        .provider(provider)
+        .system_prompt("test system prompt")
+        .tools(tools)
+        .compaction(nomic_core::CompactionSettings {
+            enabled: false,
+            ..Default::default()
+        })
+        .build()
 }
 
 async fn collect_events(
@@ -316,22 +311,17 @@ async fn resume_with_seeded_history() {
             StopReason::Stop,
         )),
     ];
-    let (mut agent, rx) = Agent::with_messages(
-        AgentConfig {
-            model: model(),
-            provider: provider.clone(),
-            stream_options: StreamOptions::default(),
-            hooks: Arc::new(NoopHooks),
-            tool_execution: nomic_core::ExecutionMode::Parallel,
-            compaction: nomic_core::CompactionSettings {
-                enabled: false,
-                ..Default::default()
-            },
-        },
-        vec![DynTool::new(EchoTool)],
-        "test system prompt",
-        history.clone(),
-    );
+    let (mut agent, rx) = Agent::builder()
+        .model(model())
+        .provider(provider.clone())
+        .system_prompt("test system prompt")
+        .tools(vec![DynTool::new(EchoTool)])
+        .messages(history.clone())
+        .compaction(nomic_core::CompactionSettings {
+            enabled: false,
+            ..Default::default()
+        })
+        .build();
 
     let collector = tokio::spawn(collect_events(rx));
     let new_messages = agent
@@ -551,21 +541,17 @@ async fn hook_block_produces_error_result_without_executing() {
         tool_call_done("c1", "echo", serde_json::json!({"text": "x"})),
         text_done("ok"),
     ]);
-    let (mut agent, rx) = Agent::new(
-        AgentConfig {
-            model: model(),
-            provider,
-            stream_options: StreamOptions::default(),
-            hooks: Arc::new(BlockAllHooks),
-            tool_execution: nomic_core::ExecutionMode::Parallel,
-            compaction: nomic_core::CompactionSettings {
-                enabled: false,
-                ..Default::default()
-            },
-        },
-        vec![DynTool::new(EchoTool)],
-        "sys",
-    );
+    let (mut agent, rx) = Agent::builder()
+        .model(model())
+        .provider(provider)
+        .system_prompt("sys")
+        .tools(vec![DynTool::new(EchoTool)])
+        .hooks(Arc::new(BlockAllHooks))
+        .compaction(nomic_core::CompactionSettings {
+            enabled: false,
+            ..Default::default()
+        })
+        .build();
 
     let collector = tokio::spawn(collect_events(rx));
     let new_messages = agent

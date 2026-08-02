@@ -7,10 +7,7 @@ use nomic_ai::{
     ApiKind, AssistantContent, AssistantEvent, AssistantMessage, Context, Message, Model, Provider,
     StopReason, StreamOptions, TextContent, Usage, now_millis,
 };
-use nomic_core::{
-    Agent, AgentConfig, AgentEvent, CompactionError, CompactionSettings, NoopHooks,
-    is_summary_message,
-};
+use nomic_core::{Agent, AgentEvent, CompactionError, CompactionSettings, is_summary_message};
 use tokio_util::sync::CancellationToken;
 
 // ── 录制上下文的 mock provider ──────────────────────────────────────────────
@@ -160,19 +157,13 @@ fn make_agent(
     context_window: u64,
     compaction: CompactionSettings,
 ) -> (Agent, tokio::sync::mpsc::UnboundedReceiver<AgentEvent>) {
-    Agent::with_messages(
-        AgentConfig {
-            model: model(context_window),
-            provider,
-            stream_options: StreamOptions::default(),
-            hooks: Arc::new(NoopHooks),
-            tool_execution: nomic_core::ExecutionMode::Parallel,
-            compaction,
-        },
-        Vec::new(),
-        "test system prompt",
-        history,
-    )
+    Agent::builder()
+        .model(model(context_window))
+        .provider(provider)
+        .system_prompt("test system prompt")
+        .messages(history)
+        .compaction(compaction)
+        .build()
 }
 
 async fn collect(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>) -> Vec<AgentEvent> {

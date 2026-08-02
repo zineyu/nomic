@@ -98,7 +98,9 @@ pub enum AgentEvent {
     },
 }
 
-/// loop 配置。
+/// loop 配置（crate 内部；外部经 [`Agent::builder`] 组装）。
+///
+/// `pub` 而非 `pub(crate)`：`agent` 模块本身不对外导出，可见性由模块层控制。
 pub struct AgentConfig {
     /// 当前模型
     pub model: Model,
@@ -157,32 +159,24 @@ struct FinalizedToolCall {
 }
 
 impl Agent {
-    /// 创建 agent，返回 agent 本体与事件流的接收端。
-    ///
-    /// 调用方并发地：驱动 [`Agent::prompt`] 同时从接收端消费事件。
-    pub fn new(
-        config: AgentConfig,
-        tools: Vec<DynTool>,
-        system_prompt: impl Into<String>,
-    ) -> (Self, mpsc::UnboundedReceiver<AgentEvent>) {
-        Self::with_messages(config, tools, system_prompt, Vec::new())
+    /// 创建 agent builder（typestate）：`model` / `provider` / `system_prompt`
+    /// 为编译期强制必填项，其余创建项带默认值，见 [`crate::AgentBuilder`]。
+    pub fn builder() -> crate::builder::AgentBuilder {
+        crate::builder::AgentBuilder::new()
     }
 
-    /// 创建携带既有消息历史的 agent（session resume 场景）。
-    ///
-    /// `messages` 按序作为上下文起点，后续 `prompt` 追加在其后；
-    /// 调用方负责保证顺序与来源（如 session store 的 `load_messages` 输出）。
-    pub fn with_messages(
+    /// 由 builder 组装完整部件后构造 agent（实现内核，外部不可直接调用）。
+    pub(crate) fn from_parts(
         config: AgentConfig,
         tools: Vec<DynTool>,
-        system_prompt: impl Into<String>,
+        system_prompt: String,
         messages: Vec<Message>,
     ) -> (Self, mpsc::UnboundedReceiver<AgentEvent>) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         (
             Self {
                 config,
-                system_prompt: system_prompt.into(),
+                system_prompt,
                 messages,
                 tools,
                 event_tx,
@@ -205,7 +199,7 @@ impl Agent {
 
     /// 以既有消息历史整体替换当前上下文（session resume 语义，如 TUI 的 `/resume`）。
     ///
-    /// 与 [`Self::with_messages`] 同样的调用契约：`messages` 按序作为上下文起点，
+    /// 与 builder 的 `messages` 同样的调用契约：`messages` 按序作为上下文起点，
     /// 调用方负责保证顺序与来源（如 session store 的 `load_messages` 输出）。
     /// 静默替换，不发出事件（历史已在来源 session 渲染/落库）；
     /// 应在非运行状态（`prompt` 返回后）调用。

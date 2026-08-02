@@ -3,13 +3,16 @@
 //! - `tool`：[`AgentTool`] 强类型工具契约与 [`DynTool`] 类型擦除包装
 //! - `hooks`：生命周期 hooks（trait + 默认空实现）
 //! - `agent`：事件驱动的 agent loop
+//! - `builder`：typestate 创建 builder（编译期强制必填项）
 
 mod agent;
+mod builder;
 mod compaction;
 mod hooks;
 mod tool;
 
-pub use agent::{Agent, AgentConfig, AgentError, AgentEvent};
+pub use agent::{Agent, AgentError, AgentEvent};
+pub use builder::{AgentBuilder, Set, Unset};
 pub use compaction::{
     CompactRequest, Compaction, CompactionError, CompactionSettings, estimate_context_tokens,
     is_summary_message, should_compact, summary_message,

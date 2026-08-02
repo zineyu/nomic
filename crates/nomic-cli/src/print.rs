@@ -6,11 +6,10 @@
 //! 不中断运行（store 非权威源）。
 
 use std::io::Write as _;
-use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
 use nomic_ai::{AssistantEvent, Message, StopReason};
-use nomic_core::{Agent, AgentConfig, AgentEvent, ExecutionMode, NoopHooks};
+use nomic_core::{Agent, AgentEvent};
 use nomic_session::SessionStore;
 use tokio_util::sync::CancellationToken;
 
@@ -28,19 +27,15 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
         );
     }
 
-    let (mut agent, mut events) = Agent::with_messages(
-        AgentConfig {
-            model: boot.model,
-            provider: boot.provider,
-            stream_options: boot.stream_options,
-            hooks: Arc::new(NoopHooks),
-            tool_execution: ExecutionMode::Parallel,
-            compaction: boot.compaction,
-        },
-        nomic_tools::default_tools_with_skills(boot.skill_resolver),
-        boot.system_prompt,
-        boot.history,
-    );
+    let (mut agent, mut events) = Agent::builder()
+        .model(boot.model)
+        .provider(boot.provider)
+        .system_prompt(boot.system_prompt)
+        .tools(nomic_tools::default_tools_with_skills(boot.skill_resolver))
+        .messages(boot.history)
+        .stream_options(boot.stream_options)
+        .compaction(boot.compaction)
+        .build();
 
     let cancel = CancellationToken::new();
     let cancel_on_sigint = cancel.clone();

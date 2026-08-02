@@ -4,8 +4,8 @@
 //!   首/末消息时间与启动位置（cwd）
 //! - 消息存 `entries` 表，按 `parent_id` 组织为**树**（为 ADR-0001 的
 //!   branching 目标预留；顺序会话是树的特例）
-//! - 压缩条目（`kind = 'compaction'`）记录上下文压缩结果；加载时按
-//!   「截尾 kept_count + 前置合成摘要」重建有效上下文（见 [`CompactionRecord`]）
+//! - 压缩条目（`kind = 'compaction'`）记录上下文压缩结果；加载时重放重建
+//!   有效上下文（重建语义见 `nomic_ai::compaction` module 文档）
 //! - 全局单库，默认位于 XDG data dir：`$XDG_DATA_HOME/nomic/sessions.db`
 //!
 //! 消息 payload 原样存 [`Message`] 的 serde JSON；`role`/`timestamp` 为提取列，
@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use nomic_ai::{Message, now_millis, summary_message};
+use nomic_ai::{Message, apply_compaction, now_millis};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row as _, SqlitePool};
@@ -25,12 +25,10 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 /// 压缩条目（`entries.kind = 'compaction'`）的 payload。
 ///
 /// 记录一次上下文压缩的结果：摘要正文、保留的近期消息条数与压缩前的
-/// token 估算。重建语义见 [`SessionStore::load_messages`]：沿默认分支重放时，
-/// 遇到压缩条目就把当前有效上下文截尾到 `kept_count` 条并前置合成摘要消息。
-///
-/// 与 pi 的 `CompactionEntry` 的差异：用 `kept_count`（相对计数）代替
-/// `first_kept_entry_id`（绝对指针）——顺序分支语义下等效且无需 entry id 簿记；
-/// 未来支持 branch 切换时需改回绝对指针（见 docs/adr/0005）。
+/// token 估算。重建语义（`kept_count` 相对计数代替 pi 的
+/// `first_kept_entry_id` 绝对指针、重复压缩的递归成立性、branch 切换的
+/// 已知限制）唯一定义于 `nomic_ai::compaction` module，加载路径经
+/// [`nomic_ai::apply_compaction`] 应用（见 `docs/adr/0005`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactionRecord {
     /// 结构化摘要（含 `<read-files>` / `<modified-files>` 附加段）
@@ -303,9 +301,8 @@ impl SessionStore {
                 .push(entry);
         }
 
-        // 沿「每级最新子节点」走默认分支并重建有效上下文：
-        // message 直接追加；compaction 截尾到 kept_count 条并前置合成摘要消息。
-        // 该递归语义对重复压缩天然成立（第二次的 kept_count 相对第一次重建结果计数）。
+        // 沿「每级最新子节点」走默认分支并重建有效上下文：message 直接追加；
+        // compaction 条目经 apply_compaction 应用（语义见 nomic_ai::compaction）。
         let mut effective: Vec<Message> = Vec::new();
         let mut cursor: Option<String> = None; // 从根（parent_id IS NULL）出发
         while let Some(siblings) = children.get(&cursor) {
@@ -315,12 +312,12 @@ impl SessionStore {
             };
             if entry.kind == "compaction" {
                 let record: CompactionRecord = serde_json::from_str(&entry.payload)?;
-                let keep = usize::try_from(record.kept_count)
-                    .unwrap_or(usize::MAX)
-                    .min(effective.len());
-                let tail = effective.split_off(effective.len() - keep);
-                effective = vec![summary_message(&record.summary, entry.timestamp)];
-                effective.extend(tail);
+                effective = apply_compaction(
+                    &effective,
+                    &record.summary,
+                    record.kept_count,
+                    entry.timestamp,
+                );
             } else {
                 effective.push(serde_json::from_str::<Message>(&entry.payload)?);
             }

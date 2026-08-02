@@ -25,12 +25,15 @@ compaction 锚定为 M2 待办，本 ADR 记录 nomic 的实现决策。
 
 ### 分层
 
-- `nomic-ai`：摘要消息的构造与识别（`summary_message` / `is_summary_message` /
-  `extract_summary` / `SUMMARY_PREFIX` / `SUMMARY_SUFFIX`）。包装文本逐字复刻 pi：
+- `nomic-ai`：compaction 重建语义的唯一定义点（`nomic_ai::compaction` module）——
+  摘要消息的构造与识别（`summary_message` / `is_summary_message` /
+  `extract_summary` / `SUMMARY_PREFIX` / `SUMMARY_SUFFIX`）与有效上下文重建
+  （`apply_compaction`：截尾 `kept_count` + 前置合成摘要）。包装文本逐字复刻 pi：
   `The conversation history before this point was compacted into the following
   summary:\n<summary>\n…\n</summary>`。该前缀同时是识别标记——放在消息模型层，
   因为 core（二次压缩提取 previous summary）、session（重建合成消息）、
-  CLI（TUI 压缩渲染）三方都要判定。
+  CLI（TUI 压缩渲染）三方都要判定；重建函数同层，因为 core（in-memory 组装
+  新历史）与 session（resume 重放）必须共享同一实现才能逐字节一致。
 - `nomic-core::compaction`：全部机制——token 估算、触发判定、切点、对话序列化、
   文件操作提取、摘要 LLM 调用。忠实复刻 pi 的算法与 prompt（逐字）：
   - 估算：chars/4（图片 4800 chars）；有 usage 时以最后一次有效 assistant 响应的

@@ -26,12 +26,12 @@ use std::sync::Arc;
 
 use nomic_ai::{
     AssistantContent, Context, Message, Model, Provider, StreamOptions, Usage, UserContent,
-    UserMessage, UserMessageContent, extract_summary, now_millis,
+    UserMessage, UserMessageContent, apply_compaction, extract_summary, now_millis,
 };
 use tokio_util::sync::CancellationToken;
 
-// 摘要消息的构造与识别在 nomic-ai（消息模型层）定义，nomic-session 重建上下文时
-// 共享同一实现；此处 re-export 保持 nomic-core 的公开 API 不变。
+// 摘要消息的构造/识别与重建语义在 nomic-ai 的 compaction module 定义（唯一定义点，
+// nomic-session 重放共享同一实现）；此处 re-export 保持 nomic-core 的公开 API 不变。
 pub use nomic_ai::{is_summary_message, summary_message};
 
 /// 压缩配置（默认值与 pi 对齐）。
@@ -73,7 +73,7 @@ pub struct Compaction {
     pub summary: String,
     /// 压缩前的上下文 token 估算
     pub tokens_before: u64,
-    /// 保留的近期消息条数（重建语义见 nomic-session 的 compaction entry）
+    /// 保留的近期消息条数（重建语义见 `nomic_ai::compaction` module 文档）
     pub kept_count: usize,
     /// 摘要请求的 token 用量
     pub usage: Usage,
@@ -610,9 +610,7 @@ pub async fn compact_messages(
     let summary = format!("{text}{}", format_file_ops(&file_ops));
 
     let kept_count = messages.len() - cut;
-    let mut new_history = Vec::with_capacity(kept_count + 1);
-    new_history.push(summary_message(&summary, now_millis()));
-    new_history.extend_from_slice(&messages[cut..]);
+    let new_history = apply_compaction(messages, &summary, kept_count as u64, now_millis());
 
     let compaction = Compaction {
         summary,
@@ -860,17 +858,5 @@ mod tests {
         assert!(formatted.contains("<read-files>\nsrc/a.rs\nsrc/old.rs\n</read-files>"));
         assert!(formatted.contains("<modified-files>"));
         assert!(format_file_ops(&FileOps::default()).is_empty());
-    }
-
-    // ── 摘要消息 ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn summary_message_roundtrips_through_marker() {
-        let message = summary_message("## Goal\ndo stuff", 0);
-        assert!(is_summary_message(&message));
-        assert_eq!(extract_summary(&message), Some("## Goal\ndo stuff"));
-        assert!(!is_summary_message(&user(
-            "The conversation history before this point"
-        )));
     }
 }

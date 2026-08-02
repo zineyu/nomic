@@ -307,40 +307,6 @@ impl Model {
     }
 }
 
-/// 合成摘要消息的包装前缀（与 pi 的 `COMPACTION_SUMMARY_PREFIX` 一致）。
-///
-/// 该前缀同时是识别标记：session 重建、二次压缩提取 previous summary、
-/// 交互端压缩渲染都靠它判定一条 user 消息是否为压缩摘要。
-pub const SUMMARY_PREFIX: &str = "The conversation history before this point was compacted into the following summary:\n<summary>\n";
-
-/// 合成摘要消息的包装后缀（与 pi 一致）。
-pub const SUMMARY_SUFFIX: &str = "\n</summary>";
-
-/// 构造压缩摘要的合成 user 消息（上下文压缩把较早消息段替换为该消息）。
-pub fn summary_message(summary: &str, timestamp: u64) -> Message {
-    Message::User(UserMessage {
-        content: UserMessageContent::Text(format!("{SUMMARY_PREFIX}{summary}{SUMMARY_SUFFIX}")),
-        timestamp,
-    })
-}
-
-/// 判定一条消息是否为压缩摘要（包装前缀识别）。
-pub fn is_summary_message(message: &Message) -> bool {
-    extract_summary(message).is_some()
-}
-
-/// 从合成摘要消息中提取摘要正文（非摘要消息返回 `None`）。
-pub fn extract_summary(message: &Message) -> Option<&str> {
-    let Message::User(user) = message else {
-        return None;
-    };
-    let UserMessageContent::Text(text) = &user.content else {
-        return None;
-    };
-    text.strip_prefix(SUMMARY_PREFIX)
-        .and_then(|rest| rest.strip_suffix(SUMMARY_SUFFIX))
-}
-
 /// 当前 Unix 毫秒时间戳。
 pub fn now_millis() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};

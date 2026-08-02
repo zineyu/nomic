@@ -456,6 +456,7 @@ async fn execute_effect(app: &mut App, driver: &mut Driver, effect: Effect) {
             Err(error) => app.warn(format!("载入 skill {name:?} 失败：{error}")),
         },
         Effect::AttachImage(path) => attach_image(app, &std::path::PathBuf::from(path)),
+        Effect::CopyText(text) => copy_to_clipboard(app, text).await,
         Effect::NewSession => new_session(app, driver).await,
     }
 }
@@ -586,6 +587,18 @@ async fn paste_clipboard(app: &mut App) {
         Ok(Ok(None)) => app.warn("剪贴板中没有图片或文本"),
         Ok(Err(error)) => app.warn(format!("粘贴失败：{error:#}")),
         Err(join) => app.warn(format!("粘贴失败：{join}")),
+    }
+}
+
+/// `/copy`：把文本写入系统剪贴板。
+///
+/// 与粘贴同理，写入可能阻塞在 X11/Wayland 往返上，放 `spawn_blocking` 中执行。
+async fn copy_to_clipboard(app: &mut App, text: String) {
+    let chars = text.chars().count();
+    match tokio::task::spawn_blocking(move || crate::clipboard::write_text(&text)).await {
+        Ok(Ok(())) => app.push_system(format!("已复制最新一条消息到剪贴板（{chars} 字）。")),
+        Ok(Err(error)) => app.warn(format!("复制失败：{error:#}")),
+        Err(join) => app.warn(format!("复制失败：{join}")),
     }
 }
 

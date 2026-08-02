@@ -115,6 +115,12 @@ pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
         usage: "/image:<路径>（/image <路径> 亦可）",
     },
     SlashCommand {
+        name: "copy",
+        aliases: &[],
+        summary: "复制最新一条消息到剪贴板（assistant 消息取正文，不含 thinking）",
+        usage: "/copy",
+    },
+    SlashCommand {
         name: "quit",
         aliases: &["exit"],
         summary: "退出 TUI",
@@ -148,6 +154,8 @@ enum SlashAction {
     Compact(Option<String>),
     /// `/image <路径>` 为下一条消息附加图片
     Image(String),
+    /// `/copy` 复制最新一条消息到剪贴板
+    Copy,
 }
 
 /// 解析一行输入为 slash 命令。
@@ -212,6 +220,7 @@ fn parse_slash(input: &str) -> SlashParse {
                 "help" if !junk && arg.is_none() => SlashAction::Help,
                 "new" if !junk && arg.is_none() => SlashAction::New,
                 "resume" if !junk && arg.is_none() => SlashAction::Resume,
+                "copy" if !junk && arg.is_none() => SlashAction::Copy,
                 "quit" if !junk && arg.is_none() => SlashAction::Quit,
                 _ => return SlashParse::InvalidUsage(command.usage),
             };
@@ -363,6 +372,8 @@ pub(super) enum Effect {
     LoadSkill(String),
     /// `/image <路径>`：为下一条消息附加图片
     AttachImage(String),
+    /// `/copy`：复制最新一条消息到剪贴板
+    CopyText(String),
     /// `/new`：清空上下文开启新对话（新建 session）
     NewSession,
 }
@@ -752,6 +763,14 @@ impl App {
             SlashAction::Skill(None) => vec![Effect::ListSkills],
             SlashAction::Skill(Some(name)) => vec![Effect::LoadSkill(name)],
             SlashAction::Image(path) => vec![Effect::AttachImage(path)],
+            SlashAction::Copy => {
+                if let Some(text) = self.latest_message_text() {
+                    vec![Effect::CopyText(text)]
+                } else {
+                    self.notice = Some("没有可复制的消息".to_string());
+                    Vec::new()
+                }
+            }
             SlashAction::New => vec![Effect::NewSession],
         }
     }
@@ -1093,6 +1112,32 @@ impl App {
     }
 
     /// 追加一条本地系统提示（不进上下文、不落库）。
+    /// `/copy` 的复制源：聊天区最新一条用户/assistant 消息的纯文本。
+    /// assistant 消息只取正文块（thinking 属模型内部推理，不复制）；
+    /// 正文为空（只有工具调用）时继续向前找，全部为空返回 `None`。
+    fn latest_message_text(&self) -> Option<String> {
+        for item in self.items.iter().rev() {
+            let text = match item {
+                ChatItem::User(text) => text.trim().to_string(),
+                ChatItem::Assistant(assistant) => assistant
+                    .blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        Block::Text(text) => Some(text.trim()),
+                        Block::Thinking(_) => None,
+                    })
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+                _ => continue,
+            };
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+        None
+    }
+
     pub(super) fn push_system(&mut self, text: impl Into<String>) {
         self.items.push(ChatItem::System(text.into()));
         self.scroll_to_bottom();
@@ -1634,12 +1679,46 @@ mod tests {
         );
         assert_eq!(parse_slash("/quit"), SlashParse::Known(SlashAction::Quit));
         assert_eq!(parse_slash("/exit"), SlashParse::Known(SlashAction::Quit));
+        assert_eq!(parse_slash("/copy"), SlashParse::Known(SlashAction::Copy));
         assert_eq!(
             parse_slash("/foobar"),
             SlashParse::Unknown("foobar".to_string())
         );
         // 首尾空白容错
         assert_eq!(parse_slash("  /new  "), SlashParse::Known(SlashAction::New));
+    }
+
+    #[test]
+    fn copy_takes_latest_message_text() {
+        let mut app = app();
+        // 空聊天区：无可复制内容，就地提示
+        assert!(app.execute_slash(SlashAction::Copy).is_empty());
+        assert_eq!(app.notice.as_deref(), Some("没有可复制的消息"));
+
+        app.items.push(ChatItem::User("第一条问题".to_string()));
+        app.items.push(ChatItem::Assistant(AssistantItem {
+            blocks: vec![
+                Block::Thinking("内部推理".to_string()),
+                Block::Text("第一段正文".to_string()),
+                Block::Text("第二段正文".to_string()),
+            ],
+            done: true,
+            error: None,
+        }));
+        // thinking 不复制，多个正文块以空行连接
+        let [Effect::CopyText(text)] = &app.execute_slash(SlashAction::Copy)[..] else {
+            panic!("expected CopyText effect");
+        };
+        assert_eq!(text, "第一段正文\n\n第二段正文");
+
+        // 最新一条是只有工具调用的 assistant 消息：向前找有正文的消息
+        app.items
+            .push(ChatItem::Assistant(AssistantItem::default()));
+        app.items.push(ChatItem::User("最新问题".to_string()));
+        let [Effect::CopyText(text)] = &app.execute_slash(SlashAction::Copy)[..] else {
+            panic!("expected CopyText effect");
+        };
+        assert_eq!(text, "最新问题");
     }
 
     #[test]

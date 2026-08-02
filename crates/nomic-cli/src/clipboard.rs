@@ -1,8 +1,8 @@
-//! 剪贴板读取（TUI `Ctrl+V` 粘贴）：优先取图片，其次文本。
+//! 剪贴板读写：读（TUI `Ctrl+V` 粘贴）优先取图片，其次文本；写（`/copy`）写文本。
 //!
 //! 平台支持：macOS / Windows / X11 / Wayland（data-control 协议，优先于 X11）。
 //! 无桌面环境（SSH、纯控制台）时 `Clipboard::new` 失败，调用方降级为提示。
-//! 读取可能阻塞在 X11/Wayland 往返上，调用方应放在 `spawn_blocking` 中。
+//! 读写可能阻塞在 X11/Wayland 往返上，调用方应放在 `spawn_blocking` 中。
 
 use anyhow::{Context as _, Result};
 use nomic_ai::ImageContent;
@@ -28,4 +28,13 @@ pub fn read() -> Result<Option<ClipboardContent>> {
         Ok(text) if !text.trim().is_empty() => Ok(Some(ClipboardContent::Text(text))),
         _ => Ok(None),
     }
+}
+
+/// 写入一段文本到剪贴板（`/copy`）。
+///
+/// 注意：X11/Wayland 下 arboard 默认在 `Clipboard` 析构时失去剪贴板所有权，
+/// 进程存活期间内容可粘贴（TUI 长驻进程，满足要求）。
+pub fn write_text(text: &str) -> Result<()> {
+    let mut clipboard = arboard::Clipboard::new().context("剪贴板不可用（无桌面环境？）")?;
+    clipboard.set_text(text).context("写入剪贴板失败")
 }

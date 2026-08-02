@@ -1,5 +1,9 @@
 //! 工具输出截断：行数与字节数双上限，先到先赢（与 pi 一致：2000 行 / 50KB）。
 //! 绝不返回半行（bash 尾部截断的边缘情况除外）。
+//!
+//! 截断的展示契约（给模型看的说明措辞）由本模块统一所有：调用方拿到
+//! [`Truncation`] 后用 [`Truncation::notice`] 生成展示说明，不在模块外
+//! 组装截断措辞。
 
 /// 默认最大行数。
 pub const DEFAULT_MAX_LINES: usize = 2000;
@@ -27,6 +31,8 @@ pub struct Truncation {
     pub first_line_exceeds_limit: bool,
     /// 最后一行是否被部分截断（仅尾部截断的边缘情况）
     pub last_line_partial: bool,
+    /// 计算时使用的字节上限（用于展示说明）
+    pub max_bytes: usize,
 }
 
 /// 命中的截断上限。
@@ -38,8 +44,22 @@ pub enum TruncatedBy {
     Bytes,
 }
 
+/// 截断后的继续阅读指引（各工具自己的恢复路径）。
+#[derive(Debug)]
+pub enum Continuation {
+    /// `read`：用 offset 参数继续（下一偏移由 notice 内部推导）
+    Offset,
+    /// `bash`：完整输出已保存到文件
+    FullOutput(String),
+}
+
 impl Truncation {
-    const fn untruncated(content: String, total_lines: usize, total_bytes: usize) -> Self {
+    const fn untruncated(
+        content: String,
+        total_lines: usize,
+        total_bytes: usize,
+        max_bytes: usize,
+    ) -> Self {
         let output_bytes = content.len();
         Self {
             content,
@@ -51,8 +71,52 @@ impl Truncation {
             output_bytes,
             first_line_exceeds_limit: false,
             last_line_partial: false,
+            max_bytes,
         }
     }
+
+    /// 展示用截断说明；未截断返回 `None`。
+    ///
+    /// `start_line` / `total_lines` 为调用方视角的 1-based 行号（`read`
+    /// 传文件总行数，`bash` 传输出总行数即 `self.total_lines`）。
+    pub fn notice(
+        &self,
+        start_line: usize,
+        total_lines: usize,
+        cont: &Continuation,
+    ) -> Option<String> {
+        if !self.truncated {
+            return None;
+        }
+        let end_line = start_line + self.output_lines.saturating_sub(1);
+        let guidance = match cont {
+            Continuation::Offset => format!("Use offset={} to continue.", end_line + 1),
+            Continuation::FullOutput(path) => format!("Full output: {path}"),
+        };
+        let notice = if self.last_line_partial {
+            format!(
+                "[Showing last {} of line {total_lines}. {guidance}]",
+                format_size(self.output_bytes)
+            )
+        } else if self.truncated_by == Some(TruncatedBy::Lines) {
+            format!("[Showing lines {start_line}-{end_line} of {total_lines}. {guidance}]")
+        } else {
+            format!(
+                "[Showing lines {start_line}-{end_line} of {total_lines} ({} limit). {guidance}]",
+                format_size(self.max_bytes)
+            )
+        };
+        Some(notice)
+    }
+}
+
+/// 首行即超过字节上限的说明（`read`）；`recovery` 为调用方给出的恢复命令。
+pub fn exceeds_notice(line: usize, line_bytes: usize, max_bytes: usize, recovery: &str) -> String {
+    format!(
+        "[Line {line} is {}, exceeds {} limit. {recovery}]",
+        format_size(line_bytes),
+        format_size(max_bytes)
+    )
 }
 
 /// 分割行（与 pi 一致：末尾换行产生的空尾行不计入）。
@@ -83,6 +147,7 @@ pub fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Trunc
             output_bytes: 0,
             first_line_exceeds_limit: true,
             last_line_partial: false,
+            max_bytes,
         };
     }
 
@@ -105,7 +170,7 @@ pub fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Trunc
     }
 
     if truncated_by.is_none() {
-        return Truncation::untruncated(content.to_string(), total_lines, total_bytes);
+        return Truncation::untruncated(content.to_string(), total_lines, total_bytes, max_bytes);
     }
     Truncation {
         content: lines[..output_lines].join("\n"),
@@ -117,6 +182,7 @@ pub fn truncate_head(content: &str, max_lines: usize, max_bytes: usize) -> Trunc
         output_bytes,
         first_line_exceeds_limit: false,
         last_line_partial: false,
+        max_bytes,
     }
 }
 
@@ -127,7 +193,7 @@ pub fn truncate_tail(content: &str, max_lines: usize, max_bytes: usize) -> Trunc
     let total_lines = lines.len();
 
     if total_lines <= max_lines && total_bytes <= max_bytes {
-        return Truncation::untruncated(content.to_string(), total_lines, total_bytes);
+        return Truncation::untruncated(content.to_string(), total_lines, total_bytes, max_bytes);
     }
 
     // 从尾部向前收集完整行（换行符计入前行，与 pi 一致）
@@ -176,6 +242,7 @@ pub fn truncate_tail(content: &str, max_lines: usize, max_bytes: usize) -> Trunc
         output_bytes,
         first_line_exceeds_limit: false,
         last_line_partial,
+        max_bytes,
     }
 }
 
@@ -190,7 +257,7 @@ const fn floor_char_boundary(s: &str, mut index: usize) -> usize {
 /// 格式化字节大小（`50KB`、`1.5MB`）。
 // 文件大小远低于 2^52，精度损失可忽略
 #[allow(clippy::cast_precision_loss)]
-pub fn format_size(bytes: usize) -> String {
+fn format_size(bytes: usize) -> String {
     const KB: usize = 1024;
     const MB: usize = 1024 * KB;
     if bytes >= MB {
@@ -267,5 +334,72 @@ mod tests {
         assert_eq!(format_size(500), "500B");
         assert_eq!(format_size(2048), "2KB");
         assert_eq!(format_size(3 * 1024 * 1024), "3.0MB");
+    }
+
+    #[test]
+    fn notice_none_when_untruncated() {
+        let result = truncate_head("a\nb", 10, 100);
+        assert_eq!(result.notice(1, 2, &Continuation::Offset), None);
+    }
+
+    #[test]
+    fn notice_by_lines_offset() {
+        let content = (1..=10)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = truncate_head(&content, 3, 1_000_000);
+        assert_eq!(
+            result.notice(1, 10, &Continuation::Offset).unwrap(),
+            "[Showing lines 1-3 of 10. Use offset=4 to continue.]"
+        );
+    }
+
+    #[test]
+    fn notice_by_bytes_offset() {
+        let result = truncate_head("aaaa\nbbbb\ncccc", 100, 10);
+        assert_eq!(
+            result.notice(1, 3, &Continuation::Offset).unwrap(),
+            "[Showing lines 1-2 of 3 (10B limit). Use offset=3 to continue.]"
+        );
+    }
+
+    #[test]
+    fn notice_tail_full_output() {
+        let content = (1..=10)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = truncate_tail(&content, 3, 1_000_000);
+        let cont = Continuation::FullOutput("/tmp/full.log".to_string());
+        assert_eq!(
+            result.notice(8, 10, &cont).unwrap(),
+            "[Showing lines 8-10 of 10. Full output: /tmp/full.log]"
+        );
+    }
+
+    #[test]
+    fn notice_last_line_partial() {
+        // 全文最后一行自身超过字节上限：取该行尾部
+        let result = truncate_tail(&format!("a\n{}", "x".repeat(100)), 100, 10);
+        assert!(result.last_line_partial);
+        let cont = Continuation::FullOutput("/tmp/full.log".to_string());
+        assert_eq!(
+            result.notice(2, 2, &cont).unwrap(),
+            "[Showing last 10B of line 2. Full output: /tmp/full.log]"
+        );
+    }
+
+    #[test]
+    fn exceeds_notice_formats() {
+        assert_eq!(
+            exceeds_notice(
+                5,
+                100 * 1024,
+                50 * 1024,
+                "Use bash: sed -n '5p' f | head -c 51200"
+            ),
+            "[Line 5 is 100KB, exceeds 50KB limit. Use bash: sed -n '5p' f | head -c 51200]"
+        );
     }
 }

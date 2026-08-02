@@ -10,7 +10,7 @@ use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::truncate::{
-    DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncatedBy, format_size, truncate_head,
+    Continuation, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncatedBy, exceeds_notice, truncate_head,
 };
 
 const SKILL_SCHEME: &str = "skill://";
@@ -168,29 +168,19 @@ async fn read_text_path(
 
     let truncation = truncate_head(&selected, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES);
     let output_text = if truncation.first_line_exceeds_limit {
-        let first_line_size = format_size(lines[start_line].len());
-        format!(
-            "[Line {start_line_display} is {first_line_size}, exceeds {} limit. \
-             Use bash: sed -n '{start_line_display}p' {} | head -c {DEFAULT_MAX_BYTES}]",
-            format_size(DEFAULT_MAX_BYTES),
-            file_path.display()
+        exceeds_notice(
+            start_line_display,
+            lines[start_line].len(),
+            DEFAULT_MAX_BYTES,
+            &format!(
+                "Use bash: sed -n '{start_line_display}p' {} | head -c {DEFAULT_MAX_BYTES}",
+                file_path.display()
+            ),
         )
-    } else if truncation.truncated {
-        let end_line_display = start_line_display + truncation.output_lines - 1;
-        let next_offset = end_line_display + 1;
-        let suffix = if truncation.truncated_by == Some(TruncatedBy::Lines) {
-            format!(
-                "[Showing lines {start_line_display}-{end_line_display} of {total_file_lines}. \
-                 Use offset={next_offset} to continue.]"
-            )
-        } else {
-            format!(
-                "[Showing lines {start_line_display}-{end_line_display} of {total_file_lines} \
-                 ({} limit). Use offset={next_offset} to continue.]",
-                format_size(DEFAULT_MAX_BYTES)
-            )
-        };
-        format!("{}\n\n{suffix}", truncation.content)
+    } else if let Some(notice) =
+        truncation.notice(start_line_display, total_file_lines, &Continuation::Offset)
+    {
+        format!("{}\n\n{notice}", truncation.content)
     } else if let Some(limited) = user_limited_lines
         && start_line + limited < lines.len()
     {

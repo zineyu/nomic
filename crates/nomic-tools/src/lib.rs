@@ -14,8 +14,8 @@ pub use bash::BashTool;
 pub use edit::EditTool;
 pub use read::ReadTool;
 pub use truncate::{
-    DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncatedBy, Truncation, format_size, truncate_head,
-    truncate_tail,
+    Continuation, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncatedBy, Truncation, exceeds_notice,
+    truncate_head, truncate_tail,
 };
 pub use write::WriteTool;
 

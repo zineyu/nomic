@@ -11,9 +11,7 @@ use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
-use crate::truncate::{
-    DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncatedBy, format_size, truncate_tail,
-};
+use crate::truncate::{Continuation, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncate_tail};
 
 /// 进度更新的节流间隔。
 const UPDATE_THROTTLE: Duration = Duration::from_millis(100);
@@ -251,27 +249,18 @@ fn assemble_output(full_output: &str) -> (String, Option<serde_json::Value>) {
     }
     let full_output_path = save_full_output(full_output);
     let start_line = truncation.total_lines - truncation.output_lines + 1;
-    let end_line = truncation.total_lines;
-    let suffix = if truncation.last_line_partial {
-        format!(
-            "[Showing last {} of line {end_line}. Full output: {full_output_path}]",
-            format_size(truncation.output_bytes)
+    let notice = truncation
+        .notice(
+            start_line,
+            truncation.total_lines,
+            &Continuation::FullOutput(full_output_path.clone()),
         )
-    } else if truncation.truncated_by == Some(TruncatedBy::Lines) {
-        format!(
-            "[Showing lines {start_line}-{end_line} of {end_line}. Full output: {full_output_path}]"
-        )
-    } else {
-        format!(
-            "[Showing lines {start_line}-{end_line} of {end_line} ({} limit). Full output: {full_output_path}]",
-            format_size(DEFAULT_MAX_BYTES)
-        )
-    };
+        .unwrap_or_default();
     let details = serde_json::json!({
         "truncation": { "total_lines": truncation.total_lines, "output_lines": truncation.output_lines },
         "full_output_path": full_output_path,
     });
-    (format!("{}\n\n{suffix}", truncation.content), Some(details))
+    (format!("{}\n\n{notice}", truncation.content), Some(details))
 }
 
 /// 完整输出写入临时文件，返回路径。

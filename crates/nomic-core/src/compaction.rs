@@ -516,20 +516,12 @@ async fn generate_summary(
         tools: Vec::new(),
     };
 
-    let mut stream = target
+    let message = target
         .provider
-        .stream(target.model, &context, &options, cancel);
-    let mut final_message = None;
-    while let Some(event) = stream.next().await {
-        match event {
-            nomic_ai::AssistantEvent::Done { message }
-            | nomic_ai::AssistantEvent::Error { message } => final_message = Some(*message),
-            _ => {}
-        }
-    }
-    let message = final_message.ok_or_else(|| {
-        CompactionError::Summarization("stream closed without Done/Error".to_string())
-    })?;
+        .stream(target.model, &context, &options, cancel)
+        .result()
+        .await
+        .map_err(|err| CompactionError::Summarization(err.to_string()))?;
     match message.stop_reason {
         nomic_ai::StopReason::Aborted => Err(CompactionError::Aborted(
             message.error_message.unwrap_or_default(),

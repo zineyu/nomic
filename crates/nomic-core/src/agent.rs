@@ -489,16 +489,15 @@ impl Agent {
             messages: self.messages.clone(),
             tools: self.tools.iter().map(DynTool::definition).collect(),
         };
-        let mut stream = self.config.provider.stream(
+        let stream = self.config.provider.stream(
             &self.config.model,
             &context,
             &self.config.stream_options,
             cancel.clone(),
         );
 
-        let mut final_message = None;
-        while let Some(event) = stream.next().await {
-            match event {
+        stream
+            .result_with(|event| match event {
                 AssistantEvent::Start => {
                     let skeleton = AssistantMessage {
                         content: Vec::new(),
@@ -516,17 +515,12 @@ impl Agent {
                         skeleton,
                     ))));
                 }
-                AssistantEvent::Done { message } | AssistantEvent::Error { message } => {
-                    final_message = Some(*message);
-                }
                 delta => {
                     self.emit(AgentEvent::MessageUpdate(delta));
                 }
-            }
-        }
-        final_message.ok_or_else(|| {
-            AgentError::StreamContract("stream closed without Done/Error".to_string())
-        })
+            })
+            .await
+            .map_err(|err| AgentError::StreamContract(err.to_string()))
     }
 
     /// 执行一批工具调用（按配置与工具声明选择 parallel / sequential）。

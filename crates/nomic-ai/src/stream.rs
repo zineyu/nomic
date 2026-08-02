@@ -101,6 +101,14 @@ pub struct StreamOptions {
     pub timeout_ms: Option<u64>,
 }
 
+/// provider 违反流协议：流在未发出 `Done` / `Error` 终止事件前关闭。
+///
+/// 消费方（[`AssistantStream::result`] / [`AssistantStream::result_with`]）
+/// 将其统一报告为 `Err`，绝不 panic。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("stream closed without Done/Error")]
+pub struct StreamContractError;
+
 /// assistant 事件流的接收端。
 ///
 /// 保证以恰一个 `Done` 或 `Error` 事件收尾，之后流关闭。
@@ -117,17 +125,29 @@ impl AssistantStream {
     }
 
     /// 消费流直到终止事件，返回最终的 [`AssistantMessage`]。
-    pub async fn result(mut self) -> AssistantMessage {
+    ///
+    /// 终止事件前的中间事件（`Start` 与各 delta）按到达顺序以值传给
+    /// `on_event`；provider 违约（流未以 `Done` / `Error` 收尾即关闭）
+    /// 时返回 [`StreamContractError`]。
+    pub async fn result_with(
+        mut self,
+        mut on_event: impl FnMut(AssistantEvent),
+    ) -> Result<AssistantMessage, StreamContractError> {
         let mut final_message = None;
         while let Some(event) = self.next().await {
             match event {
                 AssistantEvent::Done { message } | AssistantEvent::Error { message } => {
                     final_message = Some(*message);
                 }
-                _ => {}
+                event => on_event(event),
             }
         }
-        final_message.expect("provider contract violated: stream closed without Done/Error")
+        final_message.ok_or(StreamContractError)
+    }
+
+    /// 消费流直到终止事件，返回最终的 [`AssistantMessage`]，丢弃中间事件。
+    pub async fn result(self) -> Result<AssistantMessage, StreamContractError> {
+        self.result_with(|_| {}).await
     }
 }
 
@@ -139,7 +159,9 @@ impl std::fmt::Debug for AssistantStream {
 
 /// 供 provider 实现者构造事件流：返回 (发送端, 接收端)。
 ///
-/// provider 在后台任务中经发送端推送事件，丢弃发送端即关闭流。
+/// provider 在后台任务中经发送端推送事件。丢弃发送端即关闭流——若此时
+/// 尚未发出 `Done` / `Error`，即构成契约违约，消费方 fold 时会收到
+/// [`StreamContractError`]。
 pub fn channel() -> (mpsc::UnboundedSender<AssistantEvent>, AssistantStream) {
     let (tx, rx) = mpsc::unbounded_channel();
     (tx, AssistantStream { rx })
@@ -152,6 +174,9 @@ pub fn channel() -> (mpsc::UnboundedSender<AssistantEvent>, AssistantStream) {
 /// 编程错误（如无法构造 HTTP 客户端）才允许返回 `Err`。
 /// 取消通过 [`CancellationToken`] 表达，取消时流以
 /// `stop_reason = Aborted` 的 `Error` 事件收尾。
+///
+/// 若实现违反事件序列契约（流未以 `Done` / `Error` 收尾即关闭），消费方
+/// 统一收到 [`StreamContractError`]，绝不 panic。
 pub trait Provider: Send + Sync {
     /// 发起一次流式请求，立即返回事件流（网络交互在后台任务中进行）。
     fn stream(

@@ -20,7 +20,9 @@ pub use compaction::{
     summary_message,
 };
 pub use models_dev::{Catalog, ModelSpec};
-pub use stream::{AssistantEvent, AssistantStream, Provider, StreamOptions, channel};
+pub use stream::{
+    AssistantEvent, AssistantStream, Provider, StreamContractError, StreamOptions, channel,
+};
 pub use types::{
     ApiKind, AssistantContent, AssistantMessage, Context, Cost, ImageContent, Message, Model,
     StopReason, TextContent, ThinkingContent, ThinkingLevel, ToolCall, ToolDefinition,

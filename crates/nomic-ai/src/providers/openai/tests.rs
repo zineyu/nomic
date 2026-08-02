@@ -336,7 +336,10 @@ async fn retries_transient_errors_until_success() {
         CancellationToken::new(),
     );
 
-    let message = stream.result().await;
+    let message = stream
+        .result()
+        .await
+        .expect("stream must terminate with Done/Error");
     assert_eq!(message.stop_reason, StopReason::Stop);
     assert_eq!(count.load(Ordering::SeqCst), 3, "两次 500 后第三次成功");
     assert!(
@@ -362,7 +365,10 @@ async fn gives_up_after_three_retries() {
         CancellationToken::new(),
     );
 
-    let message = stream.result().await;
+    let message = stream
+        .result()
+        .await
+        .expect("stream must terminate with Done/Error");
     assert_eq!(message.stop_reason, StopReason::Error);
     assert_eq!(count.load(Ordering::SeqCst), 4, "首次 + 3 次重试后放弃");
     let error = message.error_message.expect("error message");
@@ -384,7 +390,10 @@ async fn fatal_status_is_not_retried() {
         CancellationToken::new(),
     );
 
-    let message = stream.result().await;
+    let message = stream
+        .result()
+        .await
+        .expect("stream must terminate with Done/Error");
     assert_eq!(message.stop_reason, StopReason::Error);
     assert_eq!(count.load(Ordering::SeqCst), 1, "4xx 不重试");
 }

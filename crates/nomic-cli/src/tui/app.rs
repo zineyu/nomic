@@ -103,6 +103,12 @@ pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
         usage: "/compact [聚焦指令]",
     },
     SlashCommand {
+        name: "models",
+        aliases: &[],
+        summary: "切换模型（当前 provider 下；打开选择器或直接指定 id）",
+        usage: "/models（打开选择器）或 /models:<模型id>",
+    },
+    SlashCommand {
         name: "skill",
         aliases: &[],
         summary: "手动载入 skill 到当前对话（/skill:<name>；无参列出可用 skill）",
@@ -152,6 +158,8 @@ enum SlashAction {
     Skill(Option<String>),
     /// `/compact [聚焦指令]` 手动压缩上下文
     Compact(Option<String>),
+    /// `/models`（None）打开模型选择器；`/models:<id>` 直接切换
+    Models(Option<String>),
     /// `/image <路径>` 为下一条消息附加图片
     Image(String),
     /// `/copy` 复制最新一条消息到剪贴板
@@ -195,6 +203,22 @@ fn parse_slash(input: &str) -> SlashParse {
             return SlashParse::InvalidUsage(image_usage());
         }
         // `/imagexxx`：落入常规解析报未知命令
+    }
+    // `/models` 特判：参数是模型 id（不可含空格），`/models id` 与
+    // `/models:id` 两种形式都接受
+    if let Some(tail) = rest.strip_prefix("models") {
+        if tail.is_empty() {
+            return SlashParse::Known(SlashAction::Models(None));
+        }
+        if let Some(id) = tail.strip_prefix(':').or_else(|| tail.strip_prefix(' ')) {
+            let id = id.trim();
+            return if id.is_empty() || id.contains(char::is_whitespace) {
+                SlashParse::InvalidUsage(models_usage())
+            } else {
+                SlashParse::Known(SlashAction::Models(Some(id.to_string())))
+            };
+        }
+        // `/modelsxxx`：落入常规解析报未知命令
     }
     let (name, arg, junk) = if let Some((name, arg)) = rest.split_once(':') {
         (
@@ -297,17 +321,27 @@ pub(super) struct Completion {
     pub(super) selected: usize,
 }
 
-/// `/resume` 选择器的一行：session id + 预生成的展示文本（渲染零计算）。
+/// 选择器的一行：内部 id + 预生成的展示文本（渲染零计算）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ResumeRow {
+pub(super) struct PickerRow {
     pub(super) id: String,
     pub(super) text: String,
 }
 
-/// `/resume` session 选择器状态：候选行 + 当前选中项（移动到底/顶钳制，不循环）。
+/// 选择器种类：决定确认动作（[`Effect`]）与渲染标题。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PickerKind {
+    /// `/resume`：恢复历史 session
+    Resume,
+    /// `/models`：切换模型
+    Models,
+}
+
+/// 选择器状态：候选行 + 当前选中项（移动到底/顶钳制，不循环）。
 #[derive(Debug)]
-pub(super) struct ResumePicker {
-    pub(super) rows: Vec<ResumeRow>,
+pub(super) struct Picker {
+    pub(super) kind: PickerKind,
+    pub(super) rows: Vec<PickerRow>,
     pub(super) selected: usize,
 }
 
@@ -366,6 +400,10 @@ pub(super) enum Effect {
     ListSessions,
     /// picker 确认：恢复选中的 session（加载历史 + 切换落库目标）
     Resume(String),
+    /// `/models`：列出当前 provider 的候选模型并打开选择器
+    ListModels,
+    /// `/models:<id>` 或 picker 确认：切换为指定模型（上下文保留）
+    SwitchModel(String),
     /// `/skill`：列出可用 skill 并刷新补全快照
     ListSkills,
     /// `/skill:<name>`：手动载入 skill 到当前对话
@@ -388,8 +426,8 @@ pub(super) struct App {
     cursor: usize,
     /// slash 命令补全弹层（输入以 `/` 开头时出现）
     completion: Option<Completion>,
-    /// `/resume` session 选择器（打开时接管键位）
-    resume_picker: Option<ResumePicker>,
+    /// 选择器（`/resume` / `/models`，打开时接管键位）
+    picker: Option<Picker>,
     /// 暂存的图片附件（随下一条 prompt 发送）
     attachments: Vec<PendingImage>,
     /// 从底部向上滚动的行数（0 = 跟随最新内容）
@@ -425,7 +463,7 @@ impl App {
             input: String::new(),
             cursor: 0,
             completion: None,
-            resume_picker: None,
+            picker: None,
             attachments: Vec::new(),
             scroll: 0,
             scroll_max: 0,
@@ -627,9 +665,9 @@ impl App {
     /// 消费一个按键，返回需要事件循环接线执行的语义效果。
     /// picker/补全/编辑器/slash 的路由全部在此内部完成。
     pub(super) fn press(&mut self, key: Key) -> Vec<Effect> {
-        // `/resume` 选择器打开时接管键位（slash 命令仅在空闲时可提交，
+        // 选择器打开时接管键位（slash 命令仅在空闲时可提交，
         // 此时 agent 必空闲，无运行可取消）
-        if self.resume_picker.is_some() {
+        if self.picker.is_some() {
             return self.press_picker(key);
         }
         match key {
@@ -715,13 +753,16 @@ impl App {
     /// Ctrl+C/D 保持全局退出，其余输入忽略（避免污染输入缓冲）。
     fn press_picker(&mut self, key: Key) -> Vec<Effect> {
         match key {
-            Key::Up | Key::Char('k') => self.resume_select(-1),
-            Key::Down | Key::Char('j') => self.resume_select(1),
-            Key::Esc | Key::Char('q') => self.close_resume_picker(),
+            Key::Up | Key::Char('k') => self.picker_select(-1),
+            Key::Down | Key::Char('j') => self.picker_select(1),
+            Key::Esc | Key::Char('q') => self.close_picker(),
             Key::Ctrl('c' | 'd') => self.should_quit = true,
             Key::Enter => {
-                if let Some(id) = self.take_resume_selection() {
-                    return vec![Effect::Resume(id)];
+                if let Some((kind, id)) = self.take_picker_selection() {
+                    return vec![match kind {
+                        PickerKind::Resume => Effect::Resume(id),
+                        PickerKind::Models => Effect::SwitchModel(id),
+                    }];
                 }
             }
             _ => {}
@@ -784,6 +825,8 @@ impl App {
                 vec![Effect::Compact(instructions)]
             }
             SlashAction::Resume => vec![Effect::ListSessions],
+            SlashAction::Models(None) => vec![Effect::ListModels],
+            SlashAction::Models(Some(id)) => vec![Effect::SwitchModel(id)],
             SlashAction::Skill(None) => vec![Effect::ListSkills],
             SlashAction::Skill(Some(name)) => vec![Effect::LoadSkill(name)],
             SlashAction::Image(path) => vec![Effect::AttachImage(path)],
@@ -1088,36 +1131,51 @@ impl App {
         true
     }
 
-    // ── /resume session 选择器 ──────────────────────────────────────────────
+    // ── 选择器（/resume、/models 共用） ───────────────────────────────────
 
-    /// 打开 `/resume` 选择器；调用方保证候选非空。
-    pub(super) fn open_resume_picker(&mut self, rows: Vec<ResumeRow>) {
+    /// 打开 `/resume` 选择器（从头选中）；调用方保证候选非空。
+    pub(super) fn open_resume_picker(&mut self, rows: Vec<PickerRow>) {
         debug_assert!(!rows.is_empty());
-        self.resume_picker = Some(ResumePicker { rows, selected: 0 });
+        self.picker = Some(Picker {
+            kind: PickerKind::Resume,
+            rows,
+            selected: 0,
+        });
+    }
+
+    /// 打开 `/models` 选择器，预选中当前模型；调用方保证候选非空。
+    pub(super) fn open_model_picker(&mut self, rows: Vec<PickerRow>, selected: usize) {
+        debug_assert!(!rows.is_empty());
+        debug_assert!(selected < rows.len());
+        self.picker = Some(Picker {
+            kind: PickerKind::Models,
+            rows,
+            selected,
+        });
     }
 
     /// 当前选择器（渲染与键位路由用）。
-    pub(super) const fn resume_picker(&self) -> Option<&ResumePicker> {
-        self.resume_picker.as_ref()
+    pub(super) const fn picker(&self) -> Option<&Picker> {
+        self.picker.as_ref()
     }
 
     /// 关闭选择器（Esc/q 取消）。
-    fn close_resume_picker(&mut self) {
-        self.resume_picker = None;
+    fn close_picker(&mut self) {
+        self.picker = None;
     }
 
     /// 移动选中项（到底/顶钳制，不循环）。
-    fn resume_select(&mut self, delta: isize) {
-        if let Some(picker) = &mut self.resume_picker {
+    fn picker_select(&mut self, delta: isize) {
+        if let Some(picker) = &mut self.picker {
             let last = picker.rows.len() - 1;
             picker.selected = picker.selected.saturating_add_signed(delta).min(last);
         }
     }
 
-    /// Enter 确认：取出选中 session id 并关闭选择器。
-    fn take_resume_selection(&mut self) -> Option<String> {
-        let picker = self.resume_picker.take()?;
-        Some(picker.rows[picker.selected].id.clone())
+    /// Enter 确认：取出选中行的（种类, id）并关闭选择器。
+    fn take_picker_selection(&mut self) -> Option<(PickerKind, String)> {
+        let picker = self.picker.take()?;
+        Some((picker.kind, picker.rows[picker.selected].id.clone()))
     }
 
     // ── slash 命令反馈 ──────────────────────────────────────────────────────
@@ -1230,6 +1288,12 @@ impl App {
         &self.model_name
     }
 
+    /// `/models` 切换成功后更新状态栏的模型徽标与上下文窗口。
+    pub(super) fn set_model(&mut self, name: String, context_window: u64) {
+        self.model_name = name;
+        self.context_window = context_window;
+    }
+
     /// 当前 session id（未持久化时为 None）。
     pub(super) fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
@@ -1284,6 +1348,13 @@ fn image_usage() -> &'static str {
         .iter()
         .find(|command| command.name == "image")
         .map_or("/image:<路径>", |command| command.usage)
+}
+
+fn models_usage() -> &'static str {
+    SLASH_COMMANDS
+        .iter()
+        .find(|command| command.name == "models")
+        .map_or("/models:<模型id>", |command| command.usage)
 }
 
 fn user_text(content: &UserMessageContent) -> String {
@@ -1730,10 +1801,10 @@ mod tests {
     }
 
     #[test]
-    fn resume_picker_clamps_selection_and_take_closes() {
+    fn picker_clamps_selection_and_take_closes() {
         let mut app = app();
         let rows = (0..3)
-            .map(|i| ResumeRow {
+            .map(|i| PickerRow {
                 id: format!("id-{i}"),
                 text: format!("row {i}"),
             })
@@ -1741,18 +1812,21 @@ mod tests {
         app.open_resume_picker(rows);
 
         // 到底/顶钳制，不循环
-        app.resume_select(1);
-        app.resume_select(1);
-        app.resume_select(1);
-        assert_eq!(app.resume_picker().expect("picker").selected, 2);
-        app.resume_select(-5);
-        assert_eq!(app.resume_picker().expect("picker").selected, 0);
+        app.picker_select(1);
+        app.picker_select(1);
+        app.picker_select(1);
+        assert_eq!(app.picker().expect("picker").selected, 2);
+        app.picker_select(-5);
+        assert_eq!(app.picker().expect("picker").selected, 0);
 
         // Enter 确认：返回选中 id 并关闭；关闭后再次确认为 None
-        app.resume_select(1);
-        assert_eq!(app.take_resume_selection().as_deref(), Some("id-1"));
-        assert!(app.resume_picker().is_none());
-        assert!(app.take_resume_selection().is_none());
+        app.picker_select(1);
+        assert_eq!(
+            app.take_picker_selection(),
+            Some((PickerKind::Resume, "id-1".to_string()))
+        );
+        assert!(app.picker().is_none());
+        assert!(app.take_picker_selection().is_none());
     }
 
     #[test]
@@ -2242,11 +2316,11 @@ mod tests {
     fn resume_picker_enter_returns_resume_effect() {
         let mut app = app();
         app.open_resume_picker(vec![
-            ResumeRow {
+            PickerRow {
                 id: "s1".to_string(),
                 text: "row 1".to_string(),
             },
-            ResumeRow {
+            PickerRow {
                 id: "s2".to_string(),
                 text: "row 2".to_string(),
             },
@@ -2256,14 +2330,80 @@ mod tests {
         assert_eq!(app.input(), "");
         let effects = app.press(Key::Enter);
         assert!(matches!(&effects[..], [Effect::Resume(id)] if id == "s2"));
-        assert!(app.resume_picker().is_none());
+        assert!(app.picker().is_none());
         // Esc/q 取消不产出效果
-        app.open_resume_picker(vec![ResumeRow {
+        app.open_resume_picker(vec![PickerRow {
             id: "s1".to_string(),
             text: "row 1".to_string(),
         }]);
         assert!(app.press(Key::Char('q')).is_empty());
-        assert!(app.resume_picker().is_none());
+        assert!(app.picker().is_none());
+    }
+
+    /// `/models` 解析：无参打开选择器，带 id（空格或冒号）直接切换，
+    /// id 含空白报用法错误。
+    #[test]
+    fn parse_slash_models_forms() {
+        assert_eq!(
+            parse_slash("/models"),
+            SlashParse::Known(SlashAction::Models(None))
+        );
+        assert_eq!(
+            parse_slash("/models:gpt-5.2"),
+            SlashParse::Known(SlashAction::Models(Some("gpt-5.2".to_string())))
+        );
+        assert_eq!(
+            parse_slash("/models gpt-5.2"),
+            SlashParse::Known(SlashAction::Models(Some("gpt-5.2".to_string())))
+        );
+        assert!(matches!(
+            parse_slash("/models a b"),
+            SlashParse::InvalidUsage(_)
+        ));
+        assert_eq!(
+            parse_slash("/modelsx"),
+            SlashParse::Unknown("modelsx".to_string())
+        );
+    }
+
+    /// `/models` 选择器：预选中当前模型，Enter 产出 SwitchModel 效果。
+    #[test]
+    fn model_picker_enter_returns_switch_effect() {
+        let mut app = app();
+        app.open_model_picker(
+            vec![
+                PickerRow {
+                    id: "m1".to_string(),
+                    text: "m1 row".to_string(),
+                },
+                PickerRow {
+                    id: "m2".to_string(),
+                    text: "m2 row".to_string(),
+                },
+            ],
+            1,
+        );
+        assert_eq!(app.picker().expect("picker").selected, 1);
+        let effects = app.press(Key::Enter);
+        assert!(matches!(&effects[..], [Effect::SwitchModel(id)] if id == "m2"));
+        assert!(app.picker().is_none());
+    }
+
+    /// `/models` 无参 → ListModels 效果；切换成功后状态栏模型信息更新。
+    #[test]
+    fn models_slash_effects_and_set_model_updates_status() {
+        let mut app = app();
+        app.paste_text("/models");
+        let effects = app.press(Key::Enter);
+        assert!(matches!(&effects[..], [Effect::ListModels]));
+
+        app.paste_text("/models:gpt-5.2");
+        let effects = app.press(Key::Enter);
+        assert!(matches!(&effects[..], [Effect::SwitchModel(id)] if id == "gpt-5.2"));
+
+        app.set_model("GPT-5.2".to_string(), 400_000);
+        assert_eq!(app.model_name(), "GPT-5.2");
+        assert_eq!(app.context_window(), 400_000);
     }
 
     #[test]

@@ -288,6 +288,32 @@ mod tests {
         assert!(a.messages().is_empty() && b.messages().is_empty() && c.messages().is_empty());
     }
 
+    /// `/models` 运行时切换：模型替换，历史与工具保留。
+    #[test]
+    fn set_model_switches_model_keeping_history() {
+        let history = vec![Message::User(UserMessage {
+            content: UserMessageContent::Text("hello".to_string()),
+            timestamp: now_millis(),
+        })];
+        let (mut agent, _events) = Agent::builder()
+            .model(model())
+            .provider(Arc::new(MockProvider))
+            .system_prompt("sys")
+            .messages(history)
+            .build();
+        assert_eq!(agent.model().id, "mock-model");
+
+        let next = Model {
+            id: "other-model".to_string(),
+            context_window: 64_000,
+            ..model()
+        };
+        agent.set_model(next);
+        assert_eq!(agent.model().id, "other-model");
+        assert_eq!(agent.model().context_window, 64_000);
+        assert_eq!(agent.messages().len(), 1, "切换模型保留消息历史");
+    }
+
     #[test]
     fn optional_setters_apply() {
         let compaction = CompactionSettings {

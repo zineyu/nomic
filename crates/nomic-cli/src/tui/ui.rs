@@ -10,7 +10,8 @@ use unicode_width::UnicodeWidthChar;
 
 use super::{
     app::{
-        App, Block, ChatItem, Completion, CompletionCandidate, ResumePicker, ToolItem, ToolStatus,
+        App, Block, ChatItem, Completion, CompletionCandidate, Picker, PickerKind, ToolItem,
+        ToolStatus,
     },
     markdown, theme,
 };
@@ -34,8 +35,8 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if let Some(completion) = app.completion() {
         draw_completion(frame, completion, chunks[1]);
     }
-    if let Some(picker) = app.resume_picker() {
-        draw_resume_picker(frame, picker, chunks[1]);
+    if let Some(picker) = app.picker() {
+        draw_picker(frame, picker, chunks[1]);
     }
 }
 
@@ -240,12 +241,13 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ]),
             theme::busy(),
         )
-    } else if app.resume_picker().is_some() {
+    } else if let Some(picker) = app.picker() {
+        let title = match picker.kind {
+            PickerKind::Resume => "恢复 session · ↑/↓ 选择 · Enter 确认 · Esc 取消",
+            PickerKind::Models => "切换模型 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
+        };
         (
-            Line::from(Span::styled(
-                "恢复 session · ↑/↓ 选择 · Enter 确认 · Esc 取消",
-                theme::accent(),
-            )),
+            Line::from(Span::styled(title, theme::accent())),
             theme::accent(),
         )
     } else if app.completion().is_some() {
@@ -355,7 +357,7 @@ fn context_usage_span(app: &App) -> Span<'static> {
 }
 
 /// token 数紧凑格式：<1k 原样，<10k 一位小数（`8.4k`），其余取整（`200k`）。
-fn format_tokens(tokens: u64) -> String {
+pub(super) fn format_tokens(tokens: u64) -> String {
     if tokens < 1_000 {
         tokens.to_string()
     } else if tokens < 10_000 {
@@ -438,8 +440,8 @@ fn draw_completion(frame: &mut Frame<'_>, completion: &Completion, input_area: R
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// `/resume` session 选择器弹层：与补全弹层同构，贴在输入框上方。
-fn draw_resume_picker(frame: &mut Frame<'_>, picker: &ResumePicker, input_area: Rect) {
+/// 选择器弹层（`/resume` / `/models` 共用）：与补全弹层同构，贴在输入框上方。
+fn draw_picker(frame: &mut Frame<'_>, picker: &Picker, input_area: Rect) {
     let total = picker.rows.len();
     let (start, end) = visible_window(total, picker.selected, COMPLETION_MAX_VISIBLE);
     let lines: Vec<Line<'static>> = picker.rows[start..end]
@@ -459,10 +461,14 @@ fn draw_resume_picker(frame: &mut Frame<'_>, picker: &ResumePicker, input_area: 
             }
         })
         .collect();
+    let action = match picker.kind {
+        PickerKind::Resume => "恢复 session",
+        PickerKind::Models => "切换模型",
+    };
     let title = if total > COMPLETION_MAX_VISIBLE {
-        format!("恢复 session {}/{total}", picker.selected + 1)
+        format!("{action} {}/{total}", picker.selected + 1)
     } else {
-        "恢复 session".to_string()
+        action.to_string()
     };
     let block = Border::bordered()
         .border_type(BorderType::Rounded)
@@ -671,15 +677,15 @@ mod tests {
     /// `/resume` 选择器弹层：session 行、标题与选中标记均可见。
     #[test]
     fn renders_resume_picker() {
-        use super::super::app::ResumeRow;
+        use super::super::app::PickerRow;
 
         let mut app = App::new("test-model".to_string(), None, 200_000);
         app.open_resume_picker(vec![
-            ResumeRow {
+            PickerRow {
                 id: "01999999-aaaa".to_string(),
                 text: "01999999  2026-07-26 14:48    3 条消息  /tmp/a".to_string(),
             },
-            ResumeRow {
+            PickerRow {
                 id: "02888888-bbbb".to_string(),
                 text: "02888888  2026-07-25 09:00   12 条消息  /tmp/b".to_string(),
             },
@@ -699,6 +705,42 @@ mod tests {
         assert!(compact.contains("恢复session"), "{compact}");
         assert!(compact.contains("01999999"), "{compact}");
         assert!(compact.contains("02888888"), "{compact}");
+    }
+
+    /// `/models` 选择器弹层：标题与模型行可见，预选中当前模型。
+    #[test]
+    fn renders_model_picker() {
+        use super::super::app::PickerRow;
+
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        app.open_model_picker(
+            vec![
+                PickerRow {
+                    id: "claude-sonnet-4-5".to_string(),
+                    text: "claude-sonnet-4-5 — Claude Sonnet 4.5 · ctx 200k".to_string(),
+                },
+                PickerRow {
+                    id: "claude-opus-4-7".to_string(),
+                    text: "claude-opus-4-7 — Claude Opus 4.7 · ctx 200k（当前）".to_string(),
+                },
+            ],
+            1,
+        );
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let compact: String = buffer
+            .content()
+            .iter()
+            .flat_map(|cell| cell.symbol().chars())
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(compact.contains("切换模型"), "{compact}");
+        assert!(compact.contains("claude-sonnet-4-5"), "{compact}");
+        assert!(compact.contains("claude-opus-4-7"), "{compact}");
     }
 
     /// 补全弹层滚动窗口：不超限全量显示；超限时选中项保持在窗内。

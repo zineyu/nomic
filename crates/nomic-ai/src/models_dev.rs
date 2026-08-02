@@ -165,6 +165,25 @@ impl Catalog {
             .values()
             .find_map(|models| models.get(model_id))
     }
+
+    /// 列出某 provider 下的全部模型（按模型 id 排序），provider 不存在时为空。
+    ///
+    /// provider 名即 api.json 的一级键（内置 anthropic / openai 与配置里的
+    /// provider 名一致；自定义 provider 名未必命中 models.dev，调用方需容忍空列表）。
+    pub fn models_of(&self, provider: &str) -> Vec<(&str, &ModelSpec)> {
+        let mut models: Vec<(&str, &ModelSpec)> = self
+            .providers
+            .get(provider)
+            .map(|models| {
+                models
+                    .iter()
+                    .map(|(id, spec)| (id.as_str(), spec))
+                    .collect()
+            })
+            .unwrap_or_default();
+        models.sort_unstable_by_key(|(id, _)| *id);
+        models
+    }
 }
 
 /// 加载 models.dev 目录：新鲜缓存 → 网络拉取（成功则写缓存）→ 过期缓存 → `None`。
@@ -319,6 +338,22 @@ mod tests {
         assert_eq!(spec.reasoning, Some(false));
         assert_eq!(spec.context_window, None);
         assert_eq!(spec.cost_input, None);
+    }
+
+    #[test]
+    fn models_of_lists_provider_models_sorted_by_id() {
+        let catalog = Catalog::parse(FIXTURE).expect("parse");
+        let models = catalog.models_of("anthropic");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].0, "claude-sonnet-4-5");
+        assert!(
+            models[0]
+                .1
+                .name
+                .as_deref()
+                .is_some_and(|name| name.contains("Sonnet"))
+        );
+        assert!(catalog.models_of("no-such-provider").is_empty());
     }
 
     #[test]

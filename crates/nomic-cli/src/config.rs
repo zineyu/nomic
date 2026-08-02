@@ -28,7 +28,7 @@ pub fn infer_api(provider: &str) -> Option<ApiKind> {
 ///
 /// 全部字段可选：缺省的字段继续向上取环境变量与内置默认；
 /// `deny_unknown_fields` 让未知键硬报错，避免拼写错误被静默忽略。
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// provider：anthropic、openai，或下方 `[providers]` 表中定义的自定义名字

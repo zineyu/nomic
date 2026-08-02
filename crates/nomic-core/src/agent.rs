@@ -197,6 +197,21 @@ impl Agent {
         self.messages.clear();
     }
 
+    /// 当前模型。
+    pub const fn model(&self) -> &Model {
+        &self.config.model
+    }
+
+    /// 运行时切换模型（交互端 `/models` 语义）。
+    ///
+    /// 消息历史、系统提示词与工具保留；provider 与 stream options 不变——
+    /// 同一 provider 下的模型共享连接参数（base_url 按 Model 逐请求取，
+    /// api_key 请求时经 stream options / provider / 环境变量解析）。
+    /// 应在非运行状态（`prompt` 返回后）调用。静默切换，不发出事件。
+    pub fn set_model(&mut self, model: Model) {
+        self.config.model = model;
+    }
+
     /// 以既有消息历史整体替换当前上下文（session resume 语义，如 TUI 的 `/resume`）。
     ///
     /// 与 builder 的 `messages` 同样的调用契约：`messages` 按序作为上下文起点，

@@ -38,7 +38,7 @@ use crossterm::{
     },
 };
 use futures::StreamExt as _;
-use nomic_ai::Message;
+use nomic_ai::{Message, Model};
 use nomic_core::{Agent, AgentEvent, Compaction, estimate_context_tokens};
 use nomic_session::{CompactionRecord, SessionStore};
 use nomic_skills::SkillResolver;
@@ -46,8 +46,9 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use app::{App, Effect, Key, ResumeRow, SkillEntry};
+use app::{App, Effect, Key, PickerRow, SkillEntry};
 
+use crate::bootstrap::{ModelChoice, ModelResolver};
 use crate::{Cli, bootstrap};
 
 /// 提交给 agent driver 的任务。
@@ -62,6 +63,8 @@ enum DriverJob {
     Clear,
     /// 整体替换 agent 上下文（`/resume` 恢复历史 session）
     Restore(Vec<Message>),
+    /// 切换模型（`/models`；上下文保留，spec 已按启动同一口径解析）
+    SwitchModel(Model),
 }
 
 /// agent driver 完成的任务回执。
@@ -100,7 +103,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
     );
 
     let (agent, mut events) = Agent::builder()
-        .model(boot.model)
+        .model(boot.model.clone())
         .provider(boot.provider)
         .system_prompt(boot.system_prompt)
         .tools(nomic_tools::default_tools_with_skills(boot.skill_resolver))
@@ -113,9 +116,41 @@ pub async fn run(cli: &Cli) -> Result<()> {
     let mut terminal =
         Terminal::new(CrosstermBackend::new(io::stdout())).context("创建终端后端失败")?;
 
-    // agent driver：持有 Agent，串行执行 prompt，完成后回传结果
+    let (mut driver, mut done_rx) =
+        spawn_driver(agent, boot.session, boot.models, boot.model, skill_resolver)?;
+    let mut term_events = EventStream::new();
+    // spinner 帧推进：仅运行中需要动画，空闲时分支挂起不唤醒事件循环
+    let mut spinner_ticker = tokio::time::interval(std::time::Duration::from_millis(100));
+    loop {
+        terminal
+            .draw(|frame| ui::draw(frame, &mut app))
+            .context("绘制失败")?;
+        let wake = next_wake(
+            app.is_running(),
+            &mut driver,
+            &mut term_events,
+            &mut spinner_ticker,
+            &mut events,
+            &mut done_rx,
+        )
+        .await;
+        if handle_wake(wake, &mut app, &mut driver).await || app.should_quit() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// 启动 agent driver：专属 tokio 任务持有 Agent，串行执行 job，完成后回传结果。
+fn spawn_driver(
+    agent: Agent,
+    session: Option<(SessionStore, String)>,
+    models: ModelResolver,
+    model: Model,
+    skill_resolver: SkillResolver,
+) -> Result<(Driver, mpsc::UnboundedReceiver<DriverDone>)> {
     let (job_tx, mut job_rx) = mpsc::unbounded_channel::<DriverJob>();
-    let (done_tx, mut done_rx) = mpsc::unbounded_channel::<DriverDone>();
+    let (done_tx, done_rx) = mpsc::unbounded_channel::<DriverDone>();
     let driver_task = tokio::spawn(async move {
         let mut agent = agent;
         while let Some(job) = job_rx.recv().await {
@@ -142,6 +177,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
                 DriverJob::Inject(text) => agent.inject_user_message(&text),
                 DriverJob::Clear => agent.clear_messages(),
                 DriverJob::Restore(messages) => agent.restore_messages(messages),
+                DriverJob::SwitchModel(model) => agent.set_model(model),
             }
             // 每个 job 都可能改变上下文：回报最新 token 估算（与自动压缩同一口径）
             let tokens = estimate_context_tokens(agent.messages());
@@ -150,37 +186,18 @@ pub async fn run(cli: &Cli) -> Result<()> {
             }
         }
     });
-
-    let mut term_events = EventStream::new();
-    // spinner 帧推进：仅运行中需要动画，空闲时分支挂起不唤醒事件循环
-    let mut spinner_ticker = tokio::time::interval(std::time::Duration::from_millis(100));
-    let mut driver = Driver {
+    let driver = Driver {
         job_tx,
         current_cancel: None,
         task: Some(driver_task),
         alive: true,
-        session: boot.session,
+        session,
         cwd: std::env::current_dir().context("get cwd")?,
         skill_resolver,
+        models,
+        model,
     };
-    loop {
-        terminal
-            .draw(|frame| ui::draw(frame, &mut app))
-            .context("绘制失败")?;
-        let wake = next_wake(
-            app.is_running(),
-            &mut driver,
-            &mut term_events,
-            &mut spinner_ticker,
-            &mut events,
-            &mut done_rx,
-        )
-        .await;
-        if handle_wake(wake, &mut app, &mut driver).await || app.should_quit() {
-            break;
-        }
-    }
-    Ok(())
+    Ok((driver, done_rx))
 }
 
 /// 事件循环持有的驱动端资源。
@@ -194,6 +211,10 @@ struct Driver {
     session: Option<(SessionStore, String)>,
     cwd: std::path::PathBuf,
     skill_resolver: SkillResolver,
+    /// 运行时模型解析器（`/models` 候选与切换，与启动同一分层口径）
+    models: ModelResolver,
+    /// 当前模型（`/models` 切换后更新；选择器预选与切换幂等判断用）
+    model: Model,
 }
 
 /// 事件循环单次等待的结果。
@@ -447,6 +468,8 @@ async fn execute_effect(app: &mut App, driver: &mut Driver, effect: Effect) {
         Effect::Resume(id) => {
             resume_session(app, &driver.job_tx, &mut driver.session, id).await;
         }
+        Effect::ListModels => list_models(app, driver),
+        Effect::SwitchModel(id) => switch_model(app, driver, &id),
         Effect::ListSkills => {
             // 列出时顺带刷新补全快照：会话期间新增的 skill 也能被 Tab 补全
             let catalog = driver.skill_resolver.catalog();
@@ -476,6 +499,76 @@ async fn execute_effect(app: &mut App, driver: &mut Driver, effect: Effect) {
     }
 }
 
+/// `/models`：列出当前 provider 的候选模型并打开选择器（预选中当前模型）。
+fn list_models(app: &mut App, driver: &Driver) {
+    let current = &driver.model.id;
+    let choices = driver.models.candidates(current);
+    if choices.is_empty() {
+        // 理论不可达（候选至少含当前模型），防御 provider 配置在运行期失效
+        app.warn("没有可用的模型候选");
+        return;
+    }
+    let selected = choices
+        .iter()
+        .position(|choice| &choice.id == current)
+        .unwrap_or(0);
+    let rows = choices
+        .iter()
+        .map(|choice| PickerRow {
+            id: choice.id.clone(),
+            text: model_row_text(choice, current),
+        })
+        .collect();
+    app.open_model_picker(rows, selected);
+}
+
+/// 选择器行文本：`id — 展示名 · ctx 200k`，当前模型带标记；窗口未知省略 ctx。
+fn model_row_text(choice: &ModelChoice, current_id: &str) -> String {
+    use std::fmt::Write as _;
+    let mut text = format!("{} — {}", choice.id, choice.name);
+    if choice.context_window > 0 {
+        let _ = write!(text, " · ctx {}", ui::format_tokens(choice.context_window));
+    }
+    if choice.id == current_id {
+        text.push_str("（当前）");
+    }
+    text
+}
+
+/// `/models:<id>` 或选择器确认：解析 → driver 串行切换 → 更新状态栏与提示。
+///
+/// 切换的是同一 provider 下的模型：连接参数（base_url / api_key）不变，
+/// 对话上下文保留。driver 串行处理任务，紧随的 prompt 一定跑在新模型上。
+fn switch_model(app: &mut App, driver: &mut Driver, id: &str) {
+    if id == driver.model.id {
+        app.push_system(format!("当前模型已是 {}。", driver.model.name));
+        return;
+    }
+    match driver.models.resolve(id) {
+        Err(error) => app.warn(format!("切换模型失败：{error:#}")),
+        Ok(model) => {
+            if driver
+                .job_tx
+                .send(DriverJob::SwitchModel(model.clone()))
+                .is_err()
+            {
+                app.warn("内部错误：agent 任务已退出，无法切换模型");
+                return;
+            }
+            let name = model.name.clone();
+            let window = model.context_window;
+            driver.model = model;
+            app.set_model(name.clone(), window);
+            let mut text = format!("已切换模型为 {name}");
+            if window > 0 {
+                use std::fmt::Write as _;
+                let _ = write!(text, "（ctx {}）", ui::format_tokens(window));
+            }
+            text.push_str("，对话上下文保留。");
+            app.push_system(text);
+        }
+    }
+}
 /// `/resume`：列出历史 session 并打开选择器。
 async fn list_sessions(app: &mut App, driver: &Driver) {
     match session_store(driver.session.as_ref()).await {
@@ -488,7 +581,7 @@ async fn list_sessions(app: &mut App, driver: &Driver) {
             Ok(sessions) => {
                 let rows = sessions
                     .iter()
-                    .map(|summary| ResumeRow {
+                    .map(|summary| PickerRow {
                         id: summary.id.clone(),
                         text: crate::sessions::row_text(summary),
                     })
@@ -785,7 +878,33 @@ mod tests {
     use std::any::Any;
     use std::path::PathBuf;
 
-    use super::{panic_payload_text, paste_image_path, percent_decode};
+    use super::{
+        ModelChoice, model_row_text, panic_payload_text, paste_image_path, percent_decode,
+    };
+
+    /// `/models` 选择器行：id + 展示名 + 窗口，当前模型带标记，窗口未知省略 ctx。
+    #[test]
+    fn model_row_text_formats_window_and_marks_current() {
+        let choice = ModelChoice {
+            id: "gpt-5.2".to_string(),
+            name: "GPT-5.2".to_string(),
+            context_window: 400_000,
+        };
+        assert_eq!(
+            model_row_text(&choice, "gpt-5.2"),
+            "gpt-5.2 — GPT-5.2 · ctx 400k（当前）"
+        );
+        assert_eq!(
+            model_row_text(&choice, "other"),
+            "gpt-5.2 — GPT-5.2 · ctx 400k"
+        );
+        let unknown = ModelChoice {
+            id: "m".to_string(),
+            name: "m".to_string(),
+            context_window: 0,
+        };
+        assert_eq!(model_row_text(&unknown, "other"), "m — m");
+    }
 
     #[test]
     fn panic_payload_extracts_message() {

@@ -1,12 +1,14 @@
 //! TUI 状态层：聊天条目、流式增量累积、输入编辑、滚动。
 //!
+//! 对外只暴露语义级操作——按键（[`App::press`] → [`Effect`]）、应用 agent 事件、
+//! 滚动、会话与附件管理；编辑器/补全/picker/slash 分发均为模块内部实现。
 //! 本模块不碰终端，全部逻辑可脱离 ratatui/crossterm 单测。
 
 use nomic_ai::{
     AssistantContent, AssistantEvent, Message, StopReason, UserContent, UserMessageContent,
 };
 use nomic_core::AgentEvent;
-use nomic_skills::{ActivatedSkill, Skill};
+use nomic_skills::{ActivatedSkill, SkillScope};
 use unicode_width::UnicodeWidthStr;
 
 use crate::print::brief_args;
@@ -122,7 +124,7 @@ pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
 
 /// slash 命令解析结果。
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum SlashParse {
+enum SlashParse {
     /// 输入不以 `/` 开头，按普通 prompt 处理
     NotCommand,
     /// 已知命令
@@ -135,7 +137,7 @@ pub(super) enum SlashParse {
 
 /// 已知 slash 命令的动作。
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum SlashAction {
+enum SlashAction {
     Help,
     New,
     Resume,
@@ -152,7 +154,7 @@ pub(super) enum SlashAction {
 ///
 /// 参数只支持 `/name:arg` 冒号形式（如 `/skill:jujutsu`）；
 /// `/cmd extra` 视为参数形式非法。
-pub(super) fn parse_slash(input: &str) -> SlashParse {
+fn parse_slash(input: &str) -> SlashParse {
     let Some(rest) = input.trim().strip_prefix('/') else {
         return SlashParse::NotCommand;
     };
@@ -220,7 +222,7 @@ pub(super) fn parse_slash(input: &str) -> SlashParse {
 }
 
 /// `/help` 的输出文本。
-pub(super) fn help_text() -> String {
+fn help_text() -> String {
     use std::fmt::Write as _;
     let mut text = "可用命令：".to_string();
     for command in SLASH_COMMANDS {
@@ -271,11 +273,12 @@ impl CompletionCandidate {
     }
 }
 
-/// 可用于 `/skill:` 补全的 skill 元数据（启动时从 resolver catalog 快照）。
+/// 可用于 `/skill:` 补全的 skill 元数据（从 resolver catalog 快照）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SkillEntry {
     pub(super) name: String,
     pub(super) description: String,
+    pub(super) scope: SkillScope,
 }
 
 /// 补全弹层状态：候选列表 + 当前选中项。
@@ -301,17 +304,73 @@ pub(super) struct ResumePicker {
 
 /// 暂存的图片附件（`/image <路径>` 载入，随下一条 prompt 一起发送）。
 #[derive(Debug)]
-pub(super) struct PendingImage {
+struct PendingImage {
     /// 展示名（文件名）
-    pub(super) name: String,
+    name: String,
     /// 图片内容块（base64 内联）
-    pub(super) image: nomic_ai::ImageContent,
+    image: nomic_ai::ImageContent,
+}
+
+/// PgUp/PgDn 的滚动步长。
+const PAGE_SCROLL: u16 = 10;
+
+/// 语义化按键：与 crossterm 解耦，保持状态层可脱离终端单测。
+/// 由事件循环（mod.rs）从 `KeyEvent` 映射；Ctrl+V 粘贴需异步读剪贴板，
+/// 由事件循环拦截处理，不经此枚举。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Key {
+    /// 普通字符输入（含 Shift 修饰的可见字符）
+    Char(char),
+    /// Ctrl+字母（Ctrl+C/D 取消或退出）
+    Ctrl(char),
+    Enter,
+    /// Shift+Enter 手动换行
+    Newline,
+    Backspace,
+    Left,
+    Right,
+    Home,
+    End,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Tab,
+    Esc,
+}
+
+/// [`App::press`] 返回的语义效果：状态层不持有的外部资源
+/// （driver job、取消令牌、session 库、skill resolver、图片加载）
+/// 由事件循环接线执行。
+#[derive(Debug)]
+pub(super) enum Effect {
+    /// 提交一轮 prompt（`running` 已置位，避免提交空窗期重复提交）
+    Prompt {
+        text: String,
+        images: Vec<nomic_ai::ImageContent>,
+    },
+    /// `/compact` 手动压缩上下文（`running` 已置位，Esc 可取消）
+    Compact(Option<String>),
+    /// 取消当前运行（Esc / Ctrl+C）
+    Cancel,
+    /// `/resume`：列出历史 session 并打开选择器
+    ListSessions,
+    /// picker 确认：恢复选中的 session（加载历史 + 切换落库目标）
+    Resume(String),
+    /// `/skill`：列出可用 skill 并刷新补全快照
+    ListSkills,
+    /// `/skill:<name>`：手动载入 skill 到当前对话
+    LoadSkill(String),
+    /// `/image <路径>`：为下一条消息附加图片
+    AttachImage(String),
+    /// `/new`：清空上下文开启新对话（新建 session）
+    NewSession,
 }
 
 /// TUI 应用状态。
 #[derive(Debug)]
 pub(super) struct App {
-    pub(super) items: Vec<ChatItem>,
+    items: Vec<ChatItem>,
     /// 输入缓冲（可多行，`\n` 为 Shift+Enter 插入的手动换行）
     input: String,
     /// 光标位置（字节索引，始终落在 char 边界）
@@ -321,19 +380,19 @@ pub(super) struct App {
     /// `/resume` session 选择器（打开时接管键位）
     resume_picker: Option<ResumePicker>,
     /// 暂存的图片附件（随下一条 prompt 发送）
-    pub(super) attachments: Vec<PendingImage>,
+    attachments: Vec<PendingImage>,
     /// 从底部向上滚动的行数（0 = 跟随最新内容）
-    pub(super) scroll: u16,
+    scroll: u16,
     /// 聊天区最大可上滚行数（渲染时更新，状态栏滚动位置显示用）
-    pub(super) scroll_max: u16,
-    pub(super) running: bool,
-    pub(super) should_quit: bool,
+    scroll_max: u16,
+    running: bool,
+    should_quit: bool,
     /// 模型展示名
-    pub(super) model_name: String,
+    model_name: String,
     /// 当前 session id（未持久化时为 None）
-    pub(super) session_id: Option<String>,
+    session_id: Option<String>,
     /// 状态栏一次性提示（告警等）
-    pub(super) notice: Option<String>,
+    notice: Option<String>,
     /// spinner 帧序号（仅运行中由事件循环周期推进）
     spinner: usize,
     /// `/skill:` 补全用的可用 skill 快照
@@ -528,6 +587,215 @@ impl App {
         })
     }
 
+    // ── 按键（语义分发） ────────────────────────────────────────────────────
+
+    /// 消费一个按键，返回需要事件循环接线执行的语义效果。
+    /// picker/补全/编辑器/slash 的路由全部在此内部完成。
+    pub(super) fn press(&mut self, key: Key) -> Vec<Effect> {
+        // `/resume` 选择器打开时接管键位（slash 命令仅在空闲时可提交，
+        // 此时 agent 必空闲，无运行可取消）
+        if self.resume_picker.is_some() {
+            return self.press_picker(key);
+        }
+        match key {
+            Key::Ctrl('c' | 'd') => {
+                if self.running {
+                    vec![Effect::Cancel]
+                } else {
+                    self.should_quit = true;
+                    Vec::new()
+                }
+            }
+            Key::Esc => {
+                // 补全弹层可见时优先关闭弹层，否则取消当前运行
+                if !self.dismiss_completion() && self.running {
+                    vec![Effect::Cancel]
+                } else {
+                    Vec::new()
+                }
+            }
+            Key::Tab => {
+                self.tab_complete();
+                Vec::new()
+            }
+            Key::Newline => {
+                self.insert_newline();
+                Vec::new()
+            }
+            Key::Enter => self.press_enter(),
+            Key::Backspace => {
+                self.backspace();
+                Vec::new()
+            }
+            Key::Left => {
+                self.cursor_left();
+                Vec::new()
+            }
+            Key::Right => {
+                self.cursor_right();
+                Vec::new()
+            }
+            Key::Home => {
+                self.cursor_home();
+                Vec::new()
+            }
+            Key::End => {
+                self.cursor_end();
+                Vec::new()
+            }
+            // 补全弹层可见时 ↑/↓ 移动选中项，否则滚动聊天区
+            Key::Up => {
+                if self.completion.is_some() {
+                    self.completion_select(-1);
+                } else {
+                    self.scroll_up(1);
+                }
+                Vec::new()
+            }
+            Key::Down => {
+                if self.completion.is_some() {
+                    self.completion_select(1);
+                } else {
+                    self.scroll_down(1);
+                }
+                Vec::new()
+            }
+            Key::PageUp => {
+                self.scroll_up(PAGE_SCROLL);
+                Vec::new()
+            }
+            Key::PageDown => {
+                self.scroll_down(PAGE_SCROLL);
+                Vec::new()
+            }
+            Key::Char(c) => {
+                self.insert_char(c);
+                Vec::new()
+            }
+            Key::Ctrl(_) => Vec::new(),
+        }
+    }
+
+    /// picker 打开时的键位：↑/↓/j/k 移动，Enter 确认，Esc/q 取消；
+    /// Ctrl+C/D 保持全局退出，其余输入忽略（避免污染输入缓冲）。
+    fn press_picker(&mut self, key: Key) -> Vec<Effect> {
+        match key {
+            Key::Up | Key::Char('k') => self.resume_select(-1),
+            Key::Down | Key::Char('j') => self.resume_select(1),
+            Key::Esc | Key::Char('q') => self.close_resume_picker(),
+            Key::Ctrl('c' | 'd') => self.should_quit = true,
+            Key::Enter => {
+                if let Some(id) = self.take_resume_selection() {
+                    return vec![Effect::Resume(id)];
+                }
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// Enter：运行中拒绝；补全弹层未精确匹配时先填入候选；
+    /// 否则取出输入，按 slash 命令或普通 prompt 分发。
+    fn press_enter(&mut self) -> Vec<Effect> {
+        if self.running {
+            self.notice = Some("运行中，等待结束后再发送".to_string());
+            return Vec::new();
+        }
+        if self.accept_completion_on_enter() {
+            // 已填入补全候选；再次 Enter 提交
+            return Vec::new();
+        }
+        let Some(text) = self.take_input() else {
+            if self.has_attachments() {
+                self.notice = Some("已附加图片，输入文本后 Enter 一起发送".to_string());
+            }
+            return Vec::new();
+        };
+        match parse_slash(&text) {
+            SlashParse::NotCommand => {
+                let images = self.take_attachments();
+                // AgentStart 事件也会置位；先置避免提交空窗期重复提交
+                self.running = true;
+                self.notice = None;
+                vec![Effect::Prompt { text, images }]
+            }
+            SlashParse::Known(action) => self.execute_slash(action),
+            SlashParse::InvalidUsage(usage) => {
+                self.notice = Some(format!("参数形式不对，用法：{usage}"));
+                Vec::new()
+            }
+            SlashParse::Unknown(name) => {
+                self.notice = Some(format!("未知命令 /{name}，输入 /help 查看可用命令"));
+                Vec::new()
+            }
+        }
+    }
+
+    /// slash 命令的内部处置：能就地完成的直接做，需要外部资源的转为效果。
+    fn execute_slash(&mut self, action: SlashAction) -> Vec<Effect> {
+        match action {
+            SlashAction::Help => {
+                self.push_system(help_text());
+                Vec::new()
+            }
+            SlashAction::Quit => {
+                self.should_quit = true;
+                Vec::new()
+            }
+            SlashAction::Compact(instructions) => {
+                // 压缩是一次 LLM 调用：按 mini-run 处理，Esc 可取消
+                self.running = true;
+                self.notice = None;
+                vec![Effect::Compact(instructions)]
+            }
+            SlashAction::Resume => vec![Effect::ListSessions],
+            SlashAction::Skill(None) => vec![Effect::ListSkills],
+            SlashAction::Skill(Some(name)) => vec![Effect::LoadSkill(name)],
+            SlashAction::Image(path) => vec![Effect::AttachImage(path)],
+            SlashAction::New => vec![Effect::NewSession],
+        }
+    }
+
+    // ── 运行生命周期 ────────────────────────────────────────────────────────
+
+    /// 一轮运行（prompt/压缩）结束：回到空闲态，按需置状态栏告警。
+    pub(super) fn finish_run(&mut self, notice: Option<String>) {
+        self.running = false;
+        self.notice = notice;
+    }
+
+    /// 置状态栏一次性提示（告警等）。
+    pub(super) fn warn(&mut self, text: impl Into<String>) {
+        self.notice = Some(text.into());
+    }
+
+    // ── 会话操作 ────────────────────────────────────────────────────────────
+
+    /// `/skill`：刷新补全快照并列出可用 skill（本地展示，不进上下文）。
+    pub(super) fn show_skills(&mut self, skills: Vec<SkillEntry>) {
+        self.push_system(skill_list_text(&skills));
+        self.skills = skills;
+    }
+
+    /// `/new`：清空聊天区开启新对话；session 切换由调用方随后经
+    /// [`Self::set_session`] / [`Self::warn`] 回报。
+    pub(super) fn start_new_conversation(&mut self) {
+        self.clear_items();
+        self.push_system("已开启新对话，上下文已清空。");
+    }
+
+    /// 切换当前 session 标识（`/new` 新建或 `/resume` 恢复后）。
+    pub(super) fn set_session(&mut self, session_id: String) {
+        self.session_id = Some(session_id);
+    }
+
+    /// `/resume`：以恢复的历史消息替换聊天区并切换 session。
+    pub(super) fn restore_conversation(&mut self, messages: &[Message], session_id: String) {
+        self.clear_items();
+        self.load_history(messages);
+        self.session_id = Some(session_id);
+    }
+
     // ── 输入编辑 ────────────────────────────────────────────────────────────
 
     pub(super) fn input(&self) -> &str {
@@ -551,14 +819,14 @@ impl App {
         u16::try_from(count).unwrap_or(u16::MAX)
     }
 
-    pub(super) fn insert_char(&mut self, c: char) {
+    fn insert_char(&mut self, c: char) {
         self.input.insert(self.cursor, c);
         self.cursor += c.len_utf8();
         self.refresh_completion();
     }
 
     /// 粘贴一段文本到光标处（可含换行；`\r\n` 统一为 `\n`），随后重算补全。
-    pub(super) fn insert_str(&mut self, text: &str) {
+    pub(super) fn paste_text(&mut self, text: &str) {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         if text.is_empty() {
             return;
@@ -569,11 +837,11 @@ impl App {
     }
 
     /// Shift+Enter 手动换行：换行是空白字符，补全弹层随之关闭。
-    pub(super) fn insert_newline(&mut self) {
+    fn insert_newline(&mut self) {
         self.insert_char('\n');
     }
 
-    pub(super) fn backspace(&mut self) {
+    fn backspace(&mut self) {
         if self.cursor == 0 {
             return;
         }
@@ -586,7 +854,7 @@ impl App {
         self.refresh_completion();
     }
 
-    pub(super) fn cursor_left(&mut self) {
+    fn cursor_left(&mut self) {
         if self.cursor > 0 {
             self.cursor = self.input[..self.cursor]
                 .char_indices()
@@ -596,25 +864,25 @@ impl App {
         }
     }
 
-    pub(super) fn cursor_right(&mut self) {
+    fn cursor_right(&mut self) {
         if let Some(c) = self.input[self.cursor..].chars().next() {
             self.cursor += c.len_utf8();
             self.refresh_completion();
         }
     }
 
-    pub(super) fn cursor_home(&mut self) {
+    fn cursor_home(&mut self) {
         self.cursor = 0;
         self.refresh_completion();
     }
 
-    pub(super) fn cursor_end(&mut self) {
+    fn cursor_end(&mut self) {
         self.cursor = self.input.len();
         self.refresh_completion();
     }
 
     /// 取出待提交的输入并清空缓冲；空输入返回 `None`。
-    pub(super) fn take_input(&mut self) -> Option<String> {
+    fn take_input(&mut self) -> Option<String> {
         let text = self.input.trim().to_string();
         if text.is_empty() {
             return None;
@@ -637,7 +905,7 @@ impl App {
     }
 
     /// 取出全部暂存附件（prompt 提交时随文本一起带走）。
-    pub(super) fn take_attachments(&mut self) -> Vec<nomic_ai::ImageContent> {
+    fn take_attachments(&mut self) -> Vec<nomic_ai::ImageContent> {
         self.attachments
             .drain(..)
             .map(|pending| pending.image)
@@ -722,7 +990,7 @@ impl App {
     }
 
     /// Tab：接受当前选中候选；输入已等于选中项时循环到下一个。
-    pub(super) fn tab_complete(&mut self) {
+    fn tab_complete(&mut self) {
         let Some(completion) = &self.completion else {
             return;
         };
@@ -739,7 +1007,7 @@ impl App {
     }
 
     /// 补全弹层中选择下一个/上一个候选（环形）。
-    pub(super) const fn completion_select(&mut self, delta: isize) {
+    const fn completion_select(&mut self, delta: isize) {
         if let Some(completion) = &mut self.completion {
             let len = completion.candidates.len();
             let step = delta.unsigned_abs() % len;
@@ -752,13 +1020,13 @@ impl App {
     }
 
     /// Esc：关闭补全弹层；返回是否确有弹层被关闭（否则调用方走取消语义）。
-    pub(super) fn dismiss_completion(&mut self) -> bool {
+    fn dismiss_completion(&mut self) -> bool {
         self.completion.take().is_some()
     }
 
     /// Enter 且补全弹层可见时的智能接受：输入未精确匹配任何候选时
     /// 填入选中候选（返回 `true`，不提交）；已精确匹配则返回 `false` 正常提交。
-    pub(super) fn accept_completion_on_enter(&mut self) -> bool {
+    fn accept_completion_on_enter(&mut self) -> bool {
         let Some(fragment) = self.slash_fragment() else {
             return false;
         };
@@ -790,12 +1058,12 @@ impl App {
     }
 
     /// 关闭选择器（Esc/q 取消）。
-    pub(super) fn close_resume_picker(&mut self) {
+    fn close_resume_picker(&mut self) {
         self.resume_picker = None;
     }
 
     /// 移动选中项（到底/顶钳制，不循环）。
-    pub(super) fn resume_select(&mut self, delta: isize) {
+    fn resume_select(&mut self, delta: isize) {
         if let Some(picker) = &mut self.resume_picker {
             let last = picker.rows.len() - 1;
             picker.selected = picker.selected.saturating_add_signed(delta).min(last);
@@ -803,7 +1071,7 @@ impl App {
     }
 
     /// Enter 确认：取出选中 session id 并关闭选择器。
-    pub(super) fn take_resume_selection(&mut self) -> Option<String> {
+    fn take_resume_selection(&mut self) -> Option<String> {
         let picker = self.resume_picker.take()?;
         Some(picker.rows[picker.selected].id.clone())
     }
@@ -830,8 +1098,8 @@ impl App {
         self.scroll_to_bottom();
     }
 
-    /// 清空聊天区（`/new` 开启新对话）。
-    pub(super) fn clear_items(&mut self) {
+    /// 清空聊天区（`/new` 开启新对话、`/resume` 恢复前）。
+    fn clear_items(&mut self) {
         self.items.clear();
         self.scroll_to_bottom();
     }
@@ -858,8 +1126,63 @@ impl App {
         self.scroll = self.scroll.saturating_sub(lines);
     }
 
-    pub(super) const fn scroll_to_bottom(&mut self) {
+    const fn scroll_to_bottom(&mut self) {
         self.scroll = 0;
+    }
+
+    /// 渲染同步滚动边界：钳制滚动偏移、记录上限，返回生效的滚动偏移。
+    /// 聊天区唯一的状态回写通道（状态栏滚动位置显示依赖 `scroll_max`）。
+    pub(super) fn clamp_scroll(&mut self, max_scroll: u16) -> u16 {
+        self.scroll_max = max_scroll;
+        self.scroll = self.scroll.min(max_scroll);
+        self.scroll
+    }
+
+    // ── 渲染读接口 ──────────────────────────────────────────────────────────
+
+    /// 聊天区条目（渲染用）。
+    pub(super) fn items(&self) -> &[ChatItem] {
+        &self.items
+    }
+
+    /// 是否有 agent 运行在途（spinner 动画与运行态渲染用）。
+    pub(super) const fn is_running(&self) -> bool {
+        self.running
+    }
+
+    /// 是否请求退出（事件循环退出条件）。
+    pub(super) const fn should_quit(&self) -> bool {
+        self.should_quit
+    }
+
+    /// 模型展示名。
+    pub(super) fn model_name(&self) -> &str {
+        &self.model_name
+    }
+
+    /// 当前 session id（未持久化时为 None）。
+    pub(super) fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
+    /// 状态栏一次性提示。
+    pub(super) fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+
+    /// 当前滚动偏移（从底部向上计）。
+    pub(super) const fn scroll(&self) -> u16 {
+        self.scroll
+    }
+
+    /// 聊天区最大可上滚行数（渲染同步后有效）。
+    pub(super) const fn scroll_max(&self) -> u16 {
+        self.scroll_max
+    }
+
+    /// 附件展示名列表（输入框附件行渲染用）。
+    pub(super) fn attachment_names(&self) -> impl Iterator<Item = &str> {
+        self.attachments.iter().map(|pending| pending.name.as_str())
     }
 }
 
@@ -916,7 +1239,7 @@ pub(super) fn skill_load_message(skill: &ActivatedSkill) -> String {
 }
 
 /// `/skill` 无参时展示的可用 skill 清单（本地展示，不进上下文）。
-pub(super) fn skill_list_text(skills: &[Skill]) -> String {
+fn skill_list_text(skills: &[SkillEntry]) -> String {
     use std::fmt::Write as _;
     if skills.is_empty() {
         return "没有可用的 skill（查找 .nomic/skills、.agents/skills 与用户配置目录）。"
@@ -927,7 +1250,7 @@ pub(super) fn skill_list_text(skills: &[Skill]) -> String {
         let _ = write!(
             text,
             "\n  {} — {}（{}）",
-            skill.name, skill.document.description, skill.scope
+            skill.name, skill.description, skill.scope
         );
     }
     text
@@ -1001,7 +1324,7 @@ mod tests {
 
     use nomic_ai::{ApiKind, AssistantMessage, TextContent, ThinkingContent, Usage, UserMessage};
     use nomic_core::{ToolResult, ToolUpdate};
-    use nomic_skills::{SkillDocument, SkillScope};
+    use nomic_skills::SkillScope;
 
     use super::*;
 
@@ -1513,10 +1836,12 @@ mod tests {
             SkillEntry {
                 name: "jujutsu".to_string(),
                 description: "jj vcs".to_string(),
+                scope: SkillScope::Project,
             },
             SkillEntry {
                 name: "rust-review".to_string(),
                 description: "review rust".to_string(),
+                scope: SkillScope::AgentUser,
             },
         ]);
         for c in "/skill:".chars() {
@@ -1592,18 +1917,12 @@ mod tests {
     #[test]
     fn skill_list_text_lists_names_or_reports_empty() {
         assert!(skill_list_text(&[]).contains("没有可用的 skill"));
-        let skill = Skill {
+        let entry = SkillEntry {
             name: "jujutsu".to_string(),
-            path: PathBuf::from("/repo/.agents/skills/jujutsu/SKILL.md"),
-            root: PathBuf::from("/repo/.agents/skills/jujutsu"),
+            description: "jj vcs".to_string(),
             scope: SkillScope::Project,
-            document: SkillDocument {
-                description: "jj vcs".to_string(),
-                triggers: Vec::new(),
-                body: "body".to_string(),
-            },
         };
-        let text = skill_list_text(&[skill]);
+        let text = skill_list_text(&[entry]);
         assert!(text.contains("/skill:<name>"), "{text}");
         assert!(text.contains("jujutsu — jj vcs（project）"), "{text}");
     }
@@ -1687,5 +2006,143 @@ mod tests {
         };
         assert!(item.done);
         assert_eq!(item.blocks.len(), 2);
+    }
+
+    // ── press 语义分发（新接口） ────────────────────────────────────────────
+
+    fn image() -> nomic_ai::ImageContent {
+        nomic_ai::ImageContent {
+            data: "aA==".to_string(),
+            mime_type: "image/png".to_string(),
+        }
+    }
+
+    #[test]
+    fn enter_submits_prompt_with_attachments_and_marks_running() {
+        let mut app = app();
+        app.stage_image("a.png".to_string(), image());
+        app.paste_text("描述这张图");
+        let effects = app.press(Key::Enter);
+        // running 在效果返回前已置位，避免提交空窗期重复提交
+        assert!(app.is_running());
+        let [Effect::Prompt { text, images }] = &effects[..] else {
+            panic!("expected single Prompt effect");
+        };
+        assert_eq!(text, "描述这张图");
+        assert_eq!(images.len(), 1);
+        // 附件随提交带走，输入缓冲已清空
+        assert!(!app.has_attachments());
+        assert_eq!(app.input(), "");
+    }
+
+    #[test]
+    fn enter_while_running_only_warns() {
+        let mut app = app();
+        app.handle_event(&AgentEvent::AgentStart);
+        app.paste_text("hi");
+        assert!(app.press(Key::Enter).is_empty());
+        assert!(app.notice().is_some_and(|n| n.contains("运行中")));
+        // 输入保留，待运行结束后可再提交
+        assert_eq!(app.input(), "hi");
+    }
+
+    #[test]
+    fn slash_new_returns_effect_and_start_new_conversation_resets() {
+        let mut app = app();
+        app.push_system("旧内容");
+        app.paste_text("/new");
+        let effects = app.press(Key::Enter);
+        assert!(matches!(&effects[..], [Effect::NewSession]));
+        assert!(!app.is_running());
+        // 事件循环执行效果：重置聊天区并切换 session
+        app.start_new_conversation();
+        app.set_session("new-id".to_string());
+        assert_eq!(app.items().len(), 1);
+        assert!(matches!(&app.items()[0], ChatItem::System(t) if t.contains("新对话")));
+        assert_eq!(app.session_id(), Some("new-id"));
+    }
+
+    #[test]
+    fn compact_returns_effect_with_instructions_and_marks_running() {
+        let mut app = app();
+        app.paste_text("/compact 专注测试");
+        let effects = app.press(Key::Enter);
+        assert!(matches!(&effects[..], [Effect::Compact(Some(i))] if i == "专注测试"));
+        assert!(app.is_running());
+    }
+
+    #[test]
+    fn ctrl_c_cancels_when_running_and_quits_when_idle() {
+        let mut idle = app();
+        assert!(idle.press(Key::Ctrl('c')).is_empty());
+        assert!(idle.should_quit());
+
+        let mut running = app();
+        running.handle_event(&AgentEvent::AgentStart);
+        let effects = running.press(Key::Ctrl('c'));
+        assert!(matches!(&effects[..], [Effect::Cancel]));
+        assert!(!running.should_quit());
+    }
+
+    #[test]
+    fn resume_picker_enter_returns_resume_effect() {
+        let mut app = app();
+        app.open_resume_picker(vec![
+            ResumeRow {
+                id: "s1".to_string(),
+                text: "row 1".to_string(),
+            },
+            ResumeRow {
+                id: "s2".to_string(),
+                text: "row 2".to_string(),
+            },
+        ]);
+        // picker 接管键位：j 移动选中项，普通字符不进入输入缓冲
+        assert!(app.press(Key::Char('j')).is_empty());
+        assert_eq!(app.input(), "");
+        let effects = app.press(Key::Enter);
+        assert!(matches!(&effects[..], [Effect::Resume(id)] if id == "s2"));
+        assert!(app.resume_picker().is_none());
+        // Esc/q 取消不产出效果
+        app.open_resume_picker(vec![ResumeRow {
+            id: "s1".to_string(),
+            text: "row 1".to_string(),
+        }]);
+        assert!(app.press(Key::Char('q')).is_empty());
+        assert!(app.resume_picker().is_none());
+    }
+
+    #[test]
+    fn unknown_and_invalid_slash_warn_via_notice() {
+        let mut unknown = app();
+        unknown.paste_text("/foobar");
+        assert!(unknown.press(Key::Enter).is_empty());
+        assert!(unknown.notice().is_some_and(|n| n.contains("未知命令")));
+
+        let mut invalid = app();
+        invalid.paste_text("/skill a b");
+        assert!(invalid.press(Key::Enter).is_empty());
+        assert!(invalid.notice().is_some_and(|n| n.contains("用法")));
+    }
+
+    #[test]
+    fn finish_run_clears_running_and_sets_notice() {
+        let mut app = app();
+        app.handle_event(&AgentEvent::AgentStart);
+        app.finish_run(Some("boom".to_string()));
+        assert!(!app.is_running());
+        assert_eq!(app.notice(), Some("boom"));
+        app.finish_run(None);
+        assert_eq!(app.notice(), None);
+    }
+
+    #[test]
+    fn restore_conversation_replaces_items_and_session() {
+        let mut app = app();
+        app.push_system("旧内容");
+        app.restore_conversation(&[*user_message("恢复的")], "sid-1".to_string());
+        assert_eq!(app.items().len(), 1);
+        assert!(matches!(&app.items()[0], ChatItem::User(t) if t == "恢复的"));
+        assert_eq!(app.session_id(), Some("sid-1"));
     }
 }

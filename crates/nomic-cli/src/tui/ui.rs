@@ -15,9 +15,6 @@ use super::{
     markdown, theme,
 };
 
-/// 单页滚动的行数。
-const PAGE_SCROLL: u16 = 10;
-
 /// 聊天区左右留白列数，避免输出紧贴屏幕边缘。
 const CHAT_H_MARGIN: u16 = 1;
 
@@ -44,14 +41,14 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
 
 /// 聊天区：历史条目 + 流式累积，软换行，`scroll` 从底部向上计。
 fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    if app.items.is_empty() {
-        app.scroll_max = 0;
+    if app.items().is_empty() {
+        app.clamp_scroll(0);
         draw_welcome(frame, app, area);
         return;
     }
     let spinner = app.spinner();
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for item in &app.items {
+    for item in app.items() {
         match item {
             ChatItem::User(text) => {
                 // 左侧 accent 竖条把整条用户消息包成视觉块，多轮对话里可扫读
@@ -106,7 +103,7 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             }
         }
     }
-    if app.items.is_empty() {
+    if app.items().is_empty() {
         lines.push(Line::from(Span::styled(
             "输入 prompt 开始对话。Enter 发送，Ctrl+C 退出。",
             theme::dim(),
@@ -116,13 +113,11 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     // 自行折行（硬换行，CJK 友好），使行数精确可知、滚动偏移精确
     let lines = wrap_lines(&lines, area.width);
     let total = lines.len();
-    let max_scroll = total.saturating_sub(usize::from(area.height));
-    app.scroll = app
-        .scroll
-        .min(u16::try_from(max_scroll).unwrap_or(u16::MAX));
-    app.scroll_max = u16::try_from(max_scroll).unwrap_or(u16::MAX);
-    let offset = max_scroll.saturating_sub(usize::from(app.scroll));
-    let offset = u16::try_from(offset).unwrap_or(u16::MAX);
+    let max_scroll =
+        u16::try_from(total.saturating_sub(usize::from(area.height))).unwrap_or(u16::MAX);
+    // 钳制滚动偏移并同步上限（状态栏滚动位置显示），取生效偏移渲染
+    let scroll = app.clamp_scroll(max_scroll);
+    let offset = max_scroll.saturating_sub(scroll);
     let paragraph = Paragraph::new(lines).scroll((offset, 0));
     frame.render_widget(paragraph, area);
 }
@@ -168,7 +163,7 @@ fn draw_welcome(frame: &mut Frame<'_>, app: &App, area: Rect) {
             theme::user_marker(),
         )),
         Line::from(Span::styled(
-            format!("agent TUI · {}", app.model_name),
+            format!("agent TUI · {}", app.model_name()),
             theme::dim(),
         )),
         Line::default(),
@@ -232,7 +227,7 @@ fn input_height(app: &App) -> u16 {
 /// 输入框（多行，高度随行数变化，最多 5 行）+ 光标定位。
 fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // 三态边框：运行中（黄 + spinner）/ 补全打开（accent）/ 空闲（暗色）
-    let (title, border_style) = if app.running {
+    let (title, border_style) = if app.is_running() {
         (
             Line::from(vec![
                 Span::styled(format!("{} ", app.spinner()), theme::busy()),
@@ -270,12 +265,7 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // 附件行（可选）在输入文本上方：🖼 文件名列表
     let mut lines: Vec<Line<'static>> = Vec::new();
     if app.has_attachments() {
-        let names = app
-            .attachments
-            .iter()
-            .map(|pending| pending.name.as_str())
-            .collect::<Vec<_>>()
-            .join(" · ");
+        let names = app.attachment_names().collect::<Vec<_>>().join(" · ");
         lines.push(Line::from(Span::styled(
             format!("🖼 {names}"),
             theme::accent(),
@@ -304,21 +294,21 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 /// 状态栏：左侧模型徽标 + session + 告警；右侧滚动位置 + 键位提示。
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let session = app.session_id.as_deref().map_or_else(
+    let session = app.session_id().map_or_else(
         || "无 session".to_string(),
         |id| format!("session {}", &id[..id.len().min(8)]),
     );
     let mut left = vec![
-        Span::styled(format!(" {} ", app.model_name), theme::selected()),
+        Span::styled(format!(" {} ", app.model_name()), theme::selected()),
         Span::styled(format!(" {session} "), theme::dim()),
     ];
-    if let Some(notice) = &app.notice {
+    if let Some(notice) = app.notice() {
         left.push(Span::styled(format!("⚠ {notice} "), theme::warn()));
     }
     let mut right = Vec::new();
-    if app.scroll > 0 {
+    if app.scroll() > 0 {
         right.push(Span::styled(
-            format!("↑ {}/{} ", app.scroll, app.scroll_max),
+            format!("↑ {}/{} ", app.scroll(), app.scroll_max()),
             theme::warn(),
         ));
     }
@@ -457,11 +447,6 @@ fn draw_resume_picker(frame: &mut Frame<'_>, picker: &ResumePicker, input_area: 
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// PgUp/PgDn 的滚动步长（供事件循环使用）。
-pub(super) const fn page_scroll() -> u16 {
-    PAGE_SCROLL
-}
-
 #[cfg(test)]
 mod tests {
     use nomic_ai::Message;
@@ -525,7 +510,7 @@ mod tests {
                 timestamp: 0,
             },
         ))));
-        app.running = true;
+        app.handle_event(&AgentEvent::AgentStart);
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -748,10 +733,8 @@ mod tests {
     #[test]
     fn renders_completion_popup_and_system_item() {
         let mut app = App::new("test-model".to_string(), None);
-        app.push_system(crate::tui::app::help_text());
-        for c in "/n".chars() {
-            app.insert_char(c);
-        }
+        app.push_system("本地系统提示");
+        app.paste_text("/n");
         assert!(app.completion().is_some());
 
         let backend = TestBackend::new(80, 24);
@@ -767,6 +750,6 @@ mod tests {
             .collect();
         // 弹层候选与 System 条目均可见
         assert!(compact.contains("/new"));
-        assert!(compact.contains("/help"));
+        assert!(compact.contains("本地系统提示"));
     }
 }

@@ -1,9 +1,12 @@
 //! 交互 TUI（ratatui + crossterm，设计见 docs/adr/0002）。
 //!
 //! 结构：
-//! - [`app`]：纯状态层（聊天条目、流式累积、输入编辑、滚动），脱离终端可测
+//! - [`app`]：纯状态层——对外为语义操作（按键 [`app::Key`] → [`app::Effect`]、
+//!   应用事件、滚动、会话/附件管理），编辑器/补全/picker/slash 分发是其内部实现，
+//!   脱离终端可测
 //! - [`ui`]：纯渲染（聊天区 + 输入框 + 状态栏）
-//! - 本文件：终端生命周期、事件循环、agent driver 任务
+//! - 本文件：终端生命周期、事件循环（`KeyEvent` → `Key` 映射、`Effect` 接线执行）、
+//!   agent driver 任务
 //!
 //! agent 由专属 tokio 任务持有（`Agent::prompt` 需要 `&mut self` 且跨轮复用），
 //! TUI 经 mpsc 发送 prompt（附本轮 `CancellationToken`），agent 事件经既有
@@ -39,7 +42,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use app::{App, SkillEntry, SlashAction, SlashParse};
+use app::{App, Effect, Key, ResumeRow, SkillEntry};
 
 use crate::{Cli, bootstrap};
 
@@ -84,6 +87,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
             .map(|skill| SkillEntry {
                 name: skill.name,
                 description: skill.document.description,
+                scope: skill.scope,
             })
             .collect(),
     );
@@ -150,14 +154,14 @@ pub async fn run(cli: &Cli) -> Result<()> {
             .draw(|frame| ui::draw(frame, &mut app))
             .context("绘制失败")?;
         let wake = next_wake(
-            app.running,
+            app.is_running(),
             &mut term_events,
             &mut spinner_ticker,
             &mut events,
             &mut done_rx,
         )
         .await;
-        if handle_wake(wake, &mut app, &mut driver).await || app.should_quit {
+        if handle_wake(wake, &mut app, &mut driver).await || app.should_quit() {
             break;
         }
     }
@@ -198,16 +202,17 @@ enum Wake {
 async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
     match wake {
         Wake::Key(key) => {
-            handle_key(
-                app,
-                &mut driver.current_cancel,
-                &driver.job_tx,
-                &mut driver.session,
-                &driver.cwd,
-                &driver.skill_resolver,
-                key,
-            )
-            .await;
+            // Ctrl+V 粘贴需异步读剪贴板，先于语义映射拦截
+            if matches!(
+                (key.code, key.modifiers),
+                (KeyCode::Char('v'), KeyModifiers::CONTROL)
+            ) {
+                paste_clipboard(app).await;
+            } else if let Some(key) = map_key(key) {
+                for effect in app.press(key) {
+                    execute_effect(app, driver, effect).await;
+                }
+            }
         }
         Wake::ScrollUp => app.scroll_up(3),
         Wake::ScrollDown => app.scroll_down(3),
@@ -237,21 +242,17 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
             app.handle_event(&event);
         }
         Wake::AgentDone(done) => {
-            app.running = false;
             driver.current_cancel = None;
-            match done {
-                DriverDone::Prompt(Ok(())) | DriverDone::Compact(Ok(Some(_))) => {}
-                DriverDone::Prompt(Err(error)) => {
-                    app.notice = Some(format!("agent loop 失败：{error}"));
-                }
+            let notice = match done {
+                DriverDone::Prompt(Ok(())) | DriverDone::Compact(Ok(Some(_))) => None,
+                DriverDone::Prompt(Err(error)) => Some(format!("agent loop 失败：{error}")),
                 // 压缩成功经 CompactionEnd 事件渲染与落库，这里无需重复处理
-                DriverDone::Compact(Ok(None)) => {
-                    app.notice = Some("上下文很短，没有可压缩的内容。".to_string());
-                }
+                DriverDone::Compact(Ok(None)) => Some("上下文很短，没有可压缩的内容。".to_string()),
                 DriverDone::Compact(Err(error)) => {
-                    app.notice = Some(format!("压缩失败，上下文保持不变：{error}"));
+                    Some(format!("压缩失败，上下文保持不变：{error}"))
                 }
-            }
+            };
+            app.finish_run(notice);
         }
         Wake::Tick => app.tick(),
         Wake::Redraw => {}
@@ -293,207 +294,132 @@ async fn next_wake(
     }
 }
 
-/// 键位处理（最小集，见 ADR-0002）。
-async fn handle_key(
-    app: &mut App,
-    current_cancel: &mut Option<CancellationToken>,
-    job_tx: &mpsc::UnboundedSender<DriverJob>,
-    session: &mut Option<(SessionStore, String)>,
-    cwd: &std::path::Path,
-    skill_resolver: &SkillResolver,
-    key: KeyEvent,
-) {
-    let cancel_running = |cancel: &Option<CancellationToken>| {
-        if let Some(token) = cancel {
-            token.cancel();
-        }
-    };
-    // `/resume` 选择器打开时接管键位（slash 命令仅在空闲时可提交，
-    // 此时 agent 必空闲，无运行可取消）
-    if app.resume_picker().is_some() {
-        handle_resume_key(app, job_tx, session, key).await;
-        return;
-    }
-    match (key.code, key.modifiers) {
-        (KeyCode::Char('c' | 'd'), KeyModifiers::CONTROL) => {
-            if app.running {
-                cancel_running(current_cancel);
-            } else {
-                app.should_quit = true;
-            }
-        }
-        (KeyCode::Esc, _) => {
-            // 补全弹层可见时优先关闭弹层，否则取消当前运行
-            if !app.dismiss_completion() && app.running {
-                cancel_running(current_cancel);
-            }
-        }
-        (KeyCode::Tab, _) => app.tab_complete(),
-        (KeyCode::Char('v'), KeyModifiers::CONTROL) => paste_clipboard(app).await,
+/// 把 crossterm 按键映射为状态层的语义按键；未识别的组合返回 `None`。
+const fn map_key(key: KeyEvent) -> Option<Key> {
+    Some(match (key.code, key.modifiers) {
+        (KeyCode::Char(c), KeyModifiers::CONTROL) => Key::Ctrl(c),
+        (KeyCode::Esc, _) => Key::Esc,
+        (KeyCode::Tab, _) => Key::Tab,
         // 换行必须在提交之前匹配；依赖 kitty 键盘增强协议区分两者
-        (KeyCode::Enter, KeyModifiers::SHIFT) => app.insert_newline(),
-        (KeyCode::Enter, _) => {
-            if app.running {
-                app.notice = Some("运行中，等待结束后再发送".to_string());
-            } else if app.accept_completion_on_enter() {
-                // 已填入补全候选；再次 Enter 提交
-            } else if let Some(text) = app.take_input() {
-                match app::parse_slash(&text) {
-                    SlashParse::NotCommand => {
-                        let images = app.take_attachments();
-                        let token = CancellationToken::new();
-                        *current_cancel = Some(token.clone());
-                        // AgentStart 事件也会置位；先置避免提交空窗期重复提交
-                        app.running = true;
-                        app.notice = None;
-                        let _ = job_tx.send(DriverJob::Prompt(text, images, token));
-                    }
-                    SlashParse::Known(action) => {
-                        handle_slash(
-                            app,
-                            job_tx,
-                            current_cancel,
-                            session,
-                            cwd,
-                            skill_resolver,
-                            action,
-                        )
-                        .await;
-                    }
-                    SlashParse::InvalidUsage(usage) => {
-                        app.notice = Some(format!("参数形式不对，用法：{usage}"));
-                    }
-                    SlashParse::Unknown(name) => {
-                        app.notice = Some(format!("未知命令 /{name}，输入 /help 查看可用命令"));
-                    }
-                }
-            } else if app.has_attachments() {
-                app.notice = Some("已附加图片，输入文本后 Enter 一起发送".to_string());
-            }
-        }
-        (KeyCode::Backspace, _) => app.backspace(),
-        (KeyCode::Left, _) => app.cursor_left(),
-        (KeyCode::Right, _) => app.cursor_right(),
-        (KeyCode::Home, _) => app.cursor_home(),
-        (KeyCode::End, _) => app.cursor_end(),
-        // 补全弹层可见时 ↑/↓ 移动选中项，否则滚动聊天区
-        (KeyCode::Up, _) => {
-            if app.completion().is_some() {
-                app.completion_select(-1);
-            } else {
-                app.scroll_up(1);
-            }
-        }
-        (KeyCode::Down, _) => {
-            if app.completion().is_some() {
-                app.completion_select(1);
-            } else {
-                app.scroll_down(1);
-            }
-        }
-        (KeyCode::PageUp, _) => app.scroll_up(ui::page_scroll()),
-        (KeyCode::PageDown, _) => app.scroll_down(ui::page_scroll()),
-        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => app.insert_char(c),
-        _ => {}
-    }
+        (KeyCode::Enter, KeyModifiers::SHIFT) => Key::Newline,
+        (KeyCode::Enter, _) => Key::Enter,
+        (KeyCode::Backspace, _) => Key::Backspace,
+        (KeyCode::Left, _) => Key::Left,
+        (KeyCode::Right, _) => Key::Right,
+        (KeyCode::Home, _) => Key::Home,
+        (KeyCode::End, _) => Key::End,
+        (KeyCode::Up, _) => Key::Up,
+        (KeyCode::Down, _) => Key::Down,
+        (KeyCode::PageUp, _) => Key::PageUp,
+        (KeyCode::PageDown, _) => Key::PageDown,
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Key::Char(c),
+        _ => return None,
+    })
 }
 
-/// 执行已知 slash 命令。
-async fn handle_slash(
-    app: &mut App,
-    job_tx: &mpsc::UnboundedSender<DriverJob>,
-    current_cancel: &mut Option<CancellationToken>,
-    session: &mut Option<(SessionStore, String)>,
-    cwd: &std::path::Path,
-    skill_resolver: &SkillResolver,
-    action: SlashAction,
-) {
-    match action {
-        SlashAction::Help => app.push_system(app::help_text()),
-        SlashAction::Quit => app.should_quit = true,
-        SlashAction::Compact(instructions) => {
-            // 压缩是一次 LLM 调用：按 mini-run 处理，Esc 可取消
+/// 执行 [`App::press`] 返回的语义效果：driver job、取消令牌、session 库、
+/// skill resolver、图片加载等外部资源在此接线。
+async fn execute_effect(app: &mut App, driver: &mut Driver, effect: Effect) {
+    match effect {
+        Effect::Prompt { text, images } => {
             let token = CancellationToken::new();
-            *current_cancel = Some(token.clone());
-            app.running = true;
-            app.notice = None;
-            let _ = job_tx.send(DriverJob::Compact(instructions, token));
+            driver.current_cancel = Some(token.clone());
+            let _ = driver.job_tx.send(DriverJob::Prompt(text, images, token));
         }
-        SlashAction::Resume => match session_store(session.as_ref()).await {
-            Err(error) => app.notice = Some(format!("{error:#}")),
-            Ok(store) => match store.list_sessions().await {
-                Err(error) => app.notice = Some(format!("列出 session 失败：{error}")),
-                Ok(sessions) if sessions.is_empty() => {
-                    app.push_system("没有历史 session。");
-                }
-                Ok(sessions) => {
-                    let rows = sessions
-                        .iter()
-                        .map(|summary| app::ResumeRow {
-                            id: summary.id.clone(),
-                            text: crate::sessions::row_text(summary),
-                        })
-                        .collect();
-                    app.open_resume_picker(rows);
-                }
-            },
-        },
-        SlashAction::Skill(None) => {
+        Effect::Compact(instructions) => {
+            let token = CancellationToken::new();
+            driver.current_cancel = Some(token.clone());
+            let _ = driver.job_tx.send(DriverJob::Compact(instructions, token));
+        }
+        Effect::Cancel => {
+            if let Some(token) = &driver.current_cancel {
+                token.cancel();
+            }
+        }
+        Effect::ListSessions => list_sessions(app, driver).await,
+        Effect::Resume(id) => {
+            resume_session(app, &driver.job_tx, &mut driver.session, id).await;
+        }
+        Effect::ListSkills => {
             // 列出时顺带刷新补全快照：会话期间新增的 skill 也能被 Tab 补全
-            let catalog = skill_resolver.catalog();
-            app.set_available_skills(
+            let catalog = driver.skill_resolver.catalog();
+            app.show_skills(
                 catalog
-                    .iter()
+                    .into_iter()
                     .map(|skill| SkillEntry {
-                        name: skill.name.clone(),
-                        description: skill.document.description.clone(),
+                        name: skill.name,
+                        description: skill.document.description,
+                        scope: skill.scope,
                     })
                     .collect(),
             );
-            app.push_system(app::skill_list_text(&catalog));
         }
-        SlashAction::Skill(Some(name)) => match skill_resolver.activate(&name) {
+        Effect::LoadSkill(name) => match driver.skill_resolver.activate(&name) {
             Ok(skill) => {
                 // 注入消息经事件管线回流：聊天区压缩展示 + session 落库自动生效
-                let _ = job_tx.send(DriverJob::Inject(app::skill_load_message(&skill)));
+                let _ = driver
+                    .job_tx
+                    .send(DriverJob::Inject(app::skill_load_message(&skill)));
             }
-            Err(error) => {
-                app.notice = Some(format!("载入 skill {name:?} 失败：{error}"));
+            Err(error) => app.warn(format!("载入 skill {name:?} 失败：{error}")),
+        },
+        Effect::AttachImage(path) => attach_image(app, &std::path::PathBuf::from(path)),
+        Effect::NewSession => new_session(app, driver).await,
+    }
+}
+
+/// `/resume`：列出历史 session 并打开选择器。
+async fn list_sessions(app: &mut App, driver: &Driver) {
+    match session_store(driver.session.as_ref()).await {
+        Err(error) => app.warn(format!("{error:#}")),
+        Ok(store) => match store.list_sessions().await {
+            Err(error) => app.warn(format!("列出 session 失败：{error}")),
+            Ok(sessions) if sessions.is_empty() => {
+                app.push_system("没有历史 session。");
+            }
+            Ok(sessions) => {
+                let rows = sessions
+                    .iter()
+                    .map(|summary| ResumeRow {
+                        id: summary.id.clone(),
+                        text: crate::sessions::row_text(summary),
+                    })
+                    .collect();
+                app.open_resume_picker(rows);
             }
         },
-        SlashAction::Image(path) => {
-            let path = std::path::PathBuf::from(path);
-            match crate::images::load_image(&path) {
-                Ok(image) => {
-                    let name = attachment_name(&path);
-                    let count = app.stage_image(name.clone(), image);
-                    app.push_system(format!(
-                        "已附加图片 {name}（共 {count} 张，随下一条消息发送）。"
-                    ));
-                }
-                Err(error) => {
-                    app.notice = Some(format!("附加图片失败：{error:#}"));
-                }
+    }
+}
+
+/// `/new`：driver 串行清空上下文；本地重置聊天区并新建 session。
+async fn new_session(app: &mut App, driver: &mut Driver) {
+    // driver 串行处理任务；slash 命令仅在空闲时可提交，无需排队等待
+    let _ = driver.job_tx.send(DriverJob::Clear);
+    app.start_new_conversation();
+    if let Some((store, id)) = &mut driver.session {
+        match store.create_session(&driver.cwd).await {
+            Ok(new_id) => {
+                id.clone_from(&new_id);
+                app.set_session(new_id);
+            }
+            Err(error) => {
+                app.warn(format!("创建新 session 失败，续写当前 session：{error}"));
             }
         }
-        SlashAction::New => {
-            // driver 串行处理任务；slash 命令仅在空闲时可提交，无需排队等待
-            let _ = job_tx.send(DriverJob::Clear);
-            app.clear_items();
-            app.push_system("已开启新对话，上下文已清空。");
-            if let Some((store, id)) = session {
-                match store.create_session(cwd).await {
-                    Ok(new_id) => {
-                        id.clone_from(&new_id);
-                        app.session_id = Some(new_id);
-                    }
-                    Err(error) => {
-                        app.notice =
-                            Some(format!("创建新 session 失败，续写当前 session：{error}"));
-                    }
-                }
-            }
+    }
+}
+
+/// 加载图片并暂存为附件（`/image` 与粘贴图片路径共用）。
+fn attach_image(app: &mut App, path: &std::path::Path) {
+    match crate::images::load_image(path) {
+        Ok(image) => {
+            let name = attachment_name(path);
+            let count = app.stage_image(name.clone(), image);
+            app.push_system(format!(
+                "已附加图片 {name}（共 {count} 张，随下一条消息发送）。"
+            ));
         }
+        Err(error) => app.warn(format!("附加图片失败：{error:#}")),
     }
 }
 
@@ -503,18 +429,9 @@ async fn handle_slash(
 /// 能否加载由 [`crate::images::load_image`] 复核；多行或普通文本走插入。
 fn handle_paste(app: &mut App, text: &str) {
     if let Some(path) = paste_image_path(text) {
-        match crate::images::load_image(&path) {
-            Ok(image) => {
-                let name = attachment_name(&path);
-                let count = app.stage_image(name.clone(), image);
-                app.push_system(format!(
-                    "已附加图片 {name}（共 {count} 张，随下一条消息发送）。"
-                ));
-            }
-            Err(error) => app.notice = Some(format!("附加图片失败：{error:#}")),
-        }
+        attach_image(app, &path);
     } else {
-        app.insert_str(text);
+        app.paste_text(text);
     }
 }
 
@@ -573,10 +490,10 @@ async fn paste_clipboard(app: &mut App) {
                 "已粘贴图片 {name}（共 {count} 张，随下一条消息发送）。"
             ));
         }
-        Ok(Ok(Some(crate::clipboard::ClipboardContent::Text(text)))) => app.insert_str(&text),
-        Ok(Ok(None)) => app.notice = Some("剪贴板中没有图片或文本".to_string()),
-        Ok(Err(error)) => app.notice = Some(format!("粘贴失败：{error:#}")),
-        Err(join) => app.notice = Some(format!("粘贴失败：{join}")),
+        Ok(Ok(Some(crate::clipboard::ClipboardContent::Text(text)))) => app.paste_text(&text),
+        Ok(Ok(None)) => app.warn("剪贴板中没有图片或文本"),
+        Ok(Err(error)) => app.warn(format!("粘贴失败：{error:#}")),
+        Err(join) => app.warn(format!("粘贴失败：{join}")),
     }
 }
 
@@ -615,28 +532,6 @@ async fn session_store(session: Option<&(SessionStore, String)>) -> Result<Sessi
     }
 }
 
-/// `/resume` 选择器打开时的键位：↑/↓/j/k 移动，Enter 恢复选中 session，
-/// Esc/q 取消；Ctrl+C/D 保持全局退出，其余输入忽略（避免污染输入缓冲）。
-async fn handle_resume_key(
-    app: &mut App,
-    job_tx: &mpsc::UnboundedSender<DriverJob>,
-    session: &mut Option<(SessionStore, String)>,
-    key: KeyEvent,
-) {
-    match (key.code, key.modifiers) {
-        (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => app.resume_select(-1),
-        (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => app.resume_select(1),
-        (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => app.close_resume_picker(),
-        (KeyCode::Char('c' | 'd'), KeyModifiers::CONTROL) => app.should_quit = true,
-        (KeyCode::Enter, _) => {
-            if let Some(id) = app.take_resume_selection() {
-                resume_session(app, job_tx, session, id).await;
-            }
-        }
-        _ => {}
-    }
-}
-
 /// 恢复选中 session：加载历史 → 替换 agent 上下文与聊天区 → 切换落库目标。
 async fn resume_session(
     app: &mut App,
@@ -654,18 +549,16 @@ async fn resume_session(
     }
     .await;
     match loaded {
-        Err(error) => app.notice = Some(format!("恢复 session 失败：{error:#}")),
+        Err(error) => app.warn(format!("恢复 session 失败：{error:#}")),
         Ok((store, messages)) => {
             // driver 串行处理任务：紧随其后的 prompt 一定排在 Restore 之后，
             // 不会出现「新 prompt 跑在旧上下文」的交错
             let _ = job_tx.send(DriverJob::Restore(messages.clone()));
-            app.clear_items();
-            app.load_history(&messages);
+            app.restore_conversation(&messages, id.clone());
             match session {
                 Some((_, current)) => current.clone_from(&id),
                 current @ None => *current = Some((store, id.clone())),
             }
-            app.session_id = Some(id.clone());
             app.push_system(format!(
                 "已恢复 session {}（{} 条消息），后续对话续写该 session。",
                 crate::sessions::short_id(&id),
@@ -680,7 +573,7 @@ async fn persist(session: Option<&(SessionStore, String)>, message: &Message, ap
     if let Some((store, session_id)) = session
         && let Err(error) = store.append_message(session_id, None, message).await
     {
-        app.notice = Some(format!("session 落库失败：{error}"));
+        app.warn(format!("session 落库失败：{error}"));
     }
 }
 
@@ -701,7 +594,7 @@ async fn persist_compaction(
         tokens_before,
     };
     if let Err(error) = store.append_compaction(session_id, &record).await {
-        app.notice = Some(format!("compaction 落库失败：{error}"));
+        app.warn(format!("compaction 落库失败：{error}"));
     }
 }
 

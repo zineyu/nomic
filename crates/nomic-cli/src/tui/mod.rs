@@ -11,6 +11,10 @@
 //! agent 由专属 tokio 任务持有（`Agent::prompt` 需要 `&mut self` 且跨轮复用），
 //! TUI 经 mpsc 发送 prompt（附本轮 `CancellationToken`），agent 事件经既有
 //! channel 回流；`MessageEnd` 定稿点复用事件驱动落库。
+//!
+//! 错误策略：可预期错误（agent loop 失败、压缩失败、落库失败等）就地转为
+//! 状态栏/聊天区提示；意外错误（driver 任务 panic）经 JoinHandle 捕获后在
+//! 聊天区提示，TUI 保持存活供查看记录，而非静默退出。
 
 mod app;
 mod markdown;
@@ -109,7 +113,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
     // agent driver：持有 Agent，串行执行 prompt，完成后回传结果
     let (job_tx, mut job_rx) = mpsc::unbounded_channel::<DriverJob>();
     let (done_tx, mut done_rx) = mpsc::unbounded_channel::<DriverDone>();
-    tokio::spawn(async move {
+    let driver_task = tokio::spawn(async move {
         let mut agent = agent;
         while let Some(job) = job_rx.recv().await {
             match job {
@@ -145,6 +149,8 @@ pub async fn run(cli: &Cli) -> Result<()> {
     let mut driver = Driver {
         job_tx,
         current_cancel: None,
+        task: Some(driver_task),
+        alive: true,
         session: boot.session,
         cwd: std::env::current_dir().context("get cwd")?,
         skill_resolver,
@@ -155,6 +161,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
             .context("绘制失败")?;
         let wake = next_wake(
             app.is_running(),
+            &mut driver,
             &mut term_events,
             &mut spinner_ticker,
             &mut events,
@@ -172,6 +179,10 @@ pub async fn run(cli: &Cli) -> Result<()> {
 struct Driver {
     job_tx: mpsc::UnboundedSender<DriverJob>,
     current_cancel: Option<CancellationToken>,
+    /// driver 任务的 JoinHandle：任务 panic 时取出详情转为 TUI 内错误提示
+    task: Option<tokio::task::JoinHandle<()>>,
+    /// driver 是否存活；退出后其 channel 已关闭，事件循环跳过对应分支
+    alive: bool,
     session: Option<(SessionStore, String)>,
     cwd: std::path::PathBuf,
     skill_resolver: SkillResolver,
@@ -194,11 +205,13 @@ enum Wake {
     Tick,
     /// 仅需重绘（resize、其他鼠标事件）
     Redraw,
-    /// 任一事件流关闭：退出循环
-    Closed,
+    /// agent driver 任务意外退出（panic 或提前返回），附详情
+    DriverFailed(String),
+    /// 终端事件流关闭：无法继续交互，退出循环
+    TermClosed,
 }
 
-/// 处理一次唤醒；返回 `true` 表示事件流关闭、退出循环。
+/// 处理一次唤醒；返回 `true` 表示终端事件流关闭、退出循环。
 async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
     match wake {
         Wake::Key(key) => {
@@ -256,19 +269,34 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
         }
         Wake::Tick => app.tick(),
         Wake::Redraw => {}
-        Wake::Closed => return true,
+        Wake::DriverFailed(detail) => {
+            tracing::error!(detail, "agent driver 任务意外退出");
+            // 进行中的一轮永远不会回执：回到空闲态，避免 spinner 空转
+            if app.is_running() {
+                app.finish_run(None);
+            }
+            app.push_system(format!(
+                "内部错误：agent 任务意外退出（{detail}）。对话记录仍可查看，但无法继续发送消息。"
+            ));
+        }
+        Wake::TermClosed => return true,
     }
     false
 }
 
 /// 等待下一个唤醒源：按键 / 鼠标 / agent 事件 / 本轮完成 / spinner 帧。
+///
+/// agent 侧 channel 与 driver 任务同生命周期：channel 关闭即任务退出
+/// （job 发送端不会先于任务丢弃），统一转为 [`Wake::DriverFailed`]。
 async fn next_wake(
     running: bool,
+    driver: &mut Driver,
     term_events: &mut EventStream,
     spinner_ticker: &mut tokio::time::Interval,
     events: &mut mpsc::UnboundedReceiver<AgentEvent>,
     done_rx: &mut mpsc::UnboundedReceiver<DriverDone>,
 ) -> Wake {
+    let driver_alive = driver.alive;
     tokio::select! {
         // spinner 动画仅在运行中推进；空闲时此分支永久挂起，不空转重绘
         () = async {
@@ -287,10 +315,59 @@ async fn next_wake(
                 _ => Wake::Redraw,
             },
             Some(Ok(_)) => Wake::Redraw,
-            Some(Err(_)) | None => Wake::Closed,
+            Some(Err(_)) | None => Wake::TermClosed,
         },
-        maybe_event = events.recv() => maybe_event.map_or(Wake::Closed, Wake::AgentEvent),
-        maybe_done = done_rx.recv() => maybe_done.map_or(Wake::Closed, Wake::AgentDone),
+        // driver 退出后 channel 已关闭，分支挂起避免立即返回 None 空转
+        maybe_event = async {
+            if driver_alive {
+                events.recv().await
+            } else {
+                std::future::pending().await
+            }
+        } => match maybe_event {
+            Some(event) => Wake::AgentEvent(event),
+            None => driver_failed(driver).await,
+        },
+        maybe_done = async {
+            if driver_alive {
+                done_rx.recv().await
+            } else {
+                std::future::pending().await
+            }
+        } => match maybe_done {
+            Some(done) => Wake::AgentDone(done),
+            None => driver_failed(driver).await,
+        },
+    }
+}
+
+/// driver 任务退出：取出 JoinHandle 详情（panic 负载等），转为 TUI 内提示。
+async fn driver_failed(driver: &mut Driver) -> Wake {
+    driver.alive = false;
+    let detail = match &mut driver.task {
+        Some(handle) => match handle.await {
+            Ok(()) => "任务提前结束".to_string(),
+            Err(error) if error.is_panic() => {
+                let payload = error.into_panic();
+                format!("panic：{}", panic_payload_text(&*payload))
+            }
+            Err(error) => error.to_string(),
+        },
+        // 已报告过一次（events 与 done 两个 channel 先后关闭）
+        None => "任务已退出".to_string(),
+    };
+    driver.task = None;
+    Wake::DriverFailed(detail)
+}
+
+/// 提取 panic 负载文本（`panic!("...")` 的 `&str`/`String`），无法识别时给兜底描述。
+fn panic_payload_text(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else if let Some(text) = payload.downcast_ref::<&'static str>() {
+        (*text).to_string()
+    } else {
+        "未知负载".to_string()
     }
 }
 
@@ -323,13 +400,28 @@ async fn execute_effect(app: &mut App, driver: &mut Driver, effect: Effect) {
     match effect {
         Effect::Prompt { text, images } => {
             let token = CancellationToken::new();
-            driver.current_cancel = Some(token.clone());
-            let _ = driver.job_tx.send(DriverJob::Prompt(text, images, token));
+            if driver
+                .job_tx
+                .send(DriverJob::Prompt(text, images, token.clone()))
+                .is_ok()
+            {
+                driver.current_cancel = Some(token);
+            } else {
+                // driver 已退出：不会有回执，立即回到空闲态并提示
+                app.finish_run(Some("内部错误：agent 任务已退出，消息未发送。".to_string()));
+            }
         }
         Effect::Compact(instructions) => {
             let token = CancellationToken::new();
-            driver.current_cancel = Some(token.clone());
-            let _ = driver.job_tx.send(DriverJob::Compact(instructions, token));
+            if driver
+                .job_tx
+                .send(DriverJob::Compact(instructions, token.clone()))
+                .is_ok()
+            {
+                driver.current_cancel = Some(token);
+            } else {
+                app.finish_run(Some("内部错误：agent 任务已退出，无法压缩。".to_string()));
+            }
         }
         Effect::Cancel => {
             if let Some(token) = &driver.current_cancel {
@@ -644,19 +736,40 @@ impl Drop for TerminalGuard {
 }
 
 /// panic 时先恢复终端再交给默认 hook，避免终端残留 raw mode。
+///
+/// 仅主线程（事件循环/渲染）的 panic 不可恢复，走上述路径；tokio 任务线程
+/// 的 panic（agent driver、剪贴板读取等）会经 JoinError 回流为 TUI 内提示，
+/// 此处只落日志——既不恢复终端（TUI 仍在运行），也不打印到 stderr（避免花屏）。
 fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        TerminalGuard::restore();
-        default_hook(info);
+        if std::thread::current().name() == Some("main") {
+            TerminalGuard::restore();
+            default_hook(info);
+        } else {
+            tracing::error!(%info, "任务线程 panic");
+        }
     }));
 }
 
 #[cfg(test)]
 mod tests {
+    use std::any::Any;
     use std::path::PathBuf;
 
-    use super::{paste_image_path, percent_decode};
+    use super::{panic_payload_text, paste_image_path, percent_decode};
+
+    #[test]
+    fn panic_payload_extracts_message() {
+        let payload: Box<dyn Any + Send> = Box::new("boom");
+        assert_eq!(panic_payload_text(&*payload), "boom");
+
+        let payload: Box<dyn Any + Send> = Box::new("owned boom".to_string());
+        assert_eq!(panic_payload_text(&*payload), "owned boom");
+
+        let payload: Box<dyn Any + Send> = Box::new(42_i32);
+        assert_eq!(panic_payload_text(&*payload), "未知负载");
+    }
 
     #[test]
     fn paste_recognizes_plain_image_path() {

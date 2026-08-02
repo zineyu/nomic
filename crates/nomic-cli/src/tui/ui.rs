@@ -72,8 +72,13 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                             lines.extend(markdown::render(text, area.width));
                         }
                         Block::Thinking(thinking) => {
+                            // 块引用式渲染：标题行 + `│` gutter，与工具输出结构区分
+                            lines.push(Line::from(Span::styled("✻ Thinking", theme::thinking())));
                             lines.extend(thinking.lines().map(|line| {
-                                Line::from(Span::styled(line.to_string(), theme::thinking()))
+                                Line::from(vec![
+                                    Span::styled("│ ", theme::thinking_marker()),
+                                    Span::styled(line.to_string(), theme::thinking()),
+                                ])
                             }));
                         }
                     }
@@ -560,6 +565,50 @@ mod tests {
         assert!(text.contains("  ⎿ line1"), "{text}");
         assert!(text.contains("    line2"), "{text}");
         assert!(text.contains("    line3"), "{text}");
+    }
+
+    /// thinking 块渲染为块引用结构：`✻ Thinking` 标题 + `│` gutter，区别于工具详情。
+    #[test]
+    fn renders_thinking_block_with_header_and_gutter() {
+        let mut app = App::new("test-model".to_string(), None);
+        app.handle_event(&AgentEvent::MessageStart(Box::new(Message::Assistant(
+            nomic_ai::AssistantMessage {
+                content: Vec::new(),
+                api: nomic_ai::ApiKind::AnthropicMessages,
+                provider: "anthropic".to_string(),
+                model: "claude".to_string(),
+                response_model: None,
+                response_id: None,
+                usage: nomic_ai::Usage::default(),
+                stop_reason: nomic_ai::StopReason::Stop,
+                error_message: None,
+                timestamp: 0,
+            },
+        ))));
+        app.handle_event(&AgentEvent::MessageUpdate(
+            nomic_ai::AssistantEvent::ThinkingStart { index: 0 },
+        ));
+        app.handle_event(&AgentEvent::MessageUpdate(
+            nomic_ai::AssistantEvent::ThinkingDelta {
+                index: 0,
+                delta: "推理第一行\n推理第二行".to_string(),
+            },
+        ));
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let compact: String = buffer
+            .content()
+            .iter()
+            .flat_map(|cell| cell.symbol().chars())
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(compact.contains("✻Thinking"), "{compact}");
+        assert!(compact.contains("│推理第一行"), "{compact}");
+        assert!(compact.contains("│推理第二行"), "{compact}");
     }
 
     /// 空状态绘制欢迎页：logo、模型名与键位速查均可见。

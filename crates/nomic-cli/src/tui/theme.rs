@@ -6,10 +6,12 @@ use ratatui::style::{Color, Modifier, Style};
 
 /// 品牌强调色：用户消息标记、选中态、焦点边框。
 pub(super) const ACCENT: Color = Color::Cyan;
-/// 辅助信息：thinking、摘要、系统提示、非焦点边框。
+/// 辅助信息：摘要、系统提示、工具参数与详情、非焦点边框。
 pub(super) const DIM: Color = Color::DarkGray;
 /// 次要正文：补全弹层未选中项。
 pub(super) const SUBTLE: Color = Color::Gray;
+/// thinking 正文：与工具详情（DIM）区分，比 gutter 亮一档。
+pub(super) const THINKING: Color = Color::Gray;
 /// 成功。
 pub(super) const OK: Color = Color::Green;
 /// 失败 / 错误。
@@ -34,9 +36,14 @@ pub(super) const fn subtle() -> Style {
     Style::new().fg(SUBTLE)
 }
 
-/// thinking 块：暗色斜体。
+/// thinking 块正文：语义色 + 斜体，区别于工具详情的暗色正体。
 pub(super) const fn thinking() -> Style {
-    dim().add_modifier(Modifier::ITALIC)
+    Style::new().fg(THINKING).add_modifier(Modifier::ITALIC)
+}
+
+/// thinking 块 gutter（`│` 竖线）：比正文暗一档，形成块引用层次。
+pub(super) const fn thinking_marker() -> Style {
+    dim()
 }
 
 /// 强调文本（焦点边框标题等）。

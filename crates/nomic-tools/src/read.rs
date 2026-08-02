@@ -4,7 +4,7 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use nomic_core::{AgentTool, ToolError, ToolResult, ToolUpdateCallback};
-use nomic_skills::SkillResolver;
+use nomic_skills::{SKILL_SCHEME, SkillResolver};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -12,8 +12,6 @@ use tokio_util::sync::CancellationToken;
 use crate::truncate::{
     Continuation, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncatedBy, exceeds_notice, truncate_head,
 };
-
-const SKILL_SCHEME: &str = "skill://";
 
 /// 参数。
 #[derive(Debug, Deserialize, JsonSchema)]

@@ -498,15 +498,8 @@ fn build_system_prompt(
         prompt.push_str("\n</available_skills>");
     }
     for skill in active_skills {
-        use std::fmt::Write as _;
-        let _ = write!(
-            prompt,
-            "\n\n<active_skill name=\"{}\" scope=\"{}\" path=\"{}\">\n{}\n</active_skill>",
-            skill.name,
-            skill.scope,
-            skill.path.display(),
-            skill.instructions
-        );
+        prompt.push_str("\n\n");
+        prompt.push_str(&skill.prompt_tag());
     }
     if let Some(extra) = append {
         prompt.push_str("\n\n");

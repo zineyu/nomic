@@ -12,6 +12,10 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+/// `skill://` URI scheme：`read` 工具与各 prompt 文案共用的唯一定义。
+pub const SKILL_SCHEME: &str = "skill://";
 
 /// 已发现的 skill。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,7 +35,10 @@ pub struct Skill {
 impl Skill {
     /// 渲染给 system prompt 的一行清单。
     pub fn prompt_entry(&self) -> String {
-        let mut entry = format!("- skill://{} — {}", self.name, self.document.description);
+        let mut entry = format!(
+            "- {SKILL_SCHEME}{} — {}",
+            self.name, self.document.description
+        );
         if !self.document.triggers.is_empty() {
             let _ = write!(entry, " (triggers: {})", self.document.triggers.join(", "));
         }
@@ -50,14 +57,35 @@ pub enum SkillScope {
     Project,
 }
 
-impl fmt::Display for SkillScope {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let text = match self {
+impl SkillScope {
+    /// 序列化到 prompt / 标签的稳定文本形式。
+    pub const fn as_str(self) -> &'static str {
+        match self {
             Self::AgentUser => "agent-user",
             Self::NomicUser => "nomic-user",
             Self::Project => "project",
-        };
-        f.write_str(text)
+        }
+    }
+}
+
+impl fmt::Display for SkillScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SkillScope {
+    type Err = SkillsError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text {
+            "agent-user" => Ok(Self::AgentUser),
+            "nomic-user" => Ok(Self::NomicUser),
+            "project" => Ok(Self::Project),
+            _ => Err(SkillsError::InvalidScope {
+                scope: text.to_string(),
+            }),
+        }
     }
 }
 
@@ -199,8 +227,8 @@ impl SkillResolver {
         if skills.is_empty() {
             return None;
         }
-        let mut prompt = String::from(
-            "Available skills (use read with skill://<name> before following a skill; skill content is read-only):",
+        let mut prompt = format!(
+            "Available skills (use read with {SKILL_SCHEME}<name> before following a skill; skill content is read-only):"
         );
         for skill in skills {
             prompt.push('\n');
@@ -225,6 +253,54 @@ pub struct ActivatedSkill {
     pub path: PathBuf,
     /// Markdown 正文
     pub instructions: String,
+}
+
+impl ActivatedSkill {
+    /// 渲染 `<active_skill>` 注入标签。
+    ///
+    /// system prompt（`--skill`）与会话内注入（`/skill:<name>`）共用同一格式，
+    /// 解析侧见 [`parse_active_skill_tag`]。
+    pub fn prompt_tag(&self) -> String {
+        format!(
+            "<active_skill name=\"{}\" scope=\"{}\" path=\"{}\">\n{}\n</active_skill>",
+            self.name,
+            self.scope,
+            self.path.display(),
+            self.instructions
+        )
+    }
+}
+
+/// 从 `<active_skill ...>` 标签头解析出的属性。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveSkillTag {
+    /// skill 名称（缺失视为非 skill 注入文本）
+    pub name: String,
+    /// 来源层级（旧格式可能缺失）
+    pub scope: Option<SkillScope>,
+    /// `SKILL.md` 路径（旧格式可能缺失）
+    pub path: Option<PathBuf>,
+}
+
+/// 解析 [`ActivatedSkill::prompt_tag`] 生成的注入文本。
+///
+/// 仅识别以 `<active_skill ` 开头的文本；属性解析自开头标签头（首个 `>` 之前）。
+/// 解析失败返回 `None`，调用方应回退为普通文本处理。
+pub fn parse_active_skill_tag(text: &str) -> Option<ActiveSkillTag> {
+    let header = text.strip_prefix("<active_skill ")?;
+    let header = &header[..header.find('>')?];
+    let name = tag_attr(header, "name")?;
+    let scope = tag_attr(header, "scope").and_then(|value| value.parse().ok());
+    let path = tag_attr(header, "path").map(PathBuf::from);
+    Some(ActiveSkillTag { name, scope, path })
+}
+
+/// 从标签头中提取 `key="value"` 属性值。
+fn tag_attr(header: &str, key: &str) -> Option<String> {
+    let needle = format!("{key}=\"");
+    let start = header.find(&needle)? + needle.len();
+    let end = header[start..].find('"')? + start;
+    Some(header[start..end].to_string())
 }
 
 /// [`SkillResolver::catalog_with_diagnostics`] 的结果。
@@ -266,6 +342,12 @@ pub enum SkillsError {
         name: String,
         /// 当前可用名称
         available: Vec<String>,
+    },
+    /// skill 来源层级文本非法
+    #[error("invalid skill scope {scope:?}; expected one of: agent-user, nomic-user, project")]
+    InvalidScope {
+        /// 非法文本
+        scope: String,
     },
     /// 读取 `SKILL.md` 失败
     #[error("failed to read skill file {}: {message}", .path.display())]
@@ -735,6 +817,42 @@ mod tests {
         assert_eq!(folded.document.body, "Body");
         let literal = resolver.resolve("literal").expect("resolve literal");
         assert_eq!(literal.document.description, "line one\nline two");
+    }
+
+    #[test]
+    fn active_skill_tag_roundtrips_and_rejects_plain_text() {
+        let skill = ActivatedSkill {
+            name: "rust-review".to_string(),
+            scope: SkillScope::Project,
+            path: PathBuf::from("/repo/.nomic/skills/rust-review/SKILL.md"),
+            instructions: "# Review\nCheck unsafe code.".to_string(),
+        };
+        let tag = skill.prompt_tag();
+        assert!(tag.starts_with(
+            "<active_skill name=\"rust-review\" scope=\"project\" \
+             path=\"/repo/.nomic/skills/rust-review/SKILL.md\">"
+        ));
+        assert!(tag.ends_with("# Review\nCheck unsafe code.\n</active_skill>"));
+
+        // 标签后允许拼接其他文本（如会话内注入的说明）。
+        let parsed = parse_active_skill_tag(&format!("{tag}\n\nmanual note")).expect("parse");
+        assert_eq!(parsed.name, "rust-review");
+        assert_eq!(parsed.scope, Some(SkillScope::Project));
+        assert_eq!(
+            parsed.path,
+            Some(PathBuf::from("/repo/.nomic/skills/rust-review/SKILL.md"))
+        );
+
+        // 旧格式缺 scope / path 时仍可解析出 name。
+        let legacy =
+            parse_active_skill_tag("<active_skill name=\"legacy\">\nbody").expect("legacy");
+        assert_eq!(legacy.name, "legacy");
+        assert_eq!(legacy.scope, None);
+        assert_eq!(legacy.path, None);
+
+        assert!(parse_active_skill_tag("plain text").is_none());
+        assert!(parse_active_skill_tag("<active_skill scope=\"project\">").is_none());
+        assert!("garbage".parse::<SkillScope>().is_err());
     }
 
     #[test]

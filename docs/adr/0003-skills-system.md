@@ -95,6 +95,11 @@ bootstrap 从 cwd 构造一个 `SkillResolver`：
 
 这遵循渐进式披露：目录信息常驻，正文按需读取或显式激活。
 
+`skill://` scheme 与 `<active_skill ...>` 标签是跨模块契约，其唯一定义在
+`nomic-skills` 接口中（`SKILL_SCHEME` 常量、`ActivatedSkill::prompt_tag` /
+`parse_active_skill_tag`）；`read` 工具、bootstrap 与 TUI 均调用这些定义，
+不在消费方各自硬编码。
+
 ### `read` 的 `skill://` 语义
 
 `ReadTool` 可注入 `SkillResolver`。当参数为：

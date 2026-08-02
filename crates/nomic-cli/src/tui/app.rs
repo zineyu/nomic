@@ -8,7 +8,7 @@ use nomic_ai::{
     AssistantContent, AssistantEvent, Message, StopReason, UserContent, UserMessageContent,
 };
 use nomic_core::AgentEvent;
-use nomic_skills::{ActivatedSkill, SkillScope};
+use nomic_skills::{ActivatedSkill, SkillScope, parse_active_skill_tag};
 use unicode_width::UnicodeWidthStr;
 
 use crate::print::brief_args;
@@ -1224,17 +1224,14 @@ fn user_text(content: &UserMessageContent) -> String {
 
 /// 构造手动载入 skill 的注入文本（作为 user 消息进入上下文，随 session 落库）。
 ///
-/// 标签格式与 bootstrap 中 `--skill` 注入 system prompt 的 `<active_skill>` 一致，
-/// 模型侧无需区分来源。
+/// 标签使用 [`ActivatedSkill::prompt_tag`] 的统一格式，与 bootstrap 中 `--skill`
+/// 注入 system prompt 的 `<active_skill>` 一致，模型侧无需区分来源。
 pub(super) fn skill_load_message(skill: &ActivatedSkill) -> String {
     format!(
-        "<active_skill name=\"{}\" scope=\"{}\" path=\"{}\">\n{}\n</active_skill>\n\n\
+        "{}\n\n\
          The user manually loaded this skill into the conversation. \
          Follow its instructions for the subsequent work.",
-        skill.name,
-        skill.scope,
-        skill.path.display(),
-        skill.instructions
+        skill.prompt_tag()
     )
 }
 
@@ -1258,20 +1255,11 @@ fn skill_list_text(skills: &[SkillEntry]) -> String {
 
 /// 聊天区压缩展示注入的 skill 消息：返回 `Some` 表示该 user 文本是 skill 注入。
 fn skill_load_notice(text: &str) -> Option<String> {
-    let header = text.strip_prefix("<active_skill ")?;
-    let name = xml_attr(header, "name")?;
-    Some(match xml_attr(header, "path") {
-        Some(path) => format!("已载入 skill `{name}`（{path}）"),
-        None => format!("已载入 skill `{name}`"),
+    let tag = parse_active_skill_tag(text)?;
+    Some(match tag.path {
+        Some(path) => format!("已载入 skill `{}`（{}）", tag.name, path.display()),
+        None => format!("已载入 skill `{}`", tag.name),
     })
-}
-
-/// 从 `<active_skill ...>` 头中提取属性值（仅用于展示，解析失败回退完整文本）。
-fn xml_attr(header: &str, key: &str) -> Option<String> {
-    let needle = format!("{key}=\"");
-    let start = header.find(&needle)? + needle.len();
-    let end = header[start..].find('"')? + start;
-    Some(header[start..end].to_string())
 }
 
 fn blocks_text(blocks: &[UserContent]) -> String {

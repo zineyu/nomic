@@ -153,7 +153,8 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 /// 工具=状态色、System=暗色、错误=红、流式=黄）。
 ///
 /// 组件内部统一负责折行：正文宽度为总宽减去 gutter 两列，续行自动
-/// 延续竖条，块引用视觉不断裂；空行（段落间隔）不加竖条，保持留白干净。
+/// 延续竖条，块引用视觉不断裂；空行（段落间隔）同样延续竖条，
+/// 竖条覆盖整个消息块，形成完整的左侧边框。
 struct MessageBlock {
     /// gutter 竖条样式（颜色区分条目类型）。
     marker: Style,
@@ -190,8 +191,8 @@ impl MessageBlock {
         let mut out = Vec::new();
         for line in &self.lines {
             if line.width() == 0 {
-                // 空行（段落间隔）不加竖条，保持留白干净
-                out.push(Line::default());
+                // 空行（段落间隔）同样加竖条，保证竖条覆盖完整消息块
+                out.push(self.with_gutter(Line::default()));
                 continue;
             }
             for wrapped in wrap_line(line, max) {
@@ -1100,16 +1101,21 @@ mod tests {
         }
     }
 
-    /// 消息块组件：空行（段落间隔）不加竖条，保持留白干净。
+    /// 消息块组件：空行（段落间隔）同样延续竖条，竖条覆盖完整消息块。
     #[test]
-    fn message_block_keeps_blank_lines_gutter_free() {
-        let mut block = MessageBlock::new(theme::dim());
+    fn message_block_extends_gutter_over_blank_lines() {
+        let style = theme::dim();
+        let mut block = MessageBlock::new(style);
         block.push(Line::from(Span::raw("上段")));
         block.push(Line::default());
         block.push(Line::from(Span::raw("下段")));
         let rendered = block.render(20);
         assert_eq!(rendered.len(), 3);
-        assert_eq!(rendered[1], Line::default());
+        let blank = &rendered[1];
+        let first = blank.spans.first().expect("空行也应有 gutter 竖条");
+        assert_eq!(first.content.as_ref(), GUTTER_PREFIX);
+        assert_eq!(first.style, style, "空行竖条应保持原 gutter 颜色");
+        assert_eq!(blank.width(), usize::from(GUTTER_WIDTH));
     }
 
     /// 裸行折行：无 gutter 前缀，行为不变。

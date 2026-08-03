@@ -38,7 +38,7 @@ export ANTHROPIC_API_KEY=sk-ant-...     # 或 OPENAI_API_KEY / OPENAI_BASE_URL
 # 交互 TUI（缺省，设计见 docs/adr/0002）
 cargo run -p nomic-cli
 # 键位：Enter 发送 · Tab 补全 · Esc 取消运行 · Ctrl+C 退出 · ↑/↓/PgUp/PgDn/滚轮滚动
-# 命令：/help 查看全部（/new 开启新对话，/resume 恢复历史 session，/compact 压缩上下文，/quit 退出），输入 / 自动补全
+# 命令：/help 查看全部（/new 开启新对话，/resume 恢复历史 session，/compact 压缩上下文，/retry 重试失败的响应，/quit 退出），输入 / 自动补全
 
 # print 模式（非交互，管道可用）
 nomic -p "列出当前目录的文件"

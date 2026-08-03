@@ -103,6 +103,12 @@ pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
         usage: "/compact [聚焦指令]",
     },
     SlashCommand {
+        name: "retry",
+        aliases: &[],
+        summary: "重试最近一轮失败的响应（移除失败消息，以原 user 消息重新请求模型）",
+        usage: "/retry",
+    },
+    SlashCommand {
         name: "models",
         aliases: &[],
         summary: "切换模型（当前 provider 下；打开选择器或直接指定 id）",
@@ -158,6 +164,8 @@ enum SlashAction {
     Skill(Option<String>),
     /// `/compact [聚焦指令]` 手动压缩上下文
     Compact(Option<String>),
+    /// `/retry` 重试最近一轮失败的响应
+    Retry,
     /// `/models`（None）打开模型选择器；`/models:<id>` 直接切换
     Models(Option<String>),
     /// `/image <路径>` 为下一条消息附加图片
@@ -244,6 +252,7 @@ fn parse_slash(input: &str) -> SlashParse {
                 "help" if !junk && arg.is_none() => SlashAction::Help,
                 "new" if !junk && arg.is_none() => SlashAction::New,
                 "resume" if !junk && arg.is_none() => SlashAction::Resume,
+                "retry" if !junk && arg.is_none() => SlashAction::Retry,
                 "copy" if !junk && arg.is_none() => SlashAction::Copy,
                 "quit" if !junk && arg.is_none() => SlashAction::Quit,
                 _ => return SlashParse::InvalidUsage(command.usage),
@@ -394,6 +403,9 @@ pub(super) enum Effect {
     },
     /// `/compact` 手动压缩上下文（`running` 已置位，Esc 可取消）
     Compact(Option<String>),
+    /// `/retry` 重试最近一轮失败的响应（`running` 已置位，聊天区尾部
+    /// 失败/未定稿条目已随历史中的失败消息一并移除）
+    Retry,
     /// 取消当前运行（Esc / Ctrl+C）
     Cancel,
     /// `/resume`：列出历史 session 并打开选择器
@@ -823,6 +835,20 @@ impl App {
                 self.running = true;
                 self.notice = None;
                 vec![Effect::Compact(instructions)]
+            }
+            SlashAction::Retry => {
+                // 与 Agent::retry 同一口径：聊天区尾部失败/未定稿的 assistant
+                // 条目随历史中的失败消息一并移除；是否实际重跑由 driver 回执
+                // 告知（agent 历史是唯一权威，这里不做预判定）
+                while matches!(
+                    self.items.last(),
+                    Some(ChatItem::Assistant(item)) if item.error.is_some() || !item.done
+                ) {
+                    self.items.pop();
+                }
+                self.running = true;
+                self.notice = None;
+                vec![Effect::Retry]
             }
             SlashAction::Resume => vec![Effect::ListSessions],
             SlashAction::Models(None) => vec![Effect::ListModels],
@@ -1841,6 +1867,7 @@ mod tests {
         assert_eq!(parse_slash("/quit"), SlashParse::Known(SlashAction::Quit));
         assert_eq!(parse_slash("/exit"), SlashParse::Known(SlashAction::Quit));
         assert_eq!(parse_slash("/copy"), SlashParse::Known(SlashAction::Copy));
+        assert_eq!(parse_slash("/retry"), SlashParse::Known(SlashAction::Retry));
         assert_eq!(
             parse_slash("/foobar"),
             SlashParse::Unknown("foobar".to_string())
@@ -1880,6 +1907,70 @@ mod tests {
             panic!("expected CopyText effect");
         };
         assert_eq!(text, "最新问题");
+    }
+
+    #[test]
+    fn retry_pops_trailing_failed_assistant_and_requests_retry() {
+        let mut app = app();
+        app.handle_event(&AgentEvent::MessageStart(user_message("hi")));
+        app.handle_event(&AgentEvent::MessageStart(assistant_message(
+            Vec::new(),
+            StopReason::Error,
+            Some("boom".to_string()),
+        )));
+        app.handle_event(&AgentEvent::MessageEnd(assistant_message(
+            Vec::new(),
+            StopReason::Error,
+            Some("boom".to_string()),
+        )));
+
+        let effects = app.execute_slash(SlashAction::Retry);
+
+        // 失败条目随历史中的失败消息一并移除；提交重试请求并进入运行态
+        assert!(matches!(&effects[..], [Effect::Retry]));
+        assert!(app.running);
+        assert_eq!(app.items.len(), 1);
+        assert!(matches!(app.items[0], ChatItem::User(_)));
+    }
+
+    #[test]
+    fn retry_pops_unfinished_assistant_item() {
+        // 流协议错误路径：MessageStart 后没有 MessageEnd 的未定稿条目同样移除
+        let mut app = app();
+        app.handle_event(&AgentEvent::MessageStart(user_message("hi")));
+        app.handle_event(&AgentEvent::MessageStart(assistant_message(
+            Vec::new(),
+            StopReason::Stop,
+            None,
+        )));
+
+        let effects = app.execute_slash(SlashAction::Retry);
+
+        assert!(matches!(&effects[..], [Effect::Retry]));
+        assert_eq!(app.items.len(), 1);
+        assert!(matches!(app.items[0], ChatItem::User(_)));
+    }
+
+    #[test]
+    fn retry_after_success_keeps_items_and_delegates() {
+        // 是否可重试由 agent 判定（历史是唯一权威）：成功条目保留，照常提交
+        let mut app = app();
+        app.handle_event(&AgentEvent::MessageStart(user_message("hi")));
+        app.handle_event(&AgentEvent::MessageStart(assistant_message(
+            vec![text_block("ok")],
+            StopReason::Stop,
+            None,
+        )));
+        app.handle_event(&AgentEvent::MessageEnd(assistant_message(
+            vec![text_block("ok")],
+            StopReason::Stop,
+            None,
+        )));
+
+        let effects = app.execute_slash(SlashAction::Retry);
+
+        assert!(matches!(&effects[..], [Effect::Retry]));
+        assert_eq!(app.items.len(), 2);
     }
 
     #[test]

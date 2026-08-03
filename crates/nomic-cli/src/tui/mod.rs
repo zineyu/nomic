@@ -57,6 +57,8 @@ enum DriverJob {
     Prompt(String, Vec<nomic_ai::ImageContent>, CancellationToken),
     /// 手动压缩上下文（`/compact [聚焦指令]`，附本轮取消令牌）
     Compact(Option<String>, CancellationToken),
+    /// 重试最近一轮失败的响应（`/retry`，附本轮取消令牌）
+    Retry(CancellationToken),
     /// 向 agent 历史注入一条 user 消息（`/skill:<name>` 手动载入），不启动 run
     Inject(String),
     /// 清空 agent 上下文（`/new`）
@@ -73,6 +75,8 @@ enum DriverDone {
     Prompt(Result<(), String>),
     /// 一次手动压缩结束（Ok(None) 表示无可压缩内容；Err 为摘要失败）
     Compact(Result<Option<Compaction>, String>),
+    /// 一次重试结束（Ok(false) 表示无可重试状态；Err 为 loop 错误）
+    Retry(Result<bool, String>),
     /// 上下文 token 估算回报（每个 job 处理后发送，状态栏用量显示用）
     Context(u64),
 }
@@ -171,6 +175,16 @@ fn spawn_driver(
                         .await
                         .map_err(|error| error.to_string());
                     if done_tx.send(DriverDone::Compact(result)).is_err() {
+                        return;
+                    }
+                }
+                DriverJob::Retry(cancel) => {
+                    let result = agent
+                        .retry(cancel)
+                        .await
+                        .map(|outcome| outcome.is_some())
+                        .map_err(|error| error.to_string());
+                    if done_tx.send(DriverDone::Retry(result)).is_err() {
                         return;
                     }
                 }
@@ -298,6 +312,16 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
                     Ok(Some(_)) => None,
                     Ok(None) => Some("上下文很短，没有可压缩的内容。".to_string()),
                     Err(error) => Some(format!("压缩失败，上下文保持不变：{error}")),
+                };
+                app.finish_run(notice);
+            }
+            DriverDone::Retry(result) => {
+                driver.current_cancel = None;
+                let notice = match result {
+                    // 重试成功经事件流渲染与落库，这里无需重复处理
+                    Ok(true) => None,
+                    Ok(false) => Some("最近一轮没有失败的响应，无需重试。".to_string()),
+                    Err(error) => Some(format!("重试失败：{error}")),
                 };
                 app.finish_run(notice);
             }
@@ -457,6 +481,14 @@ async fn execute_effect(app: &mut App, driver: &mut Driver, effect: Effect) {
                 driver.current_cancel = Some(token);
             } else {
                 app.finish_run(Some("内部错误：agent 任务已退出，无法压缩。".to_string()));
+            }
+        }
+        Effect::Retry => {
+            let token = CancellationToken::new();
+            if driver.job_tx.send(DriverJob::Retry(token.clone())).is_ok() {
+                driver.current_cancel = Some(token);
+            } else {
+                app.finish_run(Some("内部错误：agent 任务已退出，无法重试。".to_string()));
             }
         }
         Effect::Cancel => {

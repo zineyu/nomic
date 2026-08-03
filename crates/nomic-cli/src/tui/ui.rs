@@ -87,9 +87,9 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                             blocks.push(message.render(area.width));
                         }
                         Block::Thinking(thinking) => {
-                            // 同一消息块组件，暗色竖条 + 斜体正文与 assistant 输出区分
+                            // 同一消息块组件，暗色竖条 + 斜体正文与 assistant 输出区分，
+                            // 不加标题行，思考内容直接以 gutter 竖条表达
                             let mut message = MessageBlock::new(theme::thinking_marker());
-                            message.push(Line::from(Span::styled("✻ Thinking", theme::thinking())));
                             for line in thinking.lines() {
                                 message.push(Line::from(Span::styled(
                                     line.to_string(),
@@ -818,9 +818,9 @@ mod tests {
         );
     }
 
-    /// thinking 块套用 gutter 组件：`▌ ✻ Thinking` 标题 + `▌` 竖条正文，颜色区别于其他条目。
+    /// thinking 块套用 gutter 组件：无标题，`▌` 竖条正文，颜色区别于其他条目。
     #[test]
-    fn renders_thinking_block_with_header_and_gutter() {
+    fn renders_thinking_block_with_gutter() {
         let mut app = App::new("test-model".to_string(), None, 200_000);
         app.handle_event(&AgentEvent::MessageStart(Box::new(Message::Assistant(
             nomic_ai::AssistantMessage {
@@ -857,7 +857,7 @@ mod tests {
             .flat_map(|cell| cell.symbol().chars())
             .filter(|c| !c.is_whitespace())
             .collect();
-        assert!(compact.contains("✻Thinking"), "{compact}");
+        assert!(!compact.contains("Thinking"), "{compact}");
         assert!(compact.contains("▌推理第一行"), "{compact}");
         assert!(compact.contains("▌推理第二行"), "{compact}");
     }

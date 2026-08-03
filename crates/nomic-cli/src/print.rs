@@ -92,10 +92,6 @@ async fn drain_events(
                 print!("{delta}");
                 let _ = std::io::stdout().flush();
             }
-            AgentEvent::MessageUpdate(AssistantEvent::ThinkingStart { .. }) => {
-                // thinking 块边界标记，与工具输出区分
-                eprintln!("\x1b[2;3m✻ Thinking\x1b[0m");
-            }
             AgentEvent::MessageUpdate(AssistantEvent::ThinkingDelta { delta, .. }) => {
                 eprint!("\x1b[2;3m{delta}\x1b[0m");
             }

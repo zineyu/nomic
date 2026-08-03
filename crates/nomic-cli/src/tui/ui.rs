@@ -54,15 +54,18 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         match item {
             ChatItem::User(text) => {
                 // 左侧 accent 竖条把整条用户消息包成视觉块，多轮对话里可扫读
-                let mut text_lines = text.lines().peekable();
-                if text_lines.peek().is_none() {
+                if text.lines().next().is_none() {
+                    // 空消息保留竖条占位，保证可见
                     lines.push(Line::from(Span::styled("▌", theme::user_marker())));
-                }
-                for line in text_lines {
-                    lines.push(gutter(
-                        Line::from(Span::styled(line.to_string(), theme::user_text())),
-                        theme::user_marker(),
-                    ));
+                } else {
+                    let mut block = MessageBlock::new(theme::user_marker());
+                    for line in text.lines() {
+                        block.push(Line::from(Span::styled(
+                            line.to_string(),
+                            theme::user_text(),
+                        )));
+                    }
+                    lines.extend(block.render(area.width));
                 }
                 lines.push(Line::default());
             }
@@ -70,58 +73,56 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 for block in &assistant.blocks {
                     match block {
                         Block::Text(text) => {
-                            // assistant 输出按 Markdown 渲染，套用与用户消息同构的 gutter 块
-                            lines.extend(
-                                markdown::render(text, area.width)
-                                    .into_iter()
-                                    .map(|line| gutter(line, theme::assistant_marker())),
-                            );
+                            // assistant 输出按 Markdown 渲染，宽度扣除 gutter 两列
+                            let mut message = MessageBlock::new(theme::assistant_marker());
+                            for line in
+                                markdown::render(text, MessageBlock::content_width(area.width))
+                            {
+                                message.push(line);
+                            }
+                            lines.extend(message.render(area.width));
                         }
                         Block::Thinking(thinking) => {
-                            // 同一 gutter 块组件，暗色竖条 + 斜体正文与 assistant 输出区分
-                            lines.push(gutter(
-                                Line::from(Span::styled("✻ Thinking", theme::thinking())),
-                                theme::thinking_marker(),
-                            ));
-                            lines.extend(thinking.lines().map(|line| {
-                                gutter(
-                                    Line::from(Span::styled(line.to_string(), theme::thinking())),
-                                    theme::thinking_marker(),
-                                )
-                            }));
+                            // 同一消息块组件，暗色竖条 + 斜体正文与 assistant 输出区分
+                            let mut message = MessageBlock::new(theme::thinking_marker());
+                            message.push(Line::from(Span::styled("✻ Thinking", theme::thinking())));
+                            for line in thinking.lines() {
+                                message.push(Line::from(Span::styled(
+                                    line.to_string(),
+                                    theme::thinking(),
+                                )));
+                            }
+                            lines.extend(message.render(area.width));
                         }
                     }
                 }
                 if let Some(error) = &assistant.error {
-                    lines.push(gutter(
-                        Line::from(Span::styled(format!("✗ {error}"), theme::err())),
-                        theme::err(),
-                    ));
+                    let mut message = MessageBlock::new(theme::err());
+                    message.push(Line::from(Span::styled(format!("✗ {error}"), theme::err())));
+                    lines.extend(message.render(area.width));
                 } else if !assistant.done {
                     // 流式指示：消息未定稿时提示仍在生成，避免长 thinking 看似卡死
-                    lines.push(gutter(
-                        Line::from(vec![
-                            Span::styled(format!("{spinner} "), theme::busy()),
-                            Span::styled("生成中…", theme::dim()),
-                        ]),
-                        theme::busy(),
-                    ));
+                    let mut message = MessageBlock::new(theme::busy());
+                    message.push(Line::from(vec![
+                        Span::styled(format!("{spinner} "), theme::busy()),
+                        Span::styled("生成中…", theme::dim()),
+                    ]));
+                    lines.extend(message.render(area.width));
                 }
                 if !assistant.blocks.is_empty() || assistant.error.is_some() {
                     lines.push(Line::default());
                 }
             }
             ChatItem::System(text) => {
-                lines.extend(text.lines().map(|line| {
-                    gutter(
-                        Line::from(Span::styled(line.to_string(), theme::dim())),
-                        theme::dim(),
-                    )
-                }));
+                let mut block = MessageBlock::new(theme::dim());
+                for line in text.lines() {
+                    block.push(Line::from(Span::styled(line.to_string(), theme::dim())));
+                }
+                lines.extend(block.render(area.width));
                 lines.push(Line::default());
             }
             ChatItem::Tool(tool) => {
-                lines.extend(tool_lines(tool, spinner));
+                lines.extend(tool_block(tool, spinner).render(area.width));
             }
         }
     }
@@ -144,26 +145,74 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-/// 统一的 gutter 块组件：左侧 `▌ ` 竖条 + 原行内容。
+/// 消息块组件：聊天区每条消息的视觉单元，gutter 竖条是组件的一部分。
 ///
 /// 聊天区所有条目（用户消息、assistant 输出、thinking、工具调用、
-/// System 提示、错误与流式状态行）全部套用此组件，仅靠竖条与正文颜色
-/// 区分条目类型（用户=accent、assistant=正文色加粗、thinking=暗色、
+/// System 提示、错误与流式状态行）都包成 `MessageBlock`，仅靠竖条与
+/// 正文颜色区分条目类型（用户=accent、assistant=正文色、thinking=暗色、
 /// 工具=状态色、System=暗色、错误=红、流式=黄）。
-/// 空行（段落间隔）不加竖条，保持留白干净。
-fn gutter(line: Line<'static>, marker_style: Style) -> Line<'static> {
-    if line.width() == 0 {
-        return line;
-    }
-    let mut spans = Vec::with_capacity(line.spans.len() + 1);
-    spans.push(Span::styled("▌ ", marker_style));
-    spans.extend(line.spans);
-    Line::from(spans)
+///
+/// 组件内部统一负责折行：正文宽度为总宽减去 gutter 两列，续行自动
+/// 延续竖条，块引用视觉不断裂；空行（段落间隔）不加竖条，保持留白干净。
+struct MessageBlock {
+    /// gutter 竖条样式（颜色区分条目类型）。
+    marker: Style,
+    /// 正文逻辑行（未加竖条、未折行）。
+    lines: Vec<Line<'static>>,
 }
 
-/// 工具条目的渲染行：gutter 竖条取状态色 + 状态标记 + 加粗工具名 + 暗色 (参数)，
+/// gutter 竖条前缀：每条物理行的行首。
+const GUTTER_PREFIX: &str = "▌ ";
+/// gutter 占用列数：`▌` + 空格。
+const GUTTER_WIDTH: u16 = 2;
+
+impl MessageBlock {
+    const fn new(marker: Style) -> Self {
+        Self {
+            marker,
+            lines: Vec::new(),
+        }
+    }
+
+    /// 追加一行正文（逻辑行，折行由组件负责）。
+    fn push(&mut self, line: Line<'static>) {
+        self.lines.push(line);
+    }
+
+    /// 正文可用宽度：总宽减去 gutter 两列。
+    fn content_width(width: u16) -> u16 {
+        width.saturating_sub(GUTTER_WIDTH).max(1)
+    }
+
+    /// 渲染为物理行：每行加 gutter 竖条并按显示宽度折行，续行延续竖条。
+    fn render(&self, width: u16) -> Vec<Line<'static>> {
+        let max = usize::from(Self::content_width(width));
+        let mut out = Vec::new();
+        for line in &self.lines {
+            if line.width() == 0 {
+                // 空行（段落间隔）不加竖条，保持留白干净
+                out.push(Line::default());
+                continue;
+            }
+            for wrapped in wrap_line(line, max) {
+                out.push(self.with_gutter(wrapped));
+            }
+        }
+        out
+    }
+
+    /// 给物理行行首加 gutter 竖条。
+    fn with_gutter(&self, line: Line<'static>) -> Line<'static> {
+        let mut spans = Vec::with_capacity(line.spans.len() + 1);
+        spans.push(Span::styled(GUTTER_PREFIX, self.marker));
+        spans.extend(line.spans);
+        Line::from(spans)
+    }
+}
+
+/// 工具条目组件：gutter 竖条取状态色，状态标记 + 加粗工具名 + 暗色 (参数)，
 /// 结果摘要首行 `⎿` 引导、后续行对齐缩进，保持树形层次。
-fn tool_lines(tool: &ToolItem, spinner: &str) -> Vec<Line<'static>> {
+fn tool_block(tool: &ToolItem, spinner: &str) -> MessageBlock {
     let (mark, mark_style, name_style) = match tool.status {
         ToolStatus::Running => (spinner, theme::busy(), theme::bold()),
         ToolStatus::Ok => ("⏺", theme::ok(), theme::bold()),
@@ -176,7 +225,8 @@ fn tool_lines(tool: &ToolItem, spinner: &str) -> Vec<Line<'static>> {
     if !tool.args.is_empty() {
         spans.push(Span::styled(format!("({})", tool.args), theme::dim()));
     }
-    let mut lines = vec![gutter(Line::from(spans), mark_style)];
+    let mut block = MessageBlock::new(mark_style);
+    block.push(Line::from(spans));
     if !tool.detail.is_empty() {
         let detail_style = if tool.status == ToolStatus::Failed {
             theme::err()
@@ -185,13 +235,13 @@ fn tool_lines(tool: &ToolItem, spinner: &str) -> Vec<Line<'static>> {
         };
         for (index, detail) in tool.detail.iter().enumerate() {
             let prefix = if index == 0 { "  ⎿ " } else { "    " };
-            lines.push(gutter(
-                Line::from(Span::styled(format!("{prefix}{detail}"), detail_style)),
-                mark_style,
-            ));
+            block.push(Line::from(Span::styled(
+                format!("{prefix}{detail}"),
+                detail_style,
+            )));
         }
     }
-    lines
+    block
 }
 
 /// 空状态欢迎页：居中 logo + 键位速查。
@@ -227,32 +277,39 @@ fn draw_welcome(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), centered);
 }
 
+/// 把单个逻辑行按显示宽度折成物理行（保留 span 样式）。
+fn wrap_line(line: &Line<'static>, max: usize) -> Vec<Line<'static>> {
+    let max = max.max(1);
+    let mut out = Vec::new();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut row = 0usize;
+    let mut buf = String::new();
+    for span in &line.spans {
+        for c in span.content.chars() {
+            let char_width = UnicodeWidthChar::width(c).unwrap_or(0);
+            if row + char_width > max {
+                spans.push(Span::styled(std::mem::take(&mut buf), span.style));
+                out.push(Line::from(std::mem::take(&mut spans)));
+                row = 0;
+            }
+            buf.push(c);
+            row += char_width;
+        }
+        if !buf.is_empty() {
+            spans.push(Span::styled(std::mem::take(&mut buf), span.style));
+        }
+    }
+    out.push(Line::from(spans));
+    out
+}
+
 /// 把逻辑行按显示宽度折成物理行（保留 span 样式）。
+///
+/// 仅用于组件外的裸行（条目间留白、空列表提示）；消息行的折行由
+/// [`MessageBlock::render`] 负责，输出已适配宽度，此处幂等。
 fn wrap_lines(lines: &[Line<'static>], width: u16) -> Vec<Line<'static>> {
     let max = usize::from(width).max(1);
-    let mut out = Vec::new();
-    for line in lines {
-        let mut spans: Vec<Span<'static>> = Vec::new();
-        let mut row = 0usize;
-        let mut buf = String::new();
-        for span in &line.spans {
-            for c in span.content.chars() {
-                let char_width = UnicodeWidthChar::width(c).unwrap_or(0);
-                if row + char_width > max {
-                    spans.push(Span::styled(std::mem::take(&mut buf), span.style));
-                    out.push(Line::from(std::mem::take(&mut spans)));
-                    row = 0;
-                }
-                buf.push(c);
-                row += char_width;
-            }
-            if !buf.is_empty() {
-                spans.push(Span::styled(std::mem::take(&mut buf), span.style));
-            }
-        }
-        out.push(Line::from(spans));
-    }
-    out
+    lines.iter().flat_map(|line| wrap_line(line, max)).collect()
 }
 
 /// 输入框内容区行数上限：高度随行数伸缩，超过后内部滚动。
@@ -1021,6 +1078,48 @@ mod tests {
         // 弹层候选与 System 条目均可见
         assert!(compact.contains("/new"));
         assert!(compact.contains("本地系统提示"));
+    }
+
+    /// 消息块组件：折行后续行保留 gutter 竖条，块引用视觉不断裂，每行宽度不超上限。
+    #[test]
+    fn message_block_wraps_with_continuous_gutter() {
+        let style = theme::user_marker();
+        let mut block = MessageBlock::new(style);
+        block.push(Line::from(Span::styled(
+            "一二三四五六七八九十",
+            theme::user_text(),
+        )));
+        let rendered = block.render(8);
+        // 竖条 2 列 + 每行 6 列内容（3 个 CJK 字）：10 字折 4 行
+        assert_eq!(rendered.len(), 4, "{rendered:?}");
+        for line in &rendered {
+            assert!(line.width() <= 8, "折行后宽度应 <= 8：{:?}", line.width());
+            let first = line.spans.first().expect("续行应有 gutter 竖条");
+            assert_eq!(first.content.as_ref(), GUTTER_PREFIX);
+            assert_eq!(first.style, style, "续行竖条应保持原 gutter 颜色");
+        }
+    }
+
+    /// 消息块组件：空行（段落间隔）不加竖条，保持留白干净。
+    #[test]
+    fn message_block_keeps_blank_lines_gutter_free() {
+        let mut block = MessageBlock::new(theme::dim());
+        block.push(Line::from(Span::raw("上段")));
+        block.push(Line::default());
+        block.push(Line::from(Span::raw("下段")));
+        let rendered = block.render(20);
+        assert_eq!(rendered.len(), 3);
+        assert_eq!(rendered[1], Line::default());
+    }
+
+    /// 裸行折行：无 gutter 前缀，行为不变。
+    #[test]
+    fn wrapped_plain_lines_have_no_gutter() {
+        let line = Line::from(Span::raw("abcdefgh"));
+        let wrapped = wrap_lines(&[line], 4);
+        assert_eq!(wrapped.len(), 2);
+        assert_eq!(wrapped[0].spans[0].content.as_ref(), "abcd");
+        assert_eq!(wrapped[1].spans[0].content.as_ref(), "efgh");
     }
 
     /// token 数紧凑格式：<1k 原样，<10k 一位小数，其余取整。

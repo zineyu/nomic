@@ -50,8 +50,10 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     }
     let spinner = app.spinner();
     // 每个 MessageBlock 渲染为一组物理行，组间统一空行分隔：用户消息、
-    // assistant 的 Text/Thinking、错误、流式指示、System、工具调用都是
+    // assistant 的 Text/Thinking、错误、System、工具调用都是
     // 独立消息块，块间空行由拼接处保证，而非各分支自行追加。
+    // 运行中状态由输入框标题（spinner + 「运行中 · Esc 取消」）统一表达，
+    // 聊天区不再叠加流式指示，避免思考时出现两处"生成中"标记。
     let mut blocks: Vec<Vec<Line<'static>>> = Vec::new();
     for item in app.items() {
         match item {
@@ -101,14 +103,6 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 if let Some(error) = &assistant.error {
                     let mut message = MessageBlock::new(theme::err());
                     message.push(Line::from(Span::styled(format!("✗ {error}"), theme::err())));
-                    blocks.push(message.render(area.width));
-                } else if !assistant.done {
-                    // 流式指示：消息未定稿时提示仍在生成，避免长 thinking 看似卡死
-                    let mut message = MessageBlock::new(theme::busy());
-                    message.push(Line::from(vec![
-                        Span::styled(format!("{spinner} "), theme::busy()),
-                        Span::styled("生成中…", theme::dim()),
-                    ]));
                     blocks.push(message.render(area.width));
                 }
             }
@@ -648,9 +642,9 @@ mod tests {
         assert!(compact.contains("abcd1234"));
     }
 
-    /// 未定稿的 assistant 消息显示流式指示；运行中输入框标题含 spinner 与提示。
+    /// 运行中输入框标题含 spinner 与提示（聊天区不再叠加流式指示）。
     #[test]
-    fn shows_streaming_indicator_and_running_input_state() {
+    fn shows_running_input_state() {
         let mut app = App::new("test-model".to_string(), None, 200_000);
         app.handle_event(&AgentEvent::MessageStart(Box::new(Message::Assistant(
             nomic_ai::AssistantMessage {
@@ -679,7 +673,7 @@ mod tests {
             .flat_map(|cell| cell.symbol().chars())
             .filter(|c| !c.is_whitespace())
             .collect();
-        assert!(compact.contains("生成中"), "{compact}");
+        assert!(!compact.contains("生成中"), "{compact}");
         assert!(compact.contains("运行中"), "{compact}");
         assert!(compact.contains(app.spinner()), "{compact}");
     }

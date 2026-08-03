@@ -14,6 +14,7 @@ use nomic_ai::{
     ApiKind, Catalog, Message, Model, ModelSpec, Provider, StreamOptions, ThinkingLevel,
     providers::{AnthropicProvider, OpenAiCompat, OpenAiProvider},
 };
+use nomic_prompts::{ProjectDiscovery, PromptResolver, PromptTemplate};
 use nomic_session::SessionStore;
 use nomic_skills::{ActivatedSkill, SkillResolver};
 
@@ -37,6 +38,8 @@ pub struct Bootstrap {
     pub history: Vec<Message>,
     /// skill 解析器（同时注入 read 工具）
     pub skill_resolver: SkillResolver,
+    /// 可用的 prompt templates（`/name` 调用展开用，已按覆盖规则去重）
+    pub prompt_templates: Vec<PromptTemplate>,
 }
 
 /// 按 CLI 参数与环境初始化运行时上下文。
@@ -120,6 +123,7 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
         &skill_resolver,
         &active_skills,
     );
+    let prompt_templates = load_prompt_templates(cli, &cwd, models.config())?;
     let session = init_session(cli, &cwd).await?;
     let history = session
         .as_ref()
@@ -136,7 +140,38 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
         session: session.map(|init| (init.store, init.id)),
         history,
         skill_resolver,
+        prompt_templates,
     })
+}
+
+/// 加载 prompt templates：目录发现（`--no-prompt-templates` 关闭）+ 配置文件
+/// `prompts` 与 `--prompt-template` 的显式路径（同名时优先级最高）。
+/// 单个模板加载失败只告警不中断（与 skills 同一口径）。
+fn load_prompt_templates(
+    cli: &Cli,
+    cwd: &Path,
+    config: Option<&Config>,
+) -> Result<Vec<PromptTemplate>> {
+    let mut explicit = config
+        .and_then(|config| config.prompts.clone())
+        .unwrap_or_default();
+    explicit.extend(cli.prompt_template.iter().cloned());
+    let resolver = if cli.no_prompt_templates {
+        PromptResolver::new(
+            cwd,
+            ProjectDiscovery::Roots(Vec::new()),
+            Vec::new(),
+            explicit,
+        )
+    } else {
+        PromptResolver::for_cwd(cwd).map(|resolver| resolver.with_explicit(explicit))
+    }
+    .context("初始化 prompts 目录失败")?;
+    let catalog = resolver.catalog_with_diagnostics();
+    for error in &catalog.errors {
+        tracing::warn!(error = %error, "跳过加载失败的 prompt template");
+    }
+    Ok(catalog.templates)
 }
 
 /// 解析压缩配置：`[compaction]` 表逐字段合并内置默认。

@@ -71,6 +71,14 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "NAME")]
     pub(crate) skill: Vec<String>,
 
+    /// 额外的 prompt template 文件或目录（可重复传入；优先级高于项目/用户目录）
+    #[arg(long, value_name = "PATH")]
+    pub(crate) prompt_template: Vec<std::path::PathBuf>,
+
+    /// 禁用 prompt template 目录发现（显式指定的路径仍生效）
+    #[arg(long)]
+    pub(crate) no_prompt_templates: bool,
+
     /// 恢复最近一次 session 继续对话
     #[arg(long = "continue", short = 'c', conflicts_with = "session")]
     pub(crate) continue_session: bool,

@@ -22,6 +22,7 @@ crossterm.workspace = true
 futures.workspace = true
 nomic-ai.workspace = true
 nomic-core.workspace = true
+nomic-prompts.workspace = true
 nomic-session.workspace = true
 nomic-skills.workspace = true
 nomic-tools.workspace = true

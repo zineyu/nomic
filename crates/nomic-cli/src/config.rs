@@ -47,6 +47,8 @@ pub struct Config {
     pub max_tokens: Option<u64>,
     /// 追加到系统提示词末尾的文本
     pub append_system: Option<String>,
+    /// 额外的 prompt template 文件或目录（优先级高于自动发现的项目/用户目录）
+    pub prompts: Option<Vec<PathBuf>>,
     /// provider 定义表（`[providers.<名字>]`，含嵌套的模型规格覆盖）
     pub providers: Option<BTreeMap<String, ProviderConfig>>,
     /// 上下文压缩配置（`[compaction]`）
@@ -225,6 +227,20 @@ append_system = "Always reply in Chinese."
         let config = load_from(&path).expect("load").expect("some");
         assert!(config.provider.is_none());
         assert!(config.model.is_none());
+    }
+
+    #[test]
+    fn parses_prompts_list() {
+        let (_dir, path) =
+            write_temp("prompts = [\"prompts/review.md\", \"/opt/extra-prompts\"]\n");
+        let config = load_from(&path).expect("load").expect("some");
+        assert_eq!(
+            config.prompts.expect("prompts"),
+            vec![
+                PathBuf::from("prompts/review.md"),
+                PathBuf::from("/opt/extra-prompts")
+            ]
+        );
     }
 
     #[test]

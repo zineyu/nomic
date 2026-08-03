@@ -37,6 +37,15 @@ model = "claude-sonnet-4-5"
 # 追加到系统提示词末尾的文本
 # append_system = "总是用中文回复。"
 
+# ── prompt templates ─────────────────────────────────────────────────────────
+# prompt template 是 .md 文件，文件名（去掉 .md）即 /name 命令名，正文是模板，
+# 支持 $1 / $@ / ${1:-default} / ${@:N:L} 等参数占位符。自动发现（非递归）：
+#   项目级 .nomic/prompts/*.md（从 cwd 向上查找，越近越优先）
+#   用户级 $XDG_CONFIG_HOME/nomic/prompts/*.md 与 ~/.config/nomic/prompts/*.md
+# 下面可追加显式文件或目录（同名时优先级最高）；也可用 --prompt-template 指定、
+# --no-prompt-templates 关闭目录发现。
+# prompts = ["prompts/review.md", "~/.local/share/nomic/prompts"]
+
 # ── 上下文压缩 ──────────────────────────────────────────────────────────────
 # 上下文逼近模型窗口时自动把较早消息压缩为结构化摘要；TUI 内也可随时用
 # /compact [聚焦指令] 手动触发（不受 enabled 开关影响）。

@@ -1815,6 +1815,7 @@ dependencies = [
  "futures",
  "nomic-ai",
  "nomic-core",
+ "nomic-prompts",
  "nomic-session",
  "nomic-skills",
  "nomic-tools",

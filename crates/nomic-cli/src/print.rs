@@ -18,6 +18,11 @@ use crate::{Cli, bootstrap};
 /// 运行 print 模式。
 pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
     let boot = bootstrap::bootstrap(cli).await?;
+    // `/name args` 视为 prompt template 调用：展开后发送；未知名称硬报错
+    let prompt = match nomic_prompts::expand_invocation(&boot.prompt_templates, prompt) {
+        Ok(expanded) => expanded.unwrap_or_else(|| prompt.to_string()),
+        Err(error) => return Err(error).context("展开 prompt template 失败"),
+    };
     let images = load_images(&cli.image)?;
     if let Some((_, id)) = &boot.session {
         eprintln!(
@@ -46,7 +51,6 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
     });
 
     let cancel_for_prompt = cancel.clone();
-    let prompt = prompt.to_string();
     let run = tokio::spawn(async move {
         agent
             .prompt_with_images(&prompt, &images, cancel_for_prompt)

@@ -56,6 +56,11 @@ pub(super) const fn user_marker() -> Style {
     Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
 }
 
+/// assistant 输出左侧竖条标记：正文同色的加粗竖条，与用户 accent 竖条区分。
+pub(super) const fn assistant_marker() -> Style {
+    Style::new().add_modifier(Modifier::BOLD)
+}
+
 /// 用户消息正文。
 pub(super) const fn user_text() -> Style {
     Style::new().fg(ACCENT)

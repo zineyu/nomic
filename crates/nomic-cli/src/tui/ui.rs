@@ -3,6 +3,7 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Margin, Position, Rect},
+    style::Style,
     text::{Line, Span},
     widgets::{Block as Border, BorderType, Clear, Paragraph},
 };
@@ -58,10 +59,10 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     lines.push(Line::from(Span::styled("▌", theme::user_marker())));
                 }
                 for line in text_lines {
-                    lines.push(Line::from(vec![
-                        Span::styled("▌ ", theme::user_marker()),
-                        Span::styled(line.to_string(), theme::user_text()),
-                    ]));
+                    lines.push(gutter(
+                        Line::from(Span::styled(line.to_string(), theme::user_text())),
+                        theme::user_marker(),
+                    ));
                 }
                 lines.push(Line::default());
             }
@@ -69,17 +70,24 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 for block in &assistant.blocks {
                     match block {
                         Block::Text(text) => {
-                            // assistant 输出按 Markdown 渲染（标题/列表/代码块等）
-                            lines.extend(markdown::render(text, area.width));
+                            // assistant 输出按 Markdown 渲染，套用与用户消息同构的 gutter 块
+                            lines.extend(
+                                markdown::render(text, area.width)
+                                    .into_iter()
+                                    .map(|line| gutter(line, theme::assistant_marker())),
+                            );
                         }
                         Block::Thinking(thinking) => {
-                            // 块引用式渲染：标题行 + `│` gutter，与工具输出结构区分
-                            lines.push(Line::from(Span::styled("✻ Thinking", theme::thinking())));
+                            // 同一 gutter 块组件，暗色竖条 + 斜体正文与 assistant 输出区分
+                            lines.push(gutter(
+                                Line::from(Span::styled("✻ Thinking", theme::thinking())),
+                                theme::thinking_marker(),
+                            ));
                             lines.extend(thinking.lines().map(|line| {
-                                Line::from(vec![
-                                    Span::styled("│ ", theme::thinking_marker()),
-                                    Span::styled(line.to_string(), theme::thinking()),
-                                ])
+                                gutter(
+                                    Line::from(Span::styled(line.to_string(), theme::thinking())),
+                                    theme::thinking_marker(),
+                                )
                             }));
                         }
                     }
@@ -128,7 +136,22 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-/// 工具条目的渲染行：状态色标记 + 加粗工具名 + 暗色 (参数)，
+/// 统一的 gutter 块组件：左侧 `▌ ` 竖条 + 原行内容。
+///
+/// 用户消息、assistant 输出、thinking、工具调用全部套用此组件，
+/// 仅靠竖条与正文颜色区分条目类型（用户=accent、assistant=正文色加粗、
+/// thinking=暗色、工具=状态色）。空行（段落间隔）不加竖条，保持留白干净。
+fn gutter(line: Line<'static>, marker_style: Style) -> Line<'static> {
+    if line.width() == 0 {
+        return line;
+    }
+    let mut spans = Vec::with_capacity(line.spans.len() + 1);
+    spans.push(Span::styled("▌ ", marker_style));
+    spans.extend(line.spans);
+    Line::from(spans)
+}
+
+/// 工具条目的渲染行：gutter 竖条取状态色 + 状态标记 + 加粗工具名 + 暗色 (参数)，
 /// 结果摘要首行 `⎿` 引导、后续行对齐缩进，保持树形层次。
 fn tool_lines(tool: &ToolItem, spinner: &str) -> Vec<Line<'static>> {
     let (mark, mark_style, name_style) = match tool.status {
@@ -143,7 +166,7 @@ fn tool_lines(tool: &ToolItem, spinner: &str) -> Vec<Line<'static>> {
     if !tool.args.is_empty() {
         spans.push(Span::styled(format!("({})", tool.args), theme::dim()));
     }
-    let mut lines = vec![Line::from(spans)];
+    let mut lines = vec![gutter(Line::from(spans), mark_style)];
     if !tool.detail.is_empty() {
         let detail_style = if tool.status == ToolStatus::Failed {
             theme::err()
@@ -152,10 +175,10 @@ fn tool_lines(tool: &ToolItem, spinner: &str) -> Vec<Line<'static>> {
         };
         for (index, detail) in tool.detail.iter().enumerate() {
             let prefix = if index == 0 { "  ⎿ " } else { "    " };
-            lines.push(Line::from(Span::styled(
-                format!("{prefix}{detail}"),
-                detail_style,
-            )));
+            lines.push(gutter(
+                Line::from(Span::styled(format!("{prefix}{detail}"), detail_style)),
+                mark_style,
+            ));
         }
     }
     lines
@@ -610,7 +633,50 @@ mod tests {
         assert!(text.contains("    line3"), "{text}");
     }
 
-    /// thinking 块渲染为块引用结构：`✻ Thinking` 标题 + `│` gutter，区别于工具详情。
+    /// 各条目共用 `▌` gutter 组件，但颜色不同：用户=accent，工具=状态色。
+    #[test]
+    fn gutter_colors_distinguish_item_types() {
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        app.handle_event(&AgentEvent::MessageStart(Box::new(Message::User(
+            nomic_ai::UserMessage {
+                content: nomic_ai::UserMessageContent::Text("用户消息".to_string()),
+                timestamp: 0,
+            },
+        ))));
+        app.handle_event(&AgentEvent::ToolExecutionStart {
+            tool_call_id: "t1".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command": "ls"}),
+        });
+        app.handle_event(&AgentEvent::ToolExecutionEnd {
+            tool_call_id: "t1".to_string(),
+            tool_name: "bash".to_string(),
+            result: ToolResult::text("ok"),
+            is_error: false,
+        });
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let gutter_colors: Vec<ratatui::style::Color> = buffer
+            .content()
+            .iter()
+            .filter(|cell| cell.symbol() == "▌")
+            .map(|cell| cell.fg)
+            .collect();
+        assert!(
+            gutter_colors.contains(&ratatui::style::Color::Cyan),
+            "{gutter_colors:?}"
+        );
+        assert!(
+            gutter_colors.contains(&ratatui::style::Color::Green),
+            "{gutter_colors:?}"
+        );
+    }
+
+    /// thinking 块套用 gutter 组件：`▌ ✻ Thinking` 标题 + `▌` 竖条正文，颜色区别于其他条目。
     #[test]
     fn renders_thinking_block_with_header_and_gutter() {
         let mut app = App::new("test-model".to_string(), None, 200_000);
@@ -650,8 +716,8 @@ mod tests {
             .filter(|c| !c.is_whitespace())
             .collect();
         assert!(compact.contains("✻Thinking"), "{compact}");
-        assert!(compact.contains("│推理第一行"), "{compact}");
-        assert!(compact.contains("│推理第二行"), "{compact}");
+        assert!(compact.contains("▌推理第一行"), "{compact}");
+        assert!(compact.contains("▌推理第二行"), "{compact}");
     }
 
     /// 空状态绘制欢迎页：logo、模型名与键位速查均可见。
@@ -851,9 +917,12 @@ mod tests {
             .position(|cell| cell.symbol() == "输")
             .expect("assistant text cell");
         let x = u16::try_from(index % width).expect("column fits u16");
+        // assistant 输出套用 gutter 组件：留白 + `▌ ` 竖条两列
         assert_eq!(
-            x, CHAT_H_MARGIN,
-            "assistant 输出应距左缘 {CHAT_H_MARGIN} 列"
+            x,
+            CHAT_H_MARGIN + 2,
+            "assistant 输出应距左缘 {} 列",
+            CHAT_H_MARGIN + 2
         );
     }
 

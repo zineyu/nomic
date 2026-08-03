@@ -257,7 +257,7 @@ async fn latest_session_in(store: &SessionStore, cwd: &Path) -> Result<String> {
         .with_context(|| {
             format!(
                 "当前目录 {} 没有可恢复的 session\
-                 （用 `nomic sessions list` 查看全部，或用 --session <ID> 指定）",
+                 （用 `nomic resume` 交互选择任意目录的 session）",
                 cwd.display()
             )
         })
@@ -268,7 +268,7 @@ async fn load_history(store: &SessionStore, id: &str) -> Result<Vec<Message>> {
     store
         .load_messages(id)
         .await
-        .with_context(|| format!("加载 session {id} 失败"))
+        .with_context(|| "加载 session 历史失败".to_string())
 }
 
 /// 显式 `--session` 恢复的 session 属于其他目录时提示（不阻断）。
@@ -734,7 +734,7 @@ mod tests {
             .expect_err("当前目录无 session 时必须报错");
         let message = format!("{error:#}");
         assert!(message.contains("没有可恢复的 session"), "{message}");
-        assert!(message.contains("--session"), "{message}");
+        assert!(message.contains("nomic resume"), "{message}");
     }
 
     #[tokio::test]

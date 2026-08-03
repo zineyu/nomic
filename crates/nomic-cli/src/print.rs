@@ -24,12 +24,11 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
         Err(error) => return Err(error).context("展开 prompt template 失败"),
     };
     let images = load_images(&cli.image)?;
-    if let Some((_, id)) = &boot.session {
-        eprintln!(
-            "\x1b[2msession {}（{} 条历史消息）\x1b[0m",
-            id,
-            boot.history.len()
-        );
+    if boot.session.is_some() {
+        // session id 是内部标识，展示会话标题（首条用户消息摘要）
+        let label = nomic_session::session_title(&boot.history)
+            .map_or_else(|| "新会话".to_string(), |title| format!("「{title}」"));
+        eprintln!("\x1b[2m{label}（{} 条历史消息）\x1b[0m", boot.history.len());
     }
 
     let (mut agent, mut events) = Agent::builder()

@@ -14,7 +14,8 @@ use time::macros::format_description;
 
 use crate::Cli;
 
-/// 列出全部 session：id、最后更新时间、消息数与启动目录。
+/// 列出全部 session：标题、最后更新时间、消息数与启动目录。
+/// session id 是内部标识，不展示。
 pub async fn list() -> Result<()> {
     let store = SessionStore::open_default()
         .await
@@ -25,13 +26,7 @@ pub async fn list() -> Result<()> {
         return Ok(());
     }
     for summary in sessions {
-        println!(
-            "{}  {}  {:>4} 条消息  {}",
-            summary.id,
-            format_time(summary.last_message_at),
-            summary.message_count,
-            summary.cwd.display()
-        );
+        println!("{}", row_text(&summary));
     }
     Ok(())
 }
@@ -52,7 +47,7 @@ pub async fn resume(cli: &Cli) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!(
             "resume 需要交互终端选择 session；\
-             非交互场景请用 --session <ID> 指定（`nomic sessions list` 查看全部）"
+             非交互场景请用 `nomic --continue` 恢复当前目录最近的 session"
         );
     }
     let Some(id) = pick_session(&sessions)? else {
@@ -285,21 +280,17 @@ fn clear_picker(stdout: &mut impl Write, printed: u16) -> io::Result<()> {
     )
 }
 
-/// 一行的展示文本：短 id、最后更新时间、消息数与启动目录。
-/// CLI 选择器与 TUI `/resume` 弹层共用。
+/// 一行的展示文本：标题、最后更新时间、消息数与启动目录。
+/// CLI 选择器与 TUI `/resume` 弹层共用；session id 是内部标识，不展示。
 pub fn row_text(summary: &SessionSummary) -> String {
+    let title = summary.title.as_deref().unwrap_or("（空 session）");
     format!(
         "{}  {}  {:>4} 条消息  {}",
-        short_id(&summary.id),
+        title,
         format_time(summary.last_message_at),
         summary.message_count,
         summary.cwd.display()
     )
-}
-
-/// UUID 取前 8 位用于紧凑展示（选择器内无需完整 id）。
-pub fn short_id(id: &str) -> &str {
-    id.get(..8).unwrap_or(id)
 }
 
 /// Unix 毫秒时间戳 → `YYYY-MM-DD HH:MM`（本地时区，失败退回 UTC；无值显示 `-`）。
@@ -475,7 +466,7 @@ mod tests {
 
     #[test]
     fn draw_picker_respects_tiny_terminal_height() {
-        let sessions = vec![picker_summary("01999999-aaaa-bbbb-cccc")];
+        let sessions = vec![picker_summary("实现会话命名")];
         let picker = Picker::default();
 
         let mut output = Vec::new();
@@ -487,7 +478,7 @@ mod tests {
         let lines = draw_picker_with_height(&mut output, &sessions, &picker, 1).unwrap();
         assert_eq!(lines, 1);
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("01999999"), "{output:?}");
+        assert!(output.contains("实现会话命名"), "{output:?}");
         assert!(!output.contains("选择要恢复的 session"), "{output:?}");
 
         let mut output = Vec::new();
@@ -495,7 +486,20 @@ mod tests {
         assert_eq!(lines, 2);
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("选择要恢复的 session"), "{output:?}");
-        assert!(output.contains("01999999"), "{output:?}");
+        assert!(output.contains("实现会话命名"), "{output:?}");
+    }
+
+    #[test]
+    fn row_text_shows_title_without_session_id() {
+        let mut summary = picker_summary("实现会话命名");
+        let row = row_text(&summary);
+        assert!(row.contains("实现会话命名"), "{row}");
+        assert!(!row.contains(&summary.id), "不应展示 session id：{row}");
+
+        summary.title = None;
+        let row = row_text(&summary);
+        assert!(row.contains("（空 session）"), "无标题时应回退：{row}");
+        assert!(!row.contains(&summary.id), "不应展示 session id：{row}");
     }
 
     #[test]
@@ -521,19 +525,14 @@ mod tests {
         assert_eq!(selected.print.as_deref(), Some("hi"));
     }
 
-    fn picker_summary(id: &str) -> SessionSummary {
+    fn picker_summary(title: &str) -> SessionSummary {
         SessionSummary {
-            id: id.to_string(),
+            id: "01999999-aaaa-bbbb-cccc".to_string(),
+            title: Some(title.to_string()),
             cwd: std::path::PathBuf::from("/tmp/project"),
             first_message_at: Some(1_785_000_000_000),
             last_message_at: Some(1_785_000_000_000),
             message_count: 1,
         }
-    }
-
-    #[test]
-    fn short_id_truncates_to_8_chars() {
-        assert_eq!(short_id("01999999-aaaa-bbbb-cccc"), "01999999");
-        assert_eq!(short_id("short"), "short");
     }
 }

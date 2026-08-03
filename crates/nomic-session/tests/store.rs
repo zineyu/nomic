@@ -267,6 +267,37 @@ async fn list_sessions_orders_by_last_message_desc() {
     );
 }
 
+#[tokio::test]
+async fn list_sessions_computes_title_from_first_user_message() {
+    let store = SessionStore::in_memory().await.unwrap();
+    let empty = store.create_session("/tmp/empty").await.unwrap();
+    let titled = store.create_session("/tmp/titled").await.unwrap();
+
+    // 标题取首条 user 消息的首行，即使它不是 session 的第一条 entry
+    store
+        .append_message(&titled, None, &assistant_message(1_000))
+        .await
+        .unwrap();
+    store
+        .append_message(
+            &titled,
+            None,
+            &user_message("实现会话命名\n第二行忽略", 2_000),
+        )
+        .await
+        .unwrap();
+    store
+        .append_message(&titled, None, &user_message("后来的消息不作标题", 3_000))
+        .await
+        .unwrap();
+
+    let summaries = store.list_sessions().await.unwrap();
+    let titled_summary = summaries.iter().find(|s| s.id == titled).unwrap();
+    assert_eq!(titled_summary.title.as_deref(), Some("实现会话命名"));
+    let empty_summary = summaries.iter().find(|s| s.id == empty).unwrap();
+    assert_eq!(empty_summary.title, None, "无消息的 session 无标题");
+}
+
 // ── compaction entry ────────────────────────────────────────────────────────
 
 use nomic_ai::{extract_summary, is_summary_message};

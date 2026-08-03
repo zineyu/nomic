@@ -83,8 +83,9 @@ pub(crate) struct Cli {
     #[arg(long = "continue", short = 'c', conflicts_with = "session")]
     pub(crate) continue_session: bool,
 
-    /// 恢复指定 id 的 session 继续对话
-    #[arg(long, value_name = "ID")]
+    /// 恢复指定 id 的 session 继续对话（内部/调试用：id 不对外展示，
+    /// 一般用 `nomic resume` 交互选择或 `--continue` 恢复最近的 session）
+    #[arg(long, value_name = "ID", hide = true)]
     pub(crate) session: Option<String>,
 
     /// 日志输出目标：file 默认写入 XDG state 目录并按天滚动；
@@ -116,7 +117,7 @@ pub(crate) enum Commands {
 /// `nomic sessions` 子命令。
 #[derive(Debug, Clone, Subcommand)]
 pub(crate) enum SessionsCommand {
-    /// 列出全部 session（id、最后更新时间、消息数、目录）
+    /// 列出全部 session（标题、最后更新时间、消息数、目录）
     List,
 }
 

@@ -389,12 +389,9 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.set_cursor_position(Position::new(x, y));
 }
 
-/// 状态栏：左侧模型徽标 + session + 上下文用量 + 告警；右侧滚动位置 + 键位提示。
+/// 状态栏：左侧模型徽标 + 会话标题 + 上下文用量 + 告警；右侧滚动位置 + 键位提示。
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let session = app.session_id().map_or_else(
-        || "无 session".to_string(),
-        |id| format!("session {}", &id[..id.len().min(8)]),
-    );
+    let session = app.session_label();
     let mut left = vec![
         Span::styled(format!(" {} ", app.model_name()), theme::selected()),
         Span::styled(format!(" {session} "), theme::dim()),
@@ -639,7 +636,8 @@ mod tests {
         assert!(compact.contains("你好"));
         assert!(compact.contains("bash"));
         assert!(compact.contains("test-model"));
-        assert!(compact.contains("abcd1234"));
+        // session id 是内部标识，状态栏展示会话标题（首条用户消息摘要）
+        assert!(!compact.contains("abcd1234"));
     }
 
     /// 运行中输入框标题含 spinner 与提示（聊天区不再叠加流式指示）。

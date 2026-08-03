@@ -67,10 +67,15 @@ pub enum SessionError {
 }
 
 /// session 摘要（`list_sessions` 返回）。
+///
+/// `id` 为内部标识（UUID v7），不对用户展示；用户可见的名称是
+/// [`Self::title`]（首条 user 消息的首行摘要）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSummary {
-    /// session id（UUID v7）
+    /// session id（UUID v7；内部标识，不展示给用户）
     pub id: String,
+    /// 会话标题：首条 user 消息的首行摘要（无消息时为 `None`，展示侧自行回退）
+    pub title: Option<String>,
     /// 启动位置（工作目录）
     pub cwd: PathBuf,
     /// 首条消息时间（Unix 毫秒；无消息时为 `None`）
@@ -79,6 +84,32 @@ pub struct SessionSummary {
     pub last_message_at: Option<u64>,
     /// 消息总数
     pub message_count: u64,
+}
+
+/// 从消息序列计算会话标题：第一条含正文的 user 消息的首行摘要
+/// （[`first_line`] 截断）；无符合条件的消息时为 `None`。
+///
+/// 会话的用户可见名称；session id（UUID）只作内部标识，不展示。
+pub fn session_title(messages: &[Message]) -> Option<String> {
+    messages.iter().find_map(|message| match message {
+        Message::User(_) => {
+            let (preview, _) = message_preview(message);
+            (!preview.is_empty()).then_some(preview)
+        }
+        _ => None,
+    })
+}
+
+/// 首行截断到 40 字符（会话标题、树列表等单行展示用）。
+pub fn first_line(text: &str) -> String {
+    const MAX_CHARS: usize = 40;
+    let line = text.lines().next().unwrap_or_default().trim();
+    if line.chars().count() <= MAX_CHARS {
+        line.to_string()
+    } else {
+        let truncated: String = line.chars().take(MAX_CHARS).collect();
+        format!("{truncated}…")
+    }
 }
 
 /// 会话树条目（[`SessionStore::list_tree`] 返回，分支浏览与选择用）。
@@ -359,6 +390,7 @@ impl SessionStore {
         .fetch_all(&self.pool)
         .await?;
 
+        let titles = self.fetch_titles().await?;
         let mut summaries = Vec::with_capacity(rows.len());
         for row in &rows {
             let id: String = row.get("id");
@@ -367,6 +399,7 @@ impl SessionStore {
             let last: Option<i64> = row.get("last_message_at");
             let count: i64 = row.get("message_count");
             summaries.push(SessionSummary {
+                title: titles.get(&id).cloned(),
                 id,
                 cwd: PathBuf::from(cwd),
                 first_message_at: first.map(to_u64),
@@ -375,6 +408,33 @@ impl SessionStore {
             });
         }
         Ok(summaries)
+    }
+
+    /// 各 session 的标题（首条 user 消息摘要）：一次分组查询取每个 session
+    /// 最早一条 user 消息的 payload，在内存计算摘要；payload 损坏或无 user
+    /// 消息的 session 不出现在结果中（标题为 `None`）。
+    async fn fetch_titles(&self) -> Result<HashMap<String, String>, SessionError> {
+        let rows = sqlx::query(
+            "SELECT e.session_id, e.payload FROM entries e
+             JOIN (SELECT session_id, MIN(rowid) AS first_rowid FROM entries
+                   WHERE kind = 'message' AND role = 'user' GROUP BY session_id) f
+             ON e.rowid = f.first_rowid",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut titles = HashMap::with_capacity(rows.len());
+        for row in &rows {
+            let payload: String = row.get("payload");
+            let title = serde_json::from_str::<Message>(&payload)
+                .ok()
+                .map(|message| vec![message])
+                .and_then(|messages| session_title(&messages));
+            if let Some(title) = title {
+                titles.insert(row.get::<String, _>("session_id"), title);
+            }
+        }
+        Ok(titles)
     }
 }
 
@@ -554,18 +614,6 @@ fn message_preview(message: &Message) -> (String, bool) {
             let marker = if result.is_error { "失败" } else { "结果" };
             (format!("工具{marker}：{}", result.tool_name), false)
         }
-    }
-}
-
-/// 首行截断到 40 字符（树列表单行展示）。
-fn first_line(text: &str) -> String {
-    const MAX_CHARS: usize = 40;
-    let line = text.lines().next().unwrap_or_default().trim();
-    if line.chars().count() <= MAX_CHARS {
-        line.to_string()
-    } else {
-        let truncated: String = line.chars().take(MAX_CHARS).collect();
-        format!("{truncated}…")
     }
 }
 

@@ -914,7 +914,7 @@ async fn resume_session(app: &mut App, driver: &mut Driver, id: String) {
         let messages = store
             .load_messages(&id)
             .await
-            .with_context(|| format!("加载 session {id} 失败"))?;
+            .with_context(|| "加载 session 历史失败".to_string())?;
         let tip = store
             .latest_entry_id(&id)
             .await
@@ -934,9 +934,10 @@ async fn resume_session(app: &mut App, driver: &mut Driver, id: String) {
                 Some((_, current)) => current.clone_from(&id),
                 None => driver.session = Some((store, id.clone())),
             }
+            let label = nomic_session::session_title(&messages)
+                .map_or_else(String::new, |title| format!("「{title}」"));
             app.push_system(format!(
-                "已恢复 session {}（{} 条消息），后续对话续写该 session。",
-                crate::sessions::short_id(&id),
+                "已恢复 session {label}（{} 条消息），后续对话续写该 session。",
                 messages.len()
             ));
         }

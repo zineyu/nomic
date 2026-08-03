@@ -69,7 +69,8 @@ async fn sessions_list_shows_session_details() {
     let output = run(&["sessions", "list"], tmp.path());
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     let out = stdout(&output);
-    assert!(out.contains(&id), "{out}");
+    assert!(out.contains("hello"), "应展示会话标题：{out}");
+    assert!(!out.contains(&id), "不应展示 session id：{out}");
     assert!(out.contains("/tmp/project-alpha"), "{out}");
     assert!(out.contains("1 条消息"), "{out}");
     assert!(out.contains("2026-"), "{out}");
@@ -161,8 +162,7 @@ async fn resume_requires_tty_for_picker() {
     let output = run(&["resume"], tmp.path());
     assert!(!output.status.success(), "非 TTY 应失败");
     let err = stderr(&output);
-    assert!(err.contains("--session"), "应提示 --session：{err}");
-    assert!(err.contains("sessions list"), "应提示 sessions list：{err}");
+    assert!(err.contains("--continue"), "应提示 --continue：{err}");
 }
 
 #[tokio::test]
@@ -175,8 +175,11 @@ async fn continue_resumes_session_of_current_directory() {
     let output = run_in(&args, tmp.path(), Some(&project_b));
     assert!(!output.status.success(), "provider 必失败");
     let err = stderr(&output);
-    assert!(err.contains(&session_b), "应选当前目录的 session B：{err}");
-    assert!(!err.contains(&session_a), "不应选全局最新的 A：{err}");
+    // 恢复提示展示会话标题而非内部 id：标题证明选中的是当前目录的 B
+    assert!(err.contains("from b"), "应选当前目录的 session B：{err}");
+    assert!(!err.contains("from a"), "不应选全局最新的 A：{err}");
+    assert!(!err.contains(&session_b), "不应展示 session id：{err}");
+    assert!(!err.contains(&session_a), "不应展示 session id：{err}");
 }
 
 #[tokio::test]
@@ -189,7 +192,9 @@ async fn explicit_session_crosses_directory_with_warning() {
     let output = run_in(&args, tmp.path(), Some(&project_b));
     assert!(!output.status.success(), "provider 必失败");
     let err = stderr(&output);
-    assert!(err.contains(&session_a), "显式 --session 应选 A：{err}");
+    // 标题「from a」证明显式 --session 选中的是 A；id 不展示
+    assert!(err.contains("from a"), "显式 --session 应选 A：{err}");
+    assert!(!err.contains(&session_a), "不应展示 session id：{err}");
     assert!(err.contains("与当前目录不同"), "跨目录恢复应有提示：{err}");
 }
 

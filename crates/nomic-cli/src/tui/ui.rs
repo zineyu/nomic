@@ -49,14 +49,17 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         return;
     }
     let spinner = app.spinner();
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    // 每个 MessageBlock 渲染为一组物理行，组间统一空行分隔：用户消息、
+    // assistant 的 Text/Thinking、错误、流式指示、System、工具调用都是
+    // 独立消息块，块间空行由拼接处保证，而非各分支自行追加。
+    let mut blocks: Vec<Vec<Line<'static>>> = Vec::new();
     for item in app.items() {
         match item {
             ChatItem::User(text) => {
                 // 左侧 accent 竖条把整条用户消息包成视觉块，多轮对话里可扫读
                 if text.lines().next().is_none() {
                     // 空消息保留竖条占位，保证可见
-                    lines.push(Line::from(Span::styled("▌", theme::user_marker())));
+                    blocks.push(vec![Line::from(Span::styled("▌", theme::user_marker()))]);
                 } else {
                     let mut block = MessageBlock::new(theme::user_marker());
                     for line in text.lines() {
@@ -65,9 +68,8 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                             theme::user_text(),
                         )));
                     }
-                    lines.extend(block.render(area.width));
+                    blocks.push(block.render(area.width));
                 }
-                lines.push(Line::default());
             }
             ChatItem::Assistant(assistant) => {
                 for block in &assistant.blocks {
@@ -80,7 +82,7 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                             {
                                 message.push(line);
                             }
-                            lines.extend(message.render(area.width));
+                            blocks.push(message.render(area.width));
                         }
                         Block::Thinking(thinking) => {
                             // 同一消息块组件，暗色竖条 + 斜体正文与 assistant 输出区分
@@ -92,14 +94,14 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                                     theme::thinking(),
                                 )));
                             }
-                            lines.extend(message.render(area.width));
+                            blocks.push(message.render(area.width));
                         }
                     }
                 }
                 if let Some(error) = &assistant.error {
                     let mut message = MessageBlock::new(theme::err());
                     message.push(Line::from(Span::styled(format!("✗ {error}"), theme::err())));
-                    lines.extend(message.render(area.width));
+                    blocks.push(message.render(area.width));
                 } else if !assistant.done {
                     // 流式指示：消息未定稿时提示仍在生成，避免长 thinking 看似卡死
                     let mut message = MessageBlock::new(theme::busy());
@@ -107,10 +109,7 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                         Span::styled(format!("{spinner} "), theme::busy()),
                         Span::styled("生成中…", theme::dim()),
                     ]));
-                    lines.extend(message.render(area.width));
-                }
-                if !assistant.blocks.is_empty() || assistant.error.is_some() {
-                    lines.push(Line::default());
+                    blocks.push(message.render(area.width));
                 }
             }
             ChatItem::System(text) => {
@@ -118,13 +117,18 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 for line in text.lines() {
                     block.push(Line::from(Span::styled(line.to_string(), theme::dim())));
                 }
-                lines.extend(block.render(area.width));
-                lines.push(Line::default());
+                blocks.push(block.render(area.width));
             }
             ChatItem::Tool(tool) => {
-                lines.extend(tool_block(tool, spinner).render(area.width));
+                blocks.push(tool_block(tool, spinner).render(area.width));
             }
         }
+    }
+    // 拼接：每个消息块后空一行，块间分隔与末尾留白（与输入框拉开距离）统一处理
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for block in blocks {
+        lines.extend(block);
+        lines.push(Line::default());
     }
     if app.items().is_empty() {
         lines.push(Line::from(Span::styled(
@@ -1124,6 +1128,38 @@ mod tests {
         assert_eq!(first.content.as_ref(), GUTTER_PREFIX);
         assert_eq!(first.style, style, "空行竖条应保持原 gutter 颜色");
         assert_eq!(blank.width(), usize::from(GUTTER_WIDTH));
+    }
+
+    /// 聊天区拼接：相邻消息块之间恰好空一行（工具/System/用户等任意组合）。
+    #[test]
+    fn chat_blocks_are_separated_by_blank_lines() {
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        app.push_system("第一条");
+        app.push_system("第二条");
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let width = usize::from(buffer.area.width);
+        let row_of = |needle: &str| {
+            buffer
+                .content()
+                .iter()
+                .position(|cell| cell.symbol() == needle)
+                .map(|index| index / width)
+        };
+        let first = row_of("第").expect("first system row");
+        let second = row_of("二").expect("second system row");
+        // 两个单行消息块之间恰好一行空白
+        assert_eq!(second - first, 2, "相邻消息块之间应空一行");
+        // 分隔行是真空行：整行无内容字符
+        let blank_row = &buffer.content()[(first + 1) * width..(first + 2) * width];
+        assert!(
+            blank_row.iter().all(|cell| cell.symbol() == " "),
+            "分隔行应为空白行"
+        );
     }
 
     /// 裸行折行：无 gutter 前缀，行为不变。

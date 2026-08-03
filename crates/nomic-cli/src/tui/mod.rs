@@ -105,6 +105,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
             })
             .collect(),
     );
+    app.set_available_templates(boot.prompt_templates.clone());
 
     let (agent, mut events) = Agent::builder()
         .model(boot.model.clone())

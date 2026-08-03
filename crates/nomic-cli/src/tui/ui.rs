@@ -483,6 +483,13 @@ fn draw_completion(frame: &mut Frame<'_>, completion: &Completion, input_area: R
                 CompletionCandidate::Command(command) => {
                     format!("/{:<6} {}", command.name, command.summary)
                 }
+                CompletionCandidate::Template(template) => match &template.argument_hint {
+                    Some(hint) => format!(
+                        "/{:<8} {:<14} {}",
+                        template.name, hint, template.description
+                    ),
+                    None => format!("/{:<8} {}", template.name, template.description),
+                },
                 CompletionCandidate::Skill(entry) => {
                     format!("{:<10} {}", entry.name, entry.description)
                 }
@@ -499,6 +506,7 @@ fn draw_completion(frame: &mut Frame<'_>, completion: &Completion, input_area: R
         .collect();
     let kind = match completion.candidates.first() {
         Some(CompletionCandidate::Command(_)) => "命令",
+        Some(CompletionCandidate::Template(_)) => "模板",
         Some(CompletionCandidate::Skill(_)) => "skill",
         None => "补全",
     };

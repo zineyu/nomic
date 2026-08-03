@@ -8,6 +8,7 @@ use nomic_ai::{
     AssistantContent, AssistantEvent, Message, StopReason, UserContent, UserMessageContent,
 };
 use nomic_core::{AgentEvent, estimate_context_tokens, usage_context_tokens};
+use nomic_prompts::{PromptTemplate, PromptsError};
 use nomic_skills::{ActivatedSkill, SkillScope, parse_active_skill_tag};
 use unicode_width::UnicodeWidthStr;
 
@@ -288,10 +289,12 @@ fn help_text() -> String {
     text
 }
 
-/// 补全候选：slash 命令或 `/skill:` 后的 skill 名。
+/// 补全候选：slash 命令、prompt template 或 `/skill:` 后的 skill 名。
 #[derive(Debug)]
 pub(super) enum CompletionCandidate {
     Command(&'static SlashCommand),
+    /// prompt template（`/name` 调用展开）
+    Template(PromptTemplate),
     Skill(SkillEntry),
 }
 
@@ -300,6 +303,7 @@ impl CompletionCandidate {
     fn fragment(&self) -> String {
         match self {
             Self::Command(command) => command.name.to_string(),
+            Self::Template(template) => template.name.clone(),
             Self::Skill(entry) => format!("skill:{}", entry.name),
         }
     }
@@ -310,7 +314,7 @@ impl CompletionCandidate {
             Self::Command(command) => {
                 command.name == fragment || command.aliases.contains(&fragment)
             }
-            Self::Skill(_) => self.fragment() == fragment,
+            Self::Template(_) | Self::Skill(_) => self.fragment() == fragment,
         }
     }
 }
@@ -462,6 +466,8 @@ pub(super) struct App {
     spinner: usize,
     /// `/skill:` 补全用的可用 skill 快照
     skills: Vec<SkillEntry>,
+    /// 可用的 prompt templates（`/name` 调用展开与补全用）
+    templates: Vec<PromptTemplate>,
 }
 
 impl App {
@@ -488,12 +494,18 @@ impl App {
             notice: None,
             spinner: 0,
             skills: Vec::new(),
+            templates: Vec::new(),
         }
     }
 
     /// 设置 `/skill:` 补全用的可用 skill 快照（启动时从 resolver catalog 取）。
     pub(super) fn set_available_skills(&mut self, skills: Vec<SkillEntry>) {
         self.skills = skills;
+    }
+
+    /// 设置可用的 prompt templates（启动时从 resolver catalog 取）。
+    pub(super) fn set_available_templates(&mut self, templates: Vec<PromptTemplate>) {
+        self.templates = templates;
     }
 
     /// 把 resume 恢复的历史消息渲染为聊天条目。
@@ -812,7 +824,29 @@ impl App {
                 self.notice = Some(format!("参数形式不对，用法：{usage}"));
                 Vec::new()
             }
-            SlashParse::Unknown(name) => {
+            SlashParse::Unknown(name) => self.submit_template(&text, &name),
+        }
+    }
+
+    /// 未知 slash 命令：按 prompt template 调用尝试展开提交；未命中模板时
+    /// 维持未知命令提示。内建命令优先（已在 `parse_slash` 中匹配）。
+    fn submit_template(&mut self, text: &str, name: &str) -> Vec<Effect> {
+        match nomic_prompts::expand_invocation(&self.templates, text) {
+            Ok(Some(expanded)) => {
+                let images = self.take_attachments();
+                // 与普通 prompt 同一口径：先置 running 避免提交空窗期重复提交
+                self.running = true;
+                self.notice = None;
+                vec![Effect::Prompt {
+                    text: expanded,
+                    images,
+                }]
+            }
+            Err(PromptsError::UnterminatedQuote { .. }) => {
+                self.notice = Some("参数形式不对：引号未闭合".to_string());
+                Vec::new()
+            }
+            _ => {
                 self.notice = Some(format!("未知命令 /{name}，输入 /help 查看可用命令"));
                 Vec::new()
             }
@@ -1042,12 +1076,13 @@ impl App {
         self.completion = if let Some(name_fragment) = fragment.strip_prefix("skill:") {
             self.skill_candidates(name_fragment)
         } else {
-            Self::command_candidates(&fragment)
+            self.command_candidates(&fragment)
         };
     }
 
-    /// slash 命令候选（按命令名/别名前缀匹配，按名称排序）。
-    fn command_candidates(fragment: &str) -> Option<Completion> {
+    /// slash 命令与 prompt template 候选（按名称/别名前缀匹配，按名称排序；
+    /// 同名时内建命令在前）。
+    fn command_candidates(&self, fragment: &str) -> Option<Completion> {
         let mut candidates: Vec<CompletionCandidate> = SLASH_COMMANDS
             .iter()
             .filter(|command| {
@@ -1056,6 +1091,13 @@ impl App {
             })
             .map(CompletionCandidate::Command)
             .collect();
+        candidates.extend(
+            self.templates
+                .iter()
+                .filter(|template| template.name.starts_with(fragment))
+                .cloned()
+                .map(CompletionCandidate::Template),
+        );
         if candidates.is_empty() {
             return None;
         }
@@ -1489,6 +1531,8 @@ fn assistant_error(stop_reason: StopReason, error_message: Option<&str>) -> Opti
 }
 
 #[cfg(test)]
+// 测试数据包含模板占位符字面量（${2:-nomic} 等），并非格式化参数
+#[allow(clippy::literal_string_with_formatting_args)]
 mod tests {
     use std::path::PathBuf;
 
@@ -2336,6 +2380,17 @@ mod tests {
         }
     }
 
+    fn template(name: &str, body: &str, argument_hint: Option<&str>) -> PromptTemplate {
+        PromptTemplate {
+            name: name.to_string(),
+            path: PathBuf::from(format!("/repo/.nomic/prompts/{name}.md")),
+            scope: nomic_prompts::PromptScope::Project,
+            description: format!("{name} desc"),
+            argument_hint: argument_hint.map(str::to_string),
+            body: body.to_string(),
+        }
+    }
+
     #[test]
     fn enter_submits_prompt_with_attachments_and_marks_running() {
         let mut app = app();
@@ -2352,6 +2407,108 @@ mod tests {
         // 附件随提交带走，输入缓冲已清空
         assert!(!app.has_attachments());
         assert_eq!(app.input(), "");
+    }
+
+    #[test]
+    fn template_completion_lists_templates_with_commands() {
+        let mut prefixed = app();
+        prefixed.set_available_templates(vec![
+            template("review", "Review $@", Some("<path>")),
+            template("component", "Create $1", None),
+        ]);
+        for c in "/re".chars() {
+            prefixed.insert_char(c);
+        }
+        let completion = prefixed.completion().expect("前缀弹出候选");
+        assert_eq!(
+            candidate_fragments(completion),
+            vec!["resume", "retry", "review"]
+        );
+
+        // Tab 填入首个候选（接受后候选收敛到精确匹配，再次 Tab 不变）
+        prefixed.tab_complete();
+        assert_eq!(prefixed.input(), "/resume");
+        prefixed.tab_complete();
+        assert_eq!(prefixed.input(), "/resume");
+
+        // 唯一前缀时 Tab 直接填入模板候选
+        let mut unique = app();
+        unique.set_available_templates(vec![template("review", "Review $@", Some("<path>"))]);
+        for c in "/rev".chars() {
+            unique.insert_char(c);
+        }
+        assert_eq!(
+            candidate_fragments(unique.completion().expect("唯一候选")),
+            vec!["review"]
+        );
+        unique.tab_complete();
+        assert_eq!(unique.input(), "/review");
+
+        // 空片段时模板与内建命令一起出现
+        let mut empty = app();
+        empty.set_available_templates(vec![template("zz-top", "body", None)]);
+        empty.insert_char('/');
+        let completion = empty.completion().expect("全部候选");
+        assert!(candidate_fragments(completion).contains(&"zz-top".to_string()));
+    }
+
+    #[test]
+    fn enter_expands_template_invocation_into_prompt() {
+        let mut spaced = app();
+        spaced.set_available_templates(vec![template("greet", "Hello $1, from ${2:-nomic}", None)]);
+        spaced.paste_text("/greet world \"a b\"");
+        let effects = spaced.press(Key::Enter);
+        assert!(spaced.is_running());
+        let [Effect::Prompt { text, images }] = &effects[..] else {
+            panic!("expected single Prompt effect");
+        };
+        assert_eq!(text, "Hello world, from a b");
+        assert!(images.is_empty());
+
+        // 冒号形式同样展开
+        let mut colon = app();
+        colon.set_available_templates(vec![template("greet", "Hello $1", None)]);
+        colon.paste_text("/greet:world");
+        let [Effect::Prompt { text, .. }] = &colon.press(Key::Enter)[..] else {
+            panic!("expected single Prompt effect");
+        };
+        assert_eq!(text, "Hello world");
+    }
+
+    #[test]
+    fn template_invocation_errors_and_builtin_precedence() {
+        let mut quoted = app();
+        quoted.set_available_templates(vec![
+            template("greet", "Hello $1", None),
+            // 与内建命令同名的模板不抢占 /help
+            template("help", "template help", None),
+        ]);
+        // 引号未闭合：提示参数形式不对，不提交
+        quoted.paste_text("/greet \"unterminated");
+        assert!(quoted.press(Key::Enter).is_empty());
+        assert!(!quoted.is_running());
+        assert_eq!(quoted.notice.as_deref(), Some("参数形式不对：引号未闭合"));
+
+        // 未知命令：维持原提示
+        let mut missing = app();
+        missing.paste_text("/missing arg");
+        assert!(missing.press(Key::Enter).is_empty());
+        assert!(
+            missing
+                .notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("未知命令 /missing"))
+        );
+
+        // 内建命令优先于同名模板
+        let mut builtin = app();
+        builtin.set_available_templates(vec![template("help", "template help", None)]);
+        builtin.paste_text("/help");
+        assert!(builtin.press(Key::Enter).is_empty());
+        assert!(!builtin.is_running());
+        assert!(
+            matches!(&builtin.items.last(), Some(ChatItem::System(text)) if text.contains("可用命令"))
+        );
     }
 
     #[test]

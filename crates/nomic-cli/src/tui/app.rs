@@ -98,6 +98,12 @@ pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
         usage: "/resume",
     },
     SlashCommand {
+        name: "tree",
+        aliases: &[],
+        summary: "浏览会话树：选择非工具调用条目作为新分支起点（原分支保留）",
+        usage: "/tree",
+    },
+    SlashCommand {
         name: "compact",
         aliases: &[],
         summary: "压缩上下文为摘要（可带聚焦指令：/compact 专注某部分）",
@@ -160,6 +166,8 @@ enum SlashAction {
     Help,
     New,
     Resume,
+    /// `/tree`：浏览会话树并选择分支起点
+    Tree,
     Quit,
     /// `/skill`（None）列出可用 skill；`/skill:<name>` 载入指定 skill
     Skill(Option<String>),
@@ -253,6 +261,7 @@ fn parse_slash(input: &str) -> SlashParse {
                 "help" if !junk && arg.is_none() => SlashAction::Help,
                 "new" if !junk && arg.is_none() => SlashAction::New,
                 "resume" if !junk && arg.is_none() => SlashAction::Resume,
+                "tree" if !junk && arg.is_none() => SlashAction::Tree,
                 "retry" if !junk && arg.is_none() => SlashAction::Retry,
                 "copy" if !junk && arg.is_none() => SlashAction::Copy,
                 "quit" if !junk && arg.is_none() => SlashAction::Quit,
@@ -339,6 +348,9 @@ pub(super) struct Completion {
 pub(super) struct PickerRow {
     pub(super) id: String,
     pub(super) text: String,
+    /// 是否可选中确认（`/tree` 的工具调用条目只展示不可选）；
+    /// 其余选择器恒为 `true`
+    pub(super) selectable: bool,
 }
 
 /// 选择器种类：决定确认动作（[`Effect`]）与渲染标题。
@@ -346,6 +358,8 @@ pub(super) struct PickerRow {
 pub(super) enum PickerKind {
     /// `/resume`：恢复历史 session
     Resume,
+    /// `/tree`：选择分支起点
+    Tree,
     /// `/models`：切换模型
     Models,
 }
@@ -430,6 +444,11 @@ pub(super) enum Effect {
     CopyText(String),
     /// `/new`：清空上下文开启新对话（新建 session）
     NewSession,
+    /// `/tree`：列出当前 session 的会话树并打开选择器
+    ListTree,
+    /// `/tree` 选择器确认：以所选条目为起点创建分支（恢复该分支上下文，
+    /// 后续消息以该条目为父 entry 落库）
+    BranchTo(String),
 }
 
 /// TUI 应用状态。
@@ -785,6 +804,7 @@ impl App {
                 if let Some((kind, id)) = self.take_picker_selection() {
                     return vec![match kind {
                         PickerKind::Resume => Effect::Resume(id),
+                        PickerKind::Tree => Effect::BranchTo(id),
                         PickerKind::Models => Effect::SwitchModel(id),
                     }];
                 }
@@ -899,6 +919,7 @@ impl App {
                 }
             }
             SlashAction::New => vec![Effect::NewSession],
+            SlashAction::Tree => vec![Effect::ListTree],
         }
     }
 
@@ -941,6 +962,13 @@ impl App {
         self.clear_items();
         self.load_history(messages);
         self.session_id = Some(session_id);
+    }
+
+    /// `/tree` 选择器确认：以分支重放的消息替换聊天区（session 不变；
+    /// 落库父指针切换由调用方随后完成）。
+    pub(super) fn restore_branch(&mut self, messages: &[Message]) {
+        self.clear_items();
+        self.load_history(messages);
     }
 
     // ── 输入编辑 ────────────────────────────────────────────────────────────
@@ -1222,6 +1250,18 @@ impl App {
         });
     }
 
+    /// 打开 `/tree` 选择器（预选中 `selected`，通常是当前分支末端）；
+    /// 调用方保证候选非空且 `selected` 落在可选行上。
+    pub(super) fn open_tree_picker(&mut self, rows: Vec<PickerRow>, selected: usize) {
+        debug_assert!(!rows.is_empty());
+        debug_assert!(rows[selected].selectable);
+        self.picker = Some(Picker {
+            kind: PickerKind::Tree,
+            rows,
+            selected,
+        });
+    }
+
     /// 当前选择器（渲染与键位路由用）。
     pub(super) const fn picker(&self) -> Option<&Picker> {
         self.picker.as_ref()
@@ -1232,16 +1272,37 @@ impl App {
         self.picker = None;
     }
 
-    /// 移动选中项（到底/顶钳制，不循环）。
+    /// 移动选中项（到底/顶钳制，不循环；跳过不可选行）。
     fn picker_select(&mut self, delta: isize) {
-        if let Some(picker) = &mut self.picker {
-            let last = picker.rows.len() - 1;
-            picker.selected = picker.selected.saturating_add_signed(delta).min(last);
+        let Some(picker) = &mut self.picker else {
+            return;
+        };
+        let len = picker.rows.len();
+        let direction: isize = delta.signum();
+        let mut index = picker.selected;
+        for _ in 0..delta.unsigned_abs() {
+            let Some(next) = step_row(index, direction, len) else {
+                break;
+            };
+            index = next;
         }
+        // 落点不可选时沿移动方向继续；该方向上没有更多可选行则保持原位
+        while !picker.rows[index].selectable {
+            let Some(next) = step_row(index, direction, len) else {
+                return;
+            };
+            index = next;
+        }
+        picker.selected = index;
     }
 
     /// Enter 确认：取出选中行的（种类, id）并关闭选择器。
+    /// 不可选行（`/tree` 的工具调用条目）不确认、保持打开。
     fn take_picker_selection(&mut self) -> Option<(PickerKind, String)> {
+        let picker = self.picker.as_ref()?;
+        if !picker.rows[picker.selected].selectable {
+            return None;
+        }
         let picker = self.picker.take()?;
         Some((picker.kind, picker.rows[picker.selected].id.clone()))
     }
@@ -1408,6 +1469,12 @@ fn insert_block(blocks: &mut Vec<Block>, index: usize, block: Block) {
     if index <= blocks.len() {
         blocks.insert(index, block);
     }
+}
+
+/// 选择器逐行步进：越过边界返回 `None`（钳制语义由调用方决定）。
+fn step_row(index: usize, direction: isize, len: usize) -> Option<usize> {
+    let next = index.checked_add_signed(direction)?;
+    (next < len).then_some(next)
 }
 
 /// `/image` 的用法提示（以 SLASH_COMMANDS 为唯一来源）。
@@ -1875,6 +1942,7 @@ mod tests {
         let mut app = app();
         let rows = (0..3)
             .map(|i| PickerRow {
+                selectable: true,
                 id: format!("id-{i}"),
                 text: format!("row {i}"),
             })
@@ -2565,10 +2633,12 @@ mod tests {
         let mut app = app();
         app.open_resume_picker(vec![
             PickerRow {
+                selectable: true,
                 id: "s1".to_string(),
                 text: "row 1".to_string(),
             },
             PickerRow {
+                selectable: true,
                 id: "s2".to_string(),
                 text: "row 2".to_string(),
             },
@@ -2581,6 +2651,7 @@ mod tests {
         assert!(app.picker().is_none());
         // Esc/q 取消不产出效果
         app.open_resume_picker(vec![PickerRow {
+            selectable: true,
             id: "s1".to_string(),
             text: "row 1".to_string(),
         }]);
@@ -2621,10 +2692,12 @@ mod tests {
         app.open_model_picker(
             vec![
                 PickerRow {
+                    selectable: true,
                     id: "m1".to_string(),
                     text: "m1 row".to_string(),
                 },
                 PickerRow {
+                    selectable: true,
                     id: "m2".to_string(),
                     text: "m2 row".to_string(),
                 },
@@ -2685,6 +2758,103 @@ mod tests {
         app.restore_conversation(&[*user_message("恢复的")], "sid-1".to_string());
         assert_eq!(app.items().len(), 1);
         assert!(matches!(&app.items()[0], ChatItem::User(t) if t == "恢复的"));
+        assert_eq!(app.session_id(), Some("sid-1"));
+    }
+
+    /// `/tree` 解析：无参命令；带参数报用法错误。
+    #[test]
+    fn parse_slash_tree_forms() {
+        assert_eq!(parse_slash("/tree"), SlashParse::Known(SlashAction::Tree));
+        assert!(matches!(
+            parse_slash("/tree x"),
+            SlashParse::InvalidUsage(_)
+        ));
+        assert!(matches!(
+            parse_slash("/tree:abc"),
+            SlashParse::InvalidUsage(_)
+        ));
+        assert_eq!(
+            parse_slash("/treex"),
+            SlashParse::Unknown("treex".to_string())
+        );
+    }
+
+    /// `/tree` 提交 → ListTree 效果。
+    #[test]
+    fn tree_slash_produces_list_tree_effect() {
+        let mut app = app();
+        app.paste_text("/tree");
+        let effects = app.press(Key::Enter);
+        assert!(matches!(&effects[..], [Effect::ListTree]));
+    }
+
+    /// `/tree` 选择器：移动跳过不可选行（工具调用条目），Enter 产出
+    /// BranchTo 效果。
+    #[test]
+    fn tree_picker_skips_unselectable_rows() {
+        let rows = vec![
+            PickerRow {
+                selectable: true,
+                id: "user-1".to_string(),
+                text: "用户 row".to_string(),
+            },
+            PickerRow {
+                selectable: false,
+                id: "tool-1".to_string(),
+                text: "工具 row".to_string(),
+            },
+            PickerRow {
+                selectable: true,
+                id: "user-2".to_string(),
+                text: "用户 row 2".to_string(),
+            },
+        ];
+        let mut app = app();
+        app.open_tree_picker(rows, 0);
+
+        // 下移跳过不可选行，直接落在下一个可选行
+        assert!(app.press(Key::Char('j')).is_empty());
+        assert_eq!(app.picker().expect("picker").selected, 2);
+        // 上移同样跳过
+        assert!(app.press(Key::Char('k')).is_empty());
+        assert_eq!(app.picker().expect("picker").selected, 0);
+
+        let effects = app.press(Key::Enter);
+        assert!(matches!(&effects[..], [Effect::BranchTo(id)] if id == "user-1"));
+        assert!(app.picker().is_none());
+    }
+
+    /// 末尾是不可选行时，下移到边界不离开最后一个可选行。
+    #[test]
+    fn tree_picker_stays_on_last_selectable_at_boundary() {
+        let rows = vec![
+            PickerRow {
+                selectable: true,
+                id: "user-1".to_string(),
+                text: "用户 row".to_string(),
+            },
+            PickerRow {
+                selectable: false,
+                id: "tool-1".to_string(),
+                text: "工具 row".to_string(),
+            },
+        ];
+        let mut app = app();
+        app.open_tree_picker(rows, 0);
+
+        assert!(app.press(Key::Char('j')).is_empty());
+        assert_eq!(app.picker().expect("picker").selected, 0);
+    }
+
+    /// 分支切换：以重放的消息替换聊天区，session 不变。
+    #[test]
+    fn restore_branch_replaces_items_keeps_session() {
+        let mut app = app();
+        app.set_session("sid-1".to_string());
+        app.push_system("旧内容");
+        app.restore_branch(&[*user_message("分支起点")]);
+        assert_eq!(app.items().len(), 1);
+        assert!(matches!(&app.items()[0], ChatItem::User(t) if t == "分支起点"));
         assert_eq!(app.session_id(), Some("sid-1"));
     }
 }

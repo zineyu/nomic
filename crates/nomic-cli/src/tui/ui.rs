@@ -339,6 +339,7 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else if let Some(picker) = app.picker() {
         let title = match picker.kind {
             PickerKind::Resume => "恢复 session · ↑/↓ 选择 · Enter 确认 · Esc 取消",
+            PickerKind::Tree => "会话树 · ↑/↓ 选择 · Enter 创建分支 · Esc 取消",
             PickerKind::Models => "切换模型 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
         };
         (
@@ -557,15 +558,19 @@ fn draw_picker(frame: &mut Frame<'_>, picker: &Picker, input_area: Rect) {
                     Span::styled(row.text.clone(), theme::accent()),
                 ])
             } else {
-                Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(row.text.clone(), theme::subtle()),
-                ])
+                // 不可选行（`/tree` 的工具调用条目）再降一档，仅作浏览上下文
+                let style = if row.selectable {
+                    theme::subtle()
+                } else {
+                    theme::dim()
+                };
+                Line::from(vec![Span::raw("  "), Span::styled(row.text.clone(), style)])
             }
         })
         .collect();
     let action = match picker.kind {
         PickerKind::Resume => "恢复 session",
+        PickerKind::Tree => "会话树",
         PickerKind::Models => "切换模型",
     };
     let title = if total > COMPLETION_MAX_VISIBLE {
@@ -891,10 +896,12 @@ mod tests {
         let mut app = App::new("test-model".to_string(), None, 200_000);
         app.open_resume_picker(vec![
             PickerRow {
+                selectable: true,
                 id: "01999999-aaaa".to_string(),
                 text: "01999999  2026-07-26 14:48    3 条消息  /tmp/a".to_string(),
             },
             PickerRow {
+                selectable: true,
                 id: "02888888-bbbb".to_string(),
                 text: "02888888  2026-07-25 09:00   12 条消息  /tmp/b".to_string(),
             },
@@ -925,10 +932,12 @@ mod tests {
         app.open_model_picker(
             vec![
                 PickerRow {
+                    selectable: true,
                     id: "claude-sonnet-4-5".to_string(),
                     text: "claude-sonnet-4-5 — Claude Sonnet 4.5 · ctx 200k".to_string(),
                 },
                 PickerRow {
+                    selectable: true,
                     id: "claude-opus-4-7".to_string(),
                     text: "claude-opus-4-7 — Claude Opus 4.7 · ctx 200k（当前）".to_string(),
                 },

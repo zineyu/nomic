@@ -40,7 +40,7 @@ use crossterm::{
 use futures::StreamExt as _;
 use nomic_ai::{Message, Model};
 use nomic_core::{Agent, AgentEvent, Compaction, estimate_context_tokens};
-use nomic_session::{CompactionRecord, SessionStore};
+use nomic_session::{CompactionRecord, SessionStore, TreeEntry};
 use nomic_skills::SkillResolver;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
@@ -117,12 +117,28 @@ pub async fn run(cli: &Cli) -> Result<()> {
         .compaction(boot.compaction)
         .build();
 
+    // 落库父指针：恢复的 session 从默认分支末端起算（分支场景下保证续写
+    // 落在默认分支而非全局最新 entry）；读取失败退回自动链最新
+    let mut tip = None;
+    if let Some((store, id)) = &boot.session {
+        match store.latest_entry_id(id).await {
+            Ok(latest) => tip = latest,
+            Err(error) => app.warn(format!("读取分支末端失败，落库将链到最新 entry：{error}")),
+        }
+    }
+
     let _guard = TerminalGuard::enter().context("初始化终端失败")?;
     let mut terminal =
         Terminal::new(CrosstermBackend::new(io::stdout())).context("创建终端后端失败")?;
 
-    let (mut driver, mut done_rx) =
-        spawn_driver(agent, boot.session, boot.models, boot.model, skill_resolver)?;
+    let (mut driver, mut done_rx) = spawn_driver(
+        agent,
+        boot.session,
+        boot.models,
+        boot.model,
+        skill_resolver,
+        tip,
+    )?;
     let mut term_events = EventStream::new();
     // spinner 帧推进：仅运行中需要动画，空闲时分支挂起不唤醒事件循环
     let mut spinner_ticker = tokio::time::interval(std::time::Duration::from_millis(100));
@@ -153,6 +169,7 @@ fn spawn_driver(
     models: ModelResolver,
     model: Model,
     skill_resolver: SkillResolver,
+    tip: Option<String>,
 ) -> Result<(Driver, mpsc::UnboundedReceiver<DriverDone>)> {
     let (job_tx, mut job_rx) = mpsc::unbounded_channel::<DriverJob>();
     let (done_tx, done_rx) = mpsc::unbounded_channel::<DriverDone>();
@@ -207,6 +224,7 @@ fn spawn_driver(
         task: Some(driver_task),
         alive: true,
         session,
+        tip,
         cwd: std::env::current_dir().context("get cwd")?,
         skill_resolver,
         models,
@@ -224,6 +242,10 @@ struct Driver {
     /// driver 是否存活；退出后其 channel 已关闭，事件循环跳过对应分支
     alive: bool,
     session: Option<(SessionStore, String)>,
+    /// 落库父指针：当前分支末端的 entry id（新 session 或无条目时为 None，
+    /// 追加时自动链到最新 entry）。`/tree` 创建分支即切换该指针；每次成功
+    /// 落库后推进到新 entry。
+    tip: Option<String>,
     cwd: std::path::PathBuf,
     skill_resolver: SkillResolver,
     /// 运行时模型解析器（`/models` 候选与切换，与启动同一分层口径）
@@ -277,7 +299,7 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
         Wake::AgentEvent(event) => {
             match &event {
                 AgentEvent::MessageEnd(message) => {
-                    persist(driver.session.as_ref(), message, app).await;
+                    persist(driver, message, app).await;
                 }
                 AgentEvent::CompactionEnd {
                     summary,
@@ -285,14 +307,7 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
                     kept_count,
                     ..
                 } => {
-                    persist_compaction(
-                        driver.session.as_ref(),
-                        summary,
-                        *tokens_before,
-                        *kept_count,
-                        app,
-                    )
-                    .await;
+                    persist_compaction(driver, summary, *tokens_before, *kept_count, app).await;
                 }
                 _ => {}
             }
@@ -499,8 +514,10 @@ async fn execute_effect(app: &mut App, driver: &mut Driver, effect: Effect) {
         }
         Effect::ListSessions => list_sessions(app, driver).await,
         Effect::Resume(id) => {
-            resume_session(app, &driver.job_tx, &mut driver.session, id).await;
+            resume_session(app, driver, id).await;
         }
+        Effect::ListTree => list_tree(app, driver).await,
+        Effect::BranchTo(entry_id) => branch_to(app, driver, entry_id).await,
         Effect::ListModels => list_models(app, driver),
         Effect::SwitchModel(id) => switch_model(app, driver, &id),
         Effect::ListSkills => {
@@ -550,6 +567,7 @@ fn list_models(app: &mut App, driver: &Driver) {
         .map(|choice| PickerRow {
             id: choice.id.clone(),
             text: model_row_text(choice, current),
+            selectable: true,
         })
         .collect();
     app.open_model_picker(rows, selected);
@@ -617,6 +635,7 @@ async fn list_sessions(app: &mut App, driver: &Driver) {
                     .map(|summary| PickerRow {
                         id: summary.id.clone(),
                         text: crate::sessions::row_text(summary),
+                        selectable: true,
                     })
                     .collect();
                 app.open_resume_picker(rows);
@@ -630,6 +649,8 @@ async fn new_session(app: &mut App, driver: &mut Driver) {
     // driver 串行处理任务；slash 命令仅在空闲时可提交，无需排队等待
     let _ = driver.job_tx.send(DriverJob::Clear);
     app.start_new_conversation();
+    // 新 session 没有任何 entry：落库父指针重置（自动链最新）
+    driver.tip = None;
     if let Some((store, id)) = &mut driver.session {
         match store.create_session(&driver.cwd).await {
             Ok(new_id) => {
@@ -641,6 +662,113 @@ async fn new_session(app: &mut App, driver: &mut Driver) {
             }
         }
     }
+}
+
+/// `/tree`：列出当前 session 的会话树并打开选择器（预选中当前分支末端）。
+async fn list_tree(app: &mut App, driver: &Driver) {
+    let Some((store, session_id)) = &driver.session else {
+        app.warn("当前对话未持久化，没有会话树可浏览");
+        return;
+    };
+    match store.list_tree(session_id).await {
+        Err(error) => app.warn(format!("加载会话树失败：{error}")),
+        Ok(entries) if entries.is_empty() => {
+            app.push_system("当前 session 还没有消息，发送一条后再来浏览会话树。");
+        }
+        Ok(entries) => {
+            let rows = tree_rows(&entries, driver.tip.as_deref());
+            // 预选中当前分支末端；末端不可选（如工具结果）时退到首个可选行
+            let selected = driver
+                .tip
+                .as_deref()
+                .and_then(|tip| entries.iter().position(|entry| entry.id == tip))
+                .filter(|&index| entries[index].is_branchable())
+                .or_else(|| entries.iter().position(TreeEntry::is_branchable))
+                .expect("空树已在上面挡掉");
+            app.open_tree_picker(rows, selected);
+        }
+    }
+}
+
+/// `/tree` 选择器确认：以所选条目为起点创建分支——重放该分支上下文、
+/// 切换落库父指针；原分支 entries 不动，仍可在 `/tree` 中回访。
+async fn branch_to(app: &mut App, driver: &mut Driver, entry_id: String) {
+    let Some((store, session_id)) = &driver.session else {
+        return; // ListTree 已挡住未持久化场景
+    };
+    if driver.tip.as_deref() == Some(entry_id.as_str()) {
+        app.push_system("所选条目就是当前分支末端，无需切换。");
+        return;
+    }
+    match store.load_branch(session_id, &entry_id).await {
+        Err(error) => app.warn(format!("切换分支失败：{error}")),
+        Ok(messages) => {
+            // driver 串行处理任务：紧随其后的 prompt 一定排在 Restore 之后
+            if driver
+                .job_tx
+                .send(DriverJob::Restore(messages.clone()))
+                .is_err()
+            {
+                app.warn("内部错误：agent 任务已退出，无法切换分支");
+                return;
+            }
+            let count = messages.len();
+            app.restore_branch(&messages);
+            driver.tip = Some(entry_id);
+            app.push_system(format!(
+                "已从所选条目创建分支（{count} 条消息），后续对话写入新分支；\
+                 原分支保留，仍可在 /tree 中回访。"
+            ));
+        }
+    }
+}
+
+/// 会话树条目 → 选择器行：按祖先链深度缩进，工具调用条目不可选，
+/// 当前分支末端带标记。
+fn tree_rows(entries: &[TreeEntry], tip: Option<&str>) -> Vec<PickerRow> {
+    let index: std::collections::HashMap<&str, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| (entry.id.as_str(), i))
+        .collect();
+    let depth = |entry: &TreeEntry| {
+        let mut depth = 0_usize;
+        let mut cursor = entry.parent_id.as_deref();
+        // 父指针在写入时校验存在，父链必然终止于根；缺失数据按根处理
+        while let Some(parent) = cursor {
+            depth += 1;
+            cursor = index
+                .get(parent)
+                .and_then(|&i| entries[i].parent_id.as_deref());
+        }
+        depth
+    };
+    entries
+        .iter()
+        .map(|entry| {
+            let role = match entry.role.as_str() {
+                "user" => "用户",
+                "assistant" => "助手",
+                "tool_result" => "工具",
+                _ => "压缩",
+            };
+            let current = if Some(entry.id.as_str()) == tip {
+                "（当前）"
+            } else {
+                ""
+            };
+            PickerRow {
+                id: entry.id.clone(),
+                text: format!(
+                    "{}{role} · {} · {}{current}",
+                    "  ".repeat(depth(entry)),
+                    crate::sessions::format_time(Some(entry.timestamp)),
+                    entry.preview,
+                ),
+                selectable: entry.is_branchable(),
+            }
+        })
+        .collect()
 }
 
 /// 加载图片并暂存为附件（`/image` 与粘贴图片路径共用）。
@@ -778,32 +906,33 @@ async fn session_store(session: Option<&(SessionStore, String)>) -> Result<Sessi
     }
 }
 
-/// 恢复选中 session：加载历史 → 替换 agent 上下文与聊天区 → 切换落库目标。
-async fn resume_session(
-    app: &mut App,
-    job_tx: &mpsc::UnboundedSender<DriverJob>,
-    session: &mut Option<(SessionStore, String)>,
-    id: String,
-) {
+/// 恢复选中 session：加载历史 → 替换 agent 上下文与聊天区 → 切换落库目标
+/// 与落库父指针（默认分支末端）。
+async fn resume_session(app: &mut App, driver: &mut Driver, id: String) {
     let loaded = async {
-        let store = session_store(session.as_ref()).await?;
+        let store = session_store(driver.session.as_ref()).await?;
         let messages = store
             .load_messages(&id)
             .await
             .with_context(|| format!("加载 session {id} 失败"))?;
-        Ok::<_, anyhow::Error>((store, messages))
+        let tip = store
+            .latest_entry_id(&id)
+            .await
+            .context("读取分支末端失败")?;
+        Ok::<_, anyhow::Error>((store, messages, tip))
     }
     .await;
     match loaded {
         Err(error) => app.warn(format!("恢复 session 失败：{error:#}")),
-        Ok((store, messages)) => {
+        Ok((store, messages, tip)) => {
             // driver 串行处理任务：紧随其后的 prompt 一定排在 Restore 之后，
             // 不会出现「新 prompt 跑在旧上下文」的交错
-            let _ = job_tx.send(DriverJob::Restore(messages.clone()));
+            let _ = driver.job_tx.send(DriverJob::Restore(messages.clone()));
             app.restore_conversation(&messages, id.clone());
-            match session {
+            driver.tip = tip;
+            match &mut driver.session {
                 Some((_, current)) => current.clone_from(&id),
-                current @ None => *current = Some((store, id.clone())),
+                None => driver.session = Some((store, id.clone())),
             }
             app.push_system(format!(
                 "已恢复 session {}（{} 条消息），后续对话续写该 session。",
@@ -814,24 +943,30 @@ async fn resume_session(
     }
 }
 
-/// `MessageEnd` 定稿点落库；失败仅提示不中断（store 非权威源）。
-async fn persist(session: Option<&(SessionStore, String)>, message: &Message, app: &mut App) {
-    if let Some((store, session_id)) = session
-        && let Err(error) = store.append_message(session_id, None, message).await
+/// `MessageEnd` 定稿点落库：以当前分支末端为父 entry，成功后推进父指针；
+/// 失败仅提示不中断（store 非权威源）。
+async fn persist(driver: &mut Driver, message: &Message, app: &mut App) {
+    let Some((store, session_id)) = &driver.session else {
+        return;
+    };
+    match store
+        .append_message(session_id, driver.tip.as_deref(), message)
+        .await
     {
-        app.warn(format!("session 落库失败：{error}"));
+        Ok(entry_id) => driver.tip = Some(entry_id),
+        Err(error) => app.warn(format!("session 落库失败：{error}")),
     }
 }
 
-/// `CompactionEnd` 落库压缩条目；失败仅提示不中断（与消息落库同一策略）。
+/// `CompactionEnd` 落库压缩条目（父指针语义与 [`persist`] 一致）。
 async fn persist_compaction(
-    session: Option<&(SessionStore, String)>,
+    driver: &mut Driver,
     summary: &str,
     tokens_before: u64,
     kept_count: usize,
     app: &mut App,
 ) {
-    let Some((store, session_id)) = session else {
+    let Some((store, session_id)) = &driver.session else {
         return;
     };
     let record = CompactionRecord {
@@ -839,8 +974,12 @@ async fn persist_compaction(
         kept_count: kept_count as u64,
         tokens_before,
     };
-    if let Err(error) = store.append_compaction(session_id, None, &record).await {
-        app.warn(format!("compaction 落库失败：{error}"));
+    match store
+        .append_compaction(session_id, driver.tip.as_deref(), &record)
+        .await
+    {
+        Ok(entry_id) => driver.tip = Some(entry_id),
+        Err(error) => app.warn(format!("compaction 落库失败：{error}")),
     }
 }
 
@@ -913,7 +1052,42 @@ mod tests {
 
     use super::{
         ModelChoice, model_row_text, panic_payload_text, paste_image_path, percent_decode,
+        tree_rows,
     };
+    use nomic_session::TreeEntry;
+
+    /// 会话树选择器行：按深度缩进、角色/时间/预览拼接，工具调用条目不可选，
+    /// 当前分支末端带标记。
+    #[test]
+    fn tree_rows_indent_by_depth_and_mark_tip() {
+        let entry = |id: &str, parent: Option<&str>, role: &str, tool_calls: bool| TreeEntry {
+            id: id.to_string(),
+            parent_id: parent.map(str::to_string),
+            role: role.to_string(),
+            timestamp: 1_785_000_000_000,
+            preview: format!("preview of {id}"),
+            has_tool_calls: tool_calls,
+        };
+        let entries = vec![
+            entry("root", None, "user", false),
+            entry("a1", Some("root"), "assistant", true),
+            entry("t1", Some("a1"), "tool_result", false),
+            entry("b1", Some("root"), "user", false),
+        ];
+
+        let rows = tree_rows(&entries, Some("b1"));
+        assert_eq!(rows.len(), 4);
+        assert!(rows[0].text.starts_with("用户 · "), "{}", rows[0].text);
+        assert!(rows[0].text.contains("preview of root"));
+        assert!(rows[1].text.starts_with("  助手 · "), "{}", rows[1].text);
+        assert!(rows[2].text.starts_with("    工具 · "), "{}", rows[2].text);
+        assert!(rows[3].text.ends_with("（当前）"), "{}", rows[3].text);
+
+        assert!(rows[0].selectable);
+        assert!(!rows[1].selectable, "含工具调用的 assistant 条目不可选");
+        assert!(!rows[2].selectable, "工具结果条目不可选");
+        assert!(rows[3].selectable);
+    }
 
     /// `/models` 选择器行：id + 展示名 + 窗口，当前模型带标记，窗口未知省略 ctx。
     #[test]

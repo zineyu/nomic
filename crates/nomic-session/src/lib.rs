@@ -30,8 +30,8 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 ///
 /// 记录一次上下文压缩的结果：摘要正文、保留的近期消息条数与压缩前的
 /// token 估算。重建语义（`kept_count` 相对计数代替 pi 的
-/// `first_kept_entry_id` 绝对指针、重复压缩的递归成立性、branch 切换的
-/// 已知限制）唯一定义于 `nomic_ai::compaction` module，加载路径经
+/// `first_kept_entry_id` 绝对指针、重复压缩的递归成立性、分支路径重放的
+/// 精确性）唯一定义于 `nomic_ai::compaction` module，加载路径经
 /// [`nomic_ai::apply_compaction`] 应用（见 `docs/adr/0005`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactionRecord {

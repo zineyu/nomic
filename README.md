@@ -38,7 +38,7 @@ export ANTHROPIC_API_KEY=sk-ant-...     # 或 OPENAI_API_KEY / OPENAI_BASE_URL
 # 交互 TUI（缺省，设计见 docs/adr/0002）
 cargo run -p nomic-cli
 # 键位：Enter 发送 · Tab 补全 · Esc 取消运行 · Ctrl+C 退出 · ↑/↓/PgUp/PgDn/滚轮滚动
-# 命令：/help 查看全部（/new 开启新对话，/resume 恢复历史 session，/compact 压缩上下文，/retry 重试失败的响应，/quit 退出），输入 / 自动补全
+# 命令：/help 查看全部（/new 开启新对话，/resume 恢复历史 session，/tree 浏览会话树并创建分支，/compact 压缩上下文，/retry 重试失败的响应，/quit 退出），输入 / 自动补全
 
 # print 模式（非交互，管道可用）
 nomic -p "列出当前目录的文件"
@@ -55,6 +55,9 @@ nomic --session <ID>    # 指定 session（可跨目录，会有提示）
 nomic resume            # 交互选择器（↑/↓ 或 j/k 移动，Enter 确认，Esc/q 取消）
 
 # TUI 内随时可用 /resume 打开同一选择器：选中后替换当前上下文并切换落库目标
+
+# 会话分支（TUI）：/tree 浏览当前 session 的消息树，选择非工具调用条目
+# 作为新分支起点——上下文回到该条目，后续对话写入新分支，原分支保留可回访
 
 # 查看历史 session（id、最后更新时间、消息数、目录）
 nomic sessions list
@@ -266,7 +269,7 @@ check               # 与 CI 等价的全部检查：fmt / clippy / nextest / do
 - `crates/nomic-ai`：统一消息模型 + 流式事件协议 + provider 实现（Anthropic Messages、OpenAI Completions 兼容）
 - `crates/nomic-core`：agent loop（四层生命周期事件、parallel 工具执行、hooks）+ 工具抽象（schemars + serde 即校验）+ 上下文压缩（ADR-0005）
 - `crates/nomic-tools`：read/write/edit/bash 四工具（截断、模糊匹配、BOM/CRLF 保留、文件变更队列）
-- `crates/nomic-session`：SQLite session 存储（树形 entries、resume、`sessions list`）
+- `crates/nomic-session`：SQLite session 存储（树形 entries、resume、分支浏览/加载、`sessions list`）
 - `crates/nomic-skills`：skill 发现、frontmatter 元数据、覆盖规则与显式激活
 - `crates/nomic-prompts`：prompt template 发现、frontmatter 元数据、覆盖规则与参数展开
 - `crates/nomic-cli`：`nomic` 二进制（print 模式 + ratatui 交互 TUI + sessions 子命令）
@@ -277,7 +280,7 @@ check               # 与 CI 等价的全部检查：fmt / clippy / nextest / do
 已完成：
 
 - M1：agent loop + 四工具 + print 模式（ADR-0001）
-- M2（部分）：SQLite session 存储与 resume（树形 schema 已就位）、交互 TUI（ADR-0002）、用户级配置文件、上下文压缩（ADR-0005）
+- M2（部分）：SQLite session 存储与 resume、显式分支（TUI `/tree`）、交互 TUI（ADR-0002）、用户级配置文件、上下文压缩（ADR-0005）
 - M3（部分）：AGENTS.md 加载（向上发现，注入系统提示词）、skills（ADR-0003）、prompt templates（ADR-0008）
 - M4：图片输入（`--image <路径>` 附件；TUI `/image <路径>` 为下一条消息暂存图片）
 

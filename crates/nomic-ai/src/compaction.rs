@@ -2,7 +2,7 @@
 //! 「截尾 `kept_count` + 前置合成摘要」的有效上下文重建。
 //!
 //! 本 module 是重建语义的**唯一定义点**——in-memory 压缩（`nomic-core` 组装
-//! 新历史）与 resume 重放（`nomic-session` 沿默认分支重建）都经
+//! 新历史）与 resume/branch 重放（`nomic-session` 沿分支路径重建）都经
 //! [`apply_compaction`] 完成，保证两侧逐字节一致（见 `docs/adr/0005`）。
 //!
 //! ## 重建语义
@@ -16,9 +16,11 @@
 //! 压缩的 `kept_count` 相对第一次重建结果计数，摘要因此始终固定在
 //! `messages[0]`。
 //!
-//! **已知限制**：该语义只对默认顺序分支成立。未来支持 branch 切换
-//! （`docs/adr/0001` 的树目标）时需改回绝对指针——压缩条目加记
-//! `first_kept_entry_id`，重放按指针而非计数截尾（见 `docs/adr/0005`）。
+//! **分支路径**：branch 切换（`/tree` 选择分支起点）经
+//! `nomic_session::SessionStore::load_branch` 沿所选 entry 的祖先路径重放，
+//! 路径前缀即压缩发生时 agent 实际持有的上下文，因此 `kept_count` 相对计数
+//! 在任意分支路径上依然精确（见 `docs/adr/0005` Amendments）。仅当未来支持
+//! 跨分支移动 entry 时才需改回绝对指针（`first_kept_entry_id`）。
 
 use crate::types::{Message, UserMessage, UserMessageContent};
 

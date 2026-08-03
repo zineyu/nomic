@@ -303,7 +303,7 @@ pub fn short_id(id: &str) -> &str {
 }
 
 /// Unix 毫秒时间戳 → `YYYY-MM-DD HH:MM`（本地时区，失败退回 UTC；无值显示 `-`）。
-fn format_time(timestamp_ms: Option<u64>) -> String {
+pub fn format_time(timestamp_ms: Option<u64>) -> String {
     const FORMAT: &[time::format_description::FormatItem<'static>] =
         format_description!("[year]-[month]-[day] [hour]:[minute]");
     let Some(ms) = timestamp_ms else {

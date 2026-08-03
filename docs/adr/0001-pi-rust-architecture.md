@@ -219,9 +219,12 @@ ADR-0001 的里程碑边界描述已成历史，以下为当前实际状态，�
 - **消息模型**：`AssistantContent` 实际为 `Text | Thinking | ToolCall`（无 `Image`）；
   图片只存在于 `UserContent`。
 - **session**：SQLite 存储（`nomic-session`）已实现并接入 CLI 的创建/落库/resume；
-  树形 schema（`parent_id`）已就位，但**显式 branching 产品能力未实现**——当前
-  「每层最新子节点」仅是默认分支加载策略，active leaf / 分支命名等语义尚未定义，
-  实现 branching 前需先决策该模型。
+  树形 schema（`parent_id`）上的**显式 branching 已落地**：TUI `/tree` 命令浏览
+  会话树（全部 entries 按深度缩进），选择非工具调用条目作为新分支起点——沿祖先
+  路径重放恢复上下文，后续消息以该条目为父 entry 落库（落库父指针随每次写入
+  推进），原分支保留可回访。工具结果与含工具调用的 assistant 条目不可选（避免
+  悬空 tool_use 进入上下文）。分支命名/active leaf 等语义仍未定义，默认分支
+  维持「每级最新子节点」。
 - **session 恢复语义**：`--continue` 按当前 cwd 隔离恢复（只选本目录最近的 session，
   避免跨项目误恢复）；`--session <ID>` 可显式跨目录恢复并有提示；新增
   `nomic sessions list` 子命令。

@@ -481,6 +481,44 @@ async fn provider_error_ends_loop_with_error_message() {
     assert_eq!(message.error_message.as_deref(), Some("boom"));
 }
 
+#[tokio::test]
+async fn pre_stream_error_emits_paired_message_start_and_end() {
+    // 流建立前失败（如重试耗尽）：provider 只发 Error 终止事件、不发 Start
+    let provider = MockProvider::new(vec![vec![AssistantEvent::Error {
+        message: Box::new(AssistantMessage {
+            stop_reason: StopReason::Error,
+            error_message: Some("connection refused".to_string()),
+            ..assistant_message(vec![], StopReason::Error)
+        }),
+    }]]);
+    let (mut agent, rx) = make_agent(provider, vec![]);
+
+    let collector = tokio::spawn(collect_events(rx));
+    let new_messages = agent
+        .prompt("hi", CancellationToken::new())
+        .await
+        .expect("prompt");
+    let events = collector.await.expect("collector");
+
+    let Message::Assistant(message) = &new_messages[1] else {
+        panic!("expected assistant")
+    };
+    assert_eq!(message.stop_reason, StopReason::Error);
+
+    // 未收到 Start 也必须补发 MessageStart，保证与 MessageEnd 配对
+    let sequence: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::MessageStart(m) if matches!(m.as_ref(), Message::Assistant(_)) => {
+                Some("start")
+            }
+            AgentEvent::MessageEnd(m) if matches!(m.as_ref(), Message::Assistant(_)) => Some("end"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sequence, ["start", "end"]);
+}
+
 fn error_done(stop_reason: StopReason, error: &str) -> Vec<AssistantEvent> {
     vec![
         AssistantEvent::Start,

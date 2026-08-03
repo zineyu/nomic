@@ -45,7 +45,10 @@ pub enum AgentEvent {
         /// 本 turn 产生的工具结果
         tool_results: Vec<ToolResultMessage>,
     },
-    /// 消息开始（user / assistant / toolResult）
+    /// 消息开始（user / assistant / toolResult）。
+    ///
+    /// assistant 消息的 `MessageStart` / `MessageEnd` 始终配对：provider 在
+    /// 流建立前失败（重试耗尽等）不发 `Start` 事件时，由 agent 补发。
     MessageStart(Box<Message>),
     /// assistant 流式更新（携带 provider 层的增量事件）
     MessageUpdate(AssistantEvent),
@@ -551,9 +554,14 @@ impl Agent {
             cancel.clone(),
         );
 
-        stream
+        // provider 在流建立前失败（重试耗尽、连接失败等）时不发 Start，
+        // 只发 Error 终止事件；记录 Start 是否到达，必要时在终止后补发
+        // MessageStart，保证 MessageStart/MessageEnd 始终配对
+        let mut started = false;
+        let message = stream
             .result_with(|event| match event {
                 AssistantEvent::Start => {
+                    started = true;
                     let skeleton = AssistantMessage {
                         content: Vec::new(),
                         api: self.config.model.api,
@@ -575,7 +583,13 @@ impl Agent {
                 }
             })
             .await
-            .map_err(|err| AgentError::StreamContract(err.to_string()))
+            .map_err(|err| AgentError::StreamContract(err.to_string()))?;
+        if !started {
+            self.emit(AgentEvent::MessageStart(Box::new(Message::Assistant(
+                message.clone(),
+            ))));
+        }
+        Ok(message)
     }
 
     /// 执行一批工具调用（按配置与工具声明选择 parallel / sequential）。

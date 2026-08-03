@@ -118,8 +118,8 @@ pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "models",
         aliases: &[],
-        summary: "切换模型（当前 provider 下；打开选择器或直接指定 id）",
-        usage: "/models（打开选择器）或 /models:<模型id>",
+        summary: "切换模型（推理模型在选择后继续选择思考级别）",
+        usage: "/models（选择器）或 /models:<模型id>",
     },
     SlashCommand {
         name: "skill",
@@ -362,6 +362,8 @@ pub(super) enum PickerKind {
     Tree,
     /// `/models`：切换模型
     Models,
+    /// 模型切换流程第二步：设置思考级别
+    Reasoning,
 }
 
 /// 选择器状态：候选行 + 当前选中项（移动到底/顶钳制，不循环）。
@@ -432,8 +434,14 @@ pub(super) enum Effect {
     Resume(String),
     /// `/models`：列出当前 provider 的候选模型并打开选择器
     ListModels,
-    /// `/models:<id>` 或 picker 确认：切换为指定模型（上下文保留）
+    /// `/models:<id>` 或模型选择器确认：切换为指定模型（上下文保留）；
+    /// 推理模型由事件循环继续打开思考级别选择器（流程第二步）
     SwitchModel(String),
+    /// 思考级别选择器确认：设置思考级别（"off" 关闭）；若有待切换模型
+    /// （流程第二步）先应用模型切换
+    SetReasoning(String),
+    /// 思考级别选择器被 Esc 取消：放弃待切换模型，模型与级别均不变
+    CancelModelSwitch,
     /// `/skill`：列出可用 skill 并刷新补全快照
     ListSkills,
     /// `/skill:<name>`：手动载入 skill 到当前对话
@@ -461,7 +469,7 @@ pub(super) struct App {
     cursor: usize,
     /// slash 命令补全弹层（输入以 `/` 开头时出现）
     completion: Option<Completion>,
-    /// 选择器（`/resume` / `/models`，打开时接管键位）
+    /// 选择器（`/resume` / `/models` / `/tree`，打开时接管键位）
     picker: Option<Picker>,
     /// 暂存的图片附件（随下一条 prompt 发送）
     attachments: Vec<PendingImage>,
@@ -801,7 +809,21 @@ impl App {
         match key {
             Key::Up | Key::Char('k') => self.picker_select(-1),
             Key::Down | Key::Char('j') => self.picker_select(1),
-            Key::Esc | Key::Char('q') => self.close_picker(),
+            Key::Esc | Key::Char('q') => {
+                // 思考级别选择器是模型切换流程的第二步：Esc 还需放弃
+                // 事件循环侧暂存的待切换模型
+                let abort_switch = matches!(
+                    self.picker,
+                    Some(Picker {
+                        kind: PickerKind::Reasoning,
+                        ..
+                    })
+                );
+                self.close_picker();
+                if abort_switch {
+                    return vec![Effect::CancelModelSwitch];
+                }
+            }
             Key::Ctrl('c' | 'd') => self.should_quit = true,
             Key::Enter => {
                 if let Some((kind, id)) = self.take_picker_selection() {
@@ -809,6 +831,7 @@ impl App {
                         PickerKind::Resume => Effect::Resume(id),
                         PickerKind::Tree => Effect::BranchTo(id),
                         PickerKind::Models => Effect::SwitchModel(id),
+                        PickerKind::Reasoning => Effect::SetReasoning(id),
                     }];
                 }
             }
@@ -1230,7 +1253,7 @@ impl App {
         true
     }
 
-    // ── 选择器（/resume、/models 共用） ───────────────────────────────────
+    // ── 选择器（/resume、/models、/tree 共用） ──────────────────────────────
 
     /// 打开 `/resume` 选择器（从头选中）；调用方保证候选非空。
     pub(super) fn open_resume_picker(&mut self, rows: Vec<PickerRow>) {
@@ -1248,6 +1271,18 @@ impl App {
         debug_assert!(selected < rows.len());
         self.picker = Some(Picker {
             kind: PickerKind::Models,
+            rows,
+            selected,
+        });
+    }
+
+    /// 打开思考级别选择器（模型切换流程第二步，预选中当前级别）；
+    /// 调用方保证候选非空。
+    pub(super) fn open_reasoning_picker(&mut self, rows: Vec<PickerRow>, selected: usize) {
+        debug_assert!(!rows.is_empty());
+        debug_assert!(selected < rows.len());
+        self.picker = Some(Picker {
+            kind: PickerKind::Reasoning,
             rows,
             selected,
         });
@@ -2706,6 +2741,48 @@ mod tests {
             parse_slash("/modelsx"),
             SlashParse::Unknown("modelsx".to_string())
         );
+    }
+
+    /// 思考级别选择器（模型切换流程第二步）：Enter 产出 SetReasoning 效果，
+    /// Esc 产出 CancelModelSwitch 效果并关闭选择器。
+    #[test]
+    fn reasoning_picker_enter_sets_level_esc_aborts_switch() {
+        let mut app = app();
+        let rows = || {
+            vec![
+                PickerRow {
+                    selectable: true,
+                    id: "off".to_string(),
+                    text: "off row".to_string(),
+                },
+                PickerRow {
+                    selectable: true,
+                    id: "high".to_string(),
+                    text: "high row".to_string(),
+                },
+            ]
+        };
+        app.open_reasoning_picker(rows(), 1);
+        assert_eq!(app.picker().expect("picker").selected, 1);
+        let effects = app.press(Key::Enter);
+        assert!(matches!(&effects[..], [Effect::SetReasoning(id)] if id == "high"));
+        assert!(app.picker().is_none());
+
+        app.open_reasoning_picker(rows(), 0);
+        let effects = app.press(Key::Esc);
+        assert!(matches!(&effects[..], [Effect::CancelModelSwitch]));
+        assert!(app.picker().is_none());
+        // 其他选择器 Esc 不产生取消效果
+        app.open_model_picker(
+            vec![PickerRow {
+                selectable: true,
+                id: "m".to_string(),
+                text: "m row".to_string(),
+            }],
+            0,
+        );
+        assert!(app.press(Key::Esc).is_empty());
+        assert!(app.picker().is_none());
     }
 
     /// `/models` 选择器：预选中当前模型，Enter 产出 SwitchModel 效果。

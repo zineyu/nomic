@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use nomic_ai::{
     AssistantContent, AssistantEvent, AssistantMessage, Context, ImageContent, Message, Model,
-    Provider, StopReason, StreamOptions, TextContent, ToolCall, ToolResultMessage, Usage,
-    UserContent, UserMessage, UserMessageContent, now_millis,
+    Provider, StopReason, StreamOptions, TextContent, ThinkingLevel, ToolCall, ToolResultMessage,
+    Usage, UserContent, UserMessage, UserMessageContent, now_millis,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -213,6 +213,20 @@ impl Agent {
     /// 应在非运行状态（`prompt` 返回后）调用。静默切换，不发出事件。
     pub fn set_model(&mut self, model: Model) {
         self.config.model = model;
+    }
+
+    /// 当前思考级别（`StreamOptions::reasoning`）。
+    pub const fn reasoning(&self) -> Option<ThinkingLevel> {
+        self.config.stream_options.reasoning
+    }
+
+    /// 运行时设置思考级别（交互端 `/models` 级别选择器语义）。
+    ///
+    /// 思考级别是请求参数：仅 `model.reasoning == true` 时随请求生效
+    /// （见 [`nomic_ai::StreamOptions::reasoning`]）；消息历史、系统提示词
+    /// 与工具保留。应在非运行状态（`prompt` 返回后）调用。静默切换，不发出事件。
+    pub const fn set_reasoning(&mut self, reasoning: Option<ThinkingLevel>) {
+        self.config.stream_options.reasoning = reasoning;
     }
 
     /// 以既有消息历史整体替换当前上下文（session resume 语义，如 TUI 的 `/resume`）。

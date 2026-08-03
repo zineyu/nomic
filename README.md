@@ -38,7 +38,7 @@ export ANTHROPIC_API_KEY=sk-ant-...     # 或 OPENAI_API_KEY / OPENAI_BASE_URL
 # 交互 TUI（缺省，设计见 docs/adr/0002）
 cargo run -p nomic-cli
 # 键位：Enter 发送 · Tab 补全 · Esc 取消运行 · Ctrl+C 退出 · ↑/↓/PgUp/PgDn/滚轮滚动
-# 命令：/help 查看全部（/new 开启新对话，/resume 恢复历史 session，/tree 浏览会话树并创建分支，/compact 压缩上下文，/retry 重试失败的响应，/quit 退出），输入 / 自动补全
+# 命令：/help 查看全部（/new 开启新对话，/resume 恢复历史 session，/tree 浏览会话树并创建分支，/models 切换模型或设置思考级别，/compact 压缩上下文，/retry 重试失败的响应，/quit 退出），输入 / 自动补全
 
 # print 模式（非交互，管道可用）
 nomic -p "列出当前目录的文件"
@@ -48,6 +48,7 @@ nomic -p "..." --provider openai --base-url https://your.gateway/v1 --model deep
 
 # 推理模型
 nomic -p "..." --reasoning low
+# TUI 内：/models 选择模型后可为推理模型选择思考级别（含 off 关闭）
 
 # 恢复会话（两种模式通用）
 nomic --continue        # 当前目录下最近的 session（按 cwd 隔离）
@@ -149,6 +150,9 @@ max_tokens = 8192
 models.dev 目录按模型 id 查询（约 3MB 的 api.json），缓存到
 `$XDG_CACHE_HOME/nomic/models-dev-api.json`（24h 有效期，网络失败时用过期缓存兜底）；
 配置已给全规格字段时不读缓存、不联网。models.dev 与缓存都不可用时回落到内置默认值。
+
+模型 id 必须「存在」：命中 models.dev 目录、`[providers.*.models]` 定义或内置默认模型之一，
+否则启动与 `/models` 切换都会报错（目录不可用、无法校验时维持回落行为）。
 
 ## AGENTS.md
 

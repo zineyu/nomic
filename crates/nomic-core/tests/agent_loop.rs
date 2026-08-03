@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use nomic_ai::{
     ApiKind, AssistantContent, AssistantEvent, AssistantMessage, Context, Message, Model, Provider,
-    StopReason, StreamOptions, TextContent, ToolCall, Usage, now_millis,
+    StopReason, StreamOptions, TextContent, ThinkingLevel, ToolCall, Usage, now_millis,
 };
 use nomic_core::{
     Agent, AgentEvent, AgentHooks, AgentTool, BeforeToolCall, DynTool, ToolCallDecision, ToolError,
@@ -23,6 +23,8 @@ struct MockProvider {
     scripts: Mutex<VecDeque<Vec<AssistantEvent>>>,
     /// 每次 stream 调用收到的上下文消息数（验证历史注入）
     context_lens: Mutex<Vec<usize>>,
+    /// 每次 stream 调用收到的思考级别（验证 stream options 传递）
+    reasonings: Mutex<Vec<Option<ThinkingLevel>>>,
 }
 
 impl MockProvider {
@@ -30,12 +32,18 @@ impl MockProvider {
         Arc::new(Self {
             scripts: Mutex::new(scripts.into()),
             context_lens: Mutex::new(Vec::new()),
+            reasonings: Mutex::new(Vec::new()),
         })
     }
 
     /// 各次 stream 调用收到的上下文消息数
     fn context_lens(&self) -> Vec<usize> {
         self.context_lens.lock().expect("lock").clone()
+    }
+
+    /// 各次 stream 调用收到的思考级别
+    fn reasonings(&self) -> Vec<Option<ThinkingLevel>> {
+        self.reasonings.lock().expect("lock").clone()
     }
 }
 
@@ -44,13 +52,17 @@ impl Provider for MockProvider {
         &self,
         _model: &Model,
         context: &Context,
-        _options: &StreamOptions,
+        options: &StreamOptions,
         _cancel: CancellationToken,
     ) -> nomic_ai::AssistantStream {
         self.context_lens
             .lock()
             .expect("lock")
             .push(context.messages.len());
+        self.reasonings
+            .lock()
+            .expect("lock")
+            .push(options.reasoning);
         let events = self
             .scripts
             .lock()
@@ -274,6 +286,33 @@ async fn prompt_with_images_builds_blocks_message() {
         ])
     );
     assert_eq!(agent.messages()[0], new_messages[0]);
+}
+
+#[tokio::test]
+async fn set_reasoning_updates_subsequent_stream_options() {
+    let provider = MockProvider::new(vec![text_done("one"), text_done("two"), text_done("three")]);
+    let (mut agent, _rx) = make_agent(provider.clone(), vec![]);
+    assert_eq!(agent.reasoning(), None);
+
+    agent
+        .prompt("hi", CancellationToken::new())
+        .await
+        .expect("prompt");
+    agent.set_reasoning(Some(ThinkingLevel::High));
+    agent
+        .prompt("hi", CancellationToken::new())
+        .await
+        .expect("prompt");
+    agent.set_reasoning(None);
+    agent
+        .prompt("hi", CancellationToken::new())
+        .await
+        .expect("prompt");
+
+    assert_eq!(
+        provider.reasonings(),
+        vec![None, Some(ThinkingLevel::High), None]
+    );
 }
 
 #[tokio::test]

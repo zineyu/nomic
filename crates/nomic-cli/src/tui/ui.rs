@@ -335,6 +335,7 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
             PickerKind::Resume => "恢复 session · ↑/↓ 选择 · Enter 确认 · Esc 取消",
             PickerKind::Tree => "会话树 · ↑/↓ 选择 · Enter 创建分支 · Esc 取消",
             PickerKind::Models => "切换模型 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
+            PickerKind::Reasoning => "思考级别 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
         };
         (
             Line::from(Span::styled(title, theme::accent())),
@@ -535,7 +536,7 @@ fn draw_completion(frame: &mut Frame<'_>, completion: &Completion, input_area: R
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// 选择器弹层（`/resume` / `/models` 共用）：与补全弹层同构，贴在输入框上方。
+/// 选择器弹层（`/resume` / `/models` / `/tree` 共用）：与补全弹层同构，贴在输入框上方。
 fn draw_picker(frame: &mut Frame<'_>, picker: &Picker, input_area: Rect) {
     let total = picker.rows.len();
     let (start, end) = visible_window(total, picker.selected, COMPLETION_MAX_VISIBLE);
@@ -563,6 +564,7 @@ fn draw_picker(frame: &mut Frame<'_>, picker: &Picker, input_area: Rect) {
         PickerKind::Resume => "恢复 session",
         PickerKind::Tree => "会话树",
         PickerKind::Models => "切换模型",
+        PickerKind::Reasoning => "思考级别",
     };
     let title = if total > COMPLETION_MAX_VISIBLE {
         format!("{action} {}/{total}", picker.selected + 1)

@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use nomic_ai::{
     ApiKind, Catalog, Message, Model, ModelSpec, Provider, StreamOptions, ThinkingLevel,
     providers::{AnthropicProvider, OpenAiCompat, OpenAiProvider},
@@ -95,7 +95,8 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
             .reasoning
             .as_deref()
             .or_else(|| models.config().and_then(|c| c.reasoning.as_deref()))
-            .map(parse_reasoning),
+            .map(parse_reasoning)
+            .transpose()?,
         api_key,
         headers: Vec::new(),
         timeout_ms: None,
@@ -424,6 +425,8 @@ pub struct ModelChoice {
     pub name: String,
     /// 上下文窗口 token 数（0 = 规格未知）
     pub context_window: u64,
+    /// 是否支持推理/思考（选择器标注用）
+    pub reasoning: bool,
 }
 
 /// 运行时模型解析器：持有当前 provider 的连接层输入（CLI 覆盖、环境变量、
@@ -536,9 +539,14 @@ impl ModelResolver {
     }
 
     /// 按模型 id 解析完整 [`Model`]（分层与启动时一致）。
+    ///
+    /// 校验模型存在（禁止配置不存在的模型）：配置覆盖表 / models.dev 目录 /
+    /// 内置默认模型必须命中其一，否则报错——启动路径直接失败，`/models` 运行时
+    /// 切换转为提示。目录不可用（离线）时无法校验，保持既有降级行为。
     pub fn resolve(&self, model_id: &str) -> Result<Model> {
         let api = self.api()?;
         let preset = self.preset(api);
+        self.ensure_known(model_id, &preset)?;
         let base_url = self.base_url(api, &preset);
         let spec = self.spec_for(model_id, &preset);
         Ok(Model {
@@ -557,36 +565,72 @@ impl ModelResolver {
         })
     }
 
-    /// `/models` 选择器候选：配置覆盖 ∪ models.dev 目录 ∪ 当前模型，按 id 排序去重。
+    /// 模型存在性校验：配置覆盖表（用户显式定义）→ models.dev 目录 →
+    /// 内置默认模型。
+    ///
+    /// 目录不可用（离线 / 配置已写全规格跳过加载）时不校验——没有权威数据源
+    /// 无法判断「不存在」，维持启动告警 + 内置预设的降级语义。
+    fn ensure_known(&self, model_id: &str, preset: &Preset) -> Result<()> {
+        if model_spec_from_config(self.config(), &self.provider_kind, Some(model_id)).is_some()
+            || self.catalog.as_ref().is_some_and(|catalog| {
+                catalog
+                    .lookup(Some(&self.provider_kind), model_id)
+                    .is_some()
+            })
+            || preset.default_model == Some(model_id)
+        {
+            return Ok(());
+        }
+        if self.catalog.is_none() {
+            // 目录不可用：无法校验存在性，保持降级行为
+            return Ok(());
+        }
+        Err(anyhow::anyhow!(
+            "模型 {model_id:?} 不存在：不在 models.dev 目录中，\
+             也未在 config.toml 的 [providers.{}.models] 下定义，\
+             请检查 model / --model 拼写，或在该表中补充该模型的规格",
+            self.provider_kind
+        ))
+    }
+
+    /// `/models` 选择器候选：配置覆盖 ∪ models.dev 目录 ∪ 内置默认模型
+    /// ∪ 当前模型，按 id 排序去重。
     ///
     /// 目录不可用（启动时已告警）或自定义 provider 名不命中 models.dev 时，
-    /// 只剩配置覆盖与当前模型；`/models:<id>` 直接切换不受候选范围限制。
-    /// api 解析失败理论不可达（启动已成功解析过），此时返回空列表。
+    /// 只剩配置覆盖、内置默认与当前模型；`/models:<id>` 直接切换不受候选
+    /// 范围限制。api 解析失败理论不可达（启动已成功解析过），此时返回空列表。
     pub fn candidates(&self, current_id: &str) -> Vec<ModelChoice> {
         let Ok(api) = self.api() else {
             return Vec::new();
         };
         let preset = self.preset(api);
         let mut ids = std::collections::BTreeSet::new();
-        ids.insert(current_id);
+        ids.insert(current_id.to_string());
         if let Some(models) = self.provider_config().and_then(|p| p.models.as_ref()) {
-            ids.extend(models.keys().map(String::as_str));
+            ids.extend(models.keys().cloned());
         }
         if let Some(catalog) = &self.catalog {
             ids.extend(
                 catalog
                     .models_of(&self.provider_kind)
                     .into_iter()
-                    .map(|(id, _)| id),
+                    .map(|(id, _)| id.to_string()),
             );
+        }
+        if let Some(preset) = builtin_preset(&self.provider_kind)
+            && let Some(default) = preset.default_model
+        {
+            ids.insert(default.to_string());
         }
         ids.into_iter()
             .map(|id| {
-                let spec = self.spec_for(id, &preset);
+                let spec = self.spec_for(&id, &preset);
+                let name = spec.name.unwrap_or_else(|| id.clone());
                 ModelChoice {
-                    id: id.to_string(),
-                    name: spec.name.unwrap_or_else(|| id.to_string()),
+                    id,
+                    name,
                     context_window: spec.context_window.unwrap_or(0),
+                    reasoning: spec.reasoning.unwrap_or(false),
                 }
             })
             .collect()
@@ -614,12 +658,13 @@ fn resolve_model(
     resolver.resolve(&resolver.default_model_id(cli)?)
 }
 
-fn parse_reasoning(level: &str) -> ThinkingLevel {
+fn parse_reasoning(level: &str) -> Result<ThinkingLevel> {
     match level {
-        "minimal" => ThinkingLevel::Minimal,
-        "low" => ThinkingLevel::Low,
-        "medium" => ThinkingLevel::Medium,
-        _ => ThinkingLevel::High,
+        "minimal" => Ok(ThinkingLevel::Minimal),
+        "low" => Ok(ThinkingLevel::Low),
+        "medium" => Ok(ThinkingLevel::Medium),
+        "high" => Ok(ThinkingLevel::High),
+        _ => bail!("--reasoning 取值非法：{level:?}（可选 minimal / low / medium / high）"),
     }
 }
 
@@ -936,8 +981,20 @@ mod tests {
     #[test]
     fn model_prefers_cli_over_config() {
         let cli = cli(&["--model", "cli-model"]);
+        // CLI 指定的模型不在配置/models.dev 中时必须在配置里定义规格
+        let mut models = std::collections::BTreeMap::new();
+        models.insert("cli-model".to_string(), ModelSpec::default());
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert(
+            "openai".to_string(),
+            ProviderConfig {
+                models: Some(models),
+                ..ProviderConfig::default()
+            },
+        );
         let config = Config {
             model: Some("config-model".to_string()),
+            providers: Some(providers),
             ..Config::default()
         };
         let model = resolve("openai", &cli, Some(&config), None, None);
@@ -1097,12 +1154,27 @@ mod tests {
 
     #[test]
     fn custom_provider_without_catalog_uses_neutral_defaults() {
-        let config = deepseek_config();
+        let mut config = deepseek_config();
+        // 无 models.dev 目录时自定义模型必须在配置里定义规格（存在性校验）
+        let mut models = std::collections::BTreeMap::new();
+        models.insert("deepseek-chat".to_string(), ModelSpec::default());
+        let providers = config.providers.as_mut().expect("providers");
+        providers.get_mut("deepseek").expect("deepseek").models = Some(models);
         let model = resolve("deepseek", &cli(&[]), Some(&config), None, None);
         assert_eq!(model.name, "deepseek-chat");
         assert_eq!(model.context_window, 0);
         assert!(!model.reasoning);
         assert_eq!(Some(model.cost_input), Some(0.0));
+    }
+
+    #[test]
+    fn cli_reasoning_rejects_invalid_levels() {
+        assert_eq!(parse_reasoning("low").expect("low"), ThinkingLevel::Low);
+        assert_eq!(
+            parse_reasoning("medium").expect("medium"),
+            ThinkingLevel::Medium
+        );
+        assert!(parse_reasoning("extreme").is_err(), "非法级别必须报错");
     }
 
     #[test]
@@ -1140,9 +1212,72 @@ mod tests {
         assert_eq!(model.name, "GPT-5.2");
         assert_eq!(model.context_window, 400_000);
         assert_eq!(model.base_url, "https://api.openai.com/v1");
-        // 目录外的模型 id：规格落内置预设，name 回退为 id
-        let model = resolver.resolve("gpt-future").expect("resolve");
-        assert_eq!(model.name, "gpt-future");
+        // 目录外的未知模型 id：报错（禁止配置不存在的模型）
+        let error = resolver
+            .resolve("gpt-future")
+            .expect_err("目录可用时未知模型必须报错");
+        assert!(format!("{error:#}").contains("不存在"));
+    }
+
+    // ── 模型存在性校验（禁止配置不存在的模型） ──────────────────────────────
+
+    #[test]
+    fn unknown_model_rejected_when_catalog_available() {
+        let error = resolve_model(
+            "openai",
+            &cli(&["--model", "gpt-future"]),
+            None,
+            None,
+            Some(&catalog()),
+        )
+        .expect_err("目录可用时未知模型必须报错");
+        let message = format!("{error:#}");
+        assert!(message.contains("gpt-future"), "{message}");
+        assert!(message.contains("不存在"), "{message}");
+        assert!(message.contains("models"), "报错需提示配置表位置");
+    }
+
+    #[test]
+    fn config_defined_model_is_known_without_catalog() {
+        // 配置覆盖表显式定义即「存在」：即便目录不可用（None）也可解析
+        let mut models = std::collections::BTreeMap::new();
+        models.insert(
+            "my-fine-tune".to_string(),
+            ModelSpec {
+                name: Some("My Fine Tune".to_string()),
+                ..ModelSpec::default()
+            },
+        );
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert(
+            "openai".to_string(),
+            ProviderConfig {
+                models: Some(models),
+                ..ProviderConfig::default()
+            },
+        );
+        let config = Config {
+            providers: Some(providers),
+            ..Config::default()
+        };
+        let model = resolve_model(
+            "openai",
+            &cli(&["--model", "my-fine-tune"]),
+            Some(&config),
+            None,
+            None,
+        )
+        .expect("配置表定义的模型可解析");
+        assert_eq!(model.name, "My Fine Tune");
+        assert_eq!(model.context_window, 400_000, "规格字段仍按分层解析");
+    }
+
+    #[test]
+    fn unknown_model_degraded_when_catalog_unavailable() {
+        // 离线降级：目录不可用无法校验存在性，保持既有回落行为（启动告警已发）
+        let model = resolve_model("openai", &cli(&["--model", "gpt-future"]), None, None, None)
+            .expect("目录不可用时未知模型回落内置预设");
+        assert_eq!(model.id, "gpt-future");
         assert_eq!(model.context_window, 400_000);
     }
 
@@ -1178,6 +1313,7 @@ mod tests {
         );
         assert_eq!(choices[0].name, "GPT-5.2");
         assert_eq!(choices[0].context_window, 400_000);
+        assert!(choices[0].reasoning, "gpt-5.2 的推理能力来自 models.dev");
         assert_eq!(choices[2].name, "My Fine Tune", "展示名来自配置覆盖");
         // 重复解析当前模型：候选中再选一次幂等
         let again = resolver.candidates("gpt-5.2");
@@ -1193,5 +1329,6 @@ mod tests {
         assert_eq!(choices.len(), 1);
         assert_eq!(choices[0].id, "deepseek-chat");
         assert_eq!(choices[0].context_window, 0, "无目录时规格落中性预设");
+        assert!(!choices[0].reasoning, "中性预设不支持推理");
     }
 }

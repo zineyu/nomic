@@ -38,7 +38,7 @@ use crossterm::{
     },
 };
 use futures::StreamExt as _;
-use nomic_ai::{Message, Model};
+use nomic_ai::{Message, Model, ThinkingLevel};
 use nomic_core::{Agent, AgentEvent, Compaction, estimate_context_tokens};
 use nomic_session::{CompactionRecord, SessionStore, TreeEntry};
 use nomic_skills::SkillResolver;
@@ -67,6 +67,8 @@ enum DriverJob {
     Restore(Vec<Message>),
     /// 切换模型（`/models`；上下文保留，spec 已按启动同一口径解析）
     SwitchModel(Model),
+    /// 设置思考级别（模型切换流程第二步确认；None 关闭）
+    SetReasoning(Option<ThinkingLevel>),
 }
 
 /// agent driver 完成的任务回执。
@@ -106,6 +108,9 @@ pub async fn run(cli: &Cli) -> Result<()> {
             .collect(),
     );
     app.set_available_templates(boot.prompt_templates.clone());
+    // 启动解析的思考级别（CLI 参数 / 配置文件）在进入 builder 前取出，
+    // driver 据此维护 `/models` 级别选择器的当前值
+    let initial_reasoning = boot.stream_options.reasoning;
 
     let (agent, mut events) = Agent::builder()
         .model(boot.model.clone())
@@ -138,6 +143,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
         boot.model,
         skill_resolver,
         tip,
+        initial_reasoning,
     )?;
     let mut term_events = EventStream::new();
     // spinner 帧推进：仅运行中需要动画，空闲时分支挂起不唤醒事件循环
@@ -170,6 +176,7 @@ fn spawn_driver(
     model: Model,
     skill_resolver: SkillResolver,
     tip: Option<String>,
+    reasoning: Option<ThinkingLevel>,
 ) -> Result<(Driver, mpsc::UnboundedReceiver<DriverDone>)> {
     let (job_tx, mut job_rx) = mpsc::unbounded_channel::<DriverJob>();
     let (done_tx, done_rx) = mpsc::unbounded_channel::<DriverDone>();
@@ -210,6 +217,7 @@ fn spawn_driver(
                 DriverJob::Clear => agent.clear_messages(),
                 DriverJob::Restore(messages) => agent.restore_messages(messages),
                 DriverJob::SwitchModel(model) => agent.set_model(model),
+                DriverJob::SetReasoning(level) => agent.set_reasoning(level),
             }
             // 每个 job 都可能改变上下文：回报最新 token 估算（与自动压缩同一口径）
             let tokens = estimate_context_tokens(agent.messages());
@@ -229,6 +237,8 @@ fn spawn_driver(
         skill_resolver,
         models,
         model,
+        reasoning,
+        pending_model: None,
     };
     Ok((driver, done_rx))
 }
@@ -252,6 +262,11 @@ struct Driver {
     models: ModelResolver,
     /// 当前模型（`/models` 切换后更新；选择器预选与切换幂等判断用）
     model: Model,
+    /// 当前思考级别（`/models` 级别选择器确认后更新；预选与幂等判断用）
+    reasoning: Option<ThinkingLevel>,
+    /// 待切换模型（模型切换流程第二步暂存）：模型选择器确认后、思考级别
+    /// 选择器确认（应用切换）或 Esc（放弃切换）前持有
+    pending_model: Option<Model>,
 }
 
 /// 事件循环单次等待的结果。
@@ -519,7 +534,14 @@ async fn execute_effect(app: &mut App, driver: &mut Driver, effect: Effect) {
         Effect::ListTree => list_tree(app, driver).await,
         Effect::BranchTo(entry_id) => branch_to(app, driver, entry_id).await,
         Effect::ListModels => list_models(app, driver),
-        Effect::SwitchModel(id) => switch_model(app, driver, &id),
+        Effect::SwitchModel(id) => select_model(app, driver, &id),
+        Effect::SetReasoning(level) => set_reasoning(app, driver, &level),
+        Effect::CancelModelSwitch => {
+            // 模型切换流程第二步被取消：放弃待切换模型，模型与级别均不变
+            if driver.pending_model.take().is_some() {
+                app.push_system("已取消模型切换。".to_string());
+            }
+        }
         Effect::ListSkills => {
             // 列出时顺带刷新补全快照：会话期间新增的 skill 也能被 Tab 补全
             let catalog = driver.skill_resolver.catalog();
@@ -573,12 +595,16 @@ fn list_models(app: &mut App, driver: &Driver) {
     app.open_model_picker(rows, selected);
 }
 
-/// 选择器行文本：`id — 展示名 · ctx 200k`，当前模型带标记；窗口未知省略 ctx。
+/// 选择器行文本：`id — 展示名 · ctx 200k · 支持思考`，当前模型带标记；
+/// 窗口未知省略 ctx。
 fn model_row_text(choice: &ModelChoice, current_id: &str) -> String {
     use std::fmt::Write as _;
     let mut text = format!("{} — {}", choice.id, choice.name);
     if choice.context_window > 0 {
         let _ = write!(text, " · ctx {}", ui::format_tokens(choice.context_window));
+    }
+    if choice.reasoning {
+        text.push_str(" · 支持思考");
     }
     if choice.id == current_id {
         text.push_str("（当前）");
@@ -586,39 +612,203 @@ fn model_row_text(choice: &ModelChoice, current_id: &str) -> String {
     text
 }
 
-/// `/models:<id>` 或选择器确认：解析 → driver 串行切换 → 更新状态栏与提示。
+/// 思考级别选择器确认时的解析结果：关闭（`off`）或具体级别。
 ///
-/// 切换的是同一 provider 下的模型：连接参数（base_url / api_key）不变，
-/// 对话上下文保留。driver 串行处理任务，紧随的 prompt 一定跑在新模型上。
-fn switch_model(app: &mut App, driver: &mut Driver, id: &str) {
-    if id == driver.model.id {
-        app.push_system(format!("当前模型已是 {}。", driver.model.name));
-        return;
-    }
-    match driver.models.resolve(id) {
-        Err(error) => app.warn(format!("切换模型失败：{error:#}")),
-        Ok(model) => {
-            if driver
-                .job_tx
-                .send(DriverJob::SwitchModel(model.clone()))
-                .is_err()
-            {
-                app.warn("内部错误：agent 任务已退出，无法切换模型");
-                return;
-            }
-            let name = model.name.clone();
-            let window = model.context_window;
-            driver.model = model;
-            app.set_model(name.clone(), window);
-            let mut text = format!("已切换模型为 {name}");
-            if window > 0 {
-                use std::fmt::Write as _;
-                let _ = write!(text, "（ctx {}）", ui::format_tokens(window));
-            }
-            text.push_str("，对话上下文保留。");
-            app.push_system(text);
+/// 独立于 `Option<ThinkingLevel>`：让「行 id 非法」（None，拒绝）与
+/// 「off 关闭」（合法设置）在类型层面可区分。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReasoningSetting {
+    /// 关闭思考
+    Off,
+    /// 具体思考级别
+    Level(ThinkingLevel),
+}
+
+impl ReasoningSetting {
+    /// 转为请求参数（`Off` → `None` 关闭）。
+    const fn level(self) -> Option<ThinkingLevel> {
+        match self {
+            Self::Off => None,
+            Self::Level(level) => Some(level),
         }
     }
+}
+
+/// 思考级别词表：选择器行 id 与展示说明共用同一来源。
+const REASONING_LEVELS: [(&str, ReasoningSetting); 5] = [
+    ("off", ReasoningSetting::Off),
+    ("minimal", ReasoningSetting::Level(ThinkingLevel::Minimal)),
+    ("low", ReasoningSetting::Level(ThinkingLevel::Low)),
+    ("medium", ReasoningSetting::Level(ThinkingLevel::Medium)),
+    ("high", ReasoningSetting::Level(ThinkingLevel::High)),
+];
+
+/// 级别词 → 设置；未知词返回 `None`（调用方告警）。
+fn reasoning_setting(word: &str) -> Option<ReasoningSetting> {
+    REASONING_LEVELS
+        .iter()
+        .find(|(name, _)| *name == word)
+        .map(|(_, setting)| *setting)
+}
+
+/// 当前级别 → 词表中的级别词（提示文本用；词表外取值回退 `off`）。
+fn reasoning_label(level: Option<ThinkingLevel>) -> &'static str {
+    REASONING_LEVELS
+        .iter()
+        .find(|(_, setting)| setting.level() == level)
+        .map_or("off", |(name, _)| *name)
+}
+
+/// 思考级别选择器（模型切换流程第二步）：列出级别并打开选择器
+///（预选中当前级别）。
+fn open_reasoning_picker(app: &mut App, driver: &Driver) {
+    let current = driver.reasoning;
+    let rows = REASONING_LEVELS
+        .iter()
+        .map(|(name, setting)| PickerRow {
+            id: (*name).to_string(),
+            text: reasoning_row_text(name, *setting, current),
+            selectable: true,
+        })
+        .collect();
+    let selected = REASONING_LEVELS
+        .iter()
+        .position(|(_, setting)| setting.level() == current)
+        .unwrap_or(0);
+    app.open_reasoning_picker(rows, selected);
+}
+
+/// 思考级别选择器行文本：`级别 — 说明`，当前级别带标记。
+fn reasoning_row_text(
+    name: &str,
+    setting: ReasoningSetting,
+    current: Option<ThinkingLevel>,
+) -> String {
+    let description = match setting {
+        ReasoningSetting::Off => "不开启思考",
+        ReasoningSetting::Level(ThinkingLevel::Minimal) => "最小推理预算",
+        ReasoningSetting::Level(ThinkingLevel::Low) => "低推理预算",
+        ReasoningSetting::Level(ThinkingLevel::Medium) => "中等推理预算",
+        ReasoningSetting::Level(ThinkingLevel::High) => "高推理预算",
+        // xhigh/max 不在 TUI 词表内（配置文件与 CLI 同样不开放）
+        ReasoningSetting::Level(ThinkingLevel::Xhigh | ThinkingLevel::Max) => "推理预算",
+    };
+    let mut text = format!("{name} — {description}");
+    if setting.level() == current {
+        text.push_str("（当前）");
+    }
+    text
+}
+
+/// 思考级别选择器确认（模型切换流程第二步）：先应用待切换模型，
+/// 再设置思考级别；两者均未变化时提示。
+///
+/// 级别是请求参数，选择器只在目标模型支持推理时出现，因此设置必然
+/// 随请求生效（重选当前模型进入时当前模型即推理模型）。driver 串行
+/// 处理任务：级别设置一定排在模型切换之后。
+fn set_reasoning(app: &mut App, driver: &mut Driver, word: &str) {
+    use std::fmt::Write as _;
+    let Some(setting) = reasoning_setting(word) else {
+        // 理论不可达（选择器行 id 出自 REASONING_LEVELS 词表）
+        app.warn(format!("未知思考级别 {word:?}"));
+        return;
+    };
+    let level = setting.level();
+    let switched = match driver.pending_model.take() {
+        Some(model) => apply_model_switch(app, driver, model),
+        None => false,
+    };
+    let level_changed = level != driver.reasoning;
+    if level_changed {
+        if driver.job_tx.send(DriverJob::SetReasoning(level)).is_err() {
+            app.warn("内部错误：agent 任务已退出，无法设置思考级别");
+            return;
+        }
+        driver.reasoning = level;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if switched {
+        let mut part = format!("已切换模型为 {}", driver.model.name);
+        if driver.model.context_window > 0 {
+            let _ = write!(
+                part,
+                "（ctx {}）",
+                ui::format_tokens(driver.model.context_window)
+            );
+        }
+        parts.push(part);
+    }
+    if level_changed {
+        parts.push(format!("思考级别设为 {}", reasoning_label(level)));
+    }
+    let text = if parts.is_empty() {
+        format!(
+            "模型与思考级别均未变化（{}，级别 {}）。",
+            driver.model.name,
+            reasoning_label(driver.reasoning)
+        )
+    } else if switched {
+        format!("{}，对话上下文保留。", parts.join("，"))
+    } else {
+        format!("{}。", parts.join("，"))
+    };
+    app.push_system(text);
+}
+
+/// `/models:<id>` 或模型选择器确认：先选模型后选 effort——
+///
+/// - 目标模型支持推理：暂存为待切换模型并打开思考级别选择器（流程第二步）；
+///   确认级别时一并应用切换，Esc 放弃整个切换。重选当前模型时不暂存，
+///   级别选择器变为单纯的级别调整入口
+/// - 目标模型不支持推理：直接切换（级别设置保留但随请求被忽略，
+///   与配置文件 `reasoning` 同一口径）
+fn select_model(app: &mut App, driver: &mut Driver, id: &str) {
+    match driver.models.resolve(id) {
+        Err(error) => app.warn(format!("切换模型失败：{error:#}")),
+        Ok(model) if model.reasoning => {
+            driver.pending_model = (model.id != driver.model.id).then_some(model);
+            open_reasoning_picker(app, driver);
+        }
+        Ok(model) if model.id == driver.model.id => {
+            app.push_system(format!("当前模型已是 {}（不支持思考）。", model.name));
+        }
+        Ok(model) => {
+            if apply_model_switch(app, driver, model) {
+                app.push_system(switch_notice(&driver.model));
+            }
+        }
+    }
+}
+
+/// 发送 SwitchModel job 并同步 driver/app 状态（状态栏徽标、上下文窗口）；
+/// 成功返回 `true`，driver 已退出时告警并返回 `false`。
+///
+/// driver 串行处理任务，紧随的级别设置与 prompt 一定跑在新模型上。
+fn apply_model_switch(app: &mut App, driver: &mut Driver, model: Model) -> bool {
+    if driver
+        .job_tx
+        .send(DriverJob::SwitchModel(model.clone()))
+        .is_err()
+    {
+        app.warn("内部错误：agent 任务已退出，无法切换模型");
+        return false;
+    }
+    let name = model.name.clone();
+    let window = model.context_window;
+    driver.model = model;
+    app.set_model(name, window);
+    true
+}
+
+/// 切换成功的提示文本：`已切换模型为 X（ctx 400k），对话上下文保留。`
+fn switch_notice(model: &Model) -> String {
+    use std::fmt::Write as _;
+    let mut text = format!("已切换模型为 {}", model.name);
+    if model.context_window > 0 {
+        let _ = write!(text, "（ctx {}）", ui::format_tokens(model.context_window));
+    }
+    text.push_str("，对话上下文保留。");
+    text
 }
 /// `/resume`：列出历史 session 并打开选择器。
 async fn list_sessions(app: &mut App, driver: &Driver) {
@@ -1052,9 +1242,10 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        ModelChoice, model_row_text, panic_payload_text, paste_image_path, percent_decode,
-        tree_rows,
+        ModelChoice, ReasoningSetting, model_row_text, panic_payload_text, paste_image_path,
+        percent_decode, reasoning_label, reasoning_row_text, reasoning_setting, tree_rows,
     };
+    use nomic_ai::ThinkingLevel;
     use nomic_session::TreeEntry;
 
     /// 会话树选择器行：按深度缩进、角色/时间/预览拼接，工具调用条目不可选，
@@ -1090,28 +1281,85 @@ mod tests {
         assert!(rows[3].selectable);
     }
 
-    /// `/models` 选择器行：id + 展示名 + 窗口，当前模型带标记，窗口未知省略 ctx。
+    /// `/models` 选择器行：id + 展示名 + 窗口，推理模型带标注，当前模型带标记，
+    /// 窗口未知省略 ctx。
     #[test]
     fn model_row_text_formats_window_and_marks_current() {
         let choice = ModelChoice {
             id: "gpt-5.2".to_string(),
             name: "GPT-5.2".to_string(),
             context_window: 400_000,
+            reasoning: true,
         };
         assert_eq!(
             model_row_text(&choice, "gpt-5.2"),
-            "gpt-5.2 — GPT-5.2 · ctx 400k（当前）"
+            "gpt-5.2 — GPT-5.2 · ctx 400k · 支持思考（当前）"
         );
         assert_eq!(
             model_row_text(&choice, "other"),
+            "gpt-5.2 — GPT-5.2 · ctx 400k · 支持思考"
+        );
+        let no_thinking = ModelChoice {
+            reasoning: false,
+            ..choice
+        };
+        assert_eq!(
+            model_row_text(&no_thinking, "other"),
             "gpt-5.2 — GPT-5.2 · ctx 400k"
         );
         let unknown = ModelChoice {
             id: "m".to_string(),
             name: "m".to_string(),
             context_window: 0,
+            reasoning: false,
         };
         assert_eq!(model_row_text(&unknown, "other"), "m — m");
+    }
+
+    /// 思考级别词表：off 映射为关闭，词表内级别往返一致，未知词拒绝。
+    #[test]
+    fn reasoning_setting_roundtrip_and_rejects_unknown() {
+        assert_eq!(reasoning_setting("off"), Some(ReasoningSetting::Off));
+        assert_eq!(
+            reasoning_setting("minimal"),
+            Some(ReasoningSetting::Level(ThinkingLevel::Minimal))
+        );
+        assert_eq!(
+            reasoning_setting("high"),
+            Some(ReasoningSetting::Level(ThinkingLevel::High))
+        );
+        assert_eq!(
+            reasoning_setting("off").map(ReasoningSetting::level),
+            Some(None)
+        );
+        assert_eq!(reasoning_setting("extreme"), None);
+        // 词表内取值与 label 往返一致；词表外取值（xhigh/max）回退 off
+        for (name, level) in [
+            ("off", None),
+            ("low", Some(ThinkingLevel::Low)),
+            ("medium", Some(ThinkingLevel::Medium)),
+            ("high", Some(ThinkingLevel::High)),
+        ] {
+            assert_eq!(reasoning_label(level), name);
+        }
+        assert_eq!(reasoning_label(Some(ThinkingLevel::Xhigh)), "off");
+    }
+
+    /// 思考级别选择器行：级别 + 说明，当前级别带标记。
+    #[test]
+    fn reasoning_row_text_marks_current() {
+        assert_eq!(
+            reasoning_row_text(
+                "low",
+                ReasoningSetting::Level(ThinkingLevel::Low),
+                Some(ThinkingLevel::Low)
+            ),
+            "low — 低推理预算（当前）"
+        );
+        assert_eq!(
+            reasoning_row_text("off", ReasoningSetting::Off, Some(ThinkingLevel::Low)),
+            "off — 不开启思考"
+        );
     }
 
     #[test]

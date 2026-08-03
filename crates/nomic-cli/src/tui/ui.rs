@@ -93,23 +93,31 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     }
                 }
                 if let Some(error) = &assistant.error {
-                    lines.push(Line::from(Span::styled(format!("✗ {error}"), theme::err())));
+                    lines.push(gutter(
+                        Line::from(Span::styled(format!("✗ {error}"), theme::err())),
+                        theme::err(),
+                    ));
                 } else if !assistant.done {
                     // 流式指示：消息未定稿时提示仍在生成，避免长 thinking 看似卡死
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("{spinner} "), theme::busy()),
-                        Span::styled("生成中…", theme::dim()),
-                    ]));
+                    lines.push(gutter(
+                        Line::from(vec![
+                            Span::styled(format!("{spinner} "), theme::busy()),
+                            Span::styled("生成中…", theme::dim()),
+                        ]),
+                        theme::busy(),
+                    ));
                 }
                 if !assistant.blocks.is_empty() || assistant.error.is_some() {
                     lines.push(Line::default());
                 }
             }
             ChatItem::System(text) => {
-                lines.extend(
-                    text.lines()
-                        .map(|line| Line::from(Span::styled(line.to_string(), theme::dim()))),
-                );
+                lines.extend(text.lines().map(|line| {
+                    gutter(
+                        Line::from(Span::styled(line.to_string(), theme::dim())),
+                        theme::dim(),
+                    )
+                }));
                 lines.push(Line::default());
             }
             ChatItem::Tool(tool) => {
@@ -138,9 +146,11 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 
 /// 统一的 gutter 块组件：左侧 `▌ ` 竖条 + 原行内容。
 ///
-/// 用户消息、assistant 输出、thinking、工具调用全部套用此组件，
-/// 仅靠竖条与正文颜色区分条目类型（用户=accent、assistant=正文色加粗、
-/// thinking=暗色、工具=状态色）。空行（段落间隔）不加竖条，保持留白干净。
+/// 聊天区所有条目（用户消息、assistant 输出、thinking、工具调用、
+/// System 提示、错误与流式状态行）全部套用此组件，仅靠竖条与正文颜色
+/// 区分条目类型（用户=accent、assistant=正文色加粗、thinking=暗色、
+/// 工具=状态色、System=暗色、错误=红、流式=黄）。
+/// 空行（段落间隔）不加竖条，保持留白干净。
 fn gutter(line: Line<'static>, marker_style: Style) -> Line<'static> {
     if line.width() == 0 {
         return line;
@@ -672,6 +682,69 @@ mod tests {
         );
         assert!(
             gutter_colors.contains(&ratatui::style::Color::Green),
+            "{gutter_colors:?}"
+        );
+    }
+
+    /// System 条目与错误/流式状态行也套用 gutter 组件：System=暗色，错误=红色。
+    #[test]
+    fn system_and_error_lines_use_gutter() {
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        app.push_system("本地系统提示");
+        app.handle_event(&AgentEvent::MessageStart(Box::new(Message::Assistant(
+            nomic_ai::AssistantMessage {
+                content: Vec::new(),
+                api: nomic_ai::ApiKind::AnthropicMessages,
+                provider: "anthropic".to_string(),
+                model: "claude".to_string(),
+                response_model: None,
+                response_id: None,
+                usage: nomic_ai::Usage::default(),
+                stop_reason: nomic_ai::StopReason::Stop,
+                error_message: None,
+                timestamp: 0,
+            },
+        ))));
+        app.handle_event(&AgentEvent::MessageEnd(Box::new(Message::Assistant(
+            nomic_ai::AssistantMessage {
+                content: Vec::new(),
+                api: nomic_ai::ApiKind::AnthropicMessages,
+                provider: "anthropic".to_string(),
+                model: "claude".to_string(),
+                response_model: None,
+                response_id: None,
+                usage: nomic_ai::Usage::default(),
+                stop_reason: nomic_ai::StopReason::Error,
+                error_message: Some("rate limited".to_string()),
+                timestamp: 0,
+            },
+        ))));
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let compact: String = buffer
+            .content()
+            .iter()
+            .flat_map(|cell| cell.symbol().chars())
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(compact.contains("▌本地系统提示"), "{compact}");
+        assert!(compact.contains("▌✗ratelimited"), "{compact}");
+        let gutter_colors: Vec<ratatui::style::Color> = buffer
+            .content()
+            .iter()
+            .filter(|cell| cell.symbol() == "▌")
+            .map(|cell| cell.fg)
+            .collect();
+        assert!(
+            gutter_colors.contains(&ratatui::style::Color::DarkGray),
+            "{gutter_colors:?}"
+        );
+        assert!(
+            gutter_colors.contains(&ratatui::style::Color::Red),
             "{gutter_colors:?}"
         );
     }

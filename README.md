@@ -213,6 +213,48 @@ session 落库，resume 后仍然有效）：
 `skill://` 是只读资源；如需修改 skill，请显式编辑其 backing file。设计见
 [docs/adr/0003](docs/adr/0003-skills-system.md)。
 
+## Prompt Templates
+
+prompt template 是一个 `.md` 文件，文件名（去掉 `.md`）即 `/name` 命令名，
+正文是模板。输入 `/name 参数...`，模板展开为完整 prompt 后提交。
+
+```text
+# 项目级（从 cwd 向上发现，越近优先级越高）
+.nomic/prompts/<name>.md
+
+# 用户级
+$XDG_CONFIG_HOME/nomic/prompts/<name>.md
+~/.config/nomic/prompts/<name>.md
+```
+
+模板可带 frontmatter（`description` 缺省退化为正文第一个非空行；
+`argument-hint` 只在补全弹层展示）：
+
+```markdown
+---
+description: Review staged git changes
+argument-hint: "<path>"
+---
+Review the staged changes (`git diff --cached`). Focus on:
+- Bugs and logic errors
+- Security issues
+```
+
+正文支持参数占位符（与 pi 对齐）：`$1`、`$2` 位置参数，`$@` / `$ARGUMENTS`
+全部参数，`${1:-default}` 默认值，`${@:N}` / `${@:N:L}` 参数切片。参数可带
+引号：`/component Button "click handler"`。
+
+同名覆盖规则：`显式路径 > 项目级 > 用户级`；目录发现是非递归的。也可通过
+配置文件 `prompts = [...]` 或 CLI 追加显式文件/目录，并关闭目录发现：
+
+```bash
+nomic --prompt-template prompts/review.md   # 可重复传入
+nomic --no-prompt-templates                 # 关闭目录发现（显式路径仍生效）
+```
+
+print 模式同样支持：prompt 以 `/` 开头时按模板调用展开（未知名称报错）。
+设计见 [docs/adr/0008](docs/adr/0008-prompt-templates.md)。
+
 ## 本地检查
 
 ```bash
@@ -226,6 +268,7 @@ check               # 与 CI 等价的全部检查：fmt / clippy / nextest / do
 - `crates/nomic-tools`：read/write/edit/bash 四工具（截断、模糊匹配、BOM/CRLF 保留、文件变更队列）
 - `crates/nomic-session`：SQLite session 存储（树形 entries、resume、`sessions list`）
 - `crates/nomic-skills`：skill 发现、frontmatter 元数据、覆盖规则与显式激活
+- `crates/nomic-prompts`：prompt template 发现、frontmatter 元数据、覆盖规则与参数展开
 - `crates/nomic-cli`：`nomic` 二进制（print 模式 + ratatui 交互 TUI + sessions 子命令）
 - `docs/adr/`：架构决策记录
 
@@ -235,13 +278,12 @@ check               # 与 CI 等价的全部检查：fmt / clippy / nextest / do
 
 - M1：agent loop + 四工具 + print 模式（ADR-0001）
 - M2（部分）：SQLite session 存储与 resume（树形 schema 已就位）、交互 TUI（ADR-0002）、用户级配置文件、上下文压缩（ADR-0005）
-- M3（部分）：AGENTS.md 加载（向上发现，注入系统提示词）、skills（ADR-0003）
+- M3（部分）：AGENTS.md 加载（向上发现，注入系统提示词）、skills（ADR-0003）、prompt templates（ADR-0008）
 - M4：图片输入（`--image <路径>` 附件；TUI `/image <路径>` 为下一条消息暂存图片）
 
 待完成：
 
 - M2（剩余）：显式 branch 创建/选择/浏览（active leaf 语义未定，见 ADR-0001 修订）、prompt caching
-- M3（剩余）：compaction、prompt templates
 
 ## 新增 crate
 

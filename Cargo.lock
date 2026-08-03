@@ -1851,6 +1851,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomic-prompts"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "nomic-session"
 version = "0.1.0"
 dependencies = [

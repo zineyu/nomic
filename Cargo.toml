@@ -14,6 +14,7 @@ repository = "https://github.com/zine/nomic"
 # ── 内部 crate ──────────────────────────────────────────────────────────────
 nomic-ai = { path = "crates/nomic-ai", version = "0.1.0" }
 nomic-core = { path = "crates/nomic-core", version = "0.1.0" }
+nomic-prompts = { path = "crates/nomic-prompts", version = "0.1.0" }
 nomic-session = { path = "crates/nomic-session", version = "0.1.0" }
 nomic-skills = { path = "crates/nomic-skills", version = "0.1.0" }
 nomic-tools = { path = "crates/nomic-tools", version = "0.1.0" }

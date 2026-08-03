@@ -839,7 +839,7 @@ async fn persist_compaction(
         kept_count: kept_count as u64,
         tokens_before,
     };
-    if let Err(error) = store.append_compaction(session_id, &record).await {
+    if let Err(error) = store.append_compaction(session_id, None, &record).await {
         app.warn(format!("compaction 落库失败：{error}"));
     }
 }

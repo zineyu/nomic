@@ -137,7 +137,7 @@ async fn drain_events(
                         kept_count: kept_count as u64,
                         tokens_before,
                     };
-                    if let Err(error) = store.append_compaction(session_id, &record).await {
+                    if let Err(error) = store.append_compaction(session_id, None, &record).await {
                         eprintln!("\x1b[33m⚠ compaction 落库失败：{error}\x1b[0m");
                     }
                 }

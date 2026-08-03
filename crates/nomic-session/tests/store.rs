@@ -295,7 +295,7 @@ async fn compaction_rebuilds_summary_plus_kept_tail() {
             .unwrap();
     }
     store
-        .append_compaction(&session, &compaction("summary of m1+m2", 2))
+        .append_compaction(&session, None, &compaction("summary of m1+m2", 2))
         .await
         .unwrap();
 
@@ -316,7 +316,7 @@ async fn messages_after_compaction_chain_and_survive_rebuild() {
         .await
         .unwrap();
     store
-        .append_compaction(&session, &compaction("summary", 0))
+        .append_compaction(&session, None, &compaction("summary", 0))
         .await
         .unwrap();
     // 压缩后的新消息链在 compaction entry 之后
@@ -347,7 +347,7 @@ async fn repeated_compaction_rebuilds_recursively() {
     }
     // 第一次压缩：有效上下文 = [summary1, m3]
     store
-        .append_compaction(&session, &compaction("summary one", 1))
+        .append_compaction(&session, None, &compaction("summary one", 1))
         .await
         .unwrap();
     store
@@ -356,7 +356,7 @@ async fn repeated_compaction_rebuilds_recursively() {
         .unwrap();
     // 第二次压缩：相对当时的有效上下文 [summary1, m3, m4] 保留 2 条
     store
-        .append_compaction(&session, &compaction("summary two", 2))
+        .append_compaction(&session, None, &compaction("summary two", 2))
         .await
         .unwrap();
 
@@ -376,7 +376,7 @@ async fn compaction_kept_count_clamps_to_effective_len() {
         .await
         .unwrap();
     store
-        .append_compaction(&session, &compaction("summary", 100))
+        .append_compaction(&session, None, &compaction("summary", 100))
         .await
         .unwrap();
 
@@ -395,7 +395,7 @@ async fn compaction_entry_not_counted_as_message() {
         .await
         .unwrap();
     store
-        .append_compaction(&session, &compaction("summary", 1))
+        .append_compaction(&session, None, &compaction("summary", 1))
         .await
         .unwrap();
 
@@ -414,7 +414,7 @@ async fn compaction_persists_across_reopen() {
         .await
         .unwrap();
     store
-        .append_compaction(&session, &compaction("summary", 0))
+        .append_compaction(&session, None, &compaction("summary", 0))
         .await
         .unwrap();
 
@@ -422,4 +422,240 @@ async fn compaction_persists_across_reopen() {
     let loaded = reopened.load_messages(&session).await.unwrap();
     assert_eq!(loaded.len(), 1);
     assert_eq!(extract_summary(&loaded[0]), Some("summary"));
+}
+
+// ── 分支浏览与加载（list_tree / load_branch / latest_entry_id）──────────────
+
+/// 构造分支场景：
+/// root ── a1（分支 A 叶子）
+///      └─ a2 ── tool（分支 B 叶子，全局最新 entry）
+async fn branched_store() -> (SessionStore, String, Branch) {
+    let store = SessionStore::in_memory().await.unwrap();
+    let session = store.create_session("/tmp/p").await.unwrap();
+    let root = store
+        .append_message(&session, None, &user_message("root", 1_000))
+        .await
+        .unwrap();
+    let a1 = store
+        .append_message(&session, Some(&root), &user_message("branch A", 2_000))
+        .await
+        .unwrap();
+    let a2 = store
+        .append_message(&session, Some(&root), &user_message("branch B", 3_000))
+        .await
+        .unwrap();
+    let tool = store
+        .append_message(&session, Some(&a2), &tool_result_message(4_000))
+        .await
+        .unwrap();
+    (store, session, Branch { root, a1, a2, tool })
+}
+
+struct Branch {
+    root: String,
+    a1: String,
+    a2: String,
+    tool: String,
+}
+
+#[tokio::test]
+async fn load_branch_replays_ancestor_path() {
+    let (store, session, branch) = branched_store().await;
+
+    // 非默认分支（A）：只含 root + A
+    let loaded = store.load_branch(&session, &branch.a1).await.unwrap();
+    assert_eq!(
+        loaded,
+        vec![user_message("root", 1_000), user_message("branch A", 2_000)]
+    );
+
+    // 默认分支（B 叶子）：root + B + tool
+    let loaded = store.load_branch(&session, &branch.tool).await.unwrap();
+    assert_eq!(
+        loaded,
+        vec![
+            user_message("root", 1_000),
+            user_message("branch B", 3_000),
+            tool_result_message(4_000),
+        ]
+    );
+
+    // 中间节点：路径到该节点为止，不含后代
+    let loaded = store.load_branch(&session, &branch.root).await.unwrap();
+    assert_eq!(loaded, vec![user_message("root", 1_000)]);
+}
+
+#[tokio::test]
+async fn load_branch_rejects_foreign_or_missing_entry() {
+    let (store, session, branch) = branched_store().await;
+    let other = store.create_session("/tmp/q").await.unwrap();
+
+    // 其他 session 的 entry id
+    let result = store.load_branch(&other, &branch.a1).await;
+    assert!(matches!(result, Err(SessionError::EntryNotFound(_))));
+
+    // 不存在的 entry id
+    let result = store.load_branch(&session, "no-such-entry").await;
+    assert!(matches!(result, Err(SessionError::EntryNotFound(_))));
+
+    // 不存在的 session
+    let result = store.load_branch("no-such-session", &branch.a1).await;
+    assert!(matches!(result, Err(SessionError::SessionNotFound(_))));
+}
+
+#[tokio::test]
+async fn load_branch_replays_compaction_on_path() {
+    let store = SessionStore::in_memory().await.unwrap();
+    let session = store.create_session("/tmp/p").await.unwrap();
+    store
+        .append_message(&session, None, &user_message("m1", 1_000))
+        .await
+        .unwrap();
+    store
+        .append_message(&session, None, &user_message("m2", 2_000))
+        .await
+        .unwrap();
+    let compacted = store
+        .append_compaction(&session, None, &compaction("summary of m1+m2", 1))
+        .await
+        .unwrap();
+    // 压缩后分叉：分支 B 从压缩条目续写
+    let branch_b = store
+        .append_message(&session, Some(&compacted), &user_message("after B", 3_000))
+        .await
+        .unwrap();
+
+    // 分支路径重放：kept_count 相对路径前缀精确成立（保留 m2）
+    let loaded = store.load_branch(&session, &branch_b).await.unwrap();
+    assert_eq!(loaded.len(), 3);
+    assert_eq!(extract_summary(&loaded[0]), Some("summary of m1+m2"));
+    assert_eq!(loaded[1], user_message("m2", 2_000));
+    assert_eq!(loaded[2], user_message("after B", 3_000));
+}
+
+#[tokio::test]
+async fn latest_entry_id_walks_default_branch() {
+    let (store, session, branch) = branched_store().await;
+
+    // 默认分支沿最新子节点：root → B → tool（而非全局最新之外的节点）
+    let tip = store.latest_entry_id(&session).await.unwrap();
+    assert_eq!(tip.as_deref(), Some(branch.tool.as_str()));
+
+    // 分支 A 续写一条（全局最新 entry 落在 A 上）：默认分支 tip 不变
+    store
+        .append_message(
+            &session,
+            Some(&branch.a1),
+            &user_message("A continued", 5_000),
+        )
+        .await
+        .unwrap();
+    let tip = store.latest_entry_id(&session).await.unwrap();
+    assert_eq!(tip.as_deref(), Some(branch.tool.as_str()));
+
+    // 空 session：None
+    let empty = store.create_session("/tmp/empty").await.unwrap();
+    assert_eq!(store.latest_entry_id(&empty).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn list_tree_returns_all_entries_with_previews() {
+    let (store, session, branch) = branched_store().await;
+
+    let entries = store.list_tree(&session).await.unwrap();
+    assert_eq!(entries.len(), 4, "全部 entry（含各分支）按插入序列出");
+
+    let [root, a1, a2, tool] = &entries[..] else {
+        panic!("unexpected entries: {entries:?}");
+    };
+    assert_eq!(root.id, branch.root);
+    assert_eq!(root.parent_id, None);
+    assert_eq!(root.role, "user");
+    assert_eq!(root.preview, "root");
+    assert!(root.is_branchable());
+
+    assert_eq!(a1.parent_id.as_deref(), Some(branch.root.as_str()));
+    assert_eq!(a2.parent_id.as_deref(), Some(branch.root.as_str()));
+    assert_eq!(a1.preview, "branch A");
+
+    assert_eq!(tool.id, branch.tool);
+    assert_eq!(tool.parent_id.as_deref(), Some(branch.a2.as_str()));
+    assert_eq!(tool.role, "tool_result");
+    assert_eq!(tool.preview, "工具结果：read");
+    assert!(!tool.is_branchable(), "工具结果条目不可作为分支起点");
+}
+
+#[tokio::test]
+async fn list_tree_marks_assistant_tool_calls_unbranchable() {
+    let store = SessionStore::in_memory().await.unwrap();
+    let session = store.create_session("/tmp/p").await.unwrap();
+    // assistant_message 含 ToolCall 块
+    store
+        .append_message(&session, None, &assistant_message(1_000))
+        .await
+        .unwrap();
+
+    let entries = store.list_tree(&session).await.unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].has_tool_calls);
+    assert!(
+        !entries[0].is_branchable(),
+        "含工具调用的 assistant 条目不可作为分支起点（避免悬空 tool_use）"
+    );
+    // 预览取首个文本块
+    assert_eq!(entries[0].preview, "done");
+}
+
+#[tokio::test]
+async fn list_tree_compaction_and_error_previews() {
+    let store = SessionStore::in_memory().await.unwrap();
+    let session = store.create_session("/tmp/p").await.unwrap();
+    store
+        .append_message(&session, None, &user_message("hi", 1_000))
+        .await
+        .unwrap();
+    store
+        .append_compaction(&session, None, &compaction("summary", 3))
+        .await
+        .unwrap();
+    // 失败的 assistant 响应
+    let mut failed = assistant_message(2_000);
+    if let Message::Assistant(assistant) = &mut failed {
+        assistant.content.clear();
+        assistant.stop_reason = StopReason::Error;
+        assistant.error_message = Some("rate limited".to_string());
+    }
+    store.append_message(&session, None, &failed).await.unwrap();
+
+    let entries = store.list_tree(&session).await.unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[1].role, "compaction");
+    assert_eq!(entries[1].preview, "上下文压缩（保留 3 条近期消息）");
+    assert!(entries[1].is_branchable(), "压缩条目可作为分支起点");
+    assert_eq!(entries[2].preview, "（响应失败：rate limited）");
+}
+
+#[tokio::test]
+async fn append_compaction_with_explicit_parent_branches() {
+    let store = SessionStore::in_memory().await.unwrap();
+    let session = store.create_session("/tmp/p").await.unwrap();
+    let root = store
+        .append_message(&session, None, &user_message("root", 1_000))
+        .await
+        .unwrap();
+    // 显式 parent 的压缩条目：链到 root 而非全局最新
+    let compacted = store
+        .append_compaction(&session, Some(&root), &compaction("branch summary", 0))
+        .await
+        .unwrap();
+
+    let loaded = store.load_branch(&session, &compacted).await.unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(extract_summary(&loaded[0]), Some("branch summary"));
+
+    // 显式 parent 不存在：EntryNotFound
+    let result = store
+        .append_compaction(&session, Some("no-such-entry"), &compaction("x", 0))
+        .await;
+    assert!(matches!(result, Err(SessionError::EntryNotFound(_))));
 }

@@ -2,8 +2,9 @@
 //!
 //! - 每个 session 一个唯一 id（UUID v7，时间有序），`sessions` 表记录
 //!   首/末消息时间与启动位置（cwd）
-//! - 消息存 `entries` 表，按 `parent_id` 组织为**树**（为 ADR-0001 的
-//!   branching 目标预留；顺序会话是树的特例）
+//! - 消息存 `entries` 表，按 `parent_id` 组织为**树**（顺序会话是树的特例）；
+//!   分支能力：[`SessionStore::list_tree`] 浏览树、[`SessionStore::load_branch`]
+//!   加载指定 entry 所在分支、追加时显式 `parent_id` 即创建分支
 //! - 压缩条目（`kind = 'compaction'`）记录上下文压缩结果；加载时重放重建
 //!   有效上下文（重建语义见 `nomic_ai::compaction` module 文档）
 //! - 全局单库，默认位于 XDG data dir：`$XDG_DATA_HOME/nomic/sessions.db`
@@ -14,7 +15,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use nomic_ai::{Message, apply_compaction, now_millis};
+use nomic_ai::{
+    AssistantContent, Message, StopReason, UserContent, UserMessageContent, apply_compaction,
+    now_millis,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row as _, SqlitePool};
@@ -75,6 +79,33 @@ pub struct SessionSummary {
     pub last_message_at: Option<u64>,
     /// 消息总数
     pub message_count: u64,
+}
+
+/// 会话树条目（[`SessionStore::list_tree`] 返回，分支浏览与选择用）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeEntry {
+    /// entry id（UUID v7）
+    pub id: String,
+    /// 父 entry id（根为 `None`）
+    pub parent_id: Option<String>,
+    /// 条目角色：user / assistant / tool_result / compaction
+    pub role: String,
+    /// 落库时间（Unix 毫秒）
+    pub timestamp: u64,
+    /// 单行内容摘要（展示用；payload 损坏时为占位文本）
+    pub preview: String,
+    /// assistant 条目是否含工具调用块（其余角色恒为 `false`）。
+    /// 含工具调用的条目不可作为分支起点：从其分叉会把悬空的 tool_use
+    /// 留在上下文里（对应 tool_result 不在新分支路径上），provider 会拒绝。
+    pub has_tool_calls: bool,
+}
+
+impl TreeEntry {
+    /// 是否可作为分支起点（非工具调用条目：工具结果与含工具调用的
+    /// assistant 响应除外，理由见 [`Self::has_tool_calls`]）。
+    pub fn is_branchable(&self) -> bool {
+        self.role != "tool_result" && !self.has_tool_calls
+    }
 }
 
 /// SQLite session 存储。
@@ -158,28 +189,7 @@ impl SessionStore {
             return Err(SessionError::SessionNotFound(session_id.to_string()));
         }
 
-        let parent: Option<String> = match parent_id {
-            Some(parent) => {
-                let exists: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM entries WHERE id = ? AND session_id = ?)",
-                )
-                .bind(parent)
-                .bind(session_id)
-                .fetch_one(&mut *tx)
-                .await?;
-                if !exists {
-                    return Err(SessionError::EntryNotFound(parent.to_string()));
-                }
-                Some(parent.to_string())
-            }
-            None => sqlx::query_scalar::<_, Option<String>>(
-                "SELECT id FROM entries WHERE session_id = ? ORDER BY rowid DESC LIMIT 1",
-            )
-            .bind(session_id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .flatten(),
-        };
+        let parent = resolve_parent(&mut tx, session_id, parent_id).await?;
 
         let id = uuid::Uuid::now_v7().to_string();
         let payload = serde_json::to_string(message)?;
@@ -215,11 +225,12 @@ impl SessionStore {
 
     /// 追加一条压缩条目，返回新 entry id。
     ///
-    /// 链接语义与 [`Self::append_message`] 一致（链到当前最新 entry）；
-    /// 同事务内更新 `sessions.last_message_at`。
+    /// 链接语义与 [`Self::append_message`] 一致；同事务内更新
+    /// `sessions.last_message_at`。
     pub async fn append_compaction(
         &self,
         session_id: &str,
+        parent_id: Option<&str>,
         record: &CompactionRecord,
     ) -> Result<String, SessionError> {
         let mut tx = self.pool.begin().await?;
@@ -228,13 +239,7 @@ impl SessionStore {
             return Err(SessionError::SessionNotFound(session_id.to_string()));
         }
 
-        let parent: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM entries WHERE session_id = ? ORDER BY rowid DESC LIMIT 1",
-        )
-        .bind(session_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .flatten();
+        let parent = resolve_parent(&mut tx, session_id, parent_id).await?;
 
         let id = uuid::Uuid::now_v7().to_string();
         let payload = serde_json::to_string(record)?;
@@ -270,14 +275,57 @@ impl SessionStore {
     /// 加载默认分支的完整消息序列。
     ///
     /// 取该 session 全部 entries 在内存建树，从根沿"每级最新子节点"走到叶子
-    /// （默认分支语义；未来 branch 切换走显式 entry id，无需迁移）。
+    /// （默认分支语义；branch 切换走显式 entry id，见 [`Self::load_branch`]）。
     pub async fn load_messages(&self, session_id: &str) -> Result<Vec<Message>, SessionError> {
+        let entries = self.fetch_entries(session_id).await?;
+        replay(default_path(&entries))
+    }
+
+    /// 加载指定 entry 所在分支的完整消息序列：沿 `entry_id` 的祖先链
+    /// （根 → 该 entry）重放。branch 切换（`/tree` 选择分支起点）的加载路径。
+    ///
+    /// 重放沿祖先路径线性进行，路径前缀即压缩发生时 agent 实际持有的上下文，
+    /// 因此 `kept_count` 相对计数在任意分支路径上依然精确（见
+    /// `nomic_ai::compaction` module 文档）。
+    pub async fn load_branch(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+    ) -> Result<Vec<Message>, SessionError> {
+        let entries = self.fetch_entries(session_id).await?;
+        let path = ancestor_path(&entries, entry_id)
+            .ok_or_else(|| SessionError::EntryNotFound(entry_id.to_string()))?;
+        replay(path)
+    }
+
+    /// 默认分支的末端 entry id（无条目时为 `None`）。
+    ///
+    /// 恢复 session 后初始化落库父指针用：session 尚无分支时与「链到最新
+    /// entry」等价，存在分支后显式父指针保证续写落在默认分支而非全局最新
+    /// entry。
+    pub async fn latest_entry_id(&self, session_id: &str) -> Result<Option<String>, SessionError> {
+        let entries = self.fetch_entries(session_id).await?;
+        Ok(default_path(&entries).last().map(|entry| entry.id.clone()))
+    }
+
+    /// 列出 session 的全部条目（按插入序），供会话树浏览与分支起点选择。
+    ///
+    /// 条目含单行内容摘要（展示用）；payload 损坏不报错，摘要退化为占位
+    /// 文本（浏览是只读操作，不应被单条损坏数据整体阻断）。
+    pub async fn list_tree(&self, session_id: &str) -> Result<Vec<TreeEntry>, SessionError> {
+        let entries = self.fetch_entries(session_id).await?;
+        Ok(entries.iter().map(tree_entry).collect())
+    }
+
+    /// 读取 session 的全部 entries（按插入序）；session 不存在时报
+    /// [`SessionError::SessionNotFound`]。
+    async fn fetch_entries(&self, session_id: &str) -> Result<Vec<BranchEntry>, SessionError> {
         let mut tx = self.pool.begin().await?;
         if !session_exists(&mut tx, session_id).await? {
             return Err(SessionError::SessionNotFound(session_id.to_string()));
         }
         let rows = sqlx::query(
-            "SELECT id, parent_id, kind, timestamp, payload FROM entries
+            "SELECT id, parent_id, role, kind, timestamp, payload FROM entries
              WHERE session_id = ? ORDER BY rowid",
         )
         .bind(session_id)
@@ -285,45 +333,18 @@ impl SessionStore {
         .await?;
         tx.commit().await?;
 
-        // parent_id -> 按插入序排列的子节点
-        let mut children: HashMap<Option<String>, Vec<BranchEntry>> = HashMap::new();
+        let mut entries = Vec::with_capacity(rows.len());
         for row in &rows {
-            let entry = BranchEntry {
+            entries.push(BranchEntry {
                 id: row.get("id"),
                 parent_id: row.get("parent_id"),
+                role: row.get("role"),
                 kind: row.get("kind"),
                 timestamp: to_u64(row.get("timestamp")),
                 payload: row.get("payload"),
-            };
-            children
-                .entry(entry.parent_id.clone())
-                .or_default()
-                .push(entry);
+            });
         }
-
-        // 沿「每级最新子节点」走默认分支并重建有效上下文：message 直接追加；
-        // compaction 条目经 apply_compaction 应用（语义见 nomic_ai::compaction）。
-        let mut effective: Vec<Message> = Vec::new();
-        let mut cursor: Option<String> = None; // 从根（parent_id IS NULL）出发
-        while let Some(siblings) = children.get(&cursor) {
-            // 同级取最新子节点（rowid 升序排列的最后一个）
-            let Some(entry) = siblings.last() else {
-                break;
-            };
-            if entry.kind == "compaction" {
-                let record: CompactionRecord = serde_json::from_str(&entry.payload)?;
-                effective = apply_compaction(
-                    &effective,
-                    &record.summary,
-                    record.kept_count,
-                    entry.timestamp,
-                );
-            } else {
-                effective.push(serde_json::from_str::<Message>(&entry.payload)?);
-            }
-            cursor = Some(entry.id.clone());
-        }
-        Ok(effective)
+        Ok(entries)
     }
 
     /// 列出全部 session 摘要（按末条消息时间降序，无消息的排最后）。
@@ -378,13 +399,205 @@ pub fn default_db_path() -> Result<PathBuf, SessionError> {
         .join("sessions.db"))
 }
 
-/// 分支重放用的一行 entry（`load_messages` 内部）。
+/// 分支重放用的一行 entry（`fetch_entries` 内部表示）。
 struct BranchEntry {
     id: String,
     parent_id: Option<String>,
+    role: String,
     kind: String,
     timestamp: u64,
     payload: String,
+}
+
+/// 默认分支路径：从根沿「每级最新子节点」（rowid 升序排列的最后一个）走到叶子。
+fn default_path(entries: &[BranchEntry]) -> Vec<&BranchEntry> {
+    // parent_id -> 按插入序排列的子节点
+    let mut children: HashMap<Option<&str>, Vec<&BranchEntry>> = HashMap::new();
+    for entry in entries {
+        children
+            .entry(entry.parent_id.as_deref())
+            .or_default()
+            .push(entry);
+    }
+    let mut path = Vec::new();
+    let mut cursor: Option<&str> = None; // 从根（parent_id IS NULL）出发
+    while let Some(siblings) = children.get(&cursor) {
+        let Some(&entry) = siblings.last() else {
+            break;
+        };
+        path.push(entry);
+        cursor = Some(entry.id.as_str());
+    }
+    path
+}
+
+/// `entry_id` 的祖先路径（根 → 该 entry）；entry 不属于这批 entries 时为 `None`。
+///
+/// 父指针在写入时校验存在且 entries 不可变，父链 rowid 严格递减，回溯必然终止。
+fn ancestor_path<'a>(entries: &'a [BranchEntry], entry_id: &str) -> Option<Vec<&'a BranchEntry>> {
+    let by_id: HashMap<&str, &BranchEntry> = entries
+        .iter()
+        .map(|entry| (entry.id.as_str(), entry))
+        .collect();
+    let mut path = Vec::new();
+    let mut cursor = Some(entry_id);
+    while let Some(id) = cursor {
+        let entry = by_id.get(id)?;
+        path.push(*entry);
+        cursor = entry.parent_id.as_deref();
+    }
+    path.reverse();
+    Some(path)
+}
+
+/// 沿路径重放重建有效上下文：message 直接追加；compaction 条目经
+/// `apply_compaction` 应用（语义见 `nomic_ai::compaction`）。
+fn replay(path: Vec<&BranchEntry>) -> Result<Vec<Message>, SessionError> {
+    let mut effective: Vec<Message> = Vec::new();
+    for entry in path {
+        if entry.kind == "compaction" {
+            let record: CompactionRecord = serde_json::from_str(&entry.payload)?;
+            effective = apply_compaction(
+                &effective,
+                &record.summary,
+                record.kept_count,
+                entry.timestamp,
+            );
+        } else {
+            effective.push(serde_json::from_str::<Message>(&entry.payload)?);
+        }
+    }
+    Ok(effective)
+}
+
+/// `BranchEntry` → 展示用的 [`TreeEntry`]（payload 损坏时摘要退化为占位文本）。
+fn tree_entry(entry: &BranchEntry) -> TreeEntry {
+    let (preview, has_tool_calls) = if entry.kind == "compaction" {
+        let preview = serde_json::from_str::<CompactionRecord>(&entry.payload).map_or_else(
+            |_| "（payload 损坏）".to_string(),
+            |record| format!("上下文压缩（保留 {} 条近期消息）", record.kept_count),
+        );
+        (preview, false)
+    } else {
+        serde_json::from_str::<Message>(&entry.payload).map_or_else(
+            |_| ("（payload 损坏）".to_string(), false),
+            |m| message_preview(&m),
+        )
+    };
+    TreeEntry {
+        id: entry.id.clone(),
+        parent_id: entry.parent_id.clone(),
+        role: entry.role.clone(),
+        timestamp: entry.timestamp,
+        preview,
+        has_tool_calls,
+    }
+}
+
+/// 消息的单行内容摘要与工具调用标记（`list_tree` 展示用）。
+fn message_preview(message: &Message) -> (String, bool) {
+    match message {
+        Message::User(user) => {
+            let (text, images) = match &user.content {
+                UserMessageContent::Text(text) => (text.clone(), 0),
+                UserMessageContent::Blocks(blocks) => {
+                    let text = blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            UserContent::Text(text) => Some(text.text.as_str()),
+                            UserContent::Image(_) => None,
+                        })
+                        .collect::<String>();
+                    let images = blocks
+                        .iter()
+                        .filter(|block| matches!(block, UserContent::Image(_)))
+                        .count();
+                    (text, images)
+                }
+            };
+            let preview = if images == 0 {
+                first_line(&text)
+            } else {
+                format!("🖼 图片 ×{images} {}", first_line(&text))
+            };
+            (preview.trim().to_string(), false)
+        }
+        Message::Assistant(assistant) => {
+            let has_tool_calls = assistant
+                .content
+                .iter()
+                .any(|content| matches!(content, AssistantContent::ToolCall(_)));
+            if matches!(
+                assistant.stop_reason,
+                StopReason::Error | StopReason::Aborted
+            ) {
+                let detail = assistant.error_message.as_deref().unwrap_or("未知错误");
+                return (
+                    format!("（响应失败：{}）", first_line(detail)),
+                    has_tool_calls,
+                );
+            }
+            let text = assistant.content.iter().find_map(|content| match content {
+                AssistantContent::Text(text) if !text.text.trim().is_empty() => {
+                    Some(first_line(&text.text))
+                }
+                _ => None,
+            });
+            let preview = match text {
+                Some(text) => text,
+                None if has_tool_calls => "（工具调用）".to_string(),
+                None => "（空响应）".to_string(),
+            };
+            (preview, has_tool_calls)
+        }
+        Message::ToolResult(result) => {
+            let marker = if result.is_error { "失败" } else { "结果" };
+            (format!("工具{marker}：{}", result.tool_name), false)
+        }
+    }
+}
+
+/// 首行截断到 40 字符（树列表单行展示）。
+fn first_line(text: &str) -> String {
+    const MAX_CHARS: usize = 40;
+    let line = text.lines().next().unwrap_or_default().trim();
+    if line.chars().count() <= MAX_CHARS {
+        line.to_string()
+    } else {
+        let truncated: String = line.chars().take(MAX_CHARS).collect();
+        format!("{truncated}…")
+    }
+}
+
+/// 解析追加操作的父 entry：`Some` 时校验其属于本 session（不存在报
+/// [`SessionError::EntryNotFound`]）；`None` 时链到该 session 当前最新 entry。
+async fn resolve_parent(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    session_id: &str,
+    parent_id: Option<&str>,
+) -> Result<Option<String>, SessionError> {
+    match parent_id {
+        Some(parent) => {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM entries WHERE id = ? AND session_id = ?)",
+            )
+            .bind(parent)
+            .bind(session_id)
+            .fetch_one(&mut **tx)
+            .await?;
+            if !exists {
+                return Err(SessionError::EntryNotFound(parent.to_string()));
+            }
+            Ok(Some(parent.to_string()))
+        }
+        None => Ok(sqlx::query_scalar::<_, Option<String>>(
+            "SELECT id FROM entries WHERE session_id = ? ORDER BY rowid DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .flatten()),
+    }
 }
 
 async fn session_exists(

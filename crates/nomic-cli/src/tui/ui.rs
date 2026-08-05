@@ -209,18 +209,19 @@ impl MessageBlock {
     }
 }
 
-/// 工具条目组件：gutter 竖条取状态色，状态标记 + 加粗工具名 + 暗色 (参数)，
+/// 工具条目组件：gutter 竖条取状态色，加粗工具名 + 暗色 (参数)，
 /// 结果摘要首行 `⎿` 引导、后续行对齐缩进，保持树形层次。
 fn tool_block(tool: &ToolItem, spinner: &str) -> MessageBlock {
-    let (mark, mark_style, name_style) = match tool.status {
-        ToolStatus::Running => (spinner, theme::busy(), theme::bold()),
-        ToolStatus::Ok => ("⏺", theme::ok(), theme::bold()),
-        ToolStatus::Failed => ("⏺", theme::err(), theme::err_bold()),
+    let (mark_style, name_style) = match tool.status {
+        ToolStatus::Running => (theme::busy(), theme::bold()),
+        ToolStatus::Ok => (theme::ok(), theme::bold()),
+        ToolStatus::Failed => (theme::err(), theme::err_bold()),
     };
-    let mut spans = vec![
-        Span::styled(format!("{mark} "), mark_style),
-        Span::styled(tool.name.clone(), name_style),
-    ];
+    let mut spans = Vec::new();
+    if tool.status == ToolStatus::Running {
+        spans.push(Span::styled(format!("{spinner} "), mark_style));
+    }
+    spans.push(Span::styled(tool.name.clone(), name_style));
     if !tool.args.is_empty() {
         spans.push(Span::styled(format!("({})", tool.args), theme::dim()));
     }
@@ -233,7 +234,7 @@ fn tool_block(tool: &ToolItem, spinner: &str) -> MessageBlock {
             theme::dim()
         };
         for (index, detail) in tool.detail.iter().enumerate() {
-            let prefix = if index == 0 { "  ⎿ " } else { "    " };
+            let prefix = if index == 0 { "⎿ " } else { "  " };
             block.push(Line::from(Span::styled(
                 format!("{prefix}{detail}"),
                 detail_style,
@@ -707,9 +708,9 @@ mod tests {
             .collect();
         let text = rows.join("\n");
         assert!(text.contains("bash(cargo test)"), "{text}");
-        assert!(text.contains("  ⎿ line1"), "{text}");
-        assert!(text.contains("    line2"), "{text}");
-        assert!(text.contains("    line3"), "{text}");
+        assert!(text.contains("⎿ line1"), "{text}");
+        assert!(text.contains("  line2"), "{text}");
+        assert!(text.contains("  line3"), "{text}");
     }
 
     /// 各条目共用 `▌` gutter 组件，但颜色不同：用户=accent，工具=状态色。

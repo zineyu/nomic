@@ -140,6 +140,12 @@ pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
         usage: "/copy",
     },
     SlashCommand {
+        name: "thinking",
+        aliases: &[],
+        summary: "切换 thinking 内容折叠/展开显示（默认折叠）",
+        usage: "/thinking",
+    },
+    SlashCommand {
         name: "quit",
         aliases: &["exit"],
         summary: "退出 TUI",
@@ -181,6 +187,8 @@ enum SlashAction {
     Image(String),
     /// `/copy` 复制最新一条消息到剪贴板
     Copy,
+    /// `/thinking` 切换 thinking 内容折叠/展开显示
+    Thinking,
 }
 
 impl SlashAction {
@@ -193,7 +201,12 @@ impl SlashAction {
     const fn is_local(&self) -> bool {
         matches!(
             self,
-            Self::Help | Self::Quit | Self::Copy | Self::Skill(None) | Self::Image(_)
+            Self::Help
+                | Self::Quit
+                | Self::Copy
+                | Self::Thinking
+                | Self::Skill(None)
+                | Self::Image(_)
         )
     }
 }
@@ -279,6 +292,7 @@ fn parse_slash(input: &str) -> SlashParse {
                 "tree" if !junk && arg.is_none() => SlashAction::Tree,
                 "retry" if !junk && arg.is_none() => SlashAction::Retry,
                 "copy" if !junk && arg.is_none() => SlashAction::Copy,
+                "thinking" if !junk && arg.is_none() => SlashAction::Thinking,
                 "quit" if !junk && arg.is_none() => SlashAction::Quit,
                 _ => return SlashParse::InvalidUsage(command.usage),
             };
@@ -512,6 +526,8 @@ pub(super) struct App {
     skills: Vec<SkillEntry>,
     /// 可用的 prompt templates（`/name` 调用展开与补全用）
     templates: Vec<PromptTemplate>,
+    /// thinking 内容是否折叠显示（默认折叠，`/thinking` 切换）
+    thinking_collapsed: bool,
 }
 
 impl App {
@@ -540,6 +556,7 @@ impl App {
             spinner: 0,
             skills: Vec::new(),
             templates: Vec::new(),
+            thinking_collapsed: true,
         }
     }
 
@@ -904,7 +921,8 @@ impl App {
             return self.execute_slash(action);
         }
         self.notice = Some(
-            "运行中，等待本轮结束（/help、/copy、/skill、/image、/quit 不受影响）".to_string(),
+            "运行中，等待本轮结束（/help、/copy、/thinking、/skill、/image、/quit 不受影响）"
+                .to_string(),
         );
         Vec::new()
     }
@@ -978,6 +996,16 @@ impl App {
                     self.notice = Some("没有可复制的消息".to_string());
                     Vec::new()
                 }
+            }
+            SlashAction::Thinking => {
+                self.thinking_collapsed = !self.thinking_collapsed;
+                let state = if self.thinking_collapsed {
+                    "已折叠"
+                } else {
+                    "已展开"
+                };
+                self.push_system(format!("thinking 显示：{state}（/thinking 切换）"));
+                Vec::new()
             }
             SlashAction::New => vec![Effect::NewSession],
             SlashAction::Tree => vec![Effect::ListTree],
@@ -1492,6 +1520,11 @@ impl App {
     /// 是否请求退出（事件循环退出条件）。
     pub(super) const fn should_quit(&self) -> bool {
         self.should_quit
+    }
+
+    /// thinking 内容是否折叠显示（`/thinking` 切换）。
+    pub(super) const fn thinking_collapsed(&self) -> bool {
+        self.thinking_collapsed
     }
 
     /// 模型展示名。
@@ -2072,6 +2105,10 @@ mod tests {
         assert_eq!(parse_slash("/quit"), SlashParse::Known(SlashAction::Quit));
         assert_eq!(parse_slash("/exit"), SlashParse::Known(SlashAction::Quit));
         assert_eq!(parse_slash("/copy"), SlashParse::Known(SlashAction::Copy));
+        assert_eq!(
+            parse_slash("/thinking"),
+            SlashParse::Known(SlashAction::Thinking)
+        );
         assert_eq!(parse_slash("/retry"), SlashParse::Known(SlashAction::Retry));
         assert_eq!(
             parse_slash("/foobar"),
@@ -2112,6 +2149,26 @@ mod tests {
             panic!("expected CopyText effect");
         };
         assert_eq!(text, "最新问题");
+    }
+
+    #[test]
+    fn thinking_toggles_collapse_state() {
+        let mut app = app();
+        // 默认折叠，本地命令不产生外部效果
+        assert!(app.thinking_collapsed());
+        assert!(app.execute_slash(SlashAction::Thinking).is_empty());
+        assert!(!app.thinking_collapsed());
+        assert!(app.execute_slash(SlashAction::Thinking).is_empty());
+        assert!(app.thinking_collapsed());
+        // 每次切换在聊天区留下系统提示
+        let systems = app
+            .items
+            .iter()
+            .filter(|item| matches!(item, ChatItem::System(_)))
+            .count();
+        assert_eq!(systems, 2);
+        // 本地命令：运行中也可执行
+        assert!(SlashAction::Thinking.is_local());
     }
 
     #[test]

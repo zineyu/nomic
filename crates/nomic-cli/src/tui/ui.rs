@@ -88,13 +88,22 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                         }
                         Block::Thinking(thinking) => {
                             // 同一消息块组件，暗色竖条 + 斜体正文与 assistant 输出区分，
-                            // 不加标题行，思考内容直接以 gutter 竖条表达
+                            // 不加标题行，思考内容直接以 gutter 竖条表达；
+                            // 折叠时只渲染一行占位（`/thinking` 切换）
                             let mut message = MessageBlock::new(theme::thinking_marker());
-                            for line in thinking.lines() {
+                            if app.thinking_collapsed() {
+                                let count = thinking.lines().count();
                                 message.push(Line::from(Span::styled(
-                                    line.to_string(),
+                                    format!("思考过程（{count} 行，已折叠；/thinking 展开）"),
                                     theme::thinking(),
                                 )));
+                            } else {
+                                for line in thinking.lines() {
+                                    message.push(Line::from(Span::styled(
+                                        line.to_string(),
+                                        theme::thinking(),
+                                    )));
+                                }
                             }
                             blocks.push(message.render(area.width));
                         }
@@ -820,8 +829,34 @@ mod tests {
     }
 
     /// thinking 块套用 gutter 组件：无标题，`▌` 竖条正文，颜色区别于其他条目。
+    /// 默认折叠（仅占位行），`/thinking` 展开后逐行渲染正文。
     #[test]
     fn renders_thinking_block_with_gutter() {
+        let mut app = thinking_app();
+
+        // 默认折叠：不渲染正文行，只渲染一行占位提示
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let compact = compact_text(&terminal);
+        assert!(!compact.contains("推理第一行"), "{compact}");
+        assert!(!compact.contains("推理第二行"), "{compact}");
+        assert!(compact.contains("▌思考过程（2行，已折叠"), "{compact}");
+
+        // `/thinking` 展开后渲染正文行
+        for c in "/thinking".chars() {
+            app.press(super::super::app::Key::Char(c));
+        }
+        app.press(super::super::app::Key::Enter);
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let compact = compact_text(&terminal);
+        assert!(!compact.contains("Thinking"), "{compact}");
+        assert!(compact.contains("▌推理第一行"), "{compact}");
+        assert!(compact.contains("▌推理第二行"), "{compact}");
+    }
+
+    /// 构造一条含两行 thinking 的 assistant 消息。
+    fn thinking_app() -> App {
         let mut app = App::new("test-model".to_string(), None, 200_000);
         app.handle_event(&AgentEvent::MessageStart(Box::new(Message::Assistant(
             nomic_ai::AssistantMessage {
@@ -846,21 +881,19 @@ mod tests {
                 delta: "推理第一行\n推理第二行".to_string(),
             },
         ));
+        app
+    }
 
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
-
-        let buffer = terminal.backend().buffer();
-        let compact: String = buffer
+    /// 提取 buffer 全文（去空白），便于断言可见内容。
+    fn compact_text(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
             .content()
             .iter()
             .flat_map(|cell| cell.symbol().chars())
             .filter(|c| !c.is_whitespace())
-            .collect();
-        assert!(!compact.contains("Thinking"), "{compact}");
-        assert!(compact.contains("▌推理第一行"), "{compact}");
-        assert!(compact.contains("▌推理第二行"), "{compact}");
+            .collect()
     }
 
     /// 空状态绘制欢迎页：logo、模型名与键位速查均可见。

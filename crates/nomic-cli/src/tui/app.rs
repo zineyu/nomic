@@ -183,6 +183,21 @@ enum SlashAction {
     Copy,
 }
 
+impl SlashAction {
+    /// 是否为本地命令：不触碰 agent/driver 状态（不发送 driver job），
+    /// 运行中（含工具执行中）可安全执行，不被工具调用阻塞。
+    ///
+    /// 会话命令（`/new` `/resume` `/tree` `/compact` `/retry` `/models`
+    /// `/skill:<name>`）都要经 driver 串行修改 agent 上下文，而 agent 方法
+    /// 的调用契约要求非运行状态，因此仍须等本轮结束。
+    const fn is_local(&self) -> bool {
+        matches!(
+            self,
+            Self::Help | Self::Quit | Self::Copy | Self::Skill(None) | Self::Image(_)
+        )
+    }
+}
+
 /// 解析一行输入为 slash 命令。
 ///
 /// 参数只支持 `/name:arg` 冒号形式（如 `/skill:jujutsu`）；
@@ -840,16 +855,16 @@ impl App {
         Vec::new()
     }
 
-    /// Enter：运行中拒绝；补全弹层未精确匹配时先填入候选；
-    /// 否则取出输入，按 slash 命令或普通 prompt 分发。
+    /// Enter：补全弹层未精确匹配时先填入候选；否则取出输入，
+    /// 按 slash 命令或普通 prompt 分发（运行中的口径见
+    /// [`Self::press_enter_running`]）。
     fn press_enter(&mut self) -> Vec<Effect> {
-        if self.running {
-            self.notice = Some("运行中，等待结束后再发送".to_string());
-            return Vec::new();
-        }
         if self.accept_completion_on_enter() {
             // 已填入补全候选；再次 Enter 提交
             return Vec::new();
+        }
+        if self.running {
+            return self.press_enter_running();
         }
         let Some(text) = self.take_input() else {
             if self.has_attachments() {
@@ -872,6 +887,26 @@ impl App {
             }
             SlashParse::Unknown(name) => self.submit_template(&text, &name),
         }
+    }
+
+    /// 运行中（含工具执行中）的 Enter：本地 slash 命令照常执行——
+    /// 它们不触碰 agent/driver 状态（[`SlashAction::is_local`]），
+    /// 长时间运行的工具调用不应阻塞它们；会话命令、prompt 与模板调用
+    /// 仍须等本轮结束（输入保留，结束后可再提交）。
+    fn press_enter_running(&mut self) -> Vec<Effect> {
+        let text = self.input.trim().to_string();
+        if !text.is_empty()
+            && let SlashParse::Known(action) = parse_slash(&text)
+            && action.is_local()
+        {
+            self.take_input();
+            self.notice = None;
+            return self.execute_slash(action);
+        }
+        self.notice = Some(
+            "运行中，等待本轮结束（/help、/copy、/skill、/image、/quit 不受影响）".to_string(),
+        );
+        Vec::new()
     }
 
     /// 未知 slash 命令：按 prompt template 调用尝试展开提交；未命中模板时
@@ -2646,6 +2681,78 @@ mod tests {
         assert!(app.notice().is_some_and(|n| n.contains("运行中")));
         // 输入保留，待运行结束后可再提交
         assert_eq!(app.input(), "hi");
+    }
+
+    /// 运行中（含工具执行中）：本地 slash 命令照常执行，不被工具调用阻塞。
+    #[test]
+    fn enter_while_running_allows_local_slash_commands() {
+        let mut app = app();
+        app.handle_event(&AgentEvent::AgentStart);
+
+        // /help 就地输出可用命令，不产生效果
+        app.paste_text("/help");
+        assert!(app.press(Key::Enter).is_empty());
+        assert!(
+            matches!(app.items.last(), Some(ChatItem::System(text)) if text.contains("可用命令"))
+        );
+        assert_eq!(app.input(), "");
+
+        // /copy 返回 CopyText 效果（复制源为聊天区最新消息）
+        app.items.push(ChatItem::User("已发的消息".to_string()));
+        app.paste_text("/copy");
+        let effects = app.press(Key::Enter);
+        assert!(matches!(&effects[..], [Effect::CopyText(text)] if text == "已发的消息"));
+
+        // /quit 运行中同样生效
+        app.paste_text("/quit");
+        assert!(app.press(Key::Enter).is_empty());
+        assert!(app.should_quit());
+    }
+
+    /// 运行中：会话命令（经 driver 修改 agent 上下文）仍须等本轮结束，
+    /// 输入保留供结束后提交。
+    #[test]
+    fn enter_while_running_blocks_session_commands() {
+        let mut app = app();
+        app.handle_event(&AgentEvent::AgentStart);
+        for input in [
+            "/new",
+            "/resume",
+            "/tree",
+            "/compact",
+            "/retry",
+            "/models",
+            "/skill:jujutsu",
+        ] {
+            app.paste_text(input);
+            assert!(
+                app.press(Key::Enter).is_empty(),
+                "{input} 运行中不应产生效果"
+            );
+            assert!(
+                app.notice().is_some_and(|n| n.contains("运行中")),
+                "{input} 应提示运行中"
+            );
+            assert_eq!(app.input(), input, "{input} 输入应保留");
+            app.take_input();
+        }
+    }
+
+    /// 运行中补全弹层未精确匹配时 Enter 先填入候选，再次 Enter 执行本地命令。
+    #[test]
+    fn enter_while_running_accepts_completion_before_dispatch() {
+        let mut app = app();
+        app.handle_event(&AgentEvent::AgentStart);
+        app.paste_text("/he");
+        assert!(app.completion().is_some());
+        // 第一次 Enter：填入补全候选，不提交
+        assert!(app.press(Key::Enter).is_empty());
+        assert_eq!(app.input(), "/help");
+        // 第二次 Enter：精确匹配，执行本地命令
+        assert!(app.press(Key::Enter).is_empty());
+        assert!(
+            matches!(app.items.last(), Some(ChatItem::System(text)) if text.contains("可用命令"))
+        );
     }
 
     #[test]

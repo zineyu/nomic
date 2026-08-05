@@ -54,8 +54,12 @@ session 持久化（SQLite、resume）已落地。现在实现交互模式：无
 `CancellationToken`），driver 运行 loop 并经既有事件 channel 回传 `AgentEvent`，
 完成后回 `Idle` 信号。Esc → 取消本轮 token；Ctrl+C → 运行中先取消、空闲时退出。
 
-运行中新提交的处理：最小版**拒绝**（状态栏提示「等待当前运行结束」），
+运行中新提交的处理：prompt 与模板调用**拒绝**（状态栏提示「等待当前运行结束」），
 不实现 pi 的 steering/follow-up 队列（ADR-0001 已将其裁出 M1，此处同理）。
+slash 命令按是否触碰 agent/driver 状态分流：**本地命令**（`/help`、`/copy`、
+`/skill` 列表、`/image`、`/quit`）运行中照常执行——长时间运行的工具调用
+不应阻塞它们；**会话命令**（`/new`、`/resume`、`/tree`、`/compact`、`/retry`、
+`/models`、`/skill:<name>`）要经 driver 串行修改 agent 上下文，仍须等本轮结束。
 
 ### Session 与 resume
 

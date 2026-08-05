@@ -38,7 +38,7 @@ export ANTHROPIC_API_KEY=sk-ant-...     # 或 OPENAI_API_KEY / OPENAI_BASE_URL
 # 交互 TUI（缺省，设计见 docs/adr/0002）
 cargo run -p nomic-cli
 # 键位：Enter 发送 · Tab 补全 · Esc 取消运行 · Ctrl+C 退出 · ↑/↓/PgUp/PgDn/滚轮滚动
-# 命令：/help 查看全部（/new 开启新对话，/resume 恢复历史 session，/tree 浏览会话树并创建分支，/models 切换模型或设置思考级别，/compact 压缩上下文，/retry 重试失败的响应，/quit 退出），输入 / 自动补全
+# 命令：/help 查看全部（/new 开启新对话，/resume 恢复历史 session，/tree 浏览会话树并创建分支，/models 跨 provider 切换模型或设置思考级别，/compact 压缩上下文，/retry 重试失败的响应，/quit 退出），输入 / 自动补全
 
 # print 模式（非交互，管道可用）
 nomic -p "列出当前目录的文件"
@@ -93,17 +93,22 @@ X11 / Wayland。从文件管理器粘贴或拖入的图片文件路径（含 `fi
 `/compact [聚焦指令]` 手动触发。压缩结果落库，resume 后保持压缩状态。
 可在配置文件的 `[compaction]` 表中调整阈值（见 `config.example.toml`）。
 
-## 配置文件
+## 配置
 
-可选的用户级配置：`$XDG_CONFIG_HOME/nomic/config.toml`（缺省 `~/.config/nomic/config.toml`）。
-仓库根目录的 [`config.example.toml`](config.example.toml) 是带注释的完整示例，复制后按需修改。
-全部字段可选；优先级为 CLI 参数 > 环境变量 > 配置文件 > 内置默认。
-未知键或非法取值（provider / reasoning）会在启动时硬报错。
+nomic 的配置正从配置文件逐步迁移到 sqlite（设计见 [docs/adr/0009](docs/adr/0009-sqlite-config-model-selection.md)），当前两者共存：
+
+- **模型选择**在 sqlite（session 库的 `config` 表）：TUI 内 `/models` 跨 provider
+  选择（`<provider>/<模型id>` 格式），选择结果追加保存；启动时按
+  **CLI 参数 > sqlite 配置（从最新选择向最老逐条回退） > 内置默认** 解析，
+  失效的选择（provider 已删除、模型已不存在）告警后自动回退到更早的选择
+- 其余配置（provider 定义、连接/请求参数、压缩阈值等）仍在用户级配置文件
+  `$XDG_CONFIG_HOME/nomic/config.toml`（缺省 `~/.config/nomic/config.toml`）。
+  仓库根目录的 [`config.example.toml`](config.example.toml) 是带注释的完整示例，复制后按需修改。
+  全部字段可选；优先级为 CLI 参数 > 环境变量 > 配置文件 > 内置默认。
+  未知键或非法取值（reasoning）会在启动时硬报错
 
 ```toml
 # ~/.config/nomic/config.toml
-provider = "openai"
-model = "deepseek-chat"
 base_url = "https://your.gateway/v1"
 reasoning = "low"            # minimal / low / medium / high
 temperature = 0.7
@@ -111,6 +116,9 @@ max_tokens = 8192
 append_system = "总是用中文回复。"
 # api_key = "..."           # 最低优先级兜底，建议优先用环境变量
 ```
+
+启动时也可用 `--provider` / `--model` 临时指定（`--model` 支持
+`<provider>/<模型id>` 全形式），优先级高于数据库中保存的选择、不写回数据库。
 
 ### 多 provider 与模型规格
 
@@ -120,9 +128,6 @@ provider 与 base_url 永远来自用户指定；模型规格字段逐字段按
 **配置 > [models.dev](https://models.dev) > 内置默认** 解析：
 
 ```toml
-provider = "deepseek"
-model = "deepseek-chat"
-
 [providers.anthropic]
 base_url = "https://api.anthropic.com"
 # api 可省略：anthropic→anthropic_messages，openai→open_ai_completions

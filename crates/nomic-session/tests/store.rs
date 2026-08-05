@@ -690,3 +690,92 @@ async fn append_compaction_with_explicit_parent_branches() {
         .await;
     assert!(matches!(result, Err(SessionError::EntryNotFound(_))));
 }
+
+// ── config 表：append-only 配置历史与回退读取 ──────────────────────────────
+
+#[tokio::test]
+async fn config_history_is_append_only_newest_first() {
+    let store = SessionStore::in_memory().await.unwrap();
+    assert!(store.config_history("model").await.unwrap().is_empty());
+
+    store
+        .set_config("model", &serde_json::json!("anthropic/claude-sonnet-4-5"))
+        .await
+        .unwrap();
+    store
+        .set_config("model", &serde_json::json!("openai/gpt-5.2"))
+        .await
+        .unwrap();
+    store
+        .set_config("other", &serde_json::json!({"enabled": true}))
+        .await
+        .unwrap();
+
+    let history = store.config_history("model").await.unwrap();
+    assert_eq!(
+        history,
+        vec![
+            serde_json::json!("openai/gpt-5.2"),
+            serde_json::json!("anthropic/claude-sonnet-4-5"),
+        ],
+        "最新在前；不同 key 互不干扰"
+    );
+}
+
+#[tokio::test]
+async fn get_config_falls_back_past_mismatched_rows() {
+    let store = SessionStore::in_memory().await.unwrap();
+    store
+        .set_config("model", &serde_json::json!("openai/gpt-5.2"))
+        .await
+        .unwrap();
+    // 最新一行类型不符（本可能被库外写入/未来 schema 演进产生）：跳过它回退
+    store
+        .set_config("model", &serde_json::json!({"provider": "openai"}))
+        .await
+        .unwrap();
+
+    let selected: Option<String> = store.get_config("model").await.unwrap();
+    assert_eq!(selected.as_deref(), Some("openai/gpt-5.2"));
+}
+
+#[tokio::test]
+async fn get_config_returns_none_when_nothing_to_fall_back_to() {
+    let store = SessionStore::in_memory().await.unwrap();
+    let missing: Option<String> = store.get_config("model").await.unwrap();
+    assert_eq!(missing, None);
+
+    store
+        .set_config("model", &serde_json::json!(42))
+        .await
+        .unwrap();
+    let mismatched: Option<String> = store.get_config("model").await.unwrap();
+    assert_eq!(mismatched, None, "唯一的行类型不符：无可回退");
+}
+
+#[tokio::test]
+async fn config_records_update_timestamp() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sessions.db");
+    let store = SessionStore::open(&path).await.unwrap();
+    let before = nomic_ai::now_millis();
+    store
+        .set_config("model", &serde_json::json!("openai/gpt-5.2"))
+        .await
+        .unwrap();
+    let after = nomic_ai::now_millis();
+
+    // updated_at 由写入方记录（Unix 毫秒）；经独立连接直查验证列存在且落值
+    let pool = sqlx::SqlitePool::connect(path.to_str().unwrap())
+        .await
+        .unwrap();
+    let updated_at: i64 =
+        sqlx::query_scalar("SELECT updated_at FROM config WHERE \"key\" = 'model'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        before.cast_signed() <= updated_at && updated_at <= after.cast_signed(),
+        "updated_at {updated_at} 应落在写入前后 [{before}, {after}] 之间"
+    );
+}

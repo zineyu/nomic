@@ -7,6 +7,9 @@
 //!   加载指定 entry 所在分支、追加时显式 `parent_id` 即创建分支
 //! - 压缩条目（`kind = 'compaction'`）记录上下文压缩结果；加载时重放重建
 //!   有效上下文（重建语义见 `nomic_ai::compaction` module 文档）
+//! - `config` 表存配置历史：每次修改新增一行（append-only，含更新时间戳），
+//!   读取方从最新一行向最老一行逐步回退（feedback），直到无可回退的行为止；
+//!   值用 sqlite 原生 JSON 类型（JSONB）存储
 //! - 全局单库，默认位于 XDG data dir：`$XDG_DATA_HOME/nomic/sessions.db`
 //!
 //! 消息 payload 原样存 [`Message`] 的 serde JSON；`role`/`timestamp` 为提取列，
@@ -435,6 +438,60 @@ impl SessionStore {
             }
         }
         Ok(titles)
+    }
+
+    // ── 配置历史（config 表，append-only） ────────────────────────────────
+
+    /// 追加一行配置值：每次修改新增一行，旧行保留供回退（feedback）。
+    ///
+    /// 值序列化为 JSON 文本后经 `jsonb()` 以 sqlite 原生 JSON 类型存储；
+    /// [`serde_json::Value`] 必然合法，`jsonb()` 校验防御的是未来的调用路径。
+    pub async fn set_config(
+        &self,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), SessionError> {
+        let payload = serde_json::to_string(value)?;
+        sqlx::query("INSERT INTO config (\"key\", value, updated_at) VALUES (?, jsonb(?), ?)")
+            .bind(key)
+            .bind(payload)
+            .bind(to_i64(now_millis()))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 某配置键的全部历史值（最新在前），供读取方逐行回退（feedback）。
+    ///
+    /// 文本无法解析为 JSON 的行（只可能来自库外写入，`jsonb()` 在写入侧
+    /// 已校验）跳过——回退语义要求一行损坏不阻断更早的可用配置。
+    pub async fn config_history(&self, key: &str) -> Result<Vec<serde_json::Value>, SessionError> {
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT json(value) FROM config WHERE \"key\" = ? ORDER BY id DESC",
+        )
+        .bind(key)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .filter_map(|text| serde_json::from_str(text).ok())
+            .collect())
+    }
+
+    /// 最新一条可反序列化为 `T` 的配置值：从最新向最老逐行回退，跳过取值
+    /// 不符的行；全部行都不符或无历史时返回 `None`（无可回退）。
+    ///
+    /// 只按「能否解析为 `T`」回退；需要按领域语义继续校验（如模型已不存在）
+    /// 的读取方用 [`Self::config_history`] 自行遍历回退链。
+    pub async fn get_config<T: serde::de::DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> Result<Option<T>, SessionError> {
+        Ok(self
+            .config_history(key)
+            .await?
+            .into_iter()
+            .find_map(|value| serde_json::from_value(value).ok()))
     }
 }
 

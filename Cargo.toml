@@ -102,6 +102,13 @@ grep-searcher = "0.1"
 ignore = "0.4"
 globset = "0.4"
 
+# ── 进程组管理（nomic-tools 的 bash 工具超时强杀）───────────────────────────
+# killpg 是 safe 封装（workspace 禁用 unsafe_code）；仅启用所需 feature
+nix = { version = "0.29", default-features = false, features = [
+  "signal",
+  "process",
+] }
+
 # ── Markdown 渲染（nomic-cli TUI）──────────────────────────────────────────
 # 仅需 pull parser，裁剪 html/getopts 等默认 feature
 pulldown-cmark = { version = "0.13", default-features = false }

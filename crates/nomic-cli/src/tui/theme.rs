@@ -99,6 +99,15 @@ pub(super) const fn selected() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+/// NORMAL 模式徽标：反色绿块，与 INSERT 的 accent 文本强烈区分
+///（模式必须一眼可辨，ADR-0011）。
+pub(super) const fn normal_badge() -> Style {
+    Style::new()
+        .fg(Color::Black)
+        .bg(OK)
+        .add_modifier(Modifier::BOLD)
+}
+
 /// Markdown 标题：accent + 加粗。
 pub(super) const fn heading() -> Style {
     Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)

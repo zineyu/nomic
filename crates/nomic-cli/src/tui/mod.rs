@@ -25,6 +25,7 @@ use std::io;
 
 use anyhow::{Context as _, Result};
 use crossterm::{
+    cursor::SetCursorStyle,
     event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
         Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
@@ -47,7 +48,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use app::{App, Effect, Key, PickerRow, SkillEntry};
+use app::{App, Effect, Key, Mode, PickerRow, SkillEntry};
 
 use crate::bootstrap::{ModelChoice, ModelResolver, ModelSelection};
 use crate::{Cli, bootstrap};
@@ -196,6 +197,9 @@ pub async fn run(cli: &Cli) -> Result<()> {
     let mut term_events = EventStream::new();
     // spinner 帧推进：仅运行中需要动画，空闲时分支挂起不唤醒事件循环
     let mut spinner_ticker = tokio::time::interval(std::time::Duration::from_millis(100));
+    // 光标形状随交互模式切换（vim 情境信号）：NORMAL 实心块，其余竖条
+    let mut last_mode = app.mode();
+    set_cursor_style(last_mode);
     loop {
         terminal
             .draw(|frame| ui::draw(frame, &mut app))
@@ -212,8 +216,21 @@ pub async fn run(cli: &Cli) -> Result<()> {
         if handle_wake(wake, &mut app, &mut driver).await || app.should_quit() {
             break;
         }
+        if app.mode() != last_mode {
+            last_mode = app.mode();
+            set_cursor_style(last_mode);
+        }
     }
     Ok(())
+}
+
+/// 光标形状随模式切换：NORMAL 实心块，INSERT/PICKER 竖条。
+fn set_cursor_style(mode: Mode) {
+    let style = match mode {
+        Mode::Normal => SetCursorStyle::SteadyBlock,
+        Mode::Insert | Mode::Picker => SetCursorStyle::SteadyBar,
+    };
+    let _ = execute!(io::stdout(), style);
 }
 
 /// 启动 agent driver：专属 tokio 任务持有 Agent，串行执行 job，完成后回传结果。
@@ -604,6 +621,7 @@ const fn map_key(key: KeyEvent) -> Option<Key> {
         (KeyCode::Down, _) => Key::Down,
         (KeyCode::PageUp, _) => Key::PageUp,
         (KeyCode::PageDown, _) => Key::PageDown,
+        (KeyCode::Char(c), KeyModifiers::ALT) => Key::Alt(c),
         (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Key::Char(c),
         _ => return None,
     })
@@ -1527,7 +1545,9 @@ impl TerminalGuard {
             LeaveAlternateScreen,
             DisableMouseCapture,
             DisableBracketedPaste,
-            PopKeyboardEnhancementFlags
+            PopKeyboardEnhancementFlags,
+            // 恢复用户惯用光标形状（NORMAL 的实心块不残留到 shell）
+            SetCursorStyle::DefaultUserShape
         );
     }
 }

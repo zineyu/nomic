@@ -425,6 +425,24 @@ struct PendingImage {
 /// PgUp/PgDn 的滚动步长。
 const PAGE_SCROLL: u16 = 10;
 
+/// NORMAL 模式 Ctrl+D/Ctrl+U 的半页滚动步长。
+const HALF_PAGE_SCROLL: u16 = 5;
+
+/// TUI 交互模式（ADR-0011）：模式是一等状态，每个按键在当前模式只有一个语义。
+///
+/// COMMAND 不单列变体：NORMAL 下 `:` 即 INSERT + 预填 `/`（Phase 2 实现）；
+/// SEARCH 同理留给 Phase 2。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Mode {
+    /// 输入（默认）：编辑与提交 prompt、slash 命令、Tab 补全
+    Insert,
+    /// 浏览：滚动聊天区、跳转、复制；输入字符不进入缓冲（草稿保留）
+    Normal,
+    /// 选择器打开（`/resume`、`/models`、`/tree`），接管键位。
+    /// 派生态：由 `picker.is_some()` 决定，不入 `App::mode` 字段
+    Picker,
+}
+
 /// 语义化按键：与 crossterm 解耦，保持状态层可脱离终端单测。
 /// 由事件循环（mod.rs）从 `KeyEvent` 映射；Ctrl+V 粘贴需异步读剪贴板，
 /// 由事件循环拦截处理，不经此枚举。
@@ -432,8 +450,11 @@ const PAGE_SCROLL: u16 = 10;
 pub(super) enum Key {
     /// 普通字符输入（含 Shift 修饰的可见字符）
     Char(char),
-    /// Ctrl+字母（Ctrl+C/D 取消或退出）
+    /// Ctrl+字母（Ctrl+C/D 取消或退出；INSERT 下 Ctrl+W/U/A/E 词级编辑；
+    /// NORMAL 下 Ctrl+D/U 半页滚动）
     Ctrl(char),
+    /// Alt+字母（INSERT 下 Alt+B/F 词级移动）
+    Alt(char),
     Enter,
     /// Shift+Enter 手动换行
     Newline,
@@ -505,6 +526,13 @@ pub(super) enum Effect {
 #[derive(Debug)]
 pub(super) struct App {
     items: Vec<ChatItem>,
+    /// 交互模式（ADR-0011）：只取 Insert/Normal；Picker 是派生态
+    ///（`picker.is_some()` 时 [`Self::mode`] 返回 Picker），不入此字段
+    mode: Mode,
+    /// NORMAL 下 `gg` 的首键已按下（等待第二键）
+    pending_g: bool,
+    /// 首次进入 NORMAL 的一次性键位提示是否已展示
+    normal_hint_shown: bool,
     /// 输入缓冲（可多行，`\n` 为 Shift+Enter 插入的手动换行）
     input: String,
     /// 光标位置（字节索引，始终落在 char 边界）
@@ -554,6 +582,9 @@ impl App {
     ) -> Self {
         Self {
             items: Vec::new(),
+            mode: Mode::Insert,
+            pending_g: false,
+            normal_hint_shown: false,
             input: String::new(),
             cursor: 0,
             completion: None,
@@ -765,14 +796,31 @@ impl App {
 
     // ── 按键（语义分发） ────────────────────────────────────────────────────
 
-    /// 消费一个按键，返回需要事件循环接线执行的语义效果。
-    /// picker/补全/编辑器/slash 的路由全部在此内部完成。
-    pub(super) fn press(&mut self, key: Key) -> Vec<Effect> {
-        // 选择器打开时接管键位（slash 命令仅在空闲时可提交，
-        // 此时 agent 必空闲，无运行可取消）
+    /// 当前交互模式（渲染光标/徽标与外部查询用）：picker 打开时派生为
+    /// Picker，否则为字段值（Insert/Normal）。
+    pub(super) const fn mode(&self) -> Mode {
         if self.picker.is_some() {
-            return self.press_picker(key);
+            Mode::Picker
+        } else {
+            self.mode
         }
+    }
+
+    /// 消费一个按键，返回需要事件循环接线执行的语义效果。
+    /// 按交互模式分发（ADR-0011）：picker/补全/编辑器/slash 的路由全部
+    /// 在此内部完成。
+    pub(super) fn press(&mut self, key: Key) -> Vec<Effect> {
+        match self.mode() {
+            // 选择器打开时接管键位（slash 命令仅在空闲时可提交，
+            // 此时 agent 必空闲，无运行可取消）
+            Mode::Picker => self.press_picker(key),
+            Mode::Normal => self.press_normal(key),
+            Mode::Insert => self.press_insert(key),
+        }
+    }
+
+    /// INSERT 模式键位：编辑与提交 prompt、slash 命令、补全。
+    fn press_insert(&mut self, key: Key) -> Vec<Effect> {
         match key {
             Key::Ctrl('c' | 'd') => {
                 if self.running {
@@ -782,13 +830,30 @@ impl App {
                     Vec::new()
                 }
             }
-            Key::Esc => {
-                // 补全弹层可见时优先关闭弹层，否则取消当前运行
-                if !self.dismiss_completion() && self.running {
-                    vec![Effect::Cancel]
-                } else {
-                    Vec::new()
-                }
+            Key::Esc => self.insert_esc(),
+            Key::Ctrl('w') => {
+                self.delete_word_back();
+                Vec::new()
+            }
+            Key::Ctrl('u') => {
+                self.delete_to_line_start();
+                Vec::new()
+            }
+            Key::Ctrl('a') => {
+                self.cursor_line_home();
+                Vec::new()
+            }
+            Key::Ctrl('e') => {
+                self.cursor_line_end();
+                Vec::new()
+            }
+            Key::Alt('b') => {
+                self.cursor_word_left();
+                Vec::new()
+            }
+            Key::Alt('f') => {
+                self.cursor_word_right();
+                Vec::new()
             }
             Key::Tab => {
                 self.tab_complete();
@@ -821,19 +886,11 @@ impl App {
             }
             // 补全弹层可见时 ↑/↓ 移动选中项，否则滚动聊天区
             Key::Up => {
-                if self.completion.is_some() {
-                    self.completion_select(-1);
-                } else {
-                    self.scroll_up(1);
-                }
+                self.insert_vertical(-1);
                 Vec::new()
             }
             Key::Down => {
-                if self.completion.is_some() {
-                    self.completion_select(1);
-                } else {
-                    self.scroll_down(1);
-                }
+                self.insert_vertical(1);
                 Vec::new()
             }
             Key::PageUp => {
@@ -848,7 +905,134 @@ impl App {
                 self.insert_char(c);
                 Vec::new()
             }
-            Key::Ctrl(_) => Vec::new(),
+            Key::Ctrl(_) | Key::Alt(_) => Vec::new(),
+        }
+    }
+
+    /// INSERT 的 Esc 退回栈（ADR-0011）：关补全弹层 → 取消运行 → 回 NORMAL。
+    /// 每层都是无损操作，任何时刻按 Esc 都安全。
+    fn insert_esc(&mut self) -> Vec<Effect> {
+        if self.dismiss_completion() {
+            Vec::new()
+        } else if self.running {
+            vec![Effect::Cancel]
+        } else {
+            self.enter_normal();
+            Vec::new()
+        }
+    }
+
+    /// INSERT 的 ↑/↓：补全弹层可见时移动选中项，否则滚动聊天区。
+    const fn insert_vertical(&mut self, delta: isize) {
+        if self.completion.is_some() {
+            self.completion_select(delta);
+        } else if delta < 0 {
+            self.scroll_up(1);
+        } else {
+            self.scroll_down(1);
+        }
+    }
+
+    /// NORMAL 模式键位（ADR-0011）：浏览聊天区与复制；输入字符不进入
+    /// 缓冲（草稿保留，`i`/`a`/`Enter` 回到 INSERT 继续编辑）。
+    fn press_normal(&mut self, key: Key) -> Vec<Effect> {
+        // `gg` 的第二键：到顶（渲染时经 clamp_scroll 钳到实际上限）；
+        // 其他键清掉 pending 后照常处理（比 vim 的「无效序列吞键」宽容）
+        if self.pending_g {
+            self.pending_g = false;
+            if key == Key::Char('g') {
+                self.scroll_up(u16::MAX);
+                return Vec::new();
+            }
+        }
+        match key {
+            // i/a 回到光标原处继续编辑；Esc 放弃浏览直接返回
+            Key::Char('i' | 'a') | Key::Esc => {
+                self.leave_normal();
+                Vec::new()
+            }
+            // Enter 回 INSERT 并把光标置于输入末尾（ADR-0011）
+            Key::Enter => {
+                self.leave_normal();
+                self.cursor_end();
+                Vec::new()
+            }
+            Key::Char('g') => {
+                self.pending_g = true;
+                Vec::new()
+            }
+            Key::Char('G') => {
+                self.scroll_to_bottom();
+                Vec::new()
+            }
+            Key::Char('k') | Key::Up => {
+                self.scroll_up(1);
+                Vec::new()
+            }
+            Key::Char('j') | Key::Down => {
+                self.scroll_down(1);
+                Vec::new()
+            }
+            // Ctrl+D 在 NORMAL 让位 vim 语义（半页滚动）；取消/退出
+            // 统一由 Ctrl+C 承担（与 INSERT 的 Ctrl+C 同口径）
+            Key::Ctrl('u') => {
+                self.scroll_up(HALF_PAGE_SCROLL);
+                Vec::new()
+            }
+            Key::Ctrl('d') => {
+                self.scroll_down(HALF_PAGE_SCROLL);
+                Vec::new()
+            }
+            Key::PageUp => {
+                self.scroll_up(PAGE_SCROLL);
+                Vec::new()
+            }
+            Key::PageDown => {
+                self.scroll_down(PAGE_SCROLL);
+                Vec::new()
+            }
+            // 复制最新一条消息（等价 `/copy`）
+            Key::Char('Y') => self.copy_latest(),
+            Key::Ctrl('c') => {
+                if self.running {
+                    vec![Effect::Cancel]
+                } else {
+                    self.should_quit = true;
+                    Vec::new()
+                }
+            }
+            // 其余按键（含普通字符）忽略：不污染输入缓冲
+            _ => Vec::new(),
+        }
+    }
+
+    /// 进入 NORMAL：草稿保留；首次进入给一次性键位提示。
+    fn enter_normal(&mut self) {
+        self.mode = Mode::Normal;
+        self.pending_g = false;
+        // 防御：退回栈保证进 NORMAL 时弹层已关，这里兜底
+        self.completion = None;
+        if !self.normal_hint_shown {
+            self.normal_hint_shown = true;
+            self.notice =
+                Some("已进入浏览模式：i 返回输入 · j/k 滚动 · gg/G 顶/底 · Y 复制".to_string());
+        }
+    }
+
+    /// 离开 NORMAL 回 INSERT：清掉 `gg` 首键 pending，避免残留的 g
+    /// 在下次进入 NORMAL 时被误当第二键。
+    const fn leave_normal(&mut self) {
+        self.mode = Mode::Insert;
+        self.pending_g = false;
+    }
+
+    /// 复制最新一条消息到剪贴板（`/copy` 与 NORMAL `Y` 共用）。
+    fn copy_latest(&mut self) -> Vec<Effect> {
+        if let Some(text) = self.latest_message_text() {
+            vec![Effect::CopyText(text)]
+        } else {
+            self.notice = Some("没有可复制的消息".to_string());
+            Vec::new()
         }
     }
 
@@ -1006,14 +1190,7 @@ impl App {
             SlashAction::Skill(None) => vec![Effect::ListSkills],
             SlashAction::Skill(Some(name)) => vec![Effect::LoadSkill(name)],
             SlashAction::Image(path) => vec![Effect::AttachImage(path)],
-            SlashAction::Copy => {
-                if let Some(text) = self.latest_message_text() {
-                    vec![Effect::CopyText(text)]
-                } else {
-                    self.notice = Some("没有可复制的消息".to_string());
-                    Vec::new()
-                }
-            }
+            SlashAction::Copy => self.copy_latest(),
             SlashAction::Thinking => {
                 self.thinking_collapsed = !self.thinking_collapsed;
                 let state = if self.thinking_collapsed {
@@ -1125,6 +1302,8 @@ impl App {
 
     /// 粘贴一段文本到光标处（可含换行；`\r\n` 统一为 `\n`），随后重算补全。
     pub(super) fn paste_text(&mut self, text: &str) {
+        // 粘贴的意图是编辑：NORMAL 下先回到 INSERT（草稿保留）
+        self.mode = Mode::Insert;
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         if text.is_empty() {
             return;
@@ -1177,6 +1356,101 @@ impl App {
     fn cursor_end(&mut self) {
         self.cursor = self.input.len();
         self.refresh_completion();
+    }
+
+    /// Ctrl+A：光标移到当前逻辑行开头（多行输入只作用当前行）。
+    fn cursor_line_home(&mut self) {
+        let start = self.input[..self.cursor]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        if start != self.cursor {
+            self.cursor = start;
+            self.refresh_completion();
+        }
+    }
+
+    /// Ctrl+E：光标移到当前逻辑行末尾（多行输入只作用当前行）。
+    fn cursor_line_end(&mut self) {
+        let end = self.input[self.cursor..]
+            .find('\n')
+            .map_or(self.input.len(), |offset| self.cursor + offset);
+        if end != self.cursor {
+            self.cursor = end;
+            self.refresh_completion();
+        }
+    }
+
+    /// Ctrl+U：删除到当前逻辑行开头（多行输入只清当前行）。
+    fn delete_to_line_start(&mut self) {
+        let start = self.input[..self.cursor]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        if start < self.cursor {
+            self.input.replace_range(start..self.cursor, "");
+            self.cursor = start;
+            self.refresh_completion();
+        }
+    }
+
+    /// Ctrl+W：删除光标前的一个词（连同词前的空白间隔）。
+    fn delete_word_back(&mut self) {
+        let target = self.word_left_pos();
+        if target < self.cursor {
+            self.input.replace_range(target..self.cursor, "");
+            self.cursor = target;
+            self.refresh_completion();
+        }
+    }
+
+    /// Alt+B：光标移到前一个词的开头。
+    fn cursor_word_left(&mut self) {
+        let target = self.word_left_pos();
+        if target != self.cursor {
+            self.cursor = target;
+            self.refresh_completion();
+        }
+    }
+
+    /// 光标前一词开头的字节索引：先跳过非词字符（空白/标点间隔），
+    /// 再跳过词字符。
+    fn word_left_pos(&self) -> usize {
+        let mut target = self.cursor;
+        let mut in_word = false;
+        for (index, c) in self.input[..self.cursor].char_indices().rev() {
+            if is_word_char(c) {
+                in_word = true;
+            } else if in_word {
+                break;
+            }
+            target = index;
+        }
+        target
+    }
+
+    /// Alt+F：光标移到后一个词的开头（先跳过当前所在的词，再跳过词间隔）。
+    fn cursor_word_right(&mut self) {
+        let after = &self.input[self.cursor..];
+        // 光标在词中时先跳过该词剩余部分
+        let rest = if after.chars().next().is_some_and(is_word_char) {
+            let word_len: usize = after
+                .chars()
+                .take_while(|&c| is_word_char(c))
+                .map(char::len_utf8)
+                .sum();
+            &after[word_len..]
+        } else {
+            after
+        };
+        let gap_len: usize = rest
+            .chars()
+            .take_while(|&c| !is_word_char(c))
+            .map(char::len_utf8)
+            .sum();
+        let target = self.input.len() - rest.len() + gap_len;
+        if target != self.cursor {
+            self.cursor = target;
+            self.refresh_completion();
+        }
     }
 
     /// 取出待提交的输入并清空缓冲；空输入返回 `None`。
@@ -1640,6 +1914,12 @@ fn insert_block(blocks: &mut Vec<Block>, index: usize, block: Block) {
 fn step_row(index: usize, direction: isize, len: usize) -> Option<usize> {
     let next = index.checked_add_signed(direction)?;
     (next < len).then_some(next)
+}
+
+/// 词字符判定（INSERT 词级移动/删除共用）：字母数字与下划线。
+/// CJK 字符的 `is_alphanumeric` 为真，连续中文视为一个长词。
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 /// `/image` 的用法提示（以 SLASH_COMMANDS 为唯一来源）。
@@ -2912,6 +3192,198 @@ mod tests {
         let effects = running.press(Key::Ctrl('c'));
         assert!(matches!(&effects[..], [Effect::Cancel]));
         assert!(!running.should_quit());
+    }
+
+    /// Esc 退回栈（ADR-0011）：关补全弹层 → 取消运行 → 回 NORMAL。
+    /// 每层无损：弹层关闭留在 INSERT，取消运行留在 INSERT，空闲才进 NORMAL。
+    #[test]
+    fn esc_retreat_stack() {
+        // 3. 运行中：取消运行，留在 INSERT
+        let mut running = app();
+        running.handle_event(&AgentEvent::AgentStart);
+        let effects = running.press(Key::Esc);
+        assert!(matches!(&effects[..], [Effect::Cancel]));
+        assert_eq!(running.mode(), Mode::Insert);
+
+        // 1. 弹层开着：关弹层，留在 INSERT
+        let mut app = app();
+        app.paste_text("/h");
+        assert!(app.completion().is_some());
+        assert!(app.press(Key::Esc).is_empty());
+        assert!(app.completion().is_none());
+        assert_eq!(app.mode(), Mode::Insert);
+        assert_eq!(app.input(), "/h", "输入不受 Esc 影响");
+
+        // 2. 空闲：进 NORMAL；一次性提示只出现一次
+        assert!(app.press(Key::Esc).is_empty());
+        assert_eq!(app.mode(), Mode::Normal);
+        assert!(app.notice().is_some(), "首次进 NORMAL 给一次性提示");
+        app.press(Key::Char('i'));
+        app.warn("其他提示");
+        app.press(Key::Esc);
+        assert_eq!(app.notice(), Some("其他提示"), "一次性提示只出现一次");
+    }
+
+    /// NORMAL：j/k 滚动，字符不污染输入缓冲（草稿保留），
+    /// i 回原光标、Enter 到输入末尾返回 INSERT。
+    #[test]
+    fn normal_mode_navigates_and_preserves_draft() {
+        let mut app = app();
+        app.paste_text("草稿内容");
+        let draft_len = app.input().len();
+        app.press(Key::Esc);
+        assert_eq!(app.mode(), Mode::Normal);
+
+        // 字符不进入缓冲；j/k 滚动
+        assert!(app.press(Key::Char('x')).is_empty());
+        assert_eq!(app.input(), "草稿内容");
+        app.press(Key::Char('k'));
+        assert_eq!(app.scroll(), 1);
+        app.press(Key::Char('j'));
+        assert_eq!(app.scroll(), 0);
+
+        // i 回 INSERT，草稿与光标位置保留
+        assert!(app.press(Key::Char('i')).is_empty());
+        assert_eq!(app.mode(), Mode::Insert);
+        assert_eq!(app.input(), "草稿内容");
+
+        // Enter 回 INSERT：光标到输入末尾（「草稿内容」4 个 CJK 字符，宽 8 列）
+        app.press(Key::Home);
+        app.press(Key::Esc);
+        app.press(Key::Enter);
+        assert_eq!(app.mode(), Mode::Insert);
+        let (row, col) = app.cursor_position();
+        assert_eq!((row, col), (0, 8), "光标在末尾：{row},{col}");
+        assert_eq!(app.input().len(), draft_len);
+    }
+
+    /// NORMAL：gg 到顶、G 回底（跟随模式）、Ctrl+D/U 半页滚动；
+    /// g 后接非 g 键吞掉 pending，该键照常处理。
+    #[test]
+    fn normal_mode_gg_g_and_half_page_scroll() {
+        let mut app = app();
+        app.press(Key::Esc);
+
+        app.press(Key::Char('g'));
+        app.press(Key::Char('g'));
+        assert_eq!(app.scroll(), u16::MAX, "gg 滚到顶（渲染时钳到上限）");
+
+        app.press(Key::Char('G'));
+        assert_eq!(app.scroll(), 0, "G 回底");
+
+        app.press(Key::Ctrl('u'));
+        assert_eq!(app.scroll(), 5);
+        app.press(Key::Ctrl('d'));
+        assert_eq!(app.scroll(), 0);
+
+        // g + j：pending 清除，j 照常滚动
+        app.press(Key::Char('g'));
+        app.press(Key::Char('j'));
+        assert_eq!(app.scroll(), 0, "j 向下滚动钳在 0");
+        app.press(Key::Char('g'));
+        app.press(Key::Char('k'));
+        assert_eq!(app.scroll(), 1, "k 正常上滚，未被 gg 吞掉");
+    }
+
+    /// NORMAL：Y 复制最新一条消息（与 /copy 同效果）；无消息时提示。
+    #[test]
+    fn normal_mode_y_copies_latest_message() {
+        let mut empty = app();
+        empty.press(Key::Esc);
+        assert!(empty.press(Key::Char('Y')).is_empty());
+        assert_eq!(empty.notice(), Some("没有可复制的消息"));
+
+        let mut app = app();
+        app.load_history(&[*user_message("你好")]);
+        app.press(Key::Esc);
+        let effects = app.press(Key::Char('Y'));
+        assert!(matches!(&effects[..], [Effect::CopyText(text)] if text == "你好"));
+    }
+
+    /// NORMAL：Ctrl+C 与 INSERT 同口径（取消/退出）；Ctrl+D 让位半页滚动。
+    #[test]
+    fn normal_mode_ctrl_c_quits_ctrl_d_scrolls() {
+        let mut idle = app();
+        idle.press(Key::Esc);
+        assert!(idle.press(Key::Ctrl('c')).is_empty());
+        assert!(idle.should_quit());
+
+        let mut running = app();
+        running.press(Key::Esc);
+        running.handle_event(&AgentEvent::AgentStart);
+        assert!(matches!(
+            &running.press(Key::Ctrl('c'))[..],
+            [Effect::Cancel]
+        ));
+    }
+
+    /// picker 打开时模式派生为 Picker（ADR-0011）。
+    #[test]
+    fn mode_derives_picker_when_open() {
+        let mut app = app();
+        assert_eq!(app.mode(), Mode::Insert);
+        app.open_resume_picker(vec![PickerRow {
+            selectable: true,
+            id: "s1".to_string(),
+            text: "row".to_string(),
+        }]);
+        assert_eq!(app.mode(), Mode::Picker);
+    }
+
+    /// INSERT 词级编辑：Ctrl+W 删词、Ctrl+U 清到行首、Ctrl+A/E 行首/行尾、
+    /// Alt+B/F 词级移动；多行输入只作用当前逻辑行。
+    #[test]
+    fn insert_word_level_editing() {
+        let cursor_col = |app: &App| app.cursor_position().1;
+
+        // Ctrl+W：删前一个词连同词前空白
+        {
+            let mut app = app();
+            app.paste_text("hello world  foo");
+            app.press(Key::Ctrl('w'));
+            assert_eq!(app.input(), "hello world  ");
+            app.press(Key::Ctrl('w'));
+            assert_eq!(app.input(), "hello ", "连空白间隔一起删");
+        }
+
+        // Alt+B/F：词级移动
+        {
+            let mut app = app();
+            app.paste_text("foo bar baz");
+            app.press(Key::Alt('b'));
+            assert_eq!(cursor_col(&app), 8, "Alt+B 到所在词/前一词开头");
+            app.press(Key::Alt('b'));
+            assert_eq!(cursor_col(&app), 4);
+            app.press(Key::Alt('b'));
+            assert_eq!(cursor_col(&app), 0);
+            app.press(Key::Alt('f'));
+            assert_eq!(cursor_col(&app), 4, "Alt+F 到后一词开头");
+            app.press(Key::Alt('f'));
+            assert_eq!(cursor_col(&app), 8);
+        }
+
+        // Ctrl+U / Ctrl+A / Ctrl+E：多行只作用当前逻辑行
+        let mut app = app();
+        app.paste_text("first line\nsecond line");
+        app.press(Key::Ctrl('a'));
+        assert_eq!(app.cursor_position(), (1, 0), "Ctrl+A 到当前行首");
+        app.press(Key::Ctrl('e'));
+        assert_eq!(app.cursor_position(), (1, 11), "Ctrl+E 到当前行尾");
+        app.press(Key::Ctrl('u'));
+        assert_eq!(app.input(), "first line\n", "Ctrl+U 只清当前行");
+        assert_eq!(app.cursor_position(), (1, 0));
+    }
+
+    /// 粘贴的意图是编辑：NORMAL 下粘贴先回到 INSERT（草稿保留）。
+    #[test]
+    fn paste_in_normal_returns_to_insert() {
+        let mut app = app();
+        app.paste_text("草稿");
+        app.press(Key::Esc);
+        assert_eq!(app.mode(), Mode::Normal);
+        app.paste_text("追加");
+        assert_eq!(app.mode(), Mode::Insert);
+        assert_eq!(app.input(), "草稿追加");
     }
 
     #[test]

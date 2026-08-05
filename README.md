@@ -38,7 +38,11 @@ export ANTHROPIC_API_KEY=sk-ant-...     # 或 OPENAI_API_KEY / OPENAI_BASE_URL
 # 交互 TUI（缺省，设计见 docs/adr/0002）；模型必须显式指定（无内置默认模型）：
 # 首次用 --model <provider>/<模型id> 启动，之后经 /models 切换并记住选择
 cargo run -p nomic-cli -- --model anthropic/claude-sonnet-4-5
-# 键位：Enter 发送 · Tab 补全 · Esc 取消运行 · Ctrl+C 退出 · ↑/↓/PgUp/PgDn/滚轮滚动
+# 交互为 vim-like 双模式（ADR-0011）：默认 INSERT（输入），Esc 进 NORMAL（浏览）
+# INSERT：Enter 发送 · Tab 补全 · Esc 关弹层/取消运行/进 NORMAL（退回栈）
+#         Ctrl+W 删词 · Ctrl+U 清行 · Ctrl+A/E 行首/行尾 · Alt+B/F 词移动
+# NORMAL：j/k 滚动 · Ctrl+D/U 半页 · gg/G 顶/底 · Y 复制最新一条 · i/Enter 返回输入
+# 通用：Ctrl+C 取消运行/退出 · ↑/↓/PgUp/PgDn/滚轮滚动
 # 命令：/help 查看全部（/new 开启新对话，/resume 恢复历史 session，/tree 浏览会话树并创建分支，/models 跨 provider 切换模型或设置思考级别，/thinking 切换 thinking 折叠/展开，/goal 开关 goal 模式——开启后 react loop 停止时若 todo 未全部完成将自动追问，/compact 压缩上下文，/retry 重试失败的响应，/quit 退出），输入 / 自动补全
 
 # print 模式（非交互，管道可用）

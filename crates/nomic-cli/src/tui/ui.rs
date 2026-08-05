@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthChar;
 
 use super::{
     app::{
-        App, Block, ChatItem, Completion, CompletionCandidate, Picker, PickerKind, ToolItem,
+        App, Block, ChatItem, Completion, CompletionCandidate, Mode, Picker, PickerKind, ToolItem,
         ToolStatus,
     },
     markdown, theme,
@@ -270,7 +270,11 @@ fn draw_welcome(frame: &mut Frame<'_>, app: &App, area: Rect) {
             theme::dim(),
         )),
         Line::from(Span::styled(
-            "↑↓/PgUp/PgDn 滚动 · Esc 取消 · Ctrl+C 退出",
+            "Esc 进入浏览模式：j/k 滚动 · gg/G 顶/底 · Y 复制 · i 返回输入",
+            theme::dim(),
+        )),
+        Line::from(Span::styled(
+            "↑↓/PgUp/PgDn/滚轮滚动 · Ctrl+C 退出",
             theme::dim(),
         )),
     ];
@@ -356,6 +360,15 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Line::from(Span::styled("输入 · Tab 补全", theme::accent())),
             theme::accent(),
         )
+    } else if app.mode() == Mode::Normal {
+        // NORMAL：输入框不是焦点，降为暗色；草稿保留可见
+        (
+            Line::from(Span::styled(
+                "浏览 · i 返回输入 · j/k 滚动 · Y 复制",
+                theme::dim(),
+            )),
+            theme::dim(),
+        )
     } else {
         (
             Line::from(Span::styled(
@@ -400,10 +413,19 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.set_cursor_position(Position::new(x, y));
 }
 
-/// 状态栏：左侧模型徽标 + 会话标题 + 上下文用量 + 告警；右侧滚动位置 + 键位提示。
+/// 状态栏：左侧模式徽标 + 模型徽标 + 会话标题 + 上下文用量 + 告警；
+/// 右侧滚动位置 + 随模式切换的键位提示。
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let session = app.session_label();
+    // 模式徽标（ADR-0011）：NORMAL 反色绿块强提示；INSERT/PICKER 低调
+    // accent 文本，避免与相邻的模型徽标（反色块）糊成一片
+    let mode_badge = match app.mode() {
+        Mode::Normal => Span::styled(" NORMAL ", theme::normal_badge()),
+        Mode::Insert => Span::styled(" INSERT ", theme::accent()),
+        Mode::Picker => Span::styled(" PICKER ", theme::accent()),
+    };
     let mut left = vec![
+        mode_badge,
         Span::styled(format!(" {} ", app.model_name()), theme::selected()),
         Span::styled(format!(" {session} "), theme::dim()),
         context_usage_span(app),
@@ -422,10 +444,12 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
             theme::warn(),
         ));
     }
-    right.push(Span::styled(
-        "/ 命令 · Enter 发送 · Ctrl+C 退出 ",
-        theme::dim(),
-    ));
+    let hint = match app.mode() {
+        Mode::Normal => "i 输入 · j/k 滚动 · gg/G 顶/底 · Y 复制 · Ctrl+C 退出 ",
+        Mode::Picker => "j/k 选择 · Enter 确认 · Esc 取消 ",
+        Mode::Insert => "/ 命令 · Tab 补全 · Enter 发送 · Esc 浏览 ",
+    };
+    right.push(Span::styled(hint, theme::dim()));
     let left_line = Line::from(left);
     let right_line = Line::from(right);
     // 宽度不足时省略右侧提示，避免与左侧信息交叠

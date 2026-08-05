@@ -313,7 +313,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 /// provider 各 API 家族对应的环境变量名（`api_key` 分层解析用）。
-const fn api_key_env(api: ApiKind) -> &'static str {
+pub const fn api_key_env(api: ApiKind) -> &'static str {
     match api {
         ApiKind::AnthropicMessages => "ANTHROPIC_API_KEY",
         ApiKind::OpenAiCompletions => "OPENAI_API_KEY",
@@ -465,7 +465,7 @@ fn select_startup_model(
 }
 
 /// 解析 api_key：CLI 参数 > 环境变量 > `providers.<名字>.api_key` > 平铺配置文件。
-fn resolve_api_key(
+pub fn resolve_api_key(
     cli: Option<&str>,
     env: Option<&str>,
     provider: Option<&str>,
@@ -580,10 +580,12 @@ const fn neutral_preset(api: ApiKind) -> Preset {
     }
 }
 
-/// `/models` 选择器的一行候选：模型 id + 解析后的展示信息。
+/// `/models` 选择器的一行候选：`<provider, 模型id>` + 解析后的展示信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelChoice {
-    /// 模型 id（切换时回传给 [`ModelResolver::resolve`]）
+    /// provider 名
+    pub provider: String,
+    /// 模型 id
     pub id: String,
     /// 展示名（规格缺省时回退为模型 id）
     pub name: String,
@@ -591,6 +593,13 @@ pub struct ModelChoice {
     pub context_window: u64,
     /// 是否支持推理/思考（选择器标注用）
     pub reasoning: bool,
+}
+
+impl ModelChoice {
+    /// `<provider>/<模型id>` 选择项（切换时回传给 [`ModelResolver::resolve`] 与落库）。
+    pub fn spec(&self) -> String {
+        format!("{}/{}", self.provider, self.id)
+    }
 }
 
 /// 运行时模型解析器：持有全部 provider 的连接层输入（CLI 覆盖、环境变量、
@@ -620,7 +629,7 @@ impl ModelResolver {
     }
 
     /// 配置文件层（`stream_options` 等其他分层仍需要）。
-    const fn config(&self) -> Option<&Config> {
+    pub const fn config(&self) -> Option<&Config> {
         self.config.as_ref()
     }
 
@@ -736,50 +745,75 @@ impl ModelResolver {
         ))
     }
 
-    /// `/models` 选择器候选：配置覆盖 ∪ models.dev 目录 ∪ 内置默认模型
-    /// ∪ 当前模型，按 id 排序去重。
+    /// 候选 provider 列表：内置 provider（anthropic、openai）在前，
+    /// 配置表 `[providers]` 定义的自定义 provider 按名排序在后。
+    pub fn providers(&self) -> Vec<String> {
+        let mut names = vec!["anthropic".to_string(), "openai".to_string()];
+        let custom: Vec<String> = self
+            .config()
+            .and_then(|c| c.providers.as_ref())
+            .map(|providers| {
+                providers
+                    .keys()
+                    .filter(|name| !names.contains(name))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.extend(custom);
+        names
+    }
+
+    /// `/models` 选择器候选（跨 provider）：每个 provider 的 配置覆盖 ∪
+    /// models.dev 目录 ∪ 内置默认模型 ∪ 当前模型；provider 间按
+    /// [`Self::providers`] 顺序、provider 内按模型 id 排序去重。
     ///
-    /// 目录不可用（启动时已告警）或自定义 provider 名不命中 models.dev 时，
-    /// 只剩配置覆盖、内置默认与当前模型；`/models:<id>` 直接切换不受候选
-    /// 范围限制。api 解析失败理论不可达（启动已成功解析过），此时返回空列表。
-    pub fn candidates(&self, provider: &str, current_id: &str) -> Vec<ModelChoice> {
-        let Ok(api) = self.api(provider) else {
-            return Vec::new();
-        };
-        let preset = Self::preset(provider, api);
-        let mut ids = std::collections::BTreeSet::new();
-        ids.insert(current_id.to_string());
-        if let Some(models) = self
-            .provider_config(provider)
-            .and_then(|p| p.models.as_ref())
-        {
-            ids.extend(models.keys().cloned());
-        }
-        if let Some(catalog) = &self.catalog {
-            ids.extend(
-                catalog
-                    .models_of(provider)
-                    .into_iter()
-                    .map(|(id, _)| id.to_string()),
-            );
-        }
-        if let Some(preset) = builtin_preset(provider)
-            && let Some(default) = preset.default_model
-        {
-            ids.insert(default.to_string());
-        }
-        ids.into_iter()
-            .map(|id| {
-                let spec = self.spec_for(provider, &id, &preset);
+    /// 目录不可用（启动时已告警）或 provider 名不命中 models.dev 时，该
+    /// provider 只剩配置覆盖、内置默认与当前模型；`/models:<p>/<id>` 直接
+    /// 切换不受候选范围限制。api 解析失败的 provider 整组跳过。
+    pub fn candidates(&self, current: &ModelSelection) -> Vec<ModelChoice> {
+        let mut choices = Vec::new();
+        for provider in self.providers() {
+            let Ok(api) = self.api(&provider) else {
+                continue;
+            };
+            let preset = Self::preset(&provider, api);
+            let mut ids = std::collections::BTreeSet::new();
+            if provider == current.provider {
+                ids.insert(current.model.clone());
+            }
+            if let Some(models) = self
+                .provider_config(&provider)
+                .and_then(|p| p.models.as_ref())
+            {
+                ids.extend(models.keys().cloned());
+            }
+            if let Some(catalog) = &self.catalog {
+                ids.extend(
+                    catalog
+                        .models_of(&provider)
+                        .into_iter()
+                        .map(|(id, _)| id.to_string()),
+                );
+            }
+            if let Some(preset) = builtin_preset(&provider)
+                && let Some(default) = preset.default_model
+            {
+                ids.insert(default.to_string());
+            }
+            choices.extend(ids.into_iter().map(|id| {
+                let spec = self.spec_for(&provider, &id, &preset);
                 let name = spec.name.unwrap_or_else(|| id.clone());
                 ModelChoice {
+                    provider: provider.clone(),
                     id,
                     name,
                     context_window: spec.context_window.unwrap_or(0),
                     reasoning: spec.reasoning.unwrap_or(false),
                 }
-            })
-            .collect()
+            }));
+        }
+        choices
     }
 }
 
@@ -1504,31 +1538,52 @@ mod tests {
             ..Config::default()
         };
         let resolver = resolver(&cli(&[]), Some(config), Some(catalog()));
-        let choices = resolver.candidates("openai", "gpt-future");
-        let ids: Vec<&str> = choices.iter().map(|choice| choice.id.as_str()).collect();
+        let current = ModelSelection::parse("openai/gpt-future", None).expect("current");
+        let choices = resolver.candidates(&current);
+        let specs: Vec<String> = choices.iter().map(ModelChoice::spec).collect();
         assert_eq!(
-            ids,
-            ["gpt-5.2", "gpt-future", "my-fine-tune"],
-            "目录 ∪ 当前模型 ∪ 配置覆盖，按 id 排序去重"
+            specs,
+            [
+                "anthropic/claude-sonnet-4-5", // 跨 provider：内置默认模型
+                "openai/gpt-5.2",
+                "openai/gpt-future",
+                "openai/my-fine-tune",
+            ],
+            "每个 provider 的 目录 ∪ 当前模型 ∪ 配置覆盖 ∪ 内置默认"
         );
-        assert_eq!(choices[0].name, "GPT-5.2");
-        assert_eq!(choices[0].context_window, 400_000);
-        assert!(choices[0].reasoning, "gpt-5.2 的推理能力来自 models.dev");
-        assert_eq!(choices[2].name, "My Fine Tune", "展示名来自配置覆盖");
+        let gpt = &choices[1];
+        assert_eq!(gpt.name, "GPT-5.2");
+        assert_eq!(gpt.context_window, 400_000);
+        assert!(gpt.reasoning, "gpt-5.2 的推理能力来自 models.dev");
+        assert_eq!(choices[3].name, "My Fine Tune", "展示名来自配置覆盖");
         // 重复解析当前模型：候选中再选一次幂等
-        let again = resolver.candidates("openai", "gpt-5.2");
-        assert_eq!(again.len(), 2, "gpt-future 不再是当前模型后不出现");
+        let again = resolver.candidates(&ModelSelection::parse("openai/gpt-5.2", None).unwrap());
+        assert!(
+            !again.iter().any(|choice| choice.id == "gpt-future"),
+            "gpt-future 不再是当前模型后不出现"
+        );
+        assert_eq!(again.len(), 3);
     }
 
     #[test]
     fn candidates_without_catalog_keep_config_and_current() {
-        // 目录不可用（如配置已写全规格字段跳过加载）：仍列出配置覆盖与当前模型
+        // 目录不可用（如配置已写全规格字段跳过加载）：仍列出内置默认、
+        // 配置覆盖与当前模型
         let config = deepseek_config();
         let resolver = resolver(&cli(&[]), Some(config), None);
-        let choices = resolver.candidates("deepseek", "deepseek-chat");
-        assert_eq!(choices.len(), 1);
-        assert_eq!(choices[0].id, "deepseek-chat");
-        assert_eq!(choices[0].context_window, 0, "无目录时规格落中性预设");
-        assert!(!choices[0].reasoning, "中性预设不支持推理");
+        let current = ModelSelection::parse("deepseek/deepseek-chat", None).expect("current");
+        let choices = resolver.candidates(&current);
+        let specs: Vec<String> = choices.iter().map(ModelChoice::spec).collect();
+        assert_eq!(
+            specs,
+            [
+                "anthropic/claude-sonnet-4-5",
+                "openai/gpt-5.2",
+                "deepseek/deepseek-chat",
+            ]
+        );
+        let deepseek = &choices[2];
+        assert_eq!(deepseek.context_window, 0, "无目录时规格落中性预设");
+        assert!(!deepseek.reasoning, "中性预设不支持推理");
     }
 }

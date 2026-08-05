@@ -48,7 +48,7 @@ use tokio_util::sync::CancellationToken;
 
 use app::{App, Effect, Key, PickerRow, SkillEntry};
 
-use crate::bootstrap::{ModelChoice, ModelResolver};
+use crate::bootstrap::{ModelChoice, ModelResolver, ModelSelection};
 use crate::{Cli, bootstrap};
 
 /// 提交给 agent driver 的任务。
@@ -65,10 +65,25 @@ enum DriverJob {
     Clear,
     /// 整体替换 agent 上下文（`/resume` 恢复历史 session）
     Restore(Vec<Message>),
-    /// 切换模型（`/models`；上下文保留，spec 已按启动同一口径解析）
-    SwitchModel(Model),
+    /// 切换模型（`/models`；上下文保留，spec 已按启动同一口径解析；
+    /// 跨 provider 时携带新连接实现）
+    SwitchModel(ModelSwitch),
     /// 设置思考级别（模型切换流程第二步确认；None 关闭）
     SetReasoning(Option<ThinkingLevel>),
+}
+
+/// `/models` 模型切换载荷：跨 provider 时携带新连接实现与分层的 api_key。
+struct ModelSwitch {
+    model: Model,
+    provider: Option<ProviderSwitch>,
+}
+
+/// 跨 provider 切换的新连接：provider 实现 + 按启动同一口径分层
+/// （环境变量 > `providers.<名字>.api_key` > 平铺配置；CLI 的 `--api-key`
+/// 属于启动 provider，不参与运行时切换分层）的 api_key。
+struct ProviderSwitch {
+    provider: std::sync::Arc<dyn nomic_ai::Provider>,
+    api_key: Option<String>,
 }
 
 /// agent driver 完成的任务回执。
@@ -216,7 +231,14 @@ fn spawn_driver(
                 DriverJob::Inject(text) => agent.inject_user_message(&text),
                 DriverJob::Clear => agent.clear_messages(),
                 DriverJob::Restore(messages) => agent.restore_messages(messages),
-                DriverJob::SwitchModel(model) => agent.set_model(model),
+                DriverJob::SwitchModel(switch) => {
+                    // 先换 provider 再换模型：driver 串行处理，紧随的请求
+                    // 一定跑在新 provider 的新模型上
+                    if let Some(provider) = switch.provider {
+                        agent.set_provider(provider.provider, provider.api_key);
+                    }
+                    agent.set_model(switch.model);
+                }
                 DriverJob::SetReasoning(level) => agent.set_reasoning(level),
             }
             // 每个 job 都可能改变上下文：回报最新 token 估算（与自动压缩同一口径）
@@ -571,42 +593,56 @@ async fn execute_effect(app: &mut App, driver: &mut Driver, effect: Effect) {
     }
 }
 
-/// `/models`：列出当前 provider 的候选模型并打开选择器（预选中当前模型）。
+/// `/models`：跨 provider 列出候选模型并打开选择器（预选中当前模型）。
 fn list_models(app: &mut App, driver: &Driver) {
-    let current = &driver.model.id;
-    let choices = driver.models.candidates(&driver.model.provider, current);
+    let current = current_selection(&driver.model);
+    let choices = driver.models.candidates(&current);
     if choices.is_empty() {
-        // 理论不可达（候选至少含当前模型），防御 provider 配置在运行期失效
+        // 理论不可达（候选至少含内置 provider 的默认模型），防御配置在运行期失效
         app.warn("没有可用的模型候选");
         return;
     }
     let selected = choices
         .iter()
-        .position(|choice| &choice.id == current)
+        .position(|choice| is_current(choice, &current))
         .unwrap_or(0);
     let rows = choices
         .iter()
         .map(|choice| PickerRow {
-            id: choice.id.clone(),
-            text: model_row_text(choice, current),
+            id: choice.spec(),
+            text: model_row_text(choice, &current),
             selectable: true,
         })
         .collect();
     app.open_model_picker(rows, selected);
 }
 
-/// 选择器行文本：`id — 展示名 · ctx 200k · 支持思考`，当前模型带标记；
-/// 窗口未知省略 ctx。
-fn model_row_text(choice: &ModelChoice, current_id: &str) -> String {
+/// 候选行是否为当前模型（provider 与模型 id 均相同）。
+fn is_current(choice: &ModelChoice, current: &ModelSelection) -> bool {
+    (choice.provider.as_str(), choice.id.as_str())
+        == (current.provider.as_str(), current.model.as_str())
+}
+
+/// 当前模型的选择项（`<provider>/<模型id>`）。
+fn current_selection(model: &Model) -> ModelSelection {
+    ModelSelection {
+        provider: model.provider.clone(),
+        model: model.id.clone(),
+    }
+}
+
+/// 选择器行文本：`<provider>/<模型id> — 展示名 · ctx 200k · 支持思考`，
+/// 当前模型带标记；窗口未知省略 ctx。
+fn model_row_text(choice: &ModelChoice, current: &ModelSelection) -> String {
     use std::fmt::Write as _;
-    let mut text = format!("{} — {}", choice.id, choice.name);
+    let mut text = format!("{} — {}", choice.spec(), choice.name);
     if choice.context_window > 0 {
         let _ = write!(text, " · ctx {}", ui::format_tokens(choice.context_window));
     }
     if choice.reasoning {
         text.push_str(" · 支持思考");
     }
-    if choice.id == current_id {
+    if is_current(choice, current) {
         text.push_str("（当前）");
     }
     text
@@ -707,7 +743,6 @@ fn reasoning_row_text(
 /// 随请求生效（重选当前模型进入时当前模型即推理模型）。driver 串行
 /// 处理任务：级别设置一定排在模型切换之后。
 fn set_reasoning(app: &mut App, driver: &mut Driver, word: &str) {
-    use std::fmt::Write as _;
     let Some(setting) = reasoning_setting(word) else {
         // 理论不可达（选择器行 id 出自 REASONING_LEVELS 词表）
         app.warn(format!("未知思考级别 {word:?}"));
@@ -728,15 +763,7 @@ fn set_reasoning(app: &mut App, driver: &mut Driver, word: &str) {
     }
     let mut parts: Vec<String> = Vec::new();
     if switched {
-        let mut part = format!("已切换模型为 {}", driver.model.name);
-        if driver.model.context_window > 0 {
-            let _ = write!(
-                part,
-                "（ctx {}）",
-                ui::format_tokens(driver.model.context_window)
-            );
-        }
-        parts.push(part);
+        parts.push(switched_part(&driver.model));
     }
     if level_changed {
         parts.push(format!("思考级别设为 {}", reasoning_label(level)));
@@ -755,21 +782,30 @@ fn set_reasoning(app: &mut App, driver: &mut Driver, word: &str) {
     app.push_system(text);
 }
 
-/// `/models:<id>` 或模型选择器确认：先选模型后选 effort——
+/// `/models:<p>/<id>` 或模型选择器确认：先选模型后选 effort——
 ///
 /// - 目标模型支持推理：暂存为待切换模型并打开思考级别选择器（流程第二步）；
 ///   确认级别时一并应用切换，Esc 放弃整个切换。重选当前模型时不暂存，
 ///   级别选择器变为单纯的级别调整入口
 /// - 目标模型不支持推理：直接切换（级别设置保留但随请求被忽略，
 ///   与配置文件 `reasoning` 同一口径）
+///
+/// 选择项为 `<provider>/<模型id>` 全形式；裸模型 id 在当前 provider 内解析。
 fn select_model(app: &mut App, driver: &mut Driver, id: &str) {
-    match driver.models.resolve(&driver.model.provider, id) {
+    let selection = match ModelSelection::parse(id, Some(&driver.model.provider)) {
+        Ok(selection) => selection,
+        Err(error) => {
+            app.warn(format!("切换模型失败：{error:#}"));
+            return;
+        }
+    };
+    match driver.models.resolve(&selection.provider, &selection.model) {
         Err(error) => app.warn(format!("切换模型失败：{error:#}")),
         Ok(model) if model.reasoning => {
-            driver.pending_model = (model.id != driver.model.id).then_some(model);
+            driver.pending_model = (!same_model(&model, &driver.model)).then_some(model);
             open_reasoning_picker(app, driver);
         }
-        Ok(model) if model.id == driver.model.id => {
+        Ok(model) if same_model(&model, &driver.model) => {
             app.push_system(format!("当前模型已是 {}（不支持思考）。", model.name));
         }
         Ok(model) => {
@@ -780,19 +816,48 @@ fn select_model(app: &mut App, driver: &mut Driver, id: &str) {
     }
 }
 
+/// 同一模型判断：provider 与模型 id 均相同。
+fn same_model(a: &Model, b: &Model) -> bool {
+    a.provider == b.provider && a.id == b.id
+}
+
 /// 发送 SwitchModel job 并同步 driver/app 状态（状态栏徽标、上下文窗口）；
 /// 成功返回 `true`，driver 已退出时告警并返回 `false`。
 ///
-/// driver 串行处理任务，紧随的级别设置与 prompt 一定跑在新模型上。
+/// 跨 provider 时一并构造新连接实现（api_key 分层：环境变量 >
+/// `providers.<名字>.api_key` > 平铺配置）；切换成功后把选择追加到
+/// sqlite 配置表（下次启动的回退链顶端）。driver 串行处理任务，紧随的
+/// 级别设置与 prompt 一定跑在新模型上。
 fn apply_model_switch(app: &mut App, driver: &mut Driver, model: Model) -> bool {
+    let provider = (model.provider != driver.model.provider).then(|| {
+        let api_key = bootstrap::resolve_api_key(
+            None,
+            std::env::var(bootstrap::api_key_env(model.api))
+                .ok()
+                .as_deref(),
+            driver
+                .models
+                .provider_config(&model.provider)
+                .and_then(|p| p.api_key.as_deref()),
+            driver.models.config().and_then(|c| c.api_key.as_deref()),
+        );
+        ProviderSwitch {
+            provider: bootstrap::build_provider(model.api, api_key.clone()),
+            api_key,
+        }
+    });
     if driver
         .job_tx
-        .send(DriverJob::SwitchModel(model.clone()))
+        .send(DriverJob::SwitchModel(ModelSwitch {
+            model: model.clone(),
+            provider,
+        }))
         .is_err()
     {
         app.warn("内部错误：agent 任务已退出，无法切换模型");
         return false;
     }
+    persist_model_selection(driver, &model);
     let name = model.name.clone();
     let window = model.context_window;
     driver.model = model;
@@ -800,14 +865,53 @@ fn apply_model_switch(app: &mut App, driver: &mut Driver, model: Model) -> bool 
     true
 }
 
-/// 切换成功的提示文本：`已切换模型为 X（ctx 400k），对话上下文保留。`
+/// 模型选择落库（config 表 append-only，最新行即下次启动的首选）。
+///
+/// 库不可用（启动已告警）时跳过；写失败只记日志不打断切换——
+/// 下次启动的回退链只是少了这一条。
+fn persist_model_selection(driver: &Driver, model: &Model) {
+    let Some((store, _)) = &driver.session else {
+        return;
+    };
+    let store = store.clone();
+    let spec = current_selection(model).spec();
+    tokio::spawn(async move {
+        if let Err(error) = store
+            .set_config(
+                bootstrap::CONFIG_KEY_MODEL,
+                &serde_json::Value::String(spec),
+            )
+            .await
+        {
+            tracing::warn!(error = %error, "模型选择落库失败");
+        }
+    });
+}
+
+/// 切换成功的提示文本：`已切换模型为 <provider>/<模型id>（名称 · ctx 400k），
+/// 对话上下文保留。`
 fn switch_notice(model: &Model) -> String {
+    format!("{}，对话上下文保留。", switched_part(model))
+}
+
+/// 提示文本的模型切换段：`已切换模型为 <provider>/<模型id>（名称 · ctx 400k）`；
+/// 名称与模型 id 相同、窗口未知时省略对应段。
+fn switched_part(model: &Model) -> String {
     use std::fmt::Write as _;
-    let mut text = format!("已切换模型为 {}", model.name);
-    if model.context_window > 0 {
-        let _ = write!(text, "（ctx {}）", ui::format_tokens(model.context_window));
+    let mut text = format!("已切换模型为 {}", current_selection(model).spec());
+    let mut detail = String::new();
+    if model.name != model.id {
+        detail.push_str(&model.name);
     }
-    text.push_str("，对话上下文保留。");
+    if model.context_window > 0 {
+        if !detail.is_empty() {
+            detail.push_str(" · ");
+        }
+        let _ = write!(detail, "ctx {}", ui::format_tokens(model.context_window));
+    }
+    if !detail.is_empty() {
+        let _ = write!(text, "（{detail}）");
+    }
     text
 }
 /// `/resume`：列出历史 session 并打开选择器。
@@ -1242,8 +1346,9 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        ModelChoice, ReasoningSetting, model_row_text, panic_payload_text, paste_image_path,
-        percent_decode, reasoning_label, reasoning_row_text, reasoning_setting, tree_rows,
+        ModelChoice, ModelSelection, ReasoningSetting, model_row_text, panic_payload_text,
+        paste_image_path, percent_decode, reasoning_label, reasoning_row_text, reasoning_setting,
+        tree_rows,
     };
     use nomic_ai::ThinkingLevel;
     use nomic_session::TreeEntry;
@@ -1286,34 +1391,41 @@ mod tests {
     #[test]
     fn model_row_text_formats_window_and_marks_current() {
         let choice = ModelChoice {
+            provider: "openai".to_string(),
             id: "gpt-5.2".to_string(),
             name: "GPT-5.2".to_string(),
             context_window: 400_000,
             reasoning: true,
         };
+        let current = ModelSelection::parse("openai/gpt-5.2", None).unwrap();
         assert_eq!(
-            model_row_text(&choice, "gpt-5.2"),
-            "gpt-5.2 — GPT-5.2 · ctx 400k · 支持思考（当前）"
+            model_row_text(&choice, &current),
+            "openai/gpt-5.2 — GPT-5.2 · ctx 400k · 支持思考（当前）"
         );
+        let other = ModelSelection::parse("openai/other", None).unwrap();
         assert_eq!(
-            model_row_text(&choice, "other"),
-            "gpt-5.2 — GPT-5.2 · ctx 400k · 支持思考"
+            model_row_text(&choice, &other),
+            "openai/gpt-5.2 — GPT-5.2 · ctx 400k · 支持思考"
         );
+        // 同名模型 id 但 provider 不同：不是当前模型
+        let other_provider = ModelSelection::parse("deepseek/gpt-5.2", None).unwrap();
+        assert!(!model_row_text(&choice, &other_provider).contains("（当前）"));
         let no_thinking = ModelChoice {
             reasoning: false,
             ..choice
         };
         assert_eq!(
-            model_row_text(&no_thinking, "other"),
-            "gpt-5.2 — GPT-5.2 · ctx 400k"
+            model_row_text(&no_thinking, &other),
+            "openai/gpt-5.2 — GPT-5.2 · ctx 400k"
         );
         let unknown = ModelChoice {
+            provider: "openai".to_string(),
             id: "m".to_string(),
             name: "m".to_string(),
             context_window: 0,
             reasoning: false,
         };
-        assert_eq!(model_row_text(&unknown, "other"), "m — m");
+        assert_eq!(model_row_text(&unknown, &other), "openai/m — m");
     }
 
     /// 思考级别词表：off 映射为关闭，词表内级别往返一致，未知词拒绝。

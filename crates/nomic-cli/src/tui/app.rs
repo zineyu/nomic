@@ -118,8 +118,8 @@ pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "models",
         aliases: &[],
-        summary: "切换模型（推理模型在选择后继续选择思考级别）",
-        usage: "/models（选择器）或 /models:<模型id>",
+        summary: "切换模型（跨 provider；推理模型在选择后继续选择思考级别）",
+        usage: "/models（选择器）或 /models:<provider>/<模型id>",
     },
     SlashCommand {
         name: "skill",
@@ -175,7 +175,7 @@ enum SlashAction {
     Compact(Option<String>),
     /// `/retry` 重试最近一轮失败的响应
     Retry,
-    /// `/models`（None）打开模型选择器；`/models:<id>` 直接切换
+    /// `/models`（None）打开模型选择器；`/models:<provider>/<id>` 直接切换
     Models(Option<String>),
     /// `/image <路径>` 为下一条消息附加图片
     Image(String),
@@ -221,8 +221,8 @@ fn parse_slash(input: &str) -> SlashParse {
         }
         // `/imagexxx`：落入常规解析报未知命令
     }
-    // `/models` 特判：参数是模型 id（不可含空格），`/models id` 与
-    // `/models:id` 两种形式都接受
+    // `/models` 特判：参数是选择项（`<provider>/<模型id>`，不可含空格），
+    // `/models id` 与 `/models:id` 两种形式都接受
     if let Some(tail) = rest.strip_prefix("models") {
         if tail.is_empty() {
             return SlashParse::Known(SlashAction::Models(None));
@@ -434,7 +434,7 @@ pub(super) enum Effect {
     Resume(String),
     /// `/models`：列出当前 provider 的候选模型并打开选择器
     ListModels,
-    /// `/models:<id>` 或模型选择器确认：切换为指定模型（上下文保留）；
+    /// `/models:<provider>/<id>` 或模型选择器确认：切换为指定模型（上下文保留）；
     /// 推理模型由事件循环继续打开思考级别选择器（流程第二步）
     SwitchModel(String),
     /// 思考级别选择器确认：设置思考级别（"off" 关闭）；若有待切换模型
@@ -1547,7 +1547,7 @@ fn models_usage() -> &'static str {
     SLASH_COMMANDS
         .iter()
         .find(|command| command.name == "models")
-        .map_or("/models:<模型id>", |command| command.usage)
+        .map_or("/models:<provider>/<模型id>", |command| command.usage)
 }
 
 fn user_text(content: &UserMessageContent) -> String {

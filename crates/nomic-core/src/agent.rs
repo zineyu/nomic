@@ -215,6 +215,18 @@ impl Agent {
         self.config.model = model;
     }
 
+    /// 运行时切换 provider（跨 provider 的模型切换语义，如 TUI 跨 provider 的
+    /// `/models`）。
+    ///
+    /// 与 [`Self::set_model`] 配对使用：模型跨 provider 时连接实现与
+    /// stream options 的 api_key 一并替换（api_key 分层在调用方完成）。
+    /// 消息历史、系统提示词与工具保留。应在非运行状态（`prompt` 返回后）
+    /// 调用。静默切换，不发出事件。
+    pub fn set_provider(&mut self, provider: Arc<dyn Provider>, api_key: Option<String>) {
+        self.config.provider = provider;
+        self.config.stream_options.api_key = api_key;
+    }
+
     /// 当前思考级别（`StreamOptions::reasoning`）。
     pub const fn reasoning(&self) -> Option<ThinkingLevel> {
         self.config.stream_options.reasoning

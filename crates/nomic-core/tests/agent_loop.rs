@@ -25,6 +25,8 @@ struct MockProvider {
     context_lens: Mutex<Vec<usize>>,
     /// 每次 stream 调用收到的思考级别（验证 stream options 传递）
     reasonings: Mutex<Vec<Option<ThinkingLevel>>>,
+    /// 每次 stream 调用收到的 api_key（验证 provider 切换后 key 一并替换）
+    api_keys: Mutex<Vec<Option<String>>>,
 }
 
 impl MockProvider {
@@ -33,6 +35,7 @@ impl MockProvider {
             scripts: Mutex::new(scripts.into()),
             context_lens: Mutex::new(Vec::new()),
             reasonings: Mutex::new(Vec::new()),
+            api_keys: Mutex::new(Vec::new()),
         })
     }
 
@@ -44,6 +47,11 @@ impl MockProvider {
     /// 各次 stream 调用收到的思考级别
     fn reasonings(&self) -> Vec<Option<ThinkingLevel>> {
         self.reasonings.lock().expect("lock").clone()
+    }
+
+    /// 各次 stream 调用收到的 api_key
+    fn api_keys(&self) -> Vec<Option<String>> {
+        self.api_keys.lock().expect("lock").clone()
     }
 }
 
@@ -63,6 +71,10 @@ impl Provider for MockProvider {
             .lock()
             .expect("lock")
             .push(options.reasoning);
+        self.api_keys
+            .lock()
+            .expect("lock")
+            .push(options.api_key.clone());
         let events = self
             .scripts
             .lock()
@@ -313,6 +325,24 @@ async fn set_reasoning_updates_subsequent_stream_options() {
         provider.reasonings(),
         vec![None, Some(ThinkingLevel::High), None]
     );
+}
+
+/// 跨 provider 的 `/models` 运行时切换：后续请求走新 provider，且 stream
+/// options 的 api_key 一并替换；旧 provider 不再收到请求。
+#[tokio::test]
+async fn set_provider_reroutes_subsequent_requests_with_new_api_key() {
+    let old = MockProvider::new(vec![]);
+    let new = MockProvider::new(vec![text_done("from new provider")]);
+    let (mut agent, _rx) = make_agent(old.clone(), vec![]);
+
+    agent.set_provider(new.clone(), Some("sk-new".to_string()));
+    agent
+        .prompt("hi", CancellationToken::new())
+        .await
+        .expect("prompt");
+
+    assert!(old.api_keys().is_empty(), "旧 provider 不再收到请求");
+    assert_eq!(new.api_keys(), vec![Some("sk-new".to_string())]);
 }
 
 #[tokio::test]

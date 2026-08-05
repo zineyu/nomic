@@ -977,6 +977,18 @@ impl App {
                 self.pending_key = Some('g');
                 Vec::new()
             }
+            // `:` 进入命令输入：回 INSERT 并预填 `/`（补全弹层随之出现）。
+            // 草稿非空时不覆盖用户文本，提示先处理草稿
+            Key::Char(':') => {
+                let empty = self.input.is_empty();
+                self.leave_normal();
+                if empty {
+                    self.insert_char('/');
+                } else {
+                    self.notice = Some("草稿非空：i 返回编辑，清空后再用 : 命令".to_string());
+                }
+                Vec::new()
+            }
             Key::Char('G') => {
                 self.scroll_to_bottom();
                 Vec::new()
@@ -3527,6 +3539,26 @@ mod tests {
         }]);
         assert!(app.press(Key::Esc).is_empty());
         assert!(app.picker().is_none());
+    }
+
+    /// NORMAL `:`：空草稿时预填 `/` 进入命令输入（补全弹层自动出现）；
+    /// 草稿非空时不覆盖用户文本，提示先处理。
+    #[test]
+    fn normal_colon_prefills_slash_when_draft_empty() {
+        let mut drafting = app();
+        drafting.paste_text("未发送的草稿");
+        drafting.press(Key::Esc);
+        assert!(drafting.press(Key::Char(':')).is_empty());
+        assert_eq!(drafting.mode(), Mode::Insert);
+        assert_eq!(drafting.input(), "未发送的草稿", "不覆盖草稿");
+        assert!(drafting.notice().is_some());
+
+        let mut app = app();
+        app.press(Key::Esc);
+        assert!(app.press(Key::Char(':')).is_empty());
+        assert_eq!(app.mode(), Mode::Insert);
+        assert_eq!(app.input(), "/");
+        assert!(app.completion().is_some(), "命令补全弹层自动出现");
     }
 
     /// picker 过滤（fzf 风格）：可打印字符即过滤，选中随过滤对齐可选行；

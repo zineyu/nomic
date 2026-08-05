@@ -4,6 +4,11 @@
 //! （用户显式写了配置，静默降级会掩盖拼写错误等问题）。整体优先级为
 //! CLI 参数 > 环境变量 > 配置文件 > 内置默认，本模块只负责「配置文件」这一层，
 //! 分层合并在 `bootstrap` 完成。
+//!
+//! 注意：provider/model 的**选择**不在配置文件中（模型选择经 `/models` 命令
+//! 保存在 sqlite 配置表，见 `bootstrap`）；这里只保留 provider 定义
+//! （`[providers]`，连接参数与模型规格覆盖）与请求参数，二者逐步向 sqlite
+//! 迁移期间暂时共存。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -11,9 +16,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use nomic_ai::{ApiKind, ModelSpec};
 use serde::Deserialize;
-
-/// 内置 provider 名（`api` 可省略自动推断）。
-const BUILTIN_PROVIDERS: [&str; 2] = ["anthropic", "openai"];
 
 /// 按 provider 名推断 API 种类；内置以外的名字返回 `None`（需在配置中显式指定 `api`）。
 pub fn infer_api(provider: &str) -> Option<ApiKind> {
@@ -31,10 +33,6 @@ pub fn infer_api(provider: &str) -> Option<ApiKind> {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// provider：anthropic、openai，或下方 `[providers]` 表中定义的自定义名字
-    pub provider: Option<String>,
-    /// 模型 id
-    pub model: Option<String>,
     /// API base URL
     pub base_url: Option<String>,
     /// API key（最低优先级兜底，低于环境变量）
@@ -103,19 +101,6 @@ pub struct ProviderConfig {
 impl Config {
     /// 校验枚举类字段的取值，非法值硬报错并指出配置键名。
     fn validate(&self) -> Result<()> {
-        if let Some(provider) = &self.provider {
-            let known = BUILTIN_PROVIDERS.contains(&provider.as_str())
-                || self
-                    .providers
-                    .as_ref()
-                    .is_some_and(|providers| providers.contains_key(provider));
-            if !known {
-                bail!(
-                    "配置项 provider 取值非法：{provider:?}\
-                     （可选 anthropic / openai，或在 [providers] 表中定义）"
-                );
-            }
-        }
         if let Some(reasoning) = &self.reasoning
             && !matches!(reasoning.as_str(), "minimal" | "low" | "medium" | "high")
         {
@@ -199,8 +184,6 @@ mod tests {
     fn parses_full_config() {
         let (_dir, path) = write_temp(
             r#"
-provider = "anthropic"
-model = "claude-sonnet-4-5"
 base_url = "https://api.anthropic.com"
 api_key = "sk-ant-test"
 reasoning = "low"
@@ -210,8 +193,6 @@ append_system = "Always reply in Chinese."
 "#,
         );
         let config = load_from(&path).expect("load").expect("some");
-        assert_eq!(config.provider.as_deref(), Some("anthropic"));
-        assert_eq!(config.model.as_deref(), Some("claude-sonnet-4-5"));
         assert_eq!(config.reasoning.as_deref(), Some("low"));
         assert_eq!(config.temperature, Some(0.7));
         assert_eq!(config.max_tokens, Some(8192));
@@ -225,8 +206,19 @@ append_system = "Always reply in Chinese."
     fn empty_config_is_default() {
         let (_dir, path) = write_temp("");
         let config = load_from(&path).expect("load").expect("some");
-        assert!(config.provider.is_none());
-        assert!(config.model.is_none());
+        assert!(config.base_url.is_none());
+        assert!(config.providers.is_none());
+    }
+
+    #[test]
+    fn removed_selector_keys_are_rejected() {
+        // provider/model 选择已迁移到 sqlite 配置（/models 命令）：
+        // 旧配置文件中的选择器键按未知键硬报错，提示用户迁移而非静默忽略
+        for text in ["provider = \"anthropic\"\n", "model = \"gpt-5.2\"\n"] {
+            let (_dir, path) = write_temp(text);
+            let error = load_from(&path).expect_err("选择器键必须报错");
+            assert!(format!("{error:#}").contains("解析配置文件失败"));
+        }
     }
 
     #[test]
@@ -271,13 +263,6 @@ append_system = "Always reply in Chinese."
     }
 
     #[test]
-    fn invalid_provider_is_rejected() {
-        let (_dir, path) = write_temp("provider = \"gemini\"\n");
-        let error = load_from(&path).expect_err("invalid provider must fail");
-        assert!(format!("{error:#}").contains("provider"));
-    }
-
-    #[test]
     fn invalid_reasoning_is_rejected() {
         let (_dir, path) = write_temp("reasoning = \"extreme\"\n");
         let error = load_from(&path).expect_err("invalid reasoning must fail");
@@ -290,9 +275,6 @@ append_system = "Always reply in Chinese."
     fn parses_providers_with_nested_model_specs() {
         let (_dir, path) = write_temp(
             r#"
-provider = "deepseek"
-model = "deepseek-chat"
-
 [providers.anthropic]
 base_url = "https://api.anthropic.com"
 api_key = "sk-ant-test"
@@ -355,21 +337,6 @@ base_url = "https://api.deepseek.com/v1"
         let error = load_from(&path).expect_err("custom provider without api must fail");
         assert!(format!("{error:#}").contains("deepseek"));
         assert!(format!("{error:#}").contains("api"));
-    }
-
-    #[test]
-    fn provider_selector_may_reference_defined_custom_provider() {
-        let (_dir, path) = write_temp(
-            r#"
-provider = "deepseek"
-
-[providers.deepseek]
-api = "open_ai_completions"
-base_url = "https://api.deepseek.com/v1"
-"#,
-        );
-        let config = load_from(&path).expect("load").expect("some");
-        assert_eq!(config.provider.as_deref(), Some("deepseek"));
     }
 
     #[test]

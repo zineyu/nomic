@@ -1,7 +1,8 @@
 //! 两种模式共享的运行时初始化：provider/model 解析、stream options、系统提示词、
 //! session 新建/恢复。
 //!
-//! provider / base_url / api_key 等连接参数按 CLI 参数 > 环境变量 >
+//! provider/model 的选择按 CLI 参数 > sqlite 配置（config 表回退链） > 内置默认
+//! 解析；base_url / api_key 等连接参数按 CLI 参数 > 环境变量 >
 //! `providers.<名字>.*` > 平铺配置 > 内置默认 解析（永远来自用户指定）；
 //! 模型规格字段（展示名、推理能力、上下文/输出上限、费率）逐字段按
 //! 配置 `providers.<名字>.models.<模型id>` > models.dev > 内置预设 解析。
@@ -44,49 +45,52 @@ pub struct Bootstrap {
 
 /// 按 CLI 参数与环境初始化运行时上下文。
 ///
-/// 可配置项统一按 CLI 参数 > 环境变量 > 配置文件 > 内置默认 的优先级解析；
+/// provider/model 的选择按 CLI 参数 > sqlite 配置（回退链） > 内置默认 解析；
+/// 其余可配置项按 CLI 参数 > 环境变量 > 配置文件 > 内置默认 的优先级解析；
 /// 配置文件存在但非法时硬报错（见 [`config`][crate::config]）。
 pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
     let config = crate::config::load()?;
     let env_openai_base_url = std::env::var("OPENAI_BASE_URL").ok();
-    let provider_kind = cli
+    // session 库提前打开：模型选择（config 表）与消息持久化共用同一库
+    let store = open_store(cli).await?;
+    // 数据库中的模型选择历史（最新在前的回退链；库不可用或读取失败为空链）
+    let db_history = db_model_history(store.as_ref()).await;
+    // catalog 加载提示：CLI 选择器 > 数据库最新选择 > 环境推断
+    let provider_hint = cli
         .provider
         .clone()
-        .or_else(|| config.as_ref().and_then(|c| c.provider.clone()))
-        .unwrap_or_else(|| {
-            if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-                "anthropic".to_string()
-            } else {
-                "openai".to_string()
-            }
-        });
+        .or_else(|| {
+            cli.model.as_deref().and_then(|spec| {
+                spec.split_once('/')
+                    .map(|(provider, _)| provider.to_string())
+            })
+        })
+        .or_else(|| {
+            db_history
+                .first()
+                .map(|selection| selection.provider.clone())
+        })
+        .unwrap_or_else(default_provider);
     let model_id_hint = cli
         .model
-        .clone()
-        .or_else(|| config.as_ref().and_then(|c| c.model.clone()));
+        .as_deref()
+        .map(|spec| spec.rsplit_once('/').map_or(spec, |(_, model)| model))
+        .or_else(|| db_history.first().map(|selection| selection.model.as_str()));
     let catalog =
-        load_catalog_unless_complete(config.as_ref(), &provider_kind, model_id_hint.as_deref())
-            .await;
+        load_catalog_unless_complete(config.as_ref(), &provider_hint, model_id_hint).await;
     let models = ModelResolver::new(cli, config, env_openai_base_url, catalog);
-    let model_id = models.default_model_id(cli, &provider_kind)?;
-    let model = models.resolve(&provider_kind, &model_id)?;
+    let model = select_startup_model(cli, &db_history, &models)?;
     // api_key 显式分层解析（provider 内部的 env 回退发生在请求时，
     // 若把配置文件值直接交给构造器会抢到环境变量前面）。
     let api_key = resolve_api_key(
         cli.api_key.as_deref(),
         std::env::var(api_key_env(model.api)).ok().as_deref(),
         models
-            .provider_config(&provider_kind)
+            .provider_config(&model.provider)
             .and_then(|p| p.api_key.as_deref()),
         models.config().and_then(|c| c.api_key.as_deref()),
     );
-    let provider: Arc<dyn Provider> = match model.api {
-        ApiKind::AnthropicMessages => Arc::new(AnthropicProvider::new(api_key.clone())),
-        ApiKind::OpenAiCompletions => Arc::new(OpenAiProvider::new(
-            api_key.clone(),
-            OpenAiCompat::default(),
-        )),
-    };
+    let provider = build_provider(model.api, api_key.clone());
     let stream_options = StreamOptions {
         temperature: cli
             .temperature
@@ -128,7 +132,7 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
         &active_skills,
     );
     let prompt_templates = load_prompt_templates(cli, &cwd, models.config())?;
-    let session = init_session(cli, &cwd).await?;
+    let session = init_session(cli, &cwd, store).await?;
     let history = session
         .as_ref()
         .map(|init| init.history.clone())
@@ -196,21 +200,34 @@ struct SessionInit {
 
 /// 初始化 session：按 `--continue`/`--session` 恢复既有会话，否则新建。
 ///
-/// - resume 语义下打开库/加载消息失败直接报错（用户显式要求恢复）
-/// - 新会话语义下降级为不持久化（打告警后返回 `None`），不阻断本次运行
-async fn init_session(cli: &Cli, cwd: &Path) -> Result<Option<SessionInit>> {
+/// 库不可用（`store` 为 `None`，启动时已告警）时不持久化。
+async fn init_session(
+    cli: &Cli,
+    cwd: &Path,
+    store: Option<SessionStore>,
+) -> Result<Option<SessionInit>> {
+    let Some(store) = store else {
+        return Ok(None);
+    };
+    init_session_in(cli, cwd, store).await
+}
+
+/// 打开 session 库：模型选择（config 表）与消息持久化共用同一库。
+///
+/// resume 语义下打开失败直接报错（用户显式要求恢复）；否则降级为
+/// 不持久化（打告警后返回 `None`），不阻断本次运行。
+async fn open_store(cli: &Cli) -> Result<Option<SessionStore>> {
     let resume = cli.continue_session || cli.session.is_some();
-    let store = match SessionStore::open_default().await {
-        Ok(store) => store,
+    match SessionStore::open_default().await {
+        Ok(store) => Ok(Some(store)),
         Err(error) => {
             if resume {
                 return Err(error).context("打开 session 库失败，无法恢复会话");
             }
             eprintln!("\x1b[33m⚠ 打开 session 库失败，本次运行不持久化：{error}\x1b[0m");
-            return Ok(None);
+            Ok(None)
         }
-    };
-    init_session_in(cli, cwd, store).await
+    }
 }
 
 /// 在指定 cwd 与 store 下初始化 session（`init_session` 的可测试内核）。
@@ -301,6 +318,150 @@ const fn api_key_env(api: ApiKind) -> &'static str {
         ApiKind::AnthropicMessages => "ANTHROPIC_API_KEY",
         ApiKind::OpenAiCompletions => "OPENAI_API_KEY",
     }
+}
+
+/// provider 的内置默认：有 `ANTHROPIC_API_KEY` 时 anthropic，否则 openai。
+fn default_provider() -> String {
+    if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+        "anthropic".to_string()
+    } else {
+        "openai".to_string()
+    }
+}
+
+/// provider 的内置默认模型 id（自定义 provider 无默认时报错）。
+fn default_model_id(provider: &str) -> Result<String> {
+    builtin_preset(provider)
+        .and_then(|preset| preset.default_model.map(str::to_string))
+        .with_context(|| format!("provider {provider:?} 没有内置默认模型，请用 --model 指定"))
+}
+
+/// 按 API 种类构造 provider 连接实现（启动与 `/models` 运行时切换共用）。
+pub fn build_provider(api: ApiKind, api_key: Option<String>) -> Arc<dyn Provider> {
+    match api {
+        ApiKind::AnthropicMessages => Arc::new(AnthropicProvider::new(api_key)),
+        ApiKind::OpenAiCompletions => {
+            Arc::new(OpenAiProvider::new(api_key, OpenAiCompat::default()))
+        }
+    }
+}
+
+/// sqlite 配置表中模型选择的配置键。
+pub const CONFIG_KEY_MODEL: &str = "model";
+
+/// 模型选择项：`<provider>/<模型id>` 格式（sqlite 配置与 `/models` 命令共用）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelSelection {
+    /// provider 名（anthropic / openai，或配置表定义的自定义名）
+    pub provider: String,
+    /// 模型 id
+    pub model: String,
+}
+
+impl ModelSelection {
+    /// 解析 `<provider>/<模型id>`：按第一个 `/` 切分（模型 id 自身可含 `/`，
+    /// 如 openrouter 的 `openai/gpt-4o` 写作 `openrouter/openai/gpt-4o`）；
+    /// 无 `/` 时用 `default_provider`，二者都缺时报错。
+    pub fn parse(spec: &str, default_provider: Option<&str>) -> Result<Self> {
+        match spec.split_once('/') {
+            Some((provider, model)) if !provider.is_empty() && !model.is_empty() => Ok(Self {
+                provider: provider.to_string(),
+                model: model.to_string(),
+            }),
+            None if !spec.is_empty() => {
+                let provider = default_provider.with_context(|| {
+                    format!("模型选择项 {spec:?} 缺 provider：应为 <provider>/<模型id> 格式")
+                })?;
+                Ok(Self {
+                    provider: provider.to_string(),
+                    model: spec.to_string(),
+                })
+            }
+            _ => bail!("模型选择项 {spec:?} 非法：应为 <provider>/<模型id> 格式"),
+        }
+    }
+
+    /// `<provider>/<模型id>` 全形式（落库与展示用）。
+    pub fn spec(&self) -> String {
+        format!("{}/{}", self.provider, self.model)
+    }
+}
+
+/// 数据库中的模型选择历史（最新在前的回退链）。
+///
+/// 库不可用或读取失败返回空链（告警后落内置默认，不阻断启动）；形态非法的
+/// 行跳过——回退语义要求一行损坏不阻断更早的可用选择。
+async fn db_model_history(store: Option<&SessionStore>) -> Vec<ModelSelection> {
+    let Some(store) = store else {
+        return Vec::new();
+    };
+    let values = match store.config_history(CONFIG_KEY_MODEL).await {
+        Ok(values) => values,
+        Err(error) => {
+            eprintln!("\x1b[33m⚠ 读取模型选择配置失败，使用默认模型：{error}\x1b[0m");
+            return Vec::new();
+        }
+    };
+    values
+        .iter()
+        .filter_map(|value| {
+            let parsed = value
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("配置值不是字符串"))
+                .and_then(|spec| ModelSelection::parse(spec, None));
+            match parsed {
+                Ok(selection) => Some(selection),
+                Err(error) => {
+                    eprintln!(
+                        "\x1b[33m⚠ 跳过非法的模型选择配置（{error:#}），回退到更早的选择\x1b[0m"
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// 启动模型选择：CLI 参数 > sqlite 配置回退链（feedback） > 内置默认。
+///
+/// - `--model` 支持 `<provider>/<模型id>` 全形式（provider 部分优先于
+///   `--provider`）；CLI 给出任一选择器时数据库选择整层不生效
+/// - 无 CLI 选择器时沿数据库回退链从最新向最老逐条解析，第一条可解析的
+///   选择生效（provider 已删除、模型已不存在的失效选择告警后回退）；
+///   链空或全部失效时落内置默认 provider 的默认模型
+fn select_startup_model(
+    cli: &Cli,
+    db_history: &[ModelSelection],
+    models: &ModelResolver,
+) -> Result<Model> {
+    if cli.provider.is_some() || cli.model.is_some() {
+        let provider = cli
+            .model
+            .as_deref()
+            .and_then(|spec| {
+                spec.split_once('/')
+                    .map(|(provider, _)| provider.to_string())
+            })
+            .or_else(|| cli.provider.clone())
+            .unwrap_or_else(default_provider);
+        let model_id = match &cli.model {
+            Some(spec) => ModelSelection::parse(spec, Some(&provider))?.model,
+            None => default_model_id(&provider)?,
+        };
+        return models.resolve(&provider, &model_id);
+    }
+    for selection in db_history {
+        match models.resolve(&selection.provider, &selection.model) {
+            Ok(model) => return Ok(model),
+            Err(error) => eprintln!(
+                "\x1b[33m⚠ 模型选择 {} 已失效（{error:#}），回退到更早的选择\x1b[0m",
+                selection.spec()
+            ),
+        }
+    }
+    let provider = default_provider();
+    let model_id = default_model_id(&provider)?;
+    models.resolve(&provider, &model_id)
 }
 
 /// 解析 api_key：CLI 参数 > 环境变量 > `providers.<名字>.api_key` > 平铺配置文件。
@@ -505,19 +666,6 @@ impl ModelResolver {
             .unwrap_or_else(|| preset.default_base_url.to_string())
     }
 
-    /// 默认模型 id：CLI 参数 > 配置文件 > 内置默认（自定义 provider 无默认时报错）。
-    fn default_model_id(&self, cli: &Cli, provider: &str) -> Result<String> {
-        cli.model
-            .clone()
-            .or_else(|| self.config().and_then(|c| c.model.clone()))
-            .or_else(|| {
-                builtin_preset(provider).and_then(|preset| preset.default_model.map(str::to_string))
-            })
-            .with_context(|| {
-                format!("provider {provider:?} 没有内置默认模型，请用 --model 或配置 model 指定")
-            })
-    }
-
     /// 规格字段（`name` / `reasoning` / `context_window` / `max_tokens` / `cost_*`）
     /// 逐字段分层：配置 `providers.<名字>.models.<模型id>` > models.dev > 内置预设。
     fn spec_for(&self, provider: &str, model_id: &str, preset: &Preset) -> ModelSpec {
@@ -652,10 +800,11 @@ fn resolve_model(
     );
     // 未知 provider 优先报「未知 provider」（保持原报错顺序）
     resolver.api(provider_kind)?;
-    resolver.resolve(
-        provider_kind,
-        &resolver.default_model_id(cli, provider_kind)?,
-    )
+    let model_id = match &cli.model {
+        Some(spec) => ModelSelection::parse(spec, Some(provider_kind))?.model,
+        None => default_model_id(provider_kind)?,
+    };
+    resolver.resolve(provider_kind, &model_id)
 }
 
 fn parse_reasoning(level: &str) -> Result<ThinkingLevel> {
@@ -979,26 +1128,82 @@ mod tests {
     }
 
     #[test]
-    fn model_prefers_cli_over_config() {
-        let cli = cli(&["--model", "cli-model"]);
-        // CLI 指定的模型不在配置/models.dev 中时必须在配置里定义规格
-        let mut models = std::collections::BTreeMap::new();
-        models.insert("cli-model".to_string(), ModelSpec::default());
-        let mut providers = std::collections::BTreeMap::new();
-        providers.insert(
-            "openai".to_string(),
-            ProviderConfig {
-                models: Some(models),
-                ..ProviderConfig::default()
+    fn cli_model_beats_db_history() {
+        // CLI 选择器生效时数据库选择整层不生效
+        let cli = cli(&["--model", "gpt-5.2"]);
+        let resolver = resolver(&Cli::parse_from(["nomic"]), None, Some(catalog()));
+        let db_history = [ModelSelection {
+            provider: "openai".to_string(),
+            model: "other-model".to_string(),
+        }];
+        let model = select_startup_model(&cli, &db_history, &resolver).expect("select");
+        assert_eq!(model.id, "gpt-5.2");
+    }
+
+    #[test]
+    fn db_history_feedback_falls_back_to_older_selection() {
+        // 最新选择已失效（模型不在目录/配置中）：告警后回退到更早的可解析选择
+        let resolver = resolver(&cli(&[]), None, Some(catalog()));
+        let db_history = [
+            ModelSelection {
+                provider: "openai".to_string(),
+                model: "gpt-retired".to_string(),
             },
+            ModelSelection {
+                provider: "openai".to_string(),
+                model: "gpt-5.2".to_string(),
+            },
+        ];
+        let model = select_startup_model(&cli(&[]), &db_history, &resolver).expect("select");
+        assert_eq!(model.id, "gpt-5.2", "第一条可解析的选择生效");
+    }
+
+    #[test]
+    fn db_history_feedback_falls_back_to_builtin_default_when_exhausted() {
+        // 回退链全部失效：落内置默认 provider 的默认模型（provider 由环境推断，
+        // 两者都是内置 provider，这里不断言具体是哪一个）
+        let resolver = resolver(&cli(&[]), None, Some(catalog()));
+        let db_history = [ModelSelection {
+            provider: "openai".to_string(),
+            model: "gpt-retired".to_string(),
+        }];
+        let model = select_startup_model(&cli(&[]), &db_history, &resolver).expect("select");
+        assert!(
+            ["claude-sonnet-4-5", "gpt-5.2"].contains(&model.id.as_str()),
+            "链尽时落内置默认模型，实际为 {}",
+            model.id
         );
-        let config = Config {
-            model: Some("config-model".to_string()),
-            providers: Some(providers),
-            ..Config::default()
-        };
-        let model = resolve("openai", &cli, Some(&config), None, None);
-        assert_eq!(model.id, "cli-model");
+    }
+
+    #[test]
+    fn model_selection_parse() {
+        let full = ModelSelection::parse("openai/gpt-5.2", None).expect("full form");
+        assert_eq!(full.provider, "openai");
+        assert_eq!(full.model, "gpt-5.2");
+        assert_eq!(full.spec(), "openai/gpt-5.2");
+        // 模型 id 自身含 /（openrouter 风格）：按第一个 / 切分
+        let nested = ModelSelection::parse("openrouter/openai/gpt-4o", None).expect("nested");
+        assert_eq!(nested.provider, "openrouter");
+        assert_eq!(nested.model, "openai/gpt-4o");
+        // 裸模型 id 用默认 provider
+        let bare = ModelSelection::parse("gpt-5.2", Some("openai")).expect("bare");
+        assert_eq!(bare.provider, "openai");
+        // 裸模型 id 无默认 provider、空 provider、空模型 id：均报错
+        assert!(ModelSelection::parse("gpt-5.2", None).is_err());
+        assert!(ModelSelection::parse("/gpt-5.2", None).is_err());
+        assert!(ModelSelection::parse("openai/", None).is_err());
+        assert!(ModelSelection::parse("", Some("openai")).is_err());
+    }
+
+    #[test]
+    fn cli_model_accepts_provider_qualified_form() {
+        // --model 的 <provider>/<模型id> 全形式跨 provider 指定
+        let cli = cli(&["--model", "deepseek/deepseek-chat"]);
+        let config = deepseek_config();
+        let resolver = resolver(&Cli::parse_from(["nomic"]), Some(config), Some(catalog()));
+        let model = select_startup_model(&cli, &[], &resolver).expect("select");
+        assert_eq!(model.provider, "deepseek");
+        assert_eq!(model.id, "deepseek-chat");
     }
 
     #[test]
@@ -1132,7 +1337,6 @@ mod tests {
             },
         );
         Config {
-            model: Some("deepseek-chat".to_string()),
             providers: Some(providers),
             ..Config::default()
         }
@@ -1142,7 +1346,8 @@ mod tests {
     fn custom_provider_resolves_via_config_and_global_catalog_scan() {
         let config = deepseek_config();
         // 即便 provider 名不是 models.dev 的一级键，也按模型 id 全局扫描命中
-        let model = resolve("deepseek", &cli(&[]), Some(&config), None, Some(&catalog()));
+        let cli = cli(&["--model", "deepseek-chat"]);
+        let model = resolve("deepseek", &cli, Some(&config), None, Some(&catalog()));
         assert_eq!(model.api, ApiKind::OpenAiCompletions);
         assert_eq!(model.provider, "deepseek");
         assert_eq!(model.base_url, "https://api.deepseek.com/v1");
@@ -1160,7 +1365,8 @@ mod tests {
         models.insert("deepseek-chat".to_string(), ModelSpec::default());
         let providers = config.providers.as_mut().expect("providers");
         providers.get_mut("deepseek").expect("deepseek").models = Some(models);
-        let model = resolve("deepseek", &cli(&[]), Some(&config), None, None);
+        let cli = cli(&["--model", "deepseek-chat"]);
+        let model = resolve("deepseek", &cli, Some(&config), None, None);
         assert_eq!(model.name, "deepseek-chat");
         assert_eq!(model.context_window, 0);
         assert!(!model.reasoning);
@@ -1179,8 +1385,7 @@ mod tests {
 
     #[test]
     fn custom_provider_requires_explicit_model() {
-        let mut config = deepseek_config();
-        config.model = None;
+        let config = deepseek_config();
         let error = resolve_model("deepseek", &cli(&[]), Some(&config), None, None)
             .expect_err("自定义 provider 无默认模型，必须显式指定");
         assert!(format!("{error:#}").contains("没有内置默认模型"));

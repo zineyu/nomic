@@ -36,10 +36,12 @@ pub(crate) struct Cli {
     pub(crate) image: Vec<std::path::PathBuf>,
 
     /// provider：anthropic、openai，或 config.toml 的 `[providers]` 中定义的自定义名字
+    /// （缺省用数据库中保存的选择或按环境推断）
     #[arg(long)]
     pub(crate) provider: Option<String>,
 
-    /// 模型 id（缺省按 provider 选择默认模型）
+    /// 模型 id，支持 `<provider>/<模型id>` 全形式跨 provider 指定
+    /// （缺省用数据库中保存的选择或 provider 的内置默认）
     #[arg(long)]
     pub(crate) model: Option<String>,
 

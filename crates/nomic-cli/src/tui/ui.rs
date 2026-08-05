@@ -346,9 +346,9 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )
     } else if let Some(picker) = app.picker() {
         let title = match picker.kind {
-            PickerKind::Resume => "恢复 session · ↑/↓ 选择 · Enter 确认 · Esc 取消",
-            PickerKind::Tree => "会话树 · ↑/↓ 选择 · Enter 创建分支 · Esc 取消",
-            PickerKind::Models => "切换模型 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
+            PickerKind::Resume => "恢复 session · 输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
+            PickerKind::Tree => "会话树 · 输入过滤 · ↑/↓ 选择 · Enter 创建分支 · Esc 取消",
+            PickerKind::Models => "切换模型 · 输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
             PickerKind::Reasoning => "思考级别 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
         };
         (
@@ -446,7 +446,7 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     let hint = match app.mode() {
         Mode::Normal => "i 输入 · j/k 滚动 · gg/G 顶/底 · Y 复制 · Ctrl+C 退出 ",
-        Mode::Picker => "j/k 选择 · Enter 确认 · Esc 取消 ",
+        Mode::Picker => "输入过滤 · ↑/↓ 选择 · Home/End 首/尾 · Enter 确认 · Esc 取消 ",
         Mode::Insert => "/ 命令 · Tab 补全 · Enter 发送 · Esc 浏览 ",
     };
     right.push(Span::styled(hint, theme::dim()));
@@ -575,39 +575,49 @@ fn draw_completion(frame: &mut Frame<'_>, completion: &Completion, input_area: R
 }
 
 /// 选择器弹层（`/resume` / `/models` / `/tree` 共用）：与补全弹层同构，贴在输入框上方。
+/// 渲染过滤后的可见行；过滤串显示在标题，无匹配时给占位行。
 fn draw_picker(frame: &mut Frame<'_>, picker: &Picker, input_area: Rect) {
-    let total = picker.rows.len();
-    let (start, end) = visible_window(total, picker.selected, COMPLETION_MAX_VISIBLE);
-    let lines: Vec<Line<'static>> = picker.rows[start..end]
-        .iter()
-        .enumerate()
-        .map(|(offset, row)| {
-            if start + offset == picker.selected {
-                Line::from(vec![
-                    Span::styled("❯ ", theme::user_marker()),
-                    Span::styled(row.text.clone(), theme::accent()),
-                ])
-            } else {
-                // 不可选行（`/tree` 的工具调用条目）再降一档，仅作浏览上下文
-                let style = if row.selectable {
-                    theme::subtle()
-                } else {
-                    theme::dim()
-                };
-                Line::from(vec![Span::raw("  "), Span::styled(row.text.clone(), style)])
-            }
-        })
-        .collect();
+    let visible = picker.visible();
+    let total = visible.len();
     let action = match picker.kind {
         PickerKind::Resume => "恢复 session",
         PickerKind::Tree => "会话树",
         PickerKind::Models => "切换模型",
         PickerKind::Reasoning => "思考级别",
     };
-    let title = if total > COMPLETION_MAX_VISIBLE {
+    let mut title = if total > COMPLETION_MAX_VISIBLE {
         format!("{action} {}/{total}", picker.selected + 1)
     } else {
         action.to_string()
+    };
+    if !picker.filter.is_empty() {
+        title = format!("{title} · /{}", picker.filter);
+    }
+    let lines: Vec<Line<'static>> = if visible.is_empty() {
+        vec![Line::from(Span::styled("  无匹配行", theme::dim()))]
+    } else {
+        let (start, end) = visible_window(total, picker.selected, COMPLETION_MAX_VISIBLE);
+        visible[start..end]
+            .iter()
+            .enumerate()
+            .map(|(offset, &row_index)| {
+                let row = &picker.rows[row_index];
+                if start + offset == picker.selected {
+                    Line::from(vec![
+                        Span::styled("❯ ", theme::user_marker()),
+                        Span::styled(row.text.clone(), theme::accent()),
+                    ])
+                } else {
+                    // 不可选行（`/tree` 的工具调用条目）再降一档，仅作浏览上下文
+                    let style = if row.selectable {
+                        theme::subtle()
+                    } else {
+                        theme::dim()
+                    };
+                    Line::from(vec![Span::raw("  "), Span::styled(row.text.clone(), style)])
+                }
+            })
+            .collect()
     };
     let block = Border::bordered()
         .border_type(BorderType::Rounded)

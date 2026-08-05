@@ -405,12 +405,28 @@ pub(super) enum PickerKind {
     Reasoning,
 }
 
-/// 选择器状态：候选行 + 当前选中项（移动到底/顶钳制，不循环）。
+/// 选择器状态：候选行 + 当前选中项 + 过滤串（fzf 风格：可打印字符即过滤，
+/// ↑/↓ 导航）。`selected` 是**过滤后可见行**的下标。
 #[derive(Debug)]
 pub(super) struct Picker {
     pub(super) kind: PickerKind,
     pub(super) rows: Vec<PickerRow>,
     pub(super) selected: usize,
+    /// 过滤串（空 = 全部可见；大小写不敏感的子串匹配）
+    pub(super) filter: String,
+}
+
+impl Picker {
+    /// 过滤后的可见行（`rows` 下标列表，保持原顺序）。
+    pub(super) fn visible(&self) -> Vec<usize> {
+        if self.filter.is_empty() {
+            return (0..self.rows.len()).collect();
+        }
+        let needle = self.filter.to_lowercase();
+        (0..self.rows.len())
+            .filter(|&index| self.rows[index].text.to_lowercase().contains(&needle))
+            .collect()
+    }
 }
 
 /// 暂存的图片附件（`/image <路径>` 载入，随下一条 prompt 一起发送）。
@@ -427,6 +443,9 @@ const PAGE_SCROLL: u16 = 10;
 
 /// NORMAL 模式 Ctrl+D/Ctrl+U 的半页滚动步长。
 const HALF_PAGE_SCROLL: u16 = 5;
+
+/// picker Ctrl+D/Ctrl+U 的半页翻步长（可见行下标计）。
+const PICKER_PAGE_SCROLL: isize = 10;
 
 /// TUI 交互模式（ADR-0011）：模式是一等状态，每个按键在当前模式只有一个语义。
 ///
@@ -529,8 +548,8 @@ pub(super) struct App {
     /// 交互模式（ADR-0011）：只取 Insert/Normal；Picker 是派生态
     ///（`picker.is_some()` 时 [`Self::mode`] 返回 Picker），不入此字段
     mode: Mode,
-    /// NORMAL 下 `gg` 的首键已按下（等待第二键）
-    pending_g: bool,
+    /// 序列键首键（NORMAL 的 `g`/`d`、picker 的 `g`），等待第二键
+    pending_key: Option<char>,
     /// 首次进入 NORMAL 的一次性键位提示是否已展示
     normal_hint_shown: bool,
     /// 输入缓冲（可多行，`\n` 为 Shift+Enter 插入的手动换行）
@@ -583,7 +602,7 @@ impl App {
         Self {
             items: Vec::new(),
             mode: Mode::Insert,
-            pending_g: false,
+            pending_key: None,
             normal_hint_shown: false,
             input: String::new(),
             cursor: 0,
@@ -936,14 +955,11 @@ impl App {
     /// NORMAL 模式键位（ADR-0011）：浏览聊天区与复制；输入字符不进入
     /// 缓冲（草稿保留，`i`/`a`/`Enter` 回到 INSERT 继续编辑）。
     fn press_normal(&mut self, key: Key) -> Vec<Effect> {
-        // `gg` 的第二键：到顶（渲染时经 clamp_scroll 钳到实际上限）；
+        // 序列键第二键（`gg`）：到顶（渲染时经 clamp_scroll 钳到实际上限）；
         // 其他键清掉 pending 后照常处理（比 vim 的「无效序列吞键」宽容）
-        if self.pending_g {
-            self.pending_g = false;
-            if key == Key::Char('g') {
-                self.scroll_up(u16::MAX);
-                return Vec::new();
-            }
+        if self.pending_key.take() == Some('g') && key == Key::Char('g') {
+            self.scroll_up(u16::MAX);
+            return Vec::new();
         }
         match key {
             // i/a 回到光标原处继续编辑；Esc 放弃浏览直接返回
@@ -958,7 +974,7 @@ impl App {
                 Vec::new()
             }
             Key::Char('g') => {
-                self.pending_g = true;
+                self.pending_key = Some('g');
                 Vec::new()
             }
             Key::Char('G') => {
@@ -1009,7 +1025,7 @@ impl App {
     /// 进入 NORMAL：草稿保留；首次进入给一次性键位提示。
     fn enter_normal(&mut self) {
         self.mode = Mode::Normal;
-        self.pending_g = false;
+        self.pending_key = None;
         // 防御：退回栈保证进 NORMAL 时弹层已关，这里兜底
         self.completion = None;
         if !self.normal_hint_shown {
@@ -1019,11 +1035,11 @@ impl App {
         }
     }
 
-    /// 离开 NORMAL 回 INSERT：清掉 `gg` 首键 pending，避免残留的 g
+    /// 离开 NORMAL 回 INSERT：清掉序列键 pending，避免残留的首键
     /// 在下次进入 NORMAL 时被误当第二键。
     const fn leave_normal(&mut self) {
         self.mode = Mode::Insert;
-        self.pending_g = false;
+        self.pending_key = None;
     }
 
     /// 复制最新一条消息到剪贴板（`/copy` 与 NORMAL `Y` 共用）。
@@ -1036,13 +1052,28 @@ impl App {
         }
     }
 
-    /// picker 打开时的键位：↑/↓/j/k 移动，Enter 确认，Esc/q 取消；
-    /// Ctrl+C/D 保持全局退出，其余输入忽略（避免污染输入缓冲）。
+    /// picker 打开时的键位（fzf 风格）：可打印字符即过滤，↑/↓ 与
+    /// Ctrl+N/P 移动，Home/End 跳首/尾，Ctrl+D/U 半页翻，Enter 确认；
+    /// Esc 先清过滤、再关闭；Ctrl+C 保持全局退出。
     fn press_picker(&mut self, key: Key) -> Vec<Effect> {
         match key {
-            Key::Up | Key::Char('k') => self.picker_select(-1),
-            Key::Down | Key::Char('j') => self.picker_select(1),
-            Key::Esc | Key::Char('q') => {
+            Key::Up | Key::Ctrl('p') => self.picker_select(-1),
+            Key::Down | Key::Ctrl('n') => self.picker_select(1),
+            Key::Ctrl('u') => self.picker_select(-PICKER_PAGE_SCROLL),
+            Key::Ctrl('d') => self.picker_select(PICKER_PAGE_SCROLL),
+            Key::Home => self.picker_jump(0, 1),
+            Key::End => {
+                let last = self
+                    .picker
+                    .as_ref()
+                    .map_or(0, |picker| picker.visible().len().saturating_sub(1));
+                self.picker_jump(last, -1);
+            }
+            Key::Esc => {
+                // 有过滤串先清过滤（留在 picker），否则关闭
+                if self.picker_clear_filter() {
+                    return Vec::new();
+                }
                 // 思考级别选择器是模型切换流程的第二步：Esc 还需放弃
                 // 事件循环侧暂存的待切换模型
                 let abort_switch = matches!(
@@ -1057,7 +1088,8 @@ impl App {
                     return vec![Effect::CancelModelSwitch];
                 }
             }
-            Key::Ctrl('c' | 'd') => self.should_quit = true,
+            Key::Backspace => self.picker_pop_filter(),
+            Key::Ctrl('c') => self.should_quit = true,
             Key::Enter => {
                 if let Some((kind, id)) = self.take_picker_selection() {
                     return vec![match kind {
@@ -1068,9 +1100,79 @@ impl App {
                     }];
                 }
             }
+            // 可打印字符即过滤（含 j/k/q——导航全部走箭头/Ctrl 键，一键一义）
+            Key::Char(c) => {
+                if let Some(picker) = &mut self.picker {
+                    picker.filter.push(c);
+                    picker.selected = 0;
+                }
+                self.picker_snap_selection();
+            }
             _ => {}
         }
         Vec::new()
+    }
+
+    /// 清空 picker 过滤串；返回是否确有过滤串被清空
+    ///（Esc 据此决定清过滤还是关 picker）。
+    fn picker_clear_filter(&mut self) -> bool {
+        let Some(picker) = &mut self.picker else {
+            return false;
+        };
+        if picker.filter.is_empty() {
+            return false;
+        }
+        picker.filter.clear();
+        picker.selected = 0;
+        self.picker_snap_selection();
+        true
+    }
+
+    /// 删除 picker 过滤串末字符（Backspace）。
+    fn picker_pop_filter(&mut self) {
+        let Some(picker) = &mut self.picker else {
+            return;
+        };
+        if picker.filter.pop().is_some() {
+            picker.selected = 0;
+            self.picker_snap_selection();
+        }
+    }
+
+    /// 选中项对齐到最近的可选行（过滤变化后调用）：从当前位置向下找，
+    /// 找不到再向上。
+    fn picker_snap_selection(&mut self) {
+        let Some(picker) = &mut self.picker else {
+            return;
+        };
+        let visible = picker.visible();
+        if visible.is_empty() {
+            return;
+        }
+        let pos = picker.selected.min(visible.len() - 1);
+        let snapped = (pos..visible.len())
+            .chain((0..pos).rev())
+            .find(|&p| picker.rows[visible[p]].selectable);
+        picker.selected = snapped.unwrap_or(pos);
+    }
+
+    /// 跳转选中到可见行的 `pos`，不可选时沿 `direction` 找可选行。
+    fn picker_jump(&mut self, pos: usize, direction: isize) {
+        let Some(picker) = &mut self.picker else {
+            return;
+        };
+        let visible = picker.visible();
+        if visible.is_empty() {
+            return;
+        }
+        let mut pos = pos.min(visible.len() - 1);
+        while !picker.rows[visible[pos]].selectable {
+            let Some(next) = step_row(pos, direction, visible.len()) else {
+                return;
+            };
+            pos = next;
+        }
+        picker.selected = pos;
     }
 
     /// Enter：补全弹层未精确匹配时先填入候选；否则取出输入，
@@ -1633,6 +1735,7 @@ impl App {
             kind: PickerKind::Resume,
             rows,
             selected: 0,
+            filter: String::new(),
         });
     }
 
@@ -1644,6 +1747,7 @@ impl App {
             kind: PickerKind::Models,
             rows,
             selected,
+            filter: String::new(),
         });
     }
 
@@ -1656,6 +1760,7 @@ impl App {
             kind: PickerKind::Reasoning,
             rows,
             selected,
+            filter: String::new(),
         });
     }
 
@@ -1668,6 +1773,7 @@ impl App {
             kind: PickerKind::Tree,
             rows,
             selected,
+            filter: String::new(),
         });
     }
 
@@ -1676,44 +1782,50 @@ impl App {
         self.picker.as_ref()
     }
 
-    /// 关闭选择器（Esc/q 取消）。
+    /// 关闭选择器（Esc 取消）。
     fn close_picker(&mut self) {
         self.picker = None;
     }
 
-    /// 移动选中项（到底/顶钳制，不循环；跳过不可选行）。
+    /// 移动选中项（在过滤后的可见行上到底/顶钳制，不循环；跳过不可选行）。
     fn picker_select(&mut self, delta: isize) {
         let Some(picker) = &mut self.picker else {
             return;
         };
-        let len = picker.rows.len();
+        let visible = picker.visible();
+        if visible.is_empty() {
+            return;
+        }
         let direction: isize = delta.signum();
-        let mut index = picker.selected;
+        let mut pos = picker.selected.min(visible.len() - 1);
         for _ in 0..delta.unsigned_abs() {
-            let Some(next) = step_row(index, direction, len) else {
+            let Some(next) = step_row(pos, direction, visible.len()) else {
                 break;
             };
-            index = next;
+            pos = next;
         }
         // 落点不可选时沿移动方向继续；该方向上没有更多可选行则保持原位
-        while !picker.rows[index].selectable {
-            let Some(next) = step_row(index, direction, len) else {
+        while !picker.rows[visible[pos]].selectable {
+            let Some(next) = step_row(pos, direction, visible.len()) else {
                 return;
             };
-            index = next;
+            pos = next;
         }
-        picker.selected = index;
+        picker.selected = pos;
     }
 
     /// Enter 确认：取出选中行的（种类, id）并关闭选择器。
-    /// 不可选行（`/tree` 的工具调用条目）不确认、保持打开。
+    /// 过滤后无可见行或选中不可选行（`/tree` 的工具调用条目）时不确认、
+    /// 保持打开。
     fn take_picker_selection(&mut self) -> Option<(PickerKind, String)> {
         let picker = self.picker.as_ref()?;
-        if !picker.rows[picker.selected].selectable {
+        let visible = picker.visible();
+        let &row = visible.get(picker.selected)?;
+        if !picker.rows[row].selectable {
             return None;
         }
         let picker = self.picker.take()?;
-        Some((picker.kind, picker.rows[picker.selected].id.clone()))
+        Some((picker.kind, picker.rows[row].id.clone()))
     }
 
     // ── slash 命令反馈 ──────────────────────────────────────────────────────
@@ -3401,20 +3513,107 @@ mod tests {
                 text: "row 2".to_string(),
             },
         ]);
-        // picker 接管键位：j 移动选中项，普通字符不进入输入缓冲
-        assert!(app.press(Key::Char('j')).is_empty());
+        // picker 接管键位：↓ 移动选中项，普通字符进入过滤而非输入缓冲
+        assert!(app.press(Key::Down).is_empty());
         assert_eq!(app.input(), "");
         let effects = app.press(Key::Enter);
         assert!(matches!(&effects[..], [Effect::Resume(id)] if id == "s2"));
         assert!(app.picker().is_none());
-        // Esc/q 取消不产出效果
+        // Esc 取消不产出效果
         app.open_resume_picker(vec![PickerRow {
             selectable: true,
             id: "s1".to_string(),
             text: "row 1".to_string(),
         }]);
-        assert!(app.press(Key::Char('q')).is_empty());
+        assert!(app.press(Key::Esc).is_empty());
         assert!(app.picker().is_none());
+    }
+
+    /// picker 过滤（fzf 风格）：可打印字符即过滤，选中随过滤对齐可选行；
+    /// Backspace 逐字删除，Esc 先清过滤再关闭；j/k/q 同样是过滤字符。
+    #[test]
+    fn picker_filter_narrows_and_esc_clears_first() {
+        let rows = || {
+            vec![
+                PickerRow {
+                    selectable: true,
+                    id: "s1".to_string(),
+                    text: "alpha session".to_string(),
+                },
+                PickerRow {
+                    selectable: true,
+                    id: "s2".to_string(),
+                    text: "beta session".to_string(),
+                },
+                PickerRow {
+                    selectable: true,
+                    id: "s3".to_string(),
+                    text: "beta branch".to_string(),
+                },
+            ]
+        };
+        let mut app = app();
+        app.open_resume_picker(rows());
+
+        // 输入即过滤（大小写不敏感子串）
+        for c in "BETA".chars() {
+            app.press(Key::Char(c));
+        }
+        let picker = app.picker().expect("picker");
+        assert_eq!(picker.visible(), vec![1, 2]);
+        assert_eq!(picker.selected, 0);
+
+        // ↓ 在过滤结果上移动，Enter 确认命中行
+        app.press(Key::Down);
+        let effects = app.press(Key::Enter);
+        assert!(matches!(&effects[..], [Effect::Resume(id)] if id == "s3"));
+        assert!(app.picker().is_none());
+
+        // Esc 先清过滤、再关闭
+        app.open_resume_picker(rows());
+        app.press(Key::Char('x'));
+        assert_eq!(app.picker().expect("picker").filter, "x");
+        assert!(app.press(Key::Esc).is_empty());
+        assert!(app.picker().is_some(), "第一次 Esc 只清过滤");
+        assert_eq!(app.picker().expect("picker").visible().len(), 3);
+        assert!(app.press(Key::Esc).is_empty());
+        assert!(app.picker().is_none(), "第二次 Esc 关闭 picker");
+
+        // 无匹配行：Enter 不确认、保持打开
+        app.open_resume_picker(rows());
+        for c in "zzz".chars() {
+            app.press(Key::Char(c));
+        }
+        assert!(app.picker().expect("picker").visible().is_empty());
+        assert!(app.press(Key::Enter).is_empty());
+        assert!(app.picker().is_some());
+    }
+
+    /// picker 的 Home/End 与半页翻：跳首/尾并对齐可选行。
+    #[test]
+    fn picker_home_end_and_half_page() {
+        let rows: Vec<PickerRow> = (0..30)
+            .map(|i| PickerRow {
+                selectable: true,
+                id: format!("s{i}"),
+                text: format!("session {i}"),
+            })
+            .collect();
+        let mut app = app();
+        app.open_resume_picker(rows);
+
+        app.press(Key::End);
+        assert_eq!(app.picker().expect("picker").selected, 29);
+        app.press(Key::Home);
+        assert_eq!(app.picker().expect("picker").selected, 0);
+        app.press(Key::Ctrl('d'));
+        assert_eq!(app.picker().expect("picker").selected, 10);
+        app.press(Key::Ctrl('u'));
+        assert_eq!(app.picker().expect("picker").selected, 0);
+
+        // g/G 普通过滤字符（不过滤语言引入序列键，一键一义）
+        app.press(Key::Char('g'));
+        assert_eq!(app.picker().expect("picker").filter, "g");
     }
 
     /// `/models` 解析：无参打开选择器，带 id（空格或冒号）直接切换，
@@ -3651,10 +3850,10 @@ mod tests {
         app.open_tree_picker(rows, 0);
 
         // 下移跳过不可选行，直接落在下一个可选行
-        assert!(app.press(Key::Char('j')).is_empty());
+        assert!(app.press(Key::Down).is_empty());
         assert_eq!(app.picker().expect("picker").selected, 2);
         // 上移同样跳过
-        assert!(app.press(Key::Char('k')).is_empty());
+        assert!(app.press(Key::Up).is_empty());
         assert_eq!(app.picker().expect("picker").selected, 0);
 
         let effects = app.press(Key::Enter);

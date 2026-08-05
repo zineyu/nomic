@@ -352,3 +352,214 @@ async fn bash_truncates_long_output_to_temp_file() {
     let full = std::fs::read_to_string(path).expect("read full output");
     assert!(full.contains("1\n2\n3"));
 }
+
+// ── grep ─────────────────────────────────────────────────────────────────────
+
+fn grep_fixture() -> std::path::PathBuf {
+    let dir = temp_dir();
+    std::fs::create_dir_all(dir.join("src/nested")).expect("mkdir");
+    std::fs::create_dir_all(dir.join("target")).expect("mkdir");
+    std::fs::create_dir_all(dir.join(".hidden")).expect("mkdir");
+    std::fs::write(dir.join("src/main.rs"), "fn main() {}\n// TODO: refactor\n").expect("write");
+    std::fs::write(dir.join("src/nested/lib.rs"), "pub fn todo_list() {}\n").expect("write");
+    std::fs::write(dir.join("README.md"), "# todo app\n").expect("write");
+    std::fs::write(dir.join("target/build.rs"), "todo in ignored dir\n").expect("write");
+    std::fs::write(dir.join(".hidden/secret.rs"), "todo in hidden dir\n").expect("write");
+    std::fs::write(dir.join(".gitignore"), "target/\n").expect("write");
+    // 二进制文件：searcher 的 NUL 检测应直接跳过
+    std::fs::write(dir.join("blob.bin"), b"todo\x00binary").expect("write");
+    dir
+}
+
+async fn run_grep(args: serde_json::Value) -> String {
+    let result = nomic_tools::GrepTool
+        .execute(
+            serde_json::from_value(args).expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .expect("grep");
+    let nomic_ai::UserContent::Text(text) = &result.content[0] else {
+        panic!("expected text")
+    };
+    text.text.clone()
+}
+
+#[tokio::test]
+async fn grep_matches_sorted_and_gitignore_aware() {
+    let dir = grep_fixture();
+    let out = run_grep(serde_json::json!({
+        "pattern": "todo",
+        "path": dir.display().to_string(),
+        "ignore_case": true,
+    }))
+    .await;
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            format!("{}/README.md:1: # todo app", dir.display()),
+            format!("{}/src/main.rs:2: // TODO: refactor", dir.display()),
+            format!(
+                "{}/src/nested/lib.rs:1: pub fn todo_list() {{}}",
+                dir.display()
+            ),
+        ],
+        "gitignore 排除 target/、默认跳过隐藏目录，结果按路径+行号排序"
+    );
+}
+
+#[tokio::test]
+async fn grep_literal_glob_and_hidden() {
+    let dir = grep_fixture();
+    // literal：正则元字符按字面处理
+    let out = run_grep(serde_json::json!({
+        "pattern": "fn main() {}",
+        "path": dir.display().to_string(),
+        "literal": true,
+    }))
+    .await;
+    assert_eq!(out.lines().count(), 1, "{out}");
+    assert!(out.contains("src/main.rs:1: fn main() {}"));
+    // glob 过滤文件类型
+    let out = run_grep(serde_json::json!({
+        "pattern": "todo",
+        "path": dir.display().to_string(),
+        "glob": "*.md",
+    }))
+    .await;
+    assert_eq!(out.lines().count(), 1, "{out}");
+    // include_hidden 放开隐藏目录
+    let out = run_grep(serde_json::json!({
+        "pattern": "todo in hidden",
+        "path": dir.display().to_string(),
+        "include_hidden": true,
+    }))
+    .await;
+    assert!(out.contains(".hidden/secret.rs:1:"), "{out}");
+}
+
+#[tokio::test]
+async fn grep_limit_reports_more_matches() {
+    let dir = grep_fixture();
+    let out = run_grep(serde_json::json!({
+        "pattern": "todo",
+        "path": dir.display().to_string(),
+        "ignore_case": true,
+        "limit": 2,
+    }))
+    .await;
+    assert_eq!(out.lines().count(), 3, "{out}");
+    assert!(
+        out.contains("[Limit of 2 matches reached; more matches exist."),
+        "{out}"
+    );
+}
+
+#[tokio::test]
+async fn grep_no_match_and_invalid_regex() {
+    let dir = grep_fixture();
+    let out = run_grep(serde_json::json!({
+        "pattern": "nonexistent_pattern_xyz",
+        "path": dir.display().to_string(),
+    }))
+    .await;
+    assert!(out.starts_with("No matches found"), "{out}");
+
+    let err = nomic_tools::GrepTool
+        .execute(
+            serde_json::from_value(
+                serde_json::json!({"pattern": "(", "path": dir.display().to_string()}),
+            )
+            .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("Invalid regex"), "{err}");
+}
+
+// ── find ─────────────────────────────────────────────────────────────────────
+
+async fn run_find(args: serde_json::Value) -> String {
+    let result = nomic_tools::FindTool
+        .execute(
+            serde_json::from_value(args).expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .expect("find");
+    let nomic_ai::UserContent::Text(text) = &result.content[0] else {
+        panic!("expected text")
+    };
+    text.text.clone()
+}
+
+#[tokio::test]
+async fn find_by_name_glob_and_kind() {
+    let dir = grep_fixture();
+    let out = run_find(serde_json::json!({
+        "pattern": "*.rs",
+        "path": dir.display().to_string(),
+    }))
+    .await;
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            format!("{}/src/main.rs", dir.display()),
+            format!("{}/src/nested/lib.rs", dir.display()),
+        ],
+        "任意深度文件名匹配，gitignore 排除 target/，跳过隐藏目录"
+    );
+    // kind=dir 仅目录
+    let out = run_find(serde_json::json!({
+        "pattern": "src",
+        "path": dir.display().to_string(),
+        "kind": "dir",
+    }))
+    .await;
+    assert_eq!(out, format!("{}/src", dir.display()));
+}
+
+#[tokio::test]
+async fn find_path_glob_and_hidden() {
+    let dir = grep_fixture();
+    let out = run_find(serde_json::json!({
+        "pattern": "src/**/*.rs",
+        "path": dir.display().to_string(),
+    }))
+    .await;
+    assert_eq!(out.lines().count(), 2, "{out}");
+    let out = run_find(serde_json::json!({
+        "pattern": "*.rs",
+        "path": dir.display().to_string(),
+        "include_hidden": true,
+    }))
+    .await;
+    assert!(out.contains(".hidden/secret.rs"), "{out}");
+}
+
+#[tokio::test]
+async fn find_limit_and_no_match() {
+    let dir = grep_fixture();
+    let out = run_find(serde_json::json!({
+        "pattern": "*.rs",
+        "path": dir.display().to_string(),
+        "limit": 1,
+    }))
+    .await;
+    assert!(
+        out.contains("[Limit of 1 results reached; more results exist."),
+        "{out}"
+    );
+    let out = run_find(serde_json::json!({
+        "pattern": "*.xyz",
+        "path": dir.display().to_string(),
+    }))
+    .await;
+    assert!(out.starts_with("No files found"), "{out}");
+}

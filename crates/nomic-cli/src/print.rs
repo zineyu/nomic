@@ -164,14 +164,15 @@ async fn drain_events(
 
 /// 工具参数的简短摘要（stderr / TUI 展示）。
 ///
-/// 已知工具取关键字段（bash→command，read/write/edit→path），避免直接展示
-/// 原始 JSON；未知工具回退为截断 JSON。多行文本压缩为单行。
+/// 已知工具取关键字段（bash→command，read/write/edit→path，grep/find→pattern），
+/// 避免直接展示原始 JSON；未知工具回退为截断 JSON。多行文本压缩为单行。
 pub fn brief_args(tool_name: &str, args: &serde_json::Value) -> String {
     const MAX: usize = 120;
     let key_field = match tool_name {
         "bash" => args.get("command").and_then(|v| v.as_str()),
         "read" | "write" => args.get("path").and_then(|v| v.as_str()),
         "edit" => args.get("path").and_then(|v| v.as_str()),
+        "grep" | "find" => args.get("pattern").and_then(|v| v.as_str()),
         _ => None,
     };
     let text = match (tool_name, key_field) {

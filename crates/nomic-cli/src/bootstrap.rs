@@ -795,11 +795,14 @@ fn build_system_prompt(
          You help users by reading files, executing commands, editing code, and writing new files.\n\
          Available tools:\n\
          - read: Read file contents and skill://<name> instructions\n\
-         - bash: Execute bash commands (ls, rg, find, etc.)\n\
+         - bash: Execute bash commands\n\
+         - grep: Search file contents with a regex (ripgrep-style)\n\
+         - find: Find files and directories by glob pattern (fd-style)\n\
          - edit: Make precise file edits with exact text replacement\n\
          - write: Create or overwrite files\n\n\
          Guidelines:\n\
-         - Use bash for file operations like ls, rg, find\n\
+         - Use grep to search file contents and find to locate files\n\
+         - Use bash for other shell commands (cargo, git, jj, ls, etc.)\n\
          - Use read to examine files instead of cat or sed\n\
          - Skills are reusable instruction documents; read skill://<name> before following one\n\
          - Do not write or edit skill:// resources; edit their backing files only when the user asks\n\

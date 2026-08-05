@@ -93,6 +93,15 @@ png = "0.18"
 similar = "3"
 unicode-normalization = "0.1"
 
+# ── 内容搜索与文件查找（nomic-tools 的 grep/find 工具）──────────────────────
+# grep-regex/grep-searcher 是 ripgrep 官方的搜索引擎库（行匹配、二进制检测、
+# 编码处理）；ignore/globset 是 ripgrep 与 fd 共用的遍历与 glob 匹配库。
+# 全部以库形式集成，无需外部二进制（与 ADR 0006 的 nix 打包目标一致）
+grep-regex = "0.1"
+grep-searcher = "0.1"
+ignore = "0.4"
+globset = "0.4"
+
 # ── Markdown 渲染（nomic-cli TUI）──────────────────────────────────────────
 # 仅需 pull parser，裁剪 html/getopts 等默认 feature
 pulldown-cmark = { version = "0.13", default-features = false }

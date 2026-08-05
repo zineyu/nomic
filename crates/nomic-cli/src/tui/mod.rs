@@ -971,13 +971,14 @@ async fn list_tree(app: &mut App, driver: &Driver) {
         }
         Ok(entries) => {
             let rows = tree_rows(&entries, driver.tip.as_deref());
-            // 预选中当前分支末端；末端不可选（如工具结果）时退到首个可选行
+            // 预选中当前分支末端；末端不可选（工具结果，或已被折叠进摘要行）
+            // 时退到首个可选行
             let selected = driver
                 .tip
                 .as_deref()
-                .and_then(|tip| entries.iter().position(|entry| entry.id == tip))
-                .filter(|&index| entries[index].is_branchable())
-                .or_else(|| entries.iter().position(TreeEntry::is_branchable))
+                .and_then(|tip| rows.iter().position(|row| row.id == tip))
+                .filter(|&index| rows[index].selectable)
+                .or_else(|| rows.iter().position(|row| row.selectable))
                 .expect("空树已在上面挡掉");
             app.open_tree_picker(rows, selected);
         }
@@ -1017,52 +1018,162 @@ async fn branch_to(app: &mut App, driver: &mut Driver, entry_id: String) {
     }
 }
 
-/// 会话树条目 → 选择器行：按祖先链深度缩进，工具调用条目不可选，
-/// 当前分支末端带标记。
+/// 会话树条目 → 选择器行。
+///
+/// 缩进语义：**只在真实分叉处缩进**——用树形前缀（`├─`/`└─`/`│`）画出
+/// 分支结构，线性链（含工具调用轮次）平铺。工具调用循环是父子链而非
+/// 分支，若按祖先链长度缩进会把单线对话画成向右无限延伸的阶梯。
+///
+/// 不可选条目（含工具调用的 assistant 响应、工具结果）只是浏览上下文
+/// 而非分支起点：连续的一段折叠为一行摘要（`↳ 工具调用 ×N（…）`），
+/// 避免工具噪音淹没可选条目。折叠只取链上条目（子节点 ≤ 1），不会吞掉
+/// 分叉点。
 fn tree_rows(entries: &[TreeEntry], tip: Option<&str>) -> Vec<PickerRow> {
     let index: std::collections::HashMap<&str, usize> = entries
         .iter()
         .enumerate()
         .map(|(i, entry)| (entry.id.as_str(), i))
         .collect();
-    let depth = |entry: &TreeEntry| {
-        let mut depth = 0_usize;
+    // 每个 entry 的子节点（按插入序）：判定分叉与折叠用
+    let mut children: std::collections::HashMap<&str, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, entry) in entries.iter().enumerate() {
+        if let Some(parent) = entry.parent_id.as_deref() {
+            children.entry(parent).or_default().push(i);
+        }
+    }
+    // 树形前缀：沿父链收集「分叉边」（父节点有多个孩子的边）。entry 自己
+    // 的分叉边渲染为 `├─ `/`└─ `；祖先的分叉边自外向内渲染为 `│  `/`   `
+    // 层级。线性边不产生前缀。
+    let prefix = |entry: &TreeEntry| {
+        let mut ancestors: Vec<bool> = Vec::new(); // 祖先分叉边：该侧是否最末孩子
+        let mut own: Option<bool> = None; // 自身边是否分叉
+        let mut child = entry.id.as_str();
         let mut cursor = entry.parent_id.as_deref();
+        let mut first = true;
         // 父指针在写入时校验存在，父链必然终止于根；缺失数据按根处理
         while let Some(parent) = cursor {
-            depth += 1;
+            let siblings = children.get(parent).map_or(&[][..], Vec::as_slice);
+            if siblings.len() > 1 {
+                let last = siblings.last().copied() == Some(index[child]);
+                if first {
+                    own = Some(last);
+                } else {
+                    ancestors.push(last);
+                }
+            }
+            first = false;
+            child = parent;
             cursor = index
                 .get(parent)
                 .and_then(|&i| entries[i].parent_id.as_deref());
         }
-        depth
+        let mut text = String::new();
+        for &last in ancestors.iter().rev() {
+            text.push_str(if last { "   " } else { "│  " });
+        }
+        if let Some(last) = own {
+            text.push_str(if last { "└─ " } else { "├─ " });
+        }
+        text
     };
-    entries
+    // 可折叠：不可选且位于链上（子节点 ≤ 1）；有多子节点的条目是分叉点，
+    // 必须保留原行以呈现树形结构
+    let foldable = |entry: &TreeEntry| {
+        !entry.is_branchable() && children.get(entry.id.as_str()).map_or(0, Vec::len) <= 1
+    };
+    let mut rows = Vec::with_capacity(entries.len());
+    let mut i = 0;
+    while i < entries.len() {
+        if !foldable(&entries[i]) {
+            rows.push(entry_row(&entries[i], tip, &prefix(&entries[i])));
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i + 1 < entries.len() && foldable(&entries[i + 1]) {
+            i += 1;
+        }
+        rows.push(fold_row(&entries[start..=i], tip, &prefix(&entries[start])));
+        i += 1;
+    }
+    rows
+}
+
+/// 单条目的选择器行：树形前缀 + 角色/时间/预览，当前分支末端带标记。
+fn entry_row(entry: &TreeEntry, tip: Option<&str>, prefix: &str) -> PickerRow {
+    let role = match entry.role.as_str() {
+        "user" => "用户",
+        "assistant" => "助手",
+        "tool_result" => "工具",
+        _ => "压缩",
+    };
+    let current = if Some(entry.id.as_str()) == tip {
+        "（当前）"
+    } else {
+        ""
+    };
+    PickerRow {
+        id: entry.id.clone(),
+        text: format!(
+            "{prefix}{role} · {} · {}{current}",
+            crate::sessions::format_time(Some(entry.timestamp)),
+            entry.preview,
+        ),
+        selectable: entry.is_branchable(),
+    }
+}
+
+/// 一段连续工具条目的折叠摘要行（不可选，仅浏览上下文）。
+///
+/// 工具名与失败数从工具结果 preview（`工具结果：{name}` / `工具失败：{name}`，
+/// 见 nomic-session 的 `message_preview`）统计；preview 无法解析（如 payload
+/// 损坏的占位文本）只计入总数。run 内含当前分支末端（运行中打开 `/tree`）
+/// 时带标记。
+fn fold_row(run: &[TreeEntry], tip: Option<&str>, prefix: &str) -> PickerRow {
+    let mut calls = 0_usize;
+    let mut failures = 0_usize;
+    let mut tools: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for entry in run.iter().filter(|entry| entry.role == "tool_result") {
+        calls += 1;
+        if let Some(name) = entry.preview.strip_prefix("工具结果：") {
+            *tools.entry(name).or_default() += 1;
+        } else if let Some(name) = entry.preview.strip_prefix("工具失败：") {
+            failures += 1;
+            *tools.entry(name).or_default() += 1;
+        }
+    }
+    let mut parts: Vec<String> = tools
         .iter()
-        .map(|entry| {
-            let role = match entry.role.as_str() {
-                "user" => "用户",
-                "assistant" => "助手",
-                "tool_result" => "工具",
-                _ => "压缩",
-            };
-            let current = if Some(entry.id.as_str()) == tip {
-                "（当前）"
-            } else {
-                ""
-            };
-            PickerRow {
-                id: entry.id.clone(),
-                text: format!(
-                    "{}{role} · {} · {}{current}",
-                    "  ".repeat(depth(entry)),
-                    crate::sessions::format_time(Some(entry.timestamp)),
-                    entry.preview,
-                ),
-                selectable: entry.is_branchable(),
-            }
-        })
-        .collect()
+        .map(|(name, count)| format!("{name} ×{count}"))
+        .collect();
+    if failures > 0 {
+        parts.push(format!("失败 ×{failures}"));
+    }
+    let stats = if parts.is_empty() {
+        String::new()
+    } else {
+        format!("（{}）", parts.join(" · "))
+    };
+    // 无工具结果（如运行被打断）：退化为条目计数
+    let summary = if calls > 0 {
+        format!("工具调用 ×{calls}{stats}")
+    } else {
+        format!("工具调用 ×{}（无结果）", run.len())
+    };
+    let current = if run.iter().any(|entry| Some(entry.id.as_str()) == tip) {
+        "（当前）"
+    } else {
+        ""
+    };
+    PickerRow {
+        id: run[0].id.clone(),
+        text: format!(
+            "{prefix}↳ {summary} · {}{current}",
+            crate::sessions::format_time(Some(run[0].timestamp)),
+        ),
+        selectable: false,
+    }
 }
 
 /// 加载图片并暂存为附件（`/image` 与粘贴图片路径共用）。
@@ -1353,10 +1464,99 @@ mod tests {
     use nomic_ai::ThinkingLevel;
     use nomic_session::TreeEntry;
 
-    /// 会话树选择器行：按深度缩进、角色/时间/预览拼接，工具调用条目不可选，
-    /// 当前分支末端带标记。
+    /// 会话树选择器行：线性链（含工具调用轮次）平铺不缩进，连续工具条目
+    /// 折叠为一行摘要（不可选），当前分支末端带标记。
     #[test]
-    fn tree_rows_indent_by_depth_and_mark_tip() {
+    fn tree_rows_flatten_linear_chain_and_fold_tools() {
+        let entry = |id: &str, parent: Option<&str>, role: &str, tool_calls: bool| TreeEntry {
+            id: id.to_string(),
+            parent_id: parent.map(str::to_string),
+            role: role.to_string(),
+            timestamp: 1_785_000_000_000,
+            preview: format!("preview of {id}"),
+            has_tool_calls: tool_calls,
+        };
+        let tool_result = |id: &str, parent: &str, name: &str, failed: bool| {
+            let mut entry = entry(id, Some(parent), "tool_result", false);
+            entry.preview = if failed {
+                format!("工具失败：{name}")
+            } else {
+                format!("工具结果：{name}")
+            };
+            entry
+        };
+        let entries = vec![
+            entry("root", None, "user", false),
+            entry("a1", Some("root"), "assistant", true),
+            tool_result("t1", "a1", "bash", false),
+            tool_result("t2", "t1", "bash", true),
+            entry("a2", Some("t2"), "assistant", false),
+        ];
+
+        let rows = tree_rows(&entries, Some("t2"));
+        assert_eq!(rows.len(), 3, "工具条目折叠为一行：{rows:?}");
+        assert!(rows[0].text.starts_with("用户 · "), "{}", rows[0].text);
+        assert!(
+            rows[1]
+                .text
+                .starts_with("↳ 工具调用 ×2（bash ×2 · 失败 ×1）"),
+            "{}",
+            rows[1].text
+        );
+        assert!(rows[1].text.ends_with("（当前）"), "{}", rows[1].text);
+        assert!(
+            rows[2].text.starts_with("助手 · "),
+            "线性链不缩进：{}",
+            rows[2].text
+        );
+
+        assert!(rows[0].selectable);
+        assert!(!rows[1].selectable, "折叠摘要行不可选");
+        assert!(rows[2].selectable);
+    }
+
+    /// 会话树选择器行：真实分叉用树形前缀（`├─`/`└─`/`│`）画分支结构，
+    /// 分叉下的线性后代继承层级前缀。
+    #[test]
+    fn tree_rows_draw_branch_prefixes_at_forks() {
+        let entry = |id: &str, parent: Option<&str>| TreeEntry {
+            id: id.to_string(),
+            parent_id: parent.map(str::to_string),
+            role: "user".to_string(),
+            timestamp: 1_785_000_000_000,
+            preview: format!("preview of {id}"),
+            has_tool_calls: false,
+        };
+        let entries = vec![
+            entry("root", None),
+            entry("b1", Some("root")),
+            entry("c1", Some("b1")),
+            entry("b2", Some("root")),
+            entry("c2", Some("b2")),
+        ];
+
+        let rows = tree_rows(&entries, Some("c2"));
+        assert_eq!(rows.len(), 5);
+        assert!(rows[0].text.starts_with("用户 · "), "{}", rows[0].text);
+        assert!(rows[1].text.starts_with("├─ "), "{}", rows[1].text);
+        assert!(
+            rows[2].text.starts_with("│  "),
+            "非最末分支的后代画竖线：{}",
+            rows[2].text
+        );
+        assert!(rows[3].text.starts_with("└─ "), "{}", rows[3].text);
+        assert!(
+            rows[4].text.starts_with("   "),
+            "最末分支的后代留白：{}",
+            rows[4].text
+        );
+        assert!(rows[4].text.ends_with("（当前）"), "{}", rows[4].text);
+        assert!(rows.iter().all(|row| row.selectable));
+    }
+
+    /// 折叠不吞分叉点：不可选条目若有多个子节点（历史数据防御），保留原行。
+    #[test]
+    fn tree_rows_keep_unselectable_fork_point() {
         let entry = |id: &str, parent: Option<&str>, role: &str, tool_calls: bool| TreeEntry {
             id: id.to_string(),
             parent_id: parent.map(str::to_string),
@@ -1368,22 +1568,15 @@ mod tests {
         let entries = vec![
             entry("root", None, "user", false),
             entry("a1", Some("root"), "assistant", true),
-            entry("t1", Some("a1"), "tool_result", false),
-            entry("b1", Some("root"), "user", false),
+            entry("b1", Some("a1"), "user", false),
+            entry("b2", Some("a1"), "user", false),
         ];
 
-        let rows = tree_rows(&entries, Some("b1"));
-        assert_eq!(rows.len(), 4);
-        assert!(rows[0].text.starts_with("用户 · "), "{}", rows[0].text);
-        assert!(rows[0].text.contains("preview of root"));
-        assert!(rows[1].text.starts_with("  助手 · "), "{}", rows[1].text);
-        assert!(rows[2].text.starts_with("    工具 · "), "{}", rows[2].text);
-        assert!(rows[3].text.ends_with("（当前）"), "{}", rows[3].text);
-
-        assert!(rows[0].selectable);
+        let rows = tree_rows(&entries, None);
+        assert_eq!(rows.len(), 4, "分叉点不折叠：{rows:?}");
         assert!(!rows[1].selectable, "含工具调用的 assistant 条目不可选");
-        assert!(!rows[2].selectable, "工具结果条目不可选");
-        assert!(rows[3].selectable);
+        assert!(rows[2].text.starts_with("├─ "), "{}", rows[2].text);
+        assert!(rows[3].text.starts_with("└─ "), "{}", rows[3].text);
     }
 
     /// `/models` 选择器行：id + 展示名 + 窗口，推理模型带标注，当前模型带标记，

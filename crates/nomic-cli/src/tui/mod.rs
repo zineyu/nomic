@@ -574,7 +574,7 @@ async fn execute_effect(app: &mut App, driver: &mut Driver, effect: Effect) {
 /// `/models`：列出当前 provider 的候选模型并打开选择器（预选中当前模型）。
 fn list_models(app: &mut App, driver: &Driver) {
     let current = &driver.model.id;
-    let choices = driver.models.candidates(current);
+    let choices = driver.models.candidates(&driver.model.provider, current);
     if choices.is_empty() {
         // 理论不可达（候选至少含当前模型），防御 provider 配置在运行期失效
         app.warn("没有可用的模型候选");
@@ -763,7 +763,7 @@ fn set_reasoning(app: &mut App, driver: &mut Driver, word: &str) {
 /// - 目标模型不支持推理：直接切换（级别设置保留但随请求被忽略，
 ///   与配置文件 `reasoning` 同一口径）
 fn select_model(app: &mut App, driver: &mut Driver, id: &str) {
-    match driver.models.resolve(id) {
+    match driver.models.resolve(&driver.model.provider, id) {
         Err(error) => app.warn(format!("切换模型失败：{error:#}")),
         Ok(model) if model.reasoning => {
             driver.pending_model = (model.id != driver.model.id).then_some(model);

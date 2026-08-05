@@ -19,6 +19,8 @@
     cargo-nextest # 更快的测试运行器
     taplo # TOML 格式化与校验
     typos # 拼写检查
+    ripgrep # 快速文本搜索（rg）
+    fd # 快速文件查找
 
     # 常见原生依赖，按需取消注释：
     # pkg-config

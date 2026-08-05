@@ -3,7 +3,7 @@
 //! 数据源为 <https://models.dev/api.json>（约 3MB，provider → models 嵌套结构）。
 //! 拉取结果写磁盘缓存（`$XDG_CACHE_HOME/nomic/models-dev-api.json`，24h TTL）；
 //! 网络失败时回退到过期缓存，缓存与网络均不可用时返回 `None`，由调用方落到
-//! 内置默认值。本模块只提供「模型 id → 规格」查询，provider 与 base_url 永远
+//! 兜底默认值。本模块只提供「模型 id → 规格」查询，provider 与 base_url 永远
 //! 来自用户配置，不经由 models.dev。
 
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ const CACHE_TTL: Duration = Duration::from_hours(24);
 /// 保证首次拉取能写入缓存；命中缓存的启动不受此影响。
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 模型规格：全部字段可选，缺省时由调用方继续向下层（models.dev / 内置默认）解析。
+/// 模型规格：全部字段可选，缺省时由调用方继续向下层（models.dev / 中性兜底）解析。
 ///
 /// 同时作为 `config.toml` 中 `[providers.<名字>.models."<模型id>"]` 的反序列化
 /// 目标，`deny_unknown_fields` 让配置中的拼写错误硬报错。
@@ -168,8 +168,8 @@ impl Catalog {
 
     /// 列出某 provider 下的全部模型（按模型 id 排序），provider 不存在时为空。
     ///
-    /// provider 名即 api.json 的一级键（内置 anthropic / openai 与配置里的
-    /// provider 名一致；自定义 provider 名未必命中 models.dev，调用方需容忍空列表）。
+    /// provider 名即 api.json 的一级键（如 anthropic；配置里的自定义
+    /// provider 名未必命中 models.dev，调用方需容忍空列表）。
     pub fn models_of(&self, provider: &str) -> Vec<(&str, &ModelSpec)> {
         let mut models: Vec<(&str, &ModelSpec)> = self
             .providers

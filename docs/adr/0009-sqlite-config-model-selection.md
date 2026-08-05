@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted（回退链尽头的「内置默认」层已由 ADR-0010 移除：链空或全部失效时改为报错）
 
 ## Date
 

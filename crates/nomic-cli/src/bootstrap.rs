@@ -1,11 +1,12 @@
 //! 两种模式共享的运行时初始化：provider/model 解析、stream options、系统提示词、
 //! session 新建/恢复。
 //!
-//! provider/model 的选择按 CLI 参数 > sqlite 配置（config 表回退链） > 内置默认
-//! 解析；base_url / api_key 等连接参数按 CLI 参数 > 环境变量 >
-//! `providers.<名字>.*` > 平铺配置 > 内置默认 解析（永远来自用户指定）；
-//! 模型规格字段（展示名、推理能力、上下文/输出上限、费率）逐字段按
-//! 配置 `providers.<名字>.models.<模型id>` > models.dev > 内置预设 解析。
+//! provider/model 的选择按 CLI 参数 > sqlite 配置（config 表回退链）解析，
+//! 两层都没有时启动报错（无内置默认模型）；base_url / api_key 等连接参数按
+//! CLI 参数 > 环境变量 > `providers.<名字>.*` > 平铺配置 > 协议默认 解析
+//! （永远来自用户指定）；模型规格字段（展示名、推理能力、上下文/输出上限、
+//! 费率）逐字段按 配置 `providers.<名字>.models.<模型id>` > models.dev >
+//! 中性兜底 解析。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,9 +46,9 @@ pub struct Bootstrap {
 
 /// 按 CLI 参数与环境初始化运行时上下文。
 ///
-/// provider/model 的选择按 CLI 参数 > sqlite 配置（回退链） > 内置默认 解析；
-/// 其余可配置项按 CLI 参数 > 环境变量 > 配置文件 > 内置默认 的优先级解析；
-/// 配置文件存在但非法时硬报错（见 [`config`][crate::config]）。
+/// provider/model 的选择按 CLI 参数 > sqlite 配置（回退链）解析，两层都没有时
+/// 报错（无内置默认模型）；其余可配置项按 CLI 参数 > 环境变量 > 配置文件 >
+/// 协议默认 的优先级解析；配置文件存在但非法时硬报错（见 [`config`][crate::config]）。
 pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
     let config = crate::config::load()?;
     let env_openai_base_url = std::env::var("OPENAI_BASE_URL").ok();
@@ -55,7 +56,7 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
     let store = open_store(cli).await?;
     // 数据库中的模型选择历史（最新在前的回退链；库不可用或读取失败为空链）
     let db_history = db_model_history(store.as_ref()).await;
-    // catalog 加载提示：CLI 选择器 > 数据库最新选择 > 环境推断
+    // catalog 加载提示：CLI 选择器 > 数据库最新选择；都没有时不做完整性预判
     let provider_hint = cli
         .provider
         .clone()
@@ -69,15 +70,15 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
             db_history
                 .first()
                 .map(|selection| selection.provider.clone())
-        })
-        .unwrap_or_else(default_provider);
+        });
     let model_id_hint = cli
         .model
         .as_deref()
         .map(|spec| spec.rsplit_once('/').map_or(spec, |(_, model)| model))
         .or_else(|| db_history.first().map(|selection| selection.model.as_str()));
     let catalog =
-        load_catalog_unless_complete(config.as_ref(), &provider_hint, model_id_hint).await;
+        load_catalog_unless_complete(config.as_ref(), provider_hint.as_deref(), model_id_hint)
+            .await;
     let models = ModelResolver::new(cli, config, env_openai_base_url, catalog);
     let model = select_startup_model(cli, &db_history, &models)?;
     // api_key 显式分层解析（provider 内部的 env 回退发生在请求时，
@@ -320,22 +321,6 @@ pub const fn api_key_env(api: ApiKind) -> &'static str {
     }
 }
 
-/// provider 的内置默认：有 `ANTHROPIC_API_KEY` 时 anthropic，否则 openai。
-fn default_provider() -> String {
-    if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-        "anthropic".to_string()
-    } else {
-        "openai".to_string()
-    }
-}
-
-/// provider 的内置默认模型 id（自定义 provider 无默认时报错）。
-fn default_model_id(provider: &str) -> Result<String> {
-    builtin_preset(provider)
-        .and_then(|preset| preset.default_model.map(str::to_string))
-        .with_context(|| format!("provider {provider:?} 没有内置默认模型，请用 --model 指定"))
-}
-
 /// 按 API 种类构造 provider 连接实现（启动与 `/models` 运行时切换共用）。
 pub fn build_provider(api: ApiKind, api_key: Option<String>) -> Arc<dyn Provider> {
     match api {
@@ -389,8 +374,8 @@ impl ModelSelection {
 
 /// 数据库中的模型选择历史（最新在前的回退链）。
 ///
-/// 库不可用或读取失败返回空链（告警后落内置默认，不阻断启动）；形态非法的
-/// 行跳过——回退语义要求一行损坏不阻断更早的可用选择。
+/// 库不可用或读取失败返回空链（告警后由调用方报错要求显式指定，不阻断启动）；
+/// 形态非法的行跳过——回退语义要求一行损坏不阻断更早的可用选择。
 async fn db_model_history(store: Option<&SessionStore>) -> Vec<ModelSelection> {
     let Some(store) = store else {
         return Vec::new();
@@ -398,7 +383,7 @@ async fn db_model_history(store: Option<&SessionStore>) -> Vec<ModelSelection> {
     let values = match store.config_history(CONFIG_KEY_MODEL).await {
         Ok(values) => values,
         Err(error) => {
-            eprintln!("\x1b[33m⚠ 读取模型选择配置失败，使用默认模型：{error}\x1b[0m");
+            eprintln!("\x1b[33m⚠ 读取模型选择配置失败：{error}\x1b[0m");
             return Vec::new();
         }
     };
@@ -422,13 +407,13 @@ async fn db_model_history(store: Option<&SessionStore>) -> Vec<ModelSelection> {
         .collect()
 }
 
-/// 启动模型选择：CLI 参数 > sqlite 配置回退链（feedback） > 内置默认。
+/// 启动模型选择：CLI 参数 > sqlite 配置回退链（feedback）；两层都没有时报错。
 ///
 /// - `--model` 支持 `<provider>/<模型id>` 全形式（provider 部分优先于
 ///   `--provider`）；CLI 给出任一选择器时数据库选择整层不生效
 /// - 无 CLI 选择器时沿数据库回退链从最新向最老逐条解析，第一条可解析的
-///   选择生效（provider 已删除、模型已不存在的失效选择告警后回退）；
-///   链空或全部失效时落内置默认 provider 的默认模型
+///   选择生效（provider 已删除、模型已不存在的失效选择告警后回退）
+/// - 链空或全部失效时报错：无内置默认模型，必须显式指定
 fn select_startup_model(
     cli: &Cli,
     db_history: &[ModelSelection],
@@ -443,10 +428,10 @@ fn select_startup_model(
                     .map(|(provider, _)| provider.to_string())
             })
             .or_else(|| cli.provider.clone())
-            .unwrap_or_else(default_provider);
+            .context("--model 缺 provider：请用 <provider>/<模型id> 全形式，或搭配 --provider")?;
         let model_id = match &cli.model {
             Some(spec) => ModelSelection::parse(spec, Some(&provider))?.model,
-            None => default_model_id(&provider)?,
+            None => bail!("provider {provider:?} 无默认模型，请用 --model 指定模型 id"),
         };
         return models.resolve(&provider, &model_id);
     }
@@ -459,9 +444,9 @@ fn select_startup_model(
             ),
         }
     }
-    let provider = default_provider();
-    let model_id = default_model_id(&provider)?;
-    models.resolve(&provider, &model_id)
+    bail!(
+        "未指定模型：请用 --model <provider>/<模型id> 指定（provider 在 config.toml 的 [providers] 中定义）"
+    )
 }
 
 /// 解析 api_key：CLI 参数 > 环境变量 > `providers.<名字>.api_key` > 平铺配置文件。
@@ -496,73 +481,36 @@ fn model_spec_from_config<'c>(
 }
 
 /// 加载 models.dev 目录；配置已给全规格字段时跳过（不读缓存、不联网），
-/// 目录不可用时告警并返回 `None`（调用方落到内置预设）。
+/// 目录不可用时告警并返回 `None`（调用方落到中性兜底）。
 async fn load_catalog_unless_complete(
     config: Option<&Config>,
-    provider_kind: &str,
+    provider_kind: Option<&str>,
     model_id_hint: Option<&str>,
 ) -> Option<Catalog> {
-    let complete = model_spec_from_config(config, provider_kind, model_id_hint)
-        .is_some_and(ModelSpec::is_complete);
+    let complete = provider_kind.is_some_and(|provider| {
+        model_spec_from_config(config, provider, model_id_hint).is_some_and(ModelSpec::is_complete)
+    });
     if complete {
         return None;
     }
     let catalog = nomic_ai::models_dev::load().await;
     if catalog.is_none() {
-        eprintln!("\x1b[33m⚠ models.dev 目录不可用，模型规格回落到内置默认值\x1b[0m");
+        eprintln!("\x1b[33m⚠ models.dev 目录不可用，模型规格回落到中性兜底值\x1b[0m");
     }
     catalog
 }
 
-/// provider 内置预设：分层解析的最底层（「全局默认值」）。
+/// 分层解析的最底层：协议级默认 base URL 与保守的规格兜底值（全零）。
 struct Preset {
-    /// 默认模型 id（自定义 provider 无内置默认，必须显式指定）
-    default_model: Option<&'static str>,
-    /// 默认 base URL
+    /// 默认 base URL（按 API 协议；provider 本身无内置地址）
     default_base_url: &'static str,
-    /// 规格默认值（除 `name` 外全字段有值；`name` 缺省回退为模型 id）
+    /// 规格兜底值（除 `name` 外全字段有值；`name` 缺省回退为模型 id）
     spec: ModelSpec,
 }
 
-/// 内置 provider（anthropic / openai）的预设。
-fn builtin_preset(provider_kind: &str) -> Option<Preset> {
-    match provider_kind {
-        "anthropic" => Some(Preset {
-            default_model: Some("claude-sonnet-4-5"),
-            default_base_url: "https://api.anthropic.com",
-            spec: ModelSpec {
-                name: None,
-                reasoning: Some(true),
-                context_window: Some(200_000),
-                max_tokens: Some(64_000),
-                cost_input: Some(3.0),
-                cost_output: Some(15.0),
-                cost_cache_read: Some(0.3),
-                cost_cache_write: Some(3.75),
-            },
-        }),
-        "openai" => Some(Preset {
-            default_model: Some("gpt-5.2"),
-            default_base_url: "https://api.openai.com/v1",
-            spec: ModelSpec {
-                name: None,
-                reasoning: Some(true),
-                context_window: Some(400_000),
-                max_tokens: Some(128_000),
-                cost_input: Some(0.0),
-                cost_output: Some(0.0),
-                cost_cache_read: Some(0.0),
-                cost_cache_write: Some(0.0),
-            },
-        }),
-        _ => None,
-    }
-}
-
-/// 自定义 provider 的中性预设：无默认模型，规格字段全为保守值。
+/// 中性兜底：规格字段全为保守值，base URL 按 API 协议取官方地址。
 const fn neutral_preset(api: ApiKind) -> Preset {
     Preset {
-        default_model: None,
         default_base_url: match api {
             ApiKind::AnthropicMessages => "https://api.anthropic.com",
             ApiKind::OpenAiCompletions => "https://api.openai.com/v1",
@@ -638,26 +586,22 @@ impl ModelResolver {
         provider_config(self.config(), provider)
     }
 
-    /// provider 的 API 种类：配置显式指定 > 内置名推断；未知 provider 报错。
+    /// provider 的 API 种类：配置显式指定 > 按名推断（anthropic / openai）；
+    /// 其余名字必须在配置中定义。
     fn api(&self, provider: &str) -> Result<ApiKind> {
         self.provider_config(provider)
             .and_then(|p| p.api)
             .or_else(|| crate::config::infer_api(provider))
             .with_context(|| {
                 format!(
-                    "未知 provider {provider:?}：请使用 anthropic / openai，\
-                     或在 config.toml 的 [providers.{provider}] 中定义并指定 api"
+                    "未知 provider {provider:?}：请在 config.toml 的 [providers.{provider}] 中\
+                     定义并指定 api（anthropic / openai 可按名自动推断）"
                 )
             })
     }
 
-    /// 分层最底层的预设（内置 provider 或自定义中性预设）。
-    fn preset(provider: &str, api: ApiKind) -> Preset {
-        builtin_preset(provider).unwrap_or_else(|| neutral_preset(api))
-    }
-
     /// base_url 永远来自用户指定：CLI > 环境变量（仅 openai 系）>
-    /// `providers.<名字>.*` > 平铺配置 > 内置默认，不经由 models.dev。
+    /// `providers.<名字>.*` > 平铺配置 > 协议默认地址，不经由 models.dev。
     fn base_url(&self, provider: &str, api: ApiKind, preset: &Preset) -> String {
         self.cli_base_url
             .clone()
@@ -676,7 +620,7 @@ impl ModelResolver {
     }
 
     /// 规格字段（`name` / `reasoning` / `context_window` / `max_tokens` / `cost_*`）
-    /// 逐字段分层：配置 `providers.<名字>.models.<模型id>` > models.dev > 内置预设。
+    /// 逐字段分层：配置 `providers.<名字>.models.<模型id>` > models.dev > 中性兜底。
     fn spec_for(&self, provider: &str, model_id: &str, preset: &Preset) -> ModelSpec {
         model_spec_from_config(self.config(), provider, Some(model_id))
             .cloned()
@@ -694,13 +638,13 @@ impl ModelResolver {
 
     /// 按 `<provider, 模型id>` 解析完整 [`Model`]（分层与启动时一致）。
     ///
-    /// 校验模型存在（禁止配置不存在的模型）：配置覆盖表 / models.dev 目录 /
-    /// 内置默认模型必须命中其一，否则报错——启动路径直接失败，`/models` 运行时
-    /// 切换转为提示。目录不可用（离线）时无法校验，保持既有降级行为。
+    /// 校验模型存在（禁止配置不存在的模型）：配置覆盖表 / models.dev 目录必须
+    /// 命中其一，否则报错——启动路径直接失败，`/models` 运行时切换转为提示。
+    /// 目录不可用（离线）时无法校验，保持既有降级行为。
     pub fn resolve(&self, provider: &str, model_id: &str) -> Result<Model> {
         let api = self.api(provider)?;
-        let preset = Self::preset(provider, api);
-        self.ensure_known(provider, model_id, &preset)?;
+        let preset = neutral_preset(api);
+        self.ensure_known(provider, model_id)?;
         let base_url = self.base_url(provider, api, &preset);
         let spec = self.spec_for(provider, model_id, &preset);
         Ok(Model {
@@ -719,18 +663,16 @@ impl ModelResolver {
         })
     }
 
-    /// 模型存在性校验：配置覆盖表（用户显式定义）→ models.dev 目录 →
-    /// 内置默认模型。
+    /// 模型存在性校验：配置覆盖表（用户显式定义）→ models.dev 目录。
     ///
     /// 目录不可用（离线 / 配置已写全规格跳过加载）时不校验——没有权威数据源
-    /// 无法判断「不存在」，维持启动告警 + 内置预设的降级语义。
-    fn ensure_known(&self, provider: &str, model_id: &str, preset: &Preset) -> Result<()> {
+    /// 无法判断「不存在」，维持启动告警 + 中性兜底的降级语义。
+    fn ensure_known(&self, provider: &str, model_id: &str) -> Result<()> {
         if model_spec_from_config(self.config(), provider, Some(model_id)).is_some()
             || self
                 .catalog
                 .as_ref()
                 .is_some_and(|catalog| catalog.lookup(Some(provider), model_id).is_some())
-            || preset.default_model == Some(model_id)
         {
             return Ok(());
         }
@@ -745,39 +687,33 @@ impl ModelResolver {
         ))
     }
 
-    /// 候选 provider 列表：内置 provider（anthropic、openai）在前，
-    /// 配置表 `[providers]` 定义的自定义 provider 按名排序在后。
+    /// 候选 provider 列表：配置表 `[providers]` 定义的名字，按名排序。
     pub fn providers(&self) -> Vec<String> {
-        let mut names = vec!["anthropic".to_string(), "openai".to_string()];
-        let custom: Vec<String> = self
-            .config()
+        self.config()
             .and_then(|c| c.providers.as_ref())
-            .map(|providers| {
-                providers
-                    .keys()
-                    .filter(|name| !names.contains(name))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        names.extend(custom);
-        names
+            .map(|providers| providers.keys().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// `/models` 选择器候选（跨 provider）：每个 provider 的 配置覆盖 ∪
-    /// models.dev 目录 ∪ 内置默认模型 ∪ 当前模型；provider 间按
-    /// [`Self::providers`] 顺序、provider 内按模型 id 排序去重。
+    /// models.dev 目录 ∪ 当前模型；provider 间按名排序（当前模型所在的
+    /// provider 未在配置中定义时补入，保证当前模型始终可见）、provider 内
+    /// 按模型 id 排序去重。
     ///
     /// 目录不可用（启动时已告警）或 provider 名不命中 models.dev 时，该
-    /// provider 只剩配置覆盖、内置默认与当前模型；`/models:<p>/<id>` 直接
-    /// 切换不受候选范围限制。api 解析失败的 provider 整组跳过。
+    /// provider 只剩配置覆盖与当前模型；`/models:<p>/<id>` 直接切换不受候选
+    /// 范围限制。api 解析失败的 provider 整组跳过。
     pub fn candidates(&self, current: &ModelSelection) -> Vec<ModelChoice> {
         let mut choices = Vec::new();
-        for provider in self.providers() {
+        let mut providers = self.providers();
+        if !providers.contains(&current.provider) {
+            providers.insert(0, current.provider.clone());
+        }
+        for provider in providers {
             let Ok(api) = self.api(&provider) else {
                 continue;
             };
-            let preset = Self::preset(&provider, api);
+            let preset = neutral_preset(api);
             let mut ids = std::collections::BTreeSet::new();
             if provider == current.provider {
                 ids.insert(current.model.clone());
@@ -795,11 +731,6 @@ impl ModelResolver {
                         .into_iter()
                         .map(|(id, _)| id.to_string()),
                 );
-            }
-            if let Some(preset) = builtin_preset(&provider)
-                && let Some(default) = preset.default_model
-            {
-                ids.insert(default.to_string());
             }
             choices.extend(ids.into_iter().map(|id| {
                 let spec = self.spec_for(&provider, &id, &preset);
@@ -836,7 +767,7 @@ fn resolve_model(
     resolver.api(provider_kind)?;
     let model_id = match &cli.model {
         Some(spec) => ModelSelection::parse(spec, Some(provider_kind))?.model,
-        None => default_model_id(provider_kind)?,
+        None => bail!("provider {provider_kind:?} 无默认模型，请用 --model 指定模型 id"),
     };
     resolver.resolve(provider_kind, &model_id)
 }
@@ -1118,7 +1049,7 @@ mod tests {
         assert!(prompt.contains("Check unsafe code."));
     }
 
-    // ── 配置分层：CLI > 环境变量 > 配置文件 > 内置默认 ───────────────────────
+    // ── 配置分层：CLI > 环境变量 > 配置文件 > 协议默认 ─────────────────────
 
     /// 裁剪的 models.dev api.json fixture。
     const MODELS_DEV_FIXTURE: &str = r#"{
@@ -1164,7 +1095,7 @@ mod tests {
     #[test]
     fn cli_model_beats_db_history() {
         // CLI 选择器生效时数据库选择整层不生效
-        let cli = cli(&["--model", "gpt-5.2"]);
+        let cli = cli(&["--model", "openai/gpt-5.2"]);
         let resolver = resolver(&Cli::parse_from(["nomic"]), None, Some(catalog()));
         let db_history = [ModelSelection {
             provider: "openai".to_string(),
@@ -1193,20 +1124,34 @@ mod tests {
     }
 
     #[test]
-    fn db_history_feedback_falls_back_to_builtin_default_when_exhausted() {
-        // 回退链全部失效：落内置默认 provider 的默认模型（provider 由环境推断，
-        // 两者都是内置 provider，这里不断言具体是哪一个）
+    fn cli_model_without_provider_is_rejected() {
+        // 裸模型 id 且无 --provider：无内置默认 provider，必须报错
+        let cli = cli(&["--model", "gpt-5.2"]);
+        let resolver = resolver(&Cli::parse_from(["nomic"]), None, Some(catalog()));
+        let error = select_startup_model(&cli, &[], &resolver).expect_err("缺 provider 必须报错");
+        assert!(format!("{error:#}").contains("缺 provider"));
+    }
+
+    #[test]
+    fn cli_provider_without_model_is_rejected() {
+        // 只给 --provider：无内置默认模型，必须显式指定模型
+        let cli = cli(&["--provider", "openai"]);
+        let resolver = resolver(&Cli::parse_from(["nomic"]), None, Some(catalog()));
+        let error = select_startup_model(&cli, &[], &resolver).expect_err("缺模型必须报错");
+        assert!(format!("{error:#}").contains("无默认模型"));
+    }
+
+    #[test]
+    fn db_history_exhausted_requires_explicit_model() {
+        // 回退链全部失效：无内置默认模型可落，报错要求显式指定
         let resolver = resolver(&cli(&[]), None, Some(catalog()));
         let db_history = [ModelSelection {
             provider: "openai".to_string(),
             model: "gpt-retired".to_string(),
         }];
-        let model = select_startup_model(&cli(&[]), &db_history, &resolver).expect("select");
-        assert!(
-            ["claude-sonnet-4-5", "gpt-5.2"].contains(&model.id.as_str()),
-            "链尽时落内置默认模型，实际为 {}",
-            model.id
-        );
+        let error =
+            select_startup_model(&cli(&[]), &db_history, &resolver).expect_err("链尽时必须报错");
+        assert!(format!("{error:#}").contains("未指定模型"));
     }
 
     #[test]
@@ -1246,8 +1191,8 @@ mod tests {
             base_url: Some("https://config".to_string()),
             ..Config::default()
         };
-        let with_flag = cli(&["--base-url", "https://cli"]);
-        let plain = cli(&[]);
+        let with_flag = cli(&["--base-url", "https://cli", "--model", "gpt-5.2"]);
+        let plain = cli(&["--model", "gpt-5.2"]);
         // CLI 参数最高
         let model = resolve(
             "openai",
@@ -1263,11 +1208,12 @@ mod tests {
         // 配置文件再次
         let model = resolve("openai", &plain, Some(&config), None, None);
         assert_eq!(model.base_url, "https://config");
-        // 内置默认兜底
+        // 协议默认地址兜底
         let model = resolve("openai", &plain, None, None, None);
         assert_eq!(model.base_url, "https://api.openai.com/v1");
         // OPENAI_BASE_URL 对 anthropic 不生效
-        let model = resolve("anthropic", &plain, None, Some("https://env"), None);
+        let anthropic = cli(&["--model", "claude-sonnet-4-5"]);
+        let model = resolve("anthropic", &anthropic, None, Some("https://env"), None);
         assert_eq!(model.base_url, "https://api.anthropic.com");
     }
 
@@ -1286,7 +1232,13 @@ mod tests {
             providers: Some(providers),
             ..Config::default()
         };
-        let model = resolve("openai", &cli(&[]), Some(&config), None, None);
+        let model = resolve(
+            "openai",
+            &cli(&["--model", "gpt-5.2"]),
+            Some(&config),
+            None,
+            None,
+        );
         assert_eq!(model.base_url, "https://provider-table");
     }
 
@@ -1303,13 +1255,13 @@ mod tests {
         assert_eq!(resolve_api_key(None, None, None, None), None);
     }
 
-    // ── 规格字段分层：配置 > models.dev > 内置预设 ──────────────────────────
+    // ── 规格字段分层：配置 > models.dev > 中性兜底 ─────────────────────────
 
     #[test]
-    fn spec_from_catalog_fills_fields_preset_is_last_resort() {
-        let plain = cli(&[]);
-        // models.dev 命中：gpt-5.2 有 limit 但无 cost → cost 落预设（openai 预设为 0）
-        let model = resolve("openai", &plain, None, None, Some(&catalog()));
+    fn spec_from_catalog_fills_fields_neutral_preset_is_last_resort() {
+        let with_model = cli(&["--model", "gpt-5.2"]);
+        // models.dev 命中：gpt-5.2 有 limit 但无 cost → cost 落中性兜底（全零）
+        let model = resolve("openai", &with_model, None, None, Some(&catalog()));
         assert_eq!(model.id, "gpt-5.2");
         assert_eq!(model.name, "GPT-5.2", "展示名来自 models.dev");
         assert_eq!(model.context_window, 400_000);
@@ -1318,15 +1270,16 @@ mod tests {
         assert_eq!(
             Some(model.cost_input),
             Some(0.0),
-            "models.dev 缺 cost 时落预设"
+            "models.dev 缺 cost 时落中性兜底"
         );
-        // 无 models.dev：保持今天的内置默认行为
-        let model = resolve("openai", &plain, None, None, None);
+        // 无 models.dev：规格字段全部落中性兜底（目录不可用时不校验存在性）
+        let model = resolve("openai", &with_model, None, None, None);
         assert_eq!(model.name, "gpt-5.2", "name 兜底为模型 id");
-        assert_eq!(model.context_window, 400_000);
-        let model = resolve("anthropic", &plain, None, None, None);
-        assert_eq!(model.context_window, 200_000);
-        assert_eq!(Some(model.cost_input), Some(3.0));
+        assert_eq!(model.context_window, 0);
+        let claude = cli(&["--model", "claude-sonnet-4-5"]);
+        let model = resolve("anthropic", &claude, None, None, None);
+        assert_eq!(model.context_window, 0);
+        assert_eq!(Some(model.cost_input), Some(0.0));
     }
 
     #[test]
@@ -1351,7 +1304,13 @@ mod tests {
             providers: Some(providers),
             ..Config::default()
         };
-        let model = resolve("openai", &cli(&[]), Some(&config), None, Some(&catalog()));
+        let model = resolve(
+            "openai",
+            &cli(&["--model", "gpt-5.2"]),
+            Some(&config),
+            None,
+            Some(&catalog()),
+        );
         assert_eq!(model.max_tokens, 8192, "配置覆盖 models.dev");
         assert_eq!(model.context_window, 400_000, "未覆盖字段仍来自 models.dev");
         assert_eq!(model.name, "GPT-5.2");
@@ -1421,8 +1380,8 @@ mod tests {
     fn custom_provider_requires_explicit_model() {
         let config = deepseek_config();
         let error = resolve_model("deepseek", &cli(&[]), Some(&config), None, None)
-            .expect_err("自定义 provider 无默认模型，必须显式指定");
-        assert!(format!("{error:#}").contains("没有内置默认模型"));
+            .expect_err("无默认模型，必须显式指定");
+        assert!(format!("{error:#}").contains("无默认模型"));
     }
 
     #[test]
@@ -1440,7 +1399,7 @@ mod tests {
 
     #[test]
     fn resolve_by_id_shares_startup_layering() {
-        // 与启动解析同一口径：配置覆盖 > models.dev > 内置预设
+        // 与启动解析同一口径：配置覆盖 > models.dev > 中性兜底
         let resolver = resolver(&cli(&[]), None, Some(catalog()));
         let model = resolver.resolve("openai", "gpt-5.2").expect("resolve");
         assert_eq!(model.name, "GPT-5.2");
@@ -1503,16 +1462,16 @@ mod tests {
         )
         .expect("配置表定义的模型可解析");
         assert_eq!(model.name, "My Fine Tune");
-        assert_eq!(model.context_window, 400_000, "规格字段仍按分层解析");
+        assert_eq!(model.context_window, 0, "规格字段仍按分层解析");
     }
 
     #[test]
     fn unknown_model_degraded_when_catalog_unavailable() {
         // 离线降级：目录不可用无法校验存在性，保持既有回落行为（启动告警已发）
         let model = resolve_model("openai", &cli(&["--model", "gpt-future"]), None, None, None)
-            .expect("目录不可用时未知模型回落内置预设");
+            .expect("目录不可用时未知模型回落中性兜底");
         assert_eq!(model.id, "gpt-future");
-        assert_eq!(model.context_window, 400_000);
+        assert_eq!(model.context_window, 0);
     }
 
     #[test]
@@ -1543,47 +1502,48 @@ mod tests {
         let specs: Vec<String> = choices.iter().map(ModelChoice::spec).collect();
         assert_eq!(
             specs,
-            [
-                "anthropic/claude-sonnet-4-5", // 跨 provider：内置默认模型
-                "openai/gpt-5.2",
-                "openai/gpt-future",
-                "openai/my-fine-tune",
-            ],
-            "每个 provider 的 目录 ∪ 当前模型 ∪ 配置覆盖 ∪ 内置默认"
+            ["openai/gpt-5.2", "openai/gpt-future", "openai/my-fine-tune",],
+            "每个 provider 的 目录 ∪ 当前模型 ∪ 配置覆盖"
         );
-        let gpt = &choices[1];
+        let gpt = &choices[0];
         assert_eq!(gpt.name, "GPT-5.2");
         assert_eq!(gpt.context_window, 400_000);
         assert!(gpt.reasoning, "gpt-5.2 的推理能力来自 models.dev");
-        assert_eq!(choices[3].name, "My Fine Tune", "展示名来自配置覆盖");
+        assert_eq!(choices[2].name, "My Fine Tune", "展示名来自配置覆盖");
         // 重复解析当前模型：候选中再选一次幂等
         let again = resolver.candidates(&ModelSelection::parse("openai/gpt-5.2", None).unwrap());
         assert!(
             !again.iter().any(|choice| choice.id == "gpt-future"),
             "gpt-future 不再是当前模型后不出现"
         );
-        assert_eq!(again.len(), 3);
+        assert_eq!(again.len(), 2);
+    }
+
+    #[test]
+    fn candidates_include_current_provider_not_in_config() {
+        // 当前模型的 provider 未在配置中定义（按名推断 api）：补入候选列表，
+        // 保证当前模型始终可见
+        let resolver = resolver(&cli(&[]), None, Some(catalog()));
+        let current = ModelSelection::parse("openai/gpt-5.2", None).expect("current");
+        let specs: Vec<String> = resolver
+            .candidates(&current)
+            .iter()
+            .map(ModelChoice::spec)
+            .collect();
+        assert_eq!(specs, ["openai/gpt-5.2"]);
     }
 
     #[test]
     fn candidates_without_catalog_keep_config_and_current() {
-        // 目录不可用（如配置已写全规格字段跳过加载）：仍列出内置默认、
-        // 配置覆盖与当前模型
+        // 目录不可用（如配置已写全规格字段跳过加载）：仍列出配置覆盖与当前模型
         let config = deepseek_config();
         let resolver = resolver(&cli(&[]), Some(config), None);
         let current = ModelSelection::parse("deepseek/deepseek-chat", None).expect("current");
         let choices = resolver.candidates(&current);
         let specs: Vec<String> = choices.iter().map(ModelChoice::spec).collect();
-        assert_eq!(
-            specs,
-            [
-                "anthropic/claude-sonnet-4-5",
-                "openai/gpt-5.2",
-                "deepseek/deepseek-chat",
-            ]
-        );
-        let deepseek = &choices[2];
-        assert_eq!(deepseek.context_window, 0, "无目录时规格落中性预设");
-        assert!(!deepseek.reasoning, "中性预设不支持推理");
+        assert_eq!(specs, ["deepseek/deepseek-chat"]);
+        let deepseek = &choices[0];
+        assert_eq!(deepseek.context_window, 0, "无目录时规格落中性兜底");
+        assert!(!deepseek.reasoning, "中性兜底不支持推理");
     }
 }

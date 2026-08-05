@@ -2,7 +2,7 @@
 //!
 //! 配置文件为可选：文件不存在时视为无配置；存在但读取/解析/校验失败时硬报错
 //! （用户显式写了配置，静默降级会掩盖拼写错误等问题）。整体优先级为
-//! CLI 参数 > 环境变量 > 配置文件 > 内置默认，本模块只负责「配置文件」这一层，
+//! CLI 参数 > 环境变量 > 配置文件 > 协议默认，本模块只负责「配置文件」这一层，
 //! 分层合并在 `bootstrap` 完成。
 //!
 //! 注意：provider/model 的**选择**不在配置文件中（模型选择经 `/models` 命令
@@ -17,7 +17,8 @@ use anyhow::{Context as _, Result, bail};
 use nomic_ai::{ApiKind, ModelSpec};
 use serde::Deserialize;
 
-/// 按 provider 名推断 API 种类；内置以外的名字返回 `None`（需在配置中显式指定 `api`）。
+/// 按 provider 名推断 API 种类；anthropic / openai 以外的名字返回 `None`
+/// （需在配置中显式指定 `api`）。
 pub fn infer_api(provider: &str) -> Option<ApiKind> {
     match provider {
         "anthropic" => Some(ApiKind::AnthropicMessages),
@@ -94,7 +95,7 @@ pub struct ProviderConfig {
     /// API key（优先级高于平铺的顶层 `api_key`，低于环境变量）
     pub api_key: Option<String>,
     /// 模型规格覆盖表（`[providers.<名字>.models."<模型id>"]`），全部字段可选；
-    /// 缺失的字段继续向 models.dev、内置默认解析
+    /// 缺失的字段继续向 models.dev、中性兜底解析
     pub models: Option<BTreeMap<String, ModelSpec>>,
 }
 
@@ -301,7 +302,7 @@ max_tokens = 8192
         let providers = config.providers.as_ref().expect("providers");
 
         let anthropic = providers.get("anthropic").expect("anthropic");
-        assert_eq!(anthropic.api, None, "内置 provider 的 api 可省略");
+        assert_eq!(anthropic.api, None, "anthropic 的 api 可按名推断省略");
         assert_eq!(
             anthropic.base_url.as_deref(),
             Some("https://api.anthropic.com")

@@ -82,6 +82,8 @@ async fn sessions_list_shows_session_details() {
 const DEAD_PROVIDER_ARGS: &[&str] = &[
     "--provider",
     "openai",
+    "--model",
+    "gpt-5.2",
     "--api-key",
     "test",
     "--base-url",

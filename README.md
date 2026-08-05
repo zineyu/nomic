@@ -35,8 +35,9 @@ direnv allow        # 或使用 direnv 自动进入
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...     # 或 OPENAI_API_KEY / OPENAI_BASE_URL
 
-# 交互 TUI（缺省，设计见 docs/adr/0002）
-cargo run -p nomic-cli
+# 交互 TUI（缺省，设计见 docs/adr/0002）；模型必须显式指定（无内置默认模型）：
+# 首次用 --model <provider>/<模型id> 启动，之后经 /models 切换并记住选择
+cargo run -p nomic-cli -- --model anthropic/claude-sonnet-4-5
 # 键位：Enter 发送 · Tab 补全 · Esc 取消运行 · Ctrl+C 退出 · ↑/↓/PgUp/PgDn/滚轮滚动
 # 命令：/help 查看全部（/new 开启新对话，/resume 恢复历史 session，/tree 浏览会话树并创建分支，/models 跨 provider 切换模型或设置思考级别，/compact 压缩上下文，/retry 重试失败的响应，/quit 退出），输入 / 自动补全
 
@@ -99,12 +100,13 @@ nomic 的配置正从配置文件逐步迁移到 sqlite（设计见 [docs/adr/00
 
 - **模型选择**在 sqlite（session 库的 `config` 表）：TUI 内 `/models` 跨 provider
   选择（`<provider>/<模型id>` 格式），选择结果追加保存；启动时按
-  **CLI 参数 > sqlite 配置（从最新选择向最老逐条回退） > 内置默认** 解析，
-  失效的选择（provider 已删除、模型已不存在）告警后自动回退到更早的选择
+  **CLI 参数 > sqlite 配置（从最新选择向最老逐条回退）** 解析，
+  失效的选择（provider 已删除、模型已不存在）告警后自动回退到更早的选择；
+  两层都没有时启动报错——没有内置默认 provider / 模型，必须显式指定
 - 其余配置（provider 定义、连接/请求参数、压缩阈值等）仍在用户级配置文件
   `$XDG_CONFIG_HOME/nomic/config.toml`（缺省 `~/.config/nomic/config.toml`）。
   仓库根目录的 [`config.example.toml`](config.example.toml) 是带注释的完整示例，复制后按需修改。
-  全部字段可选；优先级为 CLI 参数 > 环境变量 > 配置文件 > 内置默认。
+  全部字段可选；优先级为 CLI 参数 > 环境变量 > 配置文件 > 协议默认。
   未知键或非法取值（reasoning）会在启动时硬报错
 
 ```toml
@@ -122,10 +124,11 @@ append_system = "总是用中文回复。"
 
 ### 多 provider 与模型规格
 
-`[providers.<名字>]` 定义多个 provider，`[providers.<名字>.models."<模型id>"]`
+`[providers.<名字>]` 定义多个 provider（没有内置 provider，`/models` 选择器
+只列出配置中定义的名字），`[providers.<名字>.models."<模型id>"]`
 覆盖单个模型的规格字段（全部可选，只写要覆盖的）。
 provider 与 base_url 永远来自用户指定；模型规格字段逐字段按
-**配置 > [models.dev](https://models.dev) > 内置默认** 解析：
+**配置 > [models.dev](https://models.dev) > 中性兜底（全零）** 解析：
 
 ```toml
 [providers.anthropic]
@@ -147,16 +150,16 @@ api = "open_ai_completions"
 base_url = "https://api.deepseek.com/v1"
 api_key = "sk-..."
 
-# 只写要覆盖的字段，其余走 models.dev → 内置默认
+# 只写要覆盖的字段，其余走 models.dev → 中性兜底
 [providers.deepseek.models."deepseek-chat"]
 max_tokens = 8192
 ```
 
 models.dev 目录按模型 id 查询（约 3MB 的 api.json），缓存到
 `$XDG_CACHE_HOME/nomic/models-dev-api.json`（24h 有效期，网络失败时用过期缓存兜底）；
-配置已给全规格字段时不读缓存、不联网。models.dev 与缓存都不可用时回落到内置默认值。
+配置已给全规格字段时不读缓存、不联网。models.dev 与缓存都不可用时回落到中性兜底值。
 
-模型 id 必须「存在」：命中 models.dev 目录、`[providers.*.models]` 定义或内置默认模型之一，
+模型 id 必须「存在」：命中 models.dev 目录或 `[providers.*.models]` 定义之一，
 否则启动与 `/models` 切换都会报错（目录不可用、无法校验时维持回落行为）。
 
 ## AGENTS.md

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted（「内置默认」层已由 ADR-0010 移除，改为协议级中性兜底；其余分层不变）
 
 ## Date
 

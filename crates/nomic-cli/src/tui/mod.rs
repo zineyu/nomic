@@ -38,10 +38,11 @@ use crossterm::{
     },
 };
 use futures::StreamExt as _;
-use nomic_ai::{Message, Model, ThinkingLevel};
+use nomic_ai::{Message, Model, StopReason, ThinkingLevel};
 use nomic_core::{Agent, AgentEvent, Compaction, estimate_context_tokens};
 use nomic_session::{CompactionRecord, SessionStore, TreeEntry};
 use nomic_skills::SkillResolver;
+use nomic_tools::TodoStore;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -89,13 +90,40 @@ struct ProviderSwitch {
 /// agent driver 完成的任务回执。
 enum DriverDone {
     /// 一轮 prompt 结束（Err 为 agent loop 错误）
-    Prompt(Result<(), String>),
+    Prompt(Result<PromptEnd, String>),
     /// 一次手动压缩结束（Ok(None) 表示无可压缩内容；Err 为摘要失败）
     Compact(Result<Option<Compaction>, String>),
     /// 一次重试结束（Ok(false) 表示无可重试状态；Err 为 loop 错误）
     Retry(Result<bool, String>),
     /// 上下文 token 估算回报（每个 job 处理后发送，状态栏用量显示用）
     Context(u64),
+}
+
+/// 一轮 prompt 的结束回执（goal 模式是否自动追问的判定依据）。
+struct PromptEnd {
+    /// 是否正常结束：用户取消（Esc/Ctrl+C）或响应以 Error/Aborted
+    /// 收尾时为 false——失败与中断的恢复由用户主导，不自动追问
+    ended_normally: bool,
+}
+
+/// goal 模式连续自动追问的次数上限：防止模型反复不收尾时失控循环
+///（达到上限后暂停追问，用户手动继续或 `/goal` 重开后重新计数）。
+const MAX_GOAL_NUDGES: u32 = 3;
+
+/// goal 模式的追问提示词：列出未完成的 todo（pending / in_progress），
+/// 要求模型继续完成；清单为空或没有未完成项时返回 `None`（不追问）。
+///
+/// 该文本作为 user 消息进入对话历史（聊天区可见、随 session 落库）。
+fn goal_reminder_prompt(todos: &TodoStore) -> Option<String> {
+    let incomplete = todos.incomplete();
+    if incomplete.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "[goal 模式] react loop 已停止，但 todo 清单还有未完成的任务：\n{}\n\
+         请继续完成上述剩余任务：逐项推进，完成后立即用 todo_write 更新状态；全部完成前不要停止。",
+        nomic_tools::render_todos(&incomplete)
+    ))
 }
 
 /// 运行交互 TUI。
@@ -127,11 +155,15 @@ pub async fn run(cli: &Cli) -> Result<()> {
     // driver 据此维护 `/models` 级别选择器的当前值
     let initial_reasoning = boot.stream_options.reasoning;
 
+    let todo_store = TodoStore::new();
     let (agent, mut events) = Agent::builder()
         .model(boot.model.clone())
         .provider(boot.provider)
         .system_prompt(boot.system_prompt)
-        .tools(nomic_tools::default_tools_with_skills(boot.skill_resolver))
+        .tools(nomic_tools::default_tools_with_skills(
+            boot.skill_resolver,
+            todo_store.clone(),
+        ))
         .messages(boot.history)
         .stream_options(boot.stream_options)
         .compaction(boot.compaction)
@@ -159,6 +191,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
         skill_resolver,
         tip,
         initial_reasoning,
+        todo_store,
     )?;
     let mut term_events = EventStream::new();
     // spinner 帧推进：仅运行中需要动画，空闲时分支挂起不唤醒事件循环
@@ -184,6 +217,8 @@ pub async fn run(cli: &Cli) -> Result<()> {
 }
 
 /// 启动 agent driver：专属 tokio 任务持有 Agent，串行执行 job，完成后回传结果。
+// 参数均为 driver 的独立组成部分，打包为参数结构只会增加间接层
+#[allow(clippy::too_many_arguments)]
 fn spawn_driver(
     agent: Agent,
     session: Option<(SessionStore, String)>,
@@ -192,6 +227,7 @@ fn spawn_driver(
     skill_resolver: SkillResolver,
     tip: Option<String>,
     reasoning: Option<ThinkingLevel>,
+    todos: TodoStore,
 ) -> Result<(Driver, mpsc::UnboundedReceiver<DriverDone>)> {
     let (job_tx, mut job_rx) = mpsc::unbounded_channel::<DriverJob>();
     let (done_tx, done_rx) = mpsc::unbounded_channel::<DriverDone>();
@@ -201,11 +237,27 @@ fn spawn_driver(
             match job {
                 DriverJob::Prompt(text, images, cancel) => {
                     let result = agent
-                        .prompt_with_images(&text, &images, cancel)
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| error.to_string());
-                    if done_tx.send(DriverDone::Prompt(result)).is_err() {
+                        .prompt_with_images(&text, &images, cancel.clone())
+                        .await;
+                    let done = match result {
+                        Ok(messages) => {
+                            // goal 模式追问判定：用户取消（Esc/Ctrl+C）或
+                            // 响应以 Error/Aborted 收尾时不算正常结束
+                            let last_stop =
+                                messages.iter().rev().find_map(|message| match message {
+                                    Message::Assistant(assistant) => Some(assistant.stop_reason),
+                                    _ => None,
+                                });
+                            let ended_normally = !cancel.is_cancelled()
+                                && !matches!(
+                                    last_stop,
+                                    Some(StopReason::Error | StopReason::Aborted)
+                                );
+                            Ok(PromptEnd { ended_normally })
+                        }
+                        Err(error) => Err(error.to_string()),
+                    };
+                    if done_tx.send(DriverDone::Prompt(done)).is_err() {
                         return;
                     }
                 }
@@ -261,6 +313,8 @@ fn spawn_driver(
         model,
         reasoning,
         pending_model: None,
+        todos,
+        goal_nudges: 0,
     };
     Ok((driver, done_rx))
 }
@@ -289,6 +343,10 @@ struct Driver {
     /// 待切换模型（模型切换流程第二步暂存）：模型选择器确认后、思考级别
     /// 选择器确认（应用切换）或 Esc（放弃切换）前持有
     pending_model: Option<Model>,
+    /// todo 清单（与 agent 的 todo 工具共享；goal 模式追问判定用）
+    todos: TodoStore,
+    /// goal 模式连续自动追问次数（用户提交新 prompt 或 run 异常结束时清零）
+    goal_nudges: u32,
 }
 
 /// 事件循环单次等待的结果。
@@ -353,10 +411,7 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
         Wake::AgentDone(done) => match done {
             DriverDone::Prompt(result) => {
                 driver.current_cancel = None;
-                let notice = result
-                    .err()
-                    .map(|error| format!("agent loop 失败：{error}"));
-                app.finish_run(notice);
+                handle_prompt_done(app, driver, result);
             }
             DriverDone::Compact(result) => {
                 driver.current_cancel = None;
@@ -395,6 +450,53 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
         Wake::TermClosed => return true,
     }
     false
+}
+
+/// 一轮 prompt 结束：goal 模式开启、run 正常结束且仍有未完成 todo 时，
+/// 自动以 user 消息追问（连续次数有上限，防模型反复不收尾时失控循环）；
+/// 其余情况回到空闲态。追问计数在用户提交新 prompt、run 异常结束或
+/// 清单全部完成时清零。
+fn handle_prompt_done(app: &mut App, driver: &mut Driver, result: Result<PromptEnd, String>) {
+    let end = match result {
+        Ok(end) => end,
+        Err(error) => {
+            driver.goal_nudges = 0;
+            app.finish_run(Some(format!("agent loop 失败：{error}")));
+            return;
+        }
+    };
+    let reminder = if end.ended_normally && app.goal_mode() {
+        goal_reminder_prompt(&driver.todos)
+    } else {
+        None
+    };
+    let Some(reminder) = reminder else {
+        driver.goal_nudges = 0;
+        app.finish_run(None);
+        return;
+    };
+    if driver.goal_nudges >= MAX_GOAL_NUDGES {
+        driver.goal_nudges = 0;
+        app.finish_run(Some(format!(
+            "goal 模式：已连续追问 {MAX_GOAL_NUDGES} 次，todo 仍未全部完成，\
+             暂停自动追问（手动继续或 /goal 重开）。"
+        )));
+        return;
+    }
+    driver.goal_nudges += 1;
+    let token = CancellationToken::new();
+    if driver
+        .job_tx
+        .send(DriverJob::Prompt(reminder, Vec::new(), token.clone()))
+        .is_ok()
+    {
+        driver.current_cancel = Some(token);
+        app.begin_run();
+    } else {
+        app.finish_run(Some(
+            "内部错误：agent 任务已退出，goal 追问未发送。".to_string(),
+        ));
+    }
 }
 
 /// 等待下一个唤醒源：按键 / 鼠标 / agent 事件 / 本轮完成 / spinner 帧。
@@ -512,6 +614,8 @@ const fn map_key(key: KeyEvent) -> Option<Key> {
 async fn execute_effect(app: &mut App, driver: &mut Driver, effect: Effect) {
     match effect {
         Effect::Prompt { text, images } => {
+            // 用户主动提交：重置 goal 模式连续追问计数
+            driver.goal_nudges = 0;
             let token = CancellationToken::new();
             if driver
                 .job_tx
@@ -1457,12 +1561,66 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        ModelChoice, ModelSelection, ReasoningSetting, model_row_text, panic_payload_text,
-        paste_image_path, percent_decode, reasoning_label, reasoning_row_text, reasoning_setting,
-        tree_rows,
+        ModelChoice, ModelSelection, ReasoningSetting, goal_reminder_prompt, model_row_text,
+        panic_payload_text, paste_image_path, percent_decode, reasoning_label, reasoning_row_text,
+        reasoning_setting, tree_rows,
     };
     use nomic_ai::ThinkingLevel;
+    use nomic_core::AgentTool;
     use nomic_session::TreeEntry;
+    use nomic_tools::{TodoItemInput, TodoStatus, TodoStore, TodoWriteTool};
+
+    /// goal 模式追问提示词：列出未完成 todo；空清单或全部完成时不追问。
+    #[tokio::test]
+    async fn goal_reminder_lists_incomplete_todos() {
+        async fn write(store: &TodoStore, todos: Vec<TodoItemInput>) {
+            let tool = TodoWriteTool::new(store.clone());
+            tool.execute(
+                nomic_tools::TodoWriteParams { todos },
+                tokio_util::sync::CancellationToken::new(),
+                Box::new(|_| {}),
+            )
+            .await
+            .expect("写入应成功");
+        }
+        let item = |title: &str, status: TodoStatus| TodoItemInput {
+            id: None,
+            title: title.to_string(),
+            status,
+            children: Vec::new(),
+        };
+
+        // 空清单：不追问
+        let store = TodoStore::new();
+        assert_eq!(goal_reminder_prompt(&store), None);
+
+        // 有未完成项：提示词列出 pending / in_progress，不含 completed
+        write(
+            &store,
+            vec![
+                item("修复测试", TodoStatus::Completed),
+                item("更新文档", TodoStatus::Pending),
+                item("补充单测", TodoStatus::InProgress),
+            ],
+        )
+        .await;
+        let prompt = goal_reminder_prompt(&store).expect("有未完成项应追问");
+        assert!(prompt.contains("[goal 模式]"), "{prompt}");
+        assert!(prompt.contains("更新文档"), "{prompt}");
+        assert!(prompt.contains("补充单测"), "{prompt}");
+        assert!(!prompt.contains("修复测试"), "{prompt}");
+
+        // 全部完成（含已取消）：不追问
+        write(
+            &store,
+            vec![
+                item("修复测试", TodoStatus::Completed),
+                item("过时任务", TodoStatus::Cancelled),
+            ],
+        )
+        .await;
+        assert_eq!(goal_reminder_prompt(&store), None);
+    }
 
     /// 会话树选择器行：线性链（含工具调用轮次）平铺不缩进，连续工具条目
     /// 折叠为一行摘要（不可选），当前分支末端带标记。

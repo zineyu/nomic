@@ -23,7 +23,10 @@ pub use edit::EditTool;
 pub use find::FindTool;
 pub use grep::GrepTool;
 pub use read::ReadTool;
-pub use todo::{TodoItem, TodoReadTool, TodoStatus, TodoStore, TodoWriteTool};
+pub use todo::{
+    TodoItem, TodoItemInput, TodoReadTool, TodoStatus, TodoStore, TodoWriteParams, TodoWriteTool,
+    render_todos,
+};
 pub use truncate::{
     Continuation, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncatedBy, Truncation, exceeds_notice,
     truncate_head, truncate_tail,
@@ -31,8 +34,10 @@ pub use truncate::{
 pub use write::WriteTool;
 
 /// 创建默认工具集的 [`nomic_core::DynTool`] 列表。
-pub fn default_tools() -> Vec<nomic_core::DynTool> {
-    let todo_store = TodoStore::new();
+///
+/// todo 工具共享调用方持有的 [`TodoStore`]（clone 即共享同一份数据），
+/// 交互端可据此在 run 结束后检查未完成的 todo（goal 模式）。
+pub fn default_tools(todo_store: TodoStore) -> Vec<nomic_core::DynTool> {
     vec![
         nomic_core::DynTool::new(ReadTool::new()),
         nomic_core::DynTool::new(WriteTool),
@@ -45,11 +50,11 @@ pub fn default_tools() -> Vec<nomic_core::DynTool> {
     ]
 }
 
-/// 创建支持 `skill://` 的默认工具集。
+/// 创建支持 `skill://` 的默认工具集（todo store 语义同 [`default_tools`]）。
 pub fn default_tools_with_skills(
     skill_resolver: nomic_skills::SkillResolver,
+    todo_store: TodoStore,
 ) -> Vec<nomic_core::DynTool> {
-    let todo_store = TodoStore::new();
     vec![
         nomic_core::DynTool::new(ReadTool::with_skill_resolver(skill_resolver)),
         nomic_core::DynTool::new(WriteTool),

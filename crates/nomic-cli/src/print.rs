@@ -35,7 +35,10 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
         .model(boot.model)
         .provider(boot.provider)
         .system_prompt(boot.system_prompt)
-        .tools(nomic_tools::default_tools_with_skills(boot.skill_resolver))
+        .tools(nomic_tools::default_tools_with_skills(
+            boot.skill_resolver,
+            nomic_tools::TodoStore::new(),
+        ))
         .messages(boot.history)
         .stream_options(boot.stream_options)
         .compaction(boot.compaction)

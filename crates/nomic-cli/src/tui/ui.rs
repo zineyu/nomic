@@ -408,6 +408,10 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Span::styled(format!(" {session} "), theme::dim()),
         context_usage_span(app),
     ];
+    // goal 模式开启时给出常驻徽标：自动追问进行中用户能看到原因
+    if app.goal_mode() {
+        left.push(Span::styled(" goal ", theme::warn()));
+    }
     if let Some(notice) = app.notice() {
         left.push(Span::styled(format!("⚠ {notice} "), theme::warn()));
     }

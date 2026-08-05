@@ -146,6 +146,12 @@ pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
         usage: "/thinking",
     },
     SlashCommand {
+        name: "goal",
+        aliases: &[],
+        summary: "开关 goal 模式（默认关闭）：开启后 react loop 停止时若 todo 未全部完成，自动以 user 消息追问",
+        usage: "/goal",
+    },
+    SlashCommand {
         name: "quit",
         aliases: &["exit"],
         summary: "退出 TUI",
@@ -189,6 +195,8 @@ enum SlashAction {
     Copy,
     /// `/thinking` 切换 thinking 内容折叠/展开显示
     Thinking,
+    /// `/goal` 开关 goal 模式（loop 停止且 todo 未完成时自动追问）
+    Goal,
 }
 
 impl SlashAction {
@@ -205,6 +213,7 @@ impl SlashAction {
                 | Self::Quit
                 | Self::Copy
                 | Self::Thinking
+                | Self::Goal
                 | Self::Skill(None)
                 | Self::Image(_)
         )
@@ -293,6 +302,7 @@ fn parse_slash(input: &str) -> SlashParse {
                 "retry" if !junk && arg.is_none() => SlashAction::Retry,
                 "copy" if !junk && arg.is_none() => SlashAction::Copy,
                 "thinking" if !junk && arg.is_none() => SlashAction::Thinking,
+                "goal" if !junk && arg.is_none() => SlashAction::Goal,
                 "quit" if !junk && arg.is_none() => SlashAction::Quit,
                 _ => return SlashParse::InvalidUsage(command.usage),
             };
@@ -489,6 +499,9 @@ pub(super) enum Effect {
 }
 
 /// TUI 应用状态。
+// 布尔字段均为相互独立的 UI 开关（运行态/退出/thinking 折叠/goal 模式），
+// 两态语义清晰，无需状态机
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub(super) struct App {
     items: Vec<ChatItem>,
@@ -528,6 +541,9 @@ pub(super) struct App {
     templates: Vec<PromptTemplate>,
     /// thinking 内容是否折叠显示（默认折叠，`/thinking` 切换）
     thinking_collapsed: bool,
+    /// goal 模式（默认关闭，`/goal` 开关）：开启后 react loop 停止且
+    /// todo 未全部完成时，由事件循环自动以 user 消息追问
+    goal_mode: bool,
 }
 
 impl App {
@@ -557,6 +573,7 @@ impl App {
             skills: Vec::new(),
             templates: Vec::new(),
             thinking_collapsed: true,
+            goal_mode: false,
         }
     }
 
@@ -921,7 +938,7 @@ impl App {
             return self.execute_slash(action);
         }
         self.notice = Some(
-            "运行中，等待本轮结束（/help、/copy、/thinking、/skill、/image、/quit 不受影响）"
+            "运行中，等待本轮结束（/help、/copy、/thinking、/goal、/skill、/image、/quit 不受影响）"
                 .to_string(),
         );
         Vec::new()
@@ -1007,6 +1024,16 @@ impl App {
                 self.push_system(format!("thinking 显示：{state}（/thinking 切换）"));
                 Vec::new()
             }
+            SlashAction::Goal => {
+                self.goal_mode = !self.goal_mode;
+                let state = if self.goal_mode {
+                    "已开启：react loop 停止时若 todo 未全部完成，将自动以 user 消息追问"
+                } else {
+                    "已关闭"
+                };
+                self.push_system(format!("goal 模式{state}（/goal 切换）"));
+                Vec::new()
+            }
             SlashAction::New => vec![Effect::NewSession],
             SlashAction::Tree => vec![Effect::ListTree],
         }
@@ -1018,6 +1045,13 @@ impl App {
     pub(super) fn finish_run(&mut self, notice: Option<String>) {
         self.running = false;
         self.notice = notice;
+    }
+
+    /// 开始一轮自动运行（goal 模式追问）：与 prompt 提交同一口径
+    /// 先置 running，避免 AgentStart 事件到达前的空窗期重复提交。
+    pub(super) fn begin_run(&mut self) {
+        self.running = true;
+        self.notice = None;
     }
 
     /// 置状态栏一次性提示（告警等）。
@@ -1525,6 +1559,11 @@ impl App {
     /// thinking 内容是否折叠显示（`/thinking` 切换）。
     pub(super) const fn thinking_collapsed(&self) -> bool {
         self.thinking_collapsed
+    }
+
+    /// goal 模式是否开启（`/goal` 开关，默认关闭）。
+    pub(super) const fn goal_mode(&self) -> bool {
+        self.goal_mode
     }
 
     /// 模型展示名。
@@ -2109,6 +2148,7 @@ mod tests {
             parse_slash("/thinking"),
             SlashParse::Known(SlashAction::Thinking)
         );
+        assert_eq!(parse_slash("/goal"), SlashParse::Known(SlashAction::Goal));
         assert_eq!(parse_slash("/retry"), SlashParse::Known(SlashAction::Retry));
         assert_eq!(
             parse_slash("/foobar"),
@@ -2169,6 +2209,26 @@ mod tests {
         assert_eq!(systems, 2);
         // 本地命令：运行中也可执行
         assert!(SlashAction::Thinking.is_local());
+    }
+
+    #[test]
+    fn goal_toggles_mode_state() {
+        let mut app = app();
+        // 默认关闭，本地命令不产生外部效果
+        assert!(!app.goal_mode());
+        assert!(app.execute_slash(SlashAction::Goal).is_empty());
+        assert!(app.goal_mode());
+        assert!(app.execute_slash(SlashAction::Goal).is_empty());
+        assert!(!app.goal_mode());
+        // 每次切换在聊天区留下系统提示
+        let systems = app
+            .items
+            .iter()
+            .filter(|item| matches!(item, ChatItem::System(_)))
+            .count();
+        assert_eq!(systems, 2);
+        // 本地命令：运行中也可执行
+        assert!(SlashAction::Goal.is_local());
     }
 
     #[test]
@@ -2261,6 +2321,10 @@ mod tests {
         ));
         // 无参命令带参数同样报用法错误
         assert!(matches!(parse_slash("/new x"), SlashParse::InvalidUsage(_)));
+        assert!(matches!(
+            parse_slash("/goal x"),
+            SlashParse::InvalidUsage(_)
+        ));
         assert!(matches!(
             parse_slash("/resume:abc"),
             SlashParse::InvalidUsage(_)

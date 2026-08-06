@@ -47,12 +47,12 @@
     echo "== typos =="     && typos
   '';
 
-  # ── 版本发布（tag 触发 .github/workflows/release.yml）────────────────────
+  # ── 版本发布（minor/major 手动；patch 走 release-patch.yml 自动发版）────────
   # 用法：release <semver>（不带 v 前缀），如 `release 0.2.0`
   # 流程：前置校验 → bump 版本 → git-cliff 生成 CHANGELOG → 完整 check →
   #       jj 提交 + 移动 main 书签 + git tag。推送由人工执行，防止误发。
   scripts.release = {
-    description = "发布新版本：release <semver>，例如 release 0.2.0";
+    description = "手动发布 minor/major 版本：release <semver>，例如 release 0.2.0（patch 请用 GitHub Action「Release (patch)」）";
     exec = ''
       set -euo pipefail
 
@@ -70,6 +70,17 @@
 
       if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
         echo "错误: tag $TAG 已存在" >&2
+        exit 1
+      fi
+
+      # patch 版本统一走 GitHub Action「Release (patch)」自动发版（bump/门禁/
+      # 构建/发布/回写 main 全自动），本地脚本只发布 minor/major；
+      # 确需本地发 patch 时设 RELEASE_ALLOW_PATCH=1 绕过。
+      CURRENT=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+      if [ "''${RELEASE_ALLOW_PATCH:-0}" != "1" ] \
+        && [ "$(echo "$CURRENT" | cut -d. -f1,2)" = "$(echo "$VERSION" | cut -d. -f1,2)" ]; then
+        echo "错误: patch 版本（$CURRENT → $VERSION）请使用 GitHub Action「Release (patch)」发布" >&2
+        echo "   确需本地发布时：RELEASE_ALLOW_PATCH=1 release $VERSION" >&2
         exit 1
       fi
 

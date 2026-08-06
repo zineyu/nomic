@@ -2,7 +2,8 @@ name: Release
 
 # tag 推送触发（由 devenv `release` 脚本创建），流程：
 #   check/nix 门禁（与 ci.yml 等价）→ 多平台构建 → GitHub Release
-# 发布流程详见 docs/releasing.md
+# 本 workflow 服务于 minor/major 手动发版；patch 版本由 release-patch.yml
+# （workflow_dispatch）自动发版。发布流程详见 docs/releasing.md
 on:
   push:
     tags:

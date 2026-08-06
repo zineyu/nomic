@@ -1,0 +1,266 @@
+name: Release (patch)
+
+# patch 版本自动发版，手动触发（Actions → Release (patch) → Run workflow）。
+# 流程：bump patch 版本 + CHANGELOG → 推送 release/vX.Y.Z 分支 → 完整门禁 →
+#       多平台构建 → GitHub Release（创建 tag）→ 成功后回写 main 并清理分支。
+# 关键保证：只有 GitHub Release 发布成功，bump 提交才会进入 main；
+# 任何一步失败，main 与 tag 均不受影响，修复后直接重跑即可。
+# minor/major 版本不走本流程，必须本地手动发版（见 docs/releasing.md）。
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只做 bump/检查/构建，不创建 Release、不回写 main（用于验证流程）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+# 发版不可并行，也不允许中途取消（避免 Release 已建而 main 未回写的中间态）
+concurrency:
+  group: release-patch
+  cancel-in-progress: false
+
+jobs:
+  # 在 main 之上生成 release 提交（bump + CHANGELOG），推送到 release/vX.Y.Z
+  # 分支。此阶段不打 tag、不动 main，失败可安全重跑。
+  prepare:
+    name: bump patch & push release branch
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
+      version: ${{ steps.bump.outputs.version }}
+      commit: ${{ steps.bump.outputs.commit }}
+      branch: ${{ steps.bump.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0 # git-cliff 需要完整历史定位上个 tag 以来的提交
+
+      - uses: cachix/install-nix-action@v31
+
+      - uses: cachix/cachix-action@v16
+        with:
+          name: devenv
+
+      - name: Install devenv.sh
+        run: nix profile add nixpkgs#devenv
+
+      - id: bump
+        name: Bump patch version & changelog
+        run: |
+          set -euo pipefail
+
+          CURRENT=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          devenv shell cargo set-version --workspace --bump patch
+          # 同步 Cargo.lock 中的 workspace 版本（与本地 release 脚本一致）
+          devenv shell cargo metadata --format-version 1 > /dev/null
+          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          TAG="v$VERSION"
+          BRANCH="release/$TAG"
+          echo "bump: $CURRENT -> $VERSION"
+
+          # 断言确实是 patch 递增（major.minor 不变），防止工作区版本号异常
+          if [ "$VERSION" = "$CURRENT" ] || \
+             [ "$(echo "$VERSION" | cut -d. -f1,2)" != "$(echo "$CURRENT" | cut -d. -f1,2)" ]; then
+            echo "错误: 版本号异常（$CURRENT -> $VERSION），不是 patch 递增" >&2
+            exit 1
+          fi
+
+          # 防重：tag 已存在说明该版本已进入过发布阶段，需人工处理（见 docs/releasing.md）
+          if [ -n "$(git ls-remote --tags origin "$TAG")" ]; then
+            echo "错误: 远端已存在 tag $TAG，不能重复发布" >&2
+            exit 1
+          fi
+
+          devenv shell git-cliff --tag "$TAG" -o CHANGELOG.md
+          # git-cliff 的文件尾换行数量不稳定；规范化为恰好一个换行，避免
+          # end-of-file-fixer 在后续 check 中修改文件（与本地 release 脚本一致）
+          printf '%s\n' "$(cat CHANGELOG.md)" > CHANGELOG.md.tmp
+          mv CHANGELOG.md.tmp CHANGELOG.md
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # --no-verify：提交钩子由 devenv enterShell 在本地安装，CI 环境不可用；
+          # 门禁由后续 check job（devenv test + devenv shell check）完整覆盖
+          git commit -am "chore(release): $TAG" --no-verify
+
+          COMMIT=$(git rev-parse HEAD)
+          # --force：上次运行若在 check/build 阶段失败，允许以同版本重跑覆盖 release 分支
+          git push --force origin "HEAD:refs/heads/$BRANCH"
+
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "commit=$COMMIT"
+            echo "branch=$BRANCH"
+          } >> "$GITHUB_OUTPUT"
+
+  # 门禁：与 ci.yml 相同的完整检查，在 release 提交上运行
+  check:
+    name: devenv check
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.branch }}
+
+      - uses: cachix/install-nix-action@v31
+
+      - uses: cachix/cachix-action@v16
+        with:
+          name: devenv
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install devenv.sh
+        run: nix profile add nixpkgs#devenv
+
+      - name: Run git hooks
+        run: devenv test
+
+      - name: Run checks
+        run: devenv shell check
+
+  # 保证发布的提交上 nix 包可构建（flake 是官方安装方式之一）
+  nix:
+    name: nix flake check
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.branch }}
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: nix flake check
+        run: nix flake check --print-build-logs
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: [prepare, check, nix]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 全部使用对应架构的原生 runner，避免交叉编译配置腐烂；
+          # ubuntu-24.04-arm 公开仓库免费，私有仓库若不可用可改 cross 方案
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.branch }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # runner 预装 rustup，`rustup show` 按 rust-toolchain.toml 自动安装固定工具链
+      - name: Install toolchain
+        run: rustup show
+
+      - name: Build
+        run: cargo build --release --locked --package nomic-cli --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="nomic-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/nomic" dist/nomic
+          strip dist/nomic
+          cp README.md CHANGELOG.md dist/
+          tar -C dist -czf "${name}.tar.gz" .
+          if command -v sha256sum >/dev/null; then
+            sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          else
+            shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            *.tar.gz
+            *.tar.gz.sha256
+
+  # 创建 tag 与 GitHub Release。只有 main 上的运行才允许真正发布，
+  # 其他分支只能配合 dry_run 验证流程。
+  release:
+    name: GitHub Release
+    needs: [prepare, build]
+    if: ${{ inputs.dry_run == false && github.ref_name == 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+      # 需要完整历史，git-cliff 才能定位当前版本的提交范围
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.branch }}
+          fetch-depth: 0
+
+      # git-cliff --current 依赖本地 tag 定位提交区间；远端 tag 由
+      # action-gh-release 在创建 Release 时一并创建
+      - name: Tag locally for git-cliff
+        run: git tag "${{ needs.prepare.outputs.tag }}"
+
+      - uses: taiki-e/install-action@git-cliff
+
+      # --current：仅渲染当前版本对应的提交区间，作为 Release notes
+      - name: Generate release notes
+        run: git cliff --current --strip all -o RELEASE_NOTES.md
+
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      # 通过 GITHUB_TOKEN 创建 Release 与 tag，不会再次触发 tag 推送的 release.yml
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ needs.prepare.outputs.commit }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            *.tar.gz
+            *.tar.gz.sha256
+          fail_on_unmatched_files: true
+
+  # 发布成功后才把 release 提交回写 main（快进推送），并清理 release 分支
+  finalize:
+    name: push main & cleanup
+    needs: [prepare, release]
+    if: ${{ inputs.dry_run == false && github.ref_name == 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Fast-forward main to release commit
+        run: |
+          set -euo pipefail
+          BRANCH="${{ needs.prepare.outputs.branch }}"
+          git fetch --depth 1 origin "$BRANCH"
+          # 非 force 推送：release 分支基于 prepare 时的 main，若发版期间 main 前进
+          # 则此处失败——此时 Release 已发布，需人工 rebase bump 提交后推 main
+          # （见 docs/releasing.md 故障处理）。
+          # 注意：GITHUB_TOKEN 的推送不会再触发 main 上的 CI，但该提交刚刚
+          # 通过本 workflow 与 CI 完全等价的门禁，无需重复检查。
+          git push origin "FETCH_HEAD:refs/heads/main"
+
+      - name: Delete release branch
+        run: |
+          git push origin --delete "${{ needs.prepare.outputs.branch }}" || \
+            echo "警告: 清理分支失败，可手动删除 ${{ needs.prepare.outputs.branch }}"

@@ -19,6 +19,7 @@
     cargo-nextest # 更快的测试运行器
     cargo-edit # cargo set-version：发版时 bump workspace 版本
     git-cliff # 从 conventional commits 生成 CHANGELOG
+    python3 # 规范化 release 生成的 CHANGELOG 文件尾
     taplo # TOML 格式化与校验
     typos # 拼写检查
     ripgrep # 快速文本搜索（rg）
@@ -91,6 +92,14 @@
 
       echo "== changelog =="
       git-cliff --tag "$TAG" -o CHANGELOG.md
+      # git-cliff 的文件尾换行数量不稳定；先规范化为恰好一个换行，避免
+      # end-of-file-fixer 在后续 check 中修改文件并导致 release 中断。
+      python3 - <<'PY'
+      from pathlib import Path
+
+      path = Path("CHANGELOG.md")
+      path.write_bytes(path.read_bytes().rstrip(b"\r\n") + b"\n")
+      PY
 
       # release commit 必须通过完整 check（RELEASE_SKIP_CHECK=1 可跳过，不推荐）
       if [ "''${RELEASE_SKIP_CHECK:-0}" != "1" ]; then

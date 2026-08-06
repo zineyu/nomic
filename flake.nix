@@ -81,7 +81,7 @@
               nativeCheckInputs = [ pkgs.cacert ];
               meta = {
                 description = "Rust 编码 agent（pi-coding-agent 的 Rust 复刻）";
-                homepage = "https://github.com/zine/nomic";
+                homepage = "https://github.com/zineyu/nomic";
                 license = nixpkgs.lib.licenses.mit;
                 mainProgram = "nomic";
               };

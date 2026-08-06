@@ -52,8 +52,8 @@ nomic 此前只能从源码 `cargo build` 构建。项目开发环境已由 deve
 
 ## Consequences
 
-- 用户可 `nix run github:zine/nomic` 直接运行，`nix profile install
-  github:zine/nomic` 安装；`Cargo.lock` 变动无需任何 flake 侧维护。
+- 用户可 `nix run github:zineyu/nomic` 直接运行，`nix profile install
+  github:zineyu/nomic` 安装；`Cargo.lock` 变动无需任何 flake 侧维护。
 - `flake.lock` 提交进仓库，保证可复现。
 - 升级 rust 版本或 nixpkgs 时，需要同时更新 `rust-toolchain.toml`（已同步
   devenv/CI）与 flake 输入 rev（对照 `devenv.lock`）。

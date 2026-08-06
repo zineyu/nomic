@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"
-repository = "https://github.com/zine/nomic"
+repository = "https://github.com/zineyu/nomic"
 
 # 共享依赖统一在此声明版本，crate 内使用 `dep.workspace = true` 引用。
 [workspace.dependencies]

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"
@@ -12,12 +12,12 @@ repository = "https://github.com/zineyu/nomic"
 # 共享依赖统一在此声明版本，crate 内使用 `dep.workspace = true` 引用。
 [workspace.dependencies]
 # ── 内部 crate ──────────────────────────────────────────────────────────────
-nomic-ai = { path = "crates/nomic-ai", version = "0.1.0" }
-nomic-core = { path = "crates/nomic-core", version = "0.1.0" }
-nomic-prompts = { path = "crates/nomic-prompts", version = "0.1.0" }
-nomic-session = { path = "crates/nomic-session", version = "0.1.0" }
-nomic-skills = { path = "crates/nomic-skills", version = "0.1.0" }
-nomic-tools = { path = "crates/nomic-tools", version = "0.1.0" }
+nomic-ai = { path = "crates/nomic-ai", version = "0.1.1" }
+nomic-core = { path = "crates/nomic-core", version = "0.1.1" }
+nomic-prompts = { path = "crates/nomic-prompts", version = "0.1.1" }
+nomic-session = { path = "crates/nomic-session", version = "0.1.1" }
+nomic-skills = { path = "crates/nomic-skills", version = "0.1.1" }
+nomic-tools = { path = "crates/nomic-tools", version = "0.1.1" }
 
 # ── 异步运行时与工具 ─────────────────────────────────────────────────────────
 tokio = { version = "1.53", features = [

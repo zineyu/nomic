@@ -6,6 +6,11 @@
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，
 由 [git-cliff](https://git-cliff.org) 从 conventional commits 自动生成。
 
+## [0.1.1] - 2026-08-06
+
+### 杂项
+
+- Fix devenv test
 ## [0.1.0] - 2026-08-06
 
 ### CI
@@ -142,3 +147,4 @@
 - **(tui)** 输入框不再叠加模式提示标题
 - **(tui)** 移除进入浏览模式的一次性提示
 - **(tui)** 状态栏不再显示会话标题
+

@@ -578,8 +578,6 @@ pub(super) struct App {
     search_matches: Vec<usize>,
     /// 序列键首键（NORMAL 的 `g`/`[`/`]`/`y`），等待第二键
     pending_key: Option<char>,
-    /// 首次进入 NORMAL 的一次性键位提示是否已展示
-    normal_hint_shown: bool,
     /// 输入缓冲（可多行，`\n` 为 Shift+Enter 插入的手动换行）
     input: String,
     /// 光标位置（字节索引，始终落在 char 边界）
@@ -637,7 +635,6 @@ impl App {
             search_query: String::new(),
             search_matches: Vec::new(),
             pending_key: None,
-            normal_hint_shown: false,
             input: String::new(),
             cursor: 0,
             completion: None,
@@ -1310,8 +1307,7 @@ impl App {
         (!self.search_query.is_empty()).then_some(self.search_query.as_str())
     }
 
-    /// 进入 NORMAL：草稿保留；消息游标定位到最新一条对话消息；
-    /// 首次进入给一次性键位提示。
+    /// 进入 NORMAL：草稿保留；消息游标定位到最新一条对话消息。
     fn enter_normal(&mut self) {
         self.mode = Mode::Normal;
         self.pending_key = None;
@@ -1319,11 +1315,6 @@ impl App {
         self.yc_block = 0;
         // 防御：退回栈保证进 NORMAL 时弹层已关，这里兜底
         self.completion = None;
-        if !self.normal_hint_shown {
-            self.normal_hint_shown = true;
-            // 一次性提示保持一句话：详细键位由右侧提示与 /help 承担
-            self.notice = Some("已进入浏览模式 · i 返回输入".to_string());
-        }
     }
 
     /// 离开 NORMAL 回 INSERT：清掉序列键 pending，避免残留的首键
@@ -3784,14 +3775,14 @@ mod tests {
         assert_eq!(app.mode(), Mode::Insert);
         assert_eq!(app.input(), "/h", "输入不受 Esc 影响");
 
-        // 2. 空闲：进 NORMAL；一次性提示只出现一次
+        // 2. 空闲：进 NORMAL，无模式切换提示，且不覆盖既有提示
         assert!(app.press(Key::Esc).is_empty());
         assert_eq!(app.mode(), Mode::Normal);
-        assert!(app.notice().is_some(), "首次进 NORMAL 给一次性提示");
+        assert!(app.notice().is_none(), "进 NORMAL 不再提示");
         app.press(Key::Char('i'));
         app.warn("其他提示");
         app.press(Key::Esc);
-        assert_eq!(app.notice(), Some("其他提示"), "一次性提示只出现一次");
+        assert_eq!(app.notice(), Some("其他提示"), "进 NORMAL 不覆盖既有提示");
     }
 
     /// NORMAL：j/k 滚动，字符不污染输入缓冲（草稿保留），

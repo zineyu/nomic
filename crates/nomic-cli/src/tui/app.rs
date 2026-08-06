@@ -1325,8 +1325,8 @@ impl App {
         self.completion = None;
         if !self.normal_hint_shown {
             self.normal_hint_shown = true;
-            self.notice =
-                Some("已进入浏览模式：i 返回输入 · j/k 滚动 · ]m 跳消息 · yy 复制".to_string());
+            // 一次性提示保持一句话：详细键位由右侧提示与 /help 承担
+            self.notice = Some("已进入浏览模式 · i 返回输入".to_string());
         }
     }
 

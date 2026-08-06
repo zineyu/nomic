@@ -613,12 +613,13 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
             theme::warn(),
         ));
     }
+    // 键位提示保持精简：完整键位见欢迎页与 /help，此处只留模式核心键
     let hint = match app.mode() {
-        Mode::Normal => "i 输入 · ]m 消息 · / 搜索 · yy 复制 · : 命令 · Ctrl+C 退出 ",
+        Mode::Normal => "i 输入 · ]m 消息 · / 搜索 · yy 复制 ",
         Mode::Search => "输入即搜 · Enter 完成 · Esc 取消 ",
-        Mode::Visual => "j/k 扩展选择 · y 复制 · Esc 取消 ",
-        Mode::Picker => "输入过滤 · ↑/↓ 选择 · Home/End 首/尾 · Enter 确认 · Esc 取消 ",
-        Mode::Insert => "/ 命令 · Tab 补全 · Enter 发送 · Esc 浏览 ",
+        Mode::Visual => "j/k 扩展 · y 复制 · Esc 取消 ",
+        Mode::Picker => "输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ",
+        Mode::Insert => "/ 命令 · Tab 补全 · Esc 浏览 ",
     };
     right.push(Span::styled(hint, theme::dim()));
     let left_line = Line::from(left);
@@ -630,8 +631,9 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(left_line), area);
 }
 
-/// 状态栏上下文用量：`ctx 12.3k/200k·6%`；窗口未知（0）时不显示占比。
-/// 用量逼近窗口（≥80%）时以警告色提示。
+/// 状态栏上下文用量：常态紧凑显示占比（`ctx 6%`）；窗口未知（0）时
+/// 只显示 token 估算。用量逼近窗口（≥80%）时展开完整数值并以警告色
+/// 提示（`ctx 168k/200k·84%`）。
 fn context_usage_span(app: &App) -> Span<'static> {
     let tokens = app.context_tokens();
     let window = app.context_window();
@@ -639,18 +641,18 @@ fn context_usage_span(app: &App) -> Span<'static> {
         return Span::styled(format!(" ctx {} ", format_tokens(tokens)), theme::dim());
     }
     let percent = tokens.saturating_mul(100) / window;
-    let text = format!(
-        " ctx {}/{}·{}% ",
-        format_tokens(tokens),
-        format_tokens(window),
-        percent
-    );
-    let style = if percent >= 80 {
-        theme::warn()
-    } else {
-        theme::dim()
-    };
-    Span::styled(text, style)
+    if percent >= 80 {
+        return Span::styled(
+            format!(
+                " ctx {}/{}·{}% ",
+                format_tokens(tokens),
+                format_tokens(window),
+                percent
+            ),
+            theme::warn(),
+        );
+    }
+    Span::styled(format!(" ctx {percent}% "), theme::dim())
 }
 
 /// token 数紧凑格式：<1k 原样，<10k 一位小数（`8.4k`），其余取整（`200k`）。
@@ -1476,23 +1478,49 @@ mod tests {
         assert_eq!(format_tokens(200_000), "200k");
     }
 
-    /// 状态栏显示上下文用量：token 估算 / 窗口 / 占比。
-    #[test]
-    fn status_bar_shows_context_usage() {
-        let mut app = App::new("test-model".to_string(), None, 200_000);
-        app.set_context_tokens(8_432);
-
+    /// 渲染一帧并提取全部非空白字符，供状态栏断言用。
+    fn render_compact(app: &mut App) -> String {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
-
-        let buffer = terminal.backend().buffer();
-        let compact: String = buffer
+        terminal.draw(|frame| draw(frame, app)).expect("draw");
+        terminal
+            .backend()
+            .buffer()
             .content()
             .iter()
             .flat_map(|cell| cell.symbol().chars())
             .filter(|c| !c.is_whitespace())
-            .collect();
-        assert!(compact.contains("ctx8.4k/200k·4%"), "{compact}");
+            .collect()
+    }
+
+    /// 状态栏上下文用量：常态只显示紧凑占比；逼近窗口（≥80%）时展开完整数值。
+    #[test]
+    fn status_bar_shows_context_usage() {
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        app.set_context_tokens(8_432);
+        let compact = render_compact(&mut app);
+        assert!(compact.contains("ctx4%"), "{compact}");
+        assert!(!compact.contains("8.4k/200k"), "{compact}");
+
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        app.set_context_tokens(168_000);
+        let compact = render_compact(&mut app);
+        assert!(compact.contains("ctx168k/200k·84%"), "{compact}");
+    }
+
+    /// 状态栏模式徽标：INSERT 低调徽标；进入 NORMAL 切换为强提示徽标。
+    #[test]
+    fn status_bar_badge_follows_mode() {
+        use super::super::app::Key;
+
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        let compact = render_compact(&mut app);
+        assert!(compact.contains("INSERT"), "{compact}");
+        assert!(!compact.contains("NORMAL"), "{compact}");
+
+        let _ = app.press(Key::Esc);
+        let compact = render_compact(&mut app);
+        assert!(compact.contains("NORMAL"), "{compact}");
+        assert!(!compact.contains("INSERT"), "{compact}");
     }
 }

@@ -563,10 +563,9 @@ fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
     }
 }
 
-/// 状态栏：左侧模式徽标 + 模型徽标 + 会话标题 + 上下文用量 + 告警；
+/// 状态栏：左侧模式徽标 + 模型徽标 + 上下文用量 + 告警；
 /// 右侧滚动位置 + 随模式切换的键位提示。
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let session = app.session_label();
     // 模式徽标（ADR-0011）：NORMAL 反色绿块强提示；INSERT/PICKER 低调
     // accent 文本，避免与相邻的模型徽标（反色块）糊成一片
     let mode_badge = match app.mode() {
@@ -579,7 +578,6 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mut left = vec![
         mode_badge,
         Span::styled(format!(" {} ", app.model_name()), theme::selected()),
-        Span::styled(format!(" {session} "), theme::dim()),
         context_usage_span(app),
     ];
     // goal 模式开启时给出常驻徽标：自动追问进行中用户能看到原因
@@ -867,7 +865,7 @@ mod tests {
         assert!(compact.contains("你好"));
         assert!(compact.contains("bash"));
         assert!(compact.contains("test-model"));
-        // session id 是内部标识，状态栏展示会话标题（首条用户消息摘要）
+        // session id 是内部标识，不对用户展示
         assert!(!compact.contains("abcd1234"));
     }
 

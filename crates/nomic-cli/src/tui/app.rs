@@ -598,8 +598,6 @@ pub(super) struct App {
     model_name: String,
     /// 当前 session id（未持久化时为 None；内部标识，不展示给用户）
     session_id: Option<String>,
-    /// 会话标题（首条用户消息的首行摘要；状态栏展示，替代内部 id）
-    session_title: Option<String>,
     /// 上下文 token 估算（状态栏用量显示；与自动压缩同一估算口径）
     context_tokens: u64,
     /// 模型上下文窗口（0 = 规格未知，状态栏不显示占比）
@@ -646,7 +644,6 @@ impl App {
             should_quit: false,
             model_name,
             session_id,
-            session_title: None,
             context_tokens: 0,
             context_window,
             notice: None,
@@ -2251,13 +2248,6 @@ impl App {
                 "更早的对话已压缩为摘要注入上下文。".to_string(),
             ));
         } else {
-            // 首条真实用户消息生成会话标题（skill 注入/压缩摘要不作标题）
-            if self.session_title.is_none() {
-                let title = nomic_session::first_line(&text);
-                if !title.is_empty() {
-                    self.session_title = Some(title);
-                }
-            }
             self.items.push(ChatItem::User(text));
         }
         self.scroll_to_bottom();
@@ -2279,11 +2269,9 @@ impl App {
         self.scroll_to_bottom();
     }
 
-    /// 清空聊天区（`/new` 开启新对话、`/resume` 恢复前）；会话标题随
-    /// 聊天区重建（`load_history` 会由恢复的首条用户消息重新生成）。
+    /// 清空聊天区（`/new` 开启新对话、`/resume` 恢复前）。
     fn clear_items(&mut self) {
         self.items.clear();
-        self.session_title = None;
         self.scroll_to_bottom();
     }
 
@@ -2363,16 +2351,6 @@ impl App {
     #[cfg(test)]
     pub(super) fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
-    }
-
-    /// 状态栏：会话标题（首条用户消息摘要；无则回退「新会话」/「无 session」）。
-    pub(super) fn session_label(&self) -> String {
-        if self.session_id.is_none() {
-            return "无 session".to_string();
-        }
-        self.session_title
-            .clone()
-            .unwrap_or_else(|| "新会话".to_string())
     }
 
     /// 状态栏：当前上下文 token 估算。
@@ -4503,44 +4481,6 @@ mod tests {
         assert_eq!(app.items().len(), 1);
         assert!(matches!(&app.items()[0], ChatItem::User(t) if t == "恢复的"));
         assert_eq!(app.session_id(), Some("sid-1"));
-    }
-
-    // ── 会话标题（状态栏展示，替代内部 session id）────────────────────────
-
-    #[test]
-    fn first_user_message_sets_session_title() {
-        let mut app = app();
-        assert_eq!(app.session_label(), "无 session");
-        app.set_session("sid-1".to_string());
-        assert_eq!(app.session_label(), "新会话");
-
-        app.push_user_text("实现会话命名功能\n细节补充".to_string());
-        assert_eq!(app.session_label(), "实现会话命名功能");
-
-        // 后续消息不覆盖标题
-        app.push_user_text("第二条消息".to_string());
-        assert_eq!(app.session_label(), "实现会话命名功能");
-    }
-
-    #[test]
-    fn summary_and_skill_messages_do_not_set_title() {
-        let mut app = app();
-        app.set_session("sid-1".to_string());
-        app.push_user_text(format!("{}压缩内容", nomic_ai::SUMMARY_PREFIX));
-        assert_eq!(app.session_label(), "新会话");
-
-        app.push_user_text("真正的问题".to_string());
-        assert_eq!(app.session_label(), "真正的问题");
-    }
-
-    #[test]
-    fn restore_and_new_rebuild_session_title() {
-        let mut app = app();
-        app.restore_conversation(&[*user_message("恢复的标题")], "sid-1".to_string());
-        assert_eq!(app.session_label(), "恢复的标题");
-
-        app.start_new_conversation();
-        assert_eq!(app.session_label(), "新会话");
     }
 
     /// `/tree` 解析：无参命令；带参数报用法错误。

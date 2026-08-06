@@ -54,82 +54,30 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     // 独立消息块，块间空行由拼接处保证，而非各分支自行追加。
     // 运行中状态由输入框标题（spinner + 「运行中 · Esc 取消」）统一表达，
     // 聊天区不再叠加流式指示，避免思考时出现两处"生成中"标记。
-    let mut blocks: Vec<Vec<Line<'static>>> = Vec::new();
-    for item in app.items() {
-        match item {
-            ChatItem::User(text) => {
-                // 左侧 accent 竖条把整条用户消息包成视觉块，多轮对话里可扫读
-                if text.lines().next().is_none() {
-                    // 空消息保留竖条占位，保证可见
-                    blocks.push(vec![Line::from(Span::styled("▌", theme::user_marker()))]);
-                } else {
-                    let mut block = MessageBlock::new(theme::user_marker());
-                    for line in text.lines() {
-                        block.push(Line::from(Span::styled(
-                            line.to_string(),
-                            theme::user_text(),
-                        )));
-                    }
-                    blocks.push(block.render(area.width));
-                }
-            }
-            ChatItem::Assistant(assistant) => {
-                for block in &assistant.blocks {
-                    match block {
-                        Block::Text(text) => {
-                            // assistant 输出按 Markdown 渲染，宽度扣除 gutter 两列
-                            let mut message = MessageBlock::new(theme::assistant_marker());
-                            for line in
-                                markdown::render(text, MessageBlock::content_width(area.width))
-                            {
-                                message.push(line);
-                            }
-                            blocks.push(message.render(area.width));
-                        }
-                        Block::Thinking(thinking) => {
-                            // 同一消息块组件，暗色竖条 + 斜体正文与 assistant 输出区分，
-                            // 不加标题行，思考内容直接以 gutter 竖条表达；
-                            // 折叠时只渲染一行占位（`/thinking` 切换）
-                            let mut message = MessageBlock::new(theme::thinking_marker());
-                            if app.thinking_collapsed() {
-                                let count = thinking.lines().count();
-                                message.push(Line::from(Span::styled(
-                                    format!("思考过程（{count} 行，已折叠；/thinking 展开）"),
-                                    theme::thinking(),
-                                )));
-                            } else {
-                                for line in thinking.lines() {
-                                    message.push(Line::from(Span::styled(
-                                        line.to_string(),
-                                        theme::thinking(),
-                                    )));
-                                }
-                            }
-                            blocks.push(message.render(area.width));
-                        }
-                    }
-                }
-                if let Some(error) = &assistant.error {
-                    let mut message = MessageBlock::new(theme::err());
-                    message.push(Line::from(Span::styled(format!("✗ {error}"), theme::err())));
-                    blocks.push(message.render(area.width));
-                }
-            }
-            ChatItem::System(text) => {
-                let mut block = MessageBlock::new(theme::dim());
-                for line in text.lines() {
-                    block.push(Line::from(Span::styled(line.to_string(), theme::dim())));
-                }
-                blocks.push(block.render(area.width));
-            }
-            ChatItem::Tool(tool) => {
-                blocks.push(tool_block(tool, spinner).render(area.width));
-            }
+    let cursor = app.chat_cursor();
+    // 每个块标注所属条目下标：消息游标 gutter 高亮与条目起始行回写用
+    let mut blocks: Vec<(usize, Vec<Line<'static>>)> = Vec::new();
+    for (index, item) in app.items().iter().enumerate() {
+        for block in item_blocks(item, area.width, app.thinking_collapsed(), spinner) {
+            blocks.push((index, block));
         }
     }
-    // 拼接：每个消息块后空一行，块间分隔与末尾留白（与输入框拉开距离）统一处理
+    // 拼接：每个消息块后空一行，块间分隔与末尾留白（与输入框拉开距离）统一处理；
+    // 同时记录各条目起始行（消息游标滚动定位用，回写状态层）与游标 gutter 高亮
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for block in blocks {
+    let mut starts = vec![u16::MAX; app.items().len()];
+    for (index, block) in blocks {
+        if starts[index] == u16::MAX {
+            starts[index] = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        }
+        let block = if cursor == Some(index) {
+            block
+                .into_iter()
+                .map(|line| restyle_gutter(line, theme::cursor_marker()))
+                .collect::<Vec<_>>()
+        } else {
+            block
+        };
         lines.extend(block);
         lines.push(Line::default());
     }
@@ -147,9 +95,90 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         u16::try_from(total.saturating_sub(usize::from(area.height))).unwrap_or(u16::MAX);
     // 钳制滚动偏移并同步上限（状态栏滚动位置显示），取生效偏移渲染
     let scroll = app.clamp_scroll(max_scroll);
+    app.sync_item_lines(starts);
     let offset = max_scroll.saturating_sub(scroll);
     let paragraph = Paragraph::new(lines).scroll((offset, 0));
     frame.render_widget(paragraph, area);
+}
+
+/// 单个聊天条目渲染为消息块列表（每块是一组带 gutter 的物理行）；
+/// 运行中工具经 `spinner` 传帧。
+fn item_blocks(
+    item: &ChatItem,
+    width: u16,
+    thinking_collapsed: bool,
+    spinner: &str,
+) -> Vec<Vec<Line<'static>>> {
+    let mut blocks = Vec::new();
+    match item {
+        ChatItem::User(text) => {
+            // 左侧 accent 竖条把整条用户消息包成视觉块，多轮对话里可扫读
+            if text.lines().next().is_none() {
+                // 空消息保留竖条占位，保证可见
+                blocks.push(vec![Line::from(Span::styled("▌", theme::user_marker()))]);
+            } else {
+                let mut block = MessageBlock::new(theme::user_marker());
+                for line in text.lines() {
+                    block.push(Line::from(Span::styled(
+                        line.to_string(),
+                        theme::user_text(),
+                    )));
+                }
+                blocks.push(block.render(width));
+            }
+        }
+        ChatItem::Assistant(assistant) => {
+            for block in &assistant.blocks {
+                match block {
+                    Block::Text(text) => {
+                        // assistant 输出按 Markdown 渲染，宽度扣除 gutter 两列
+                        let mut message = MessageBlock::new(theme::assistant_marker());
+                        for line in markdown::render(text, MessageBlock::content_width(width)) {
+                            message.push(line);
+                        }
+                        blocks.push(message.render(width));
+                    }
+                    Block::Thinking(thinking) => {
+                        // 同一消息块组件，暗色竖条 + 斜体正文与 assistant 输出区分，
+                        // 不加标题行，思考内容直接以 gutter 竖条表达；
+                        // 折叠时只渲染一行占位（`/thinking` 切换）
+                        let mut message = MessageBlock::new(theme::thinking_marker());
+                        if thinking_collapsed {
+                            let count = thinking.lines().count();
+                            message.push(Line::from(Span::styled(
+                                format!("思考过程（{count} 行，已折叠；/thinking 展开）"),
+                                theme::thinking(),
+                            )));
+                        } else {
+                            for line in thinking.lines() {
+                                message.push(Line::from(Span::styled(
+                                    line.to_string(),
+                                    theme::thinking(),
+                                )));
+                            }
+                        }
+                        blocks.push(message.render(width));
+                    }
+                }
+            }
+            if let Some(error) = &assistant.error {
+                let mut message = MessageBlock::new(theme::err());
+                message.push(Line::from(Span::styled(format!("✗ {error}"), theme::err())));
+                blocks.push(message.render(width));
+            }
+        }
+        ChatItem::System(text) => {
+            let mut block = MessageBlock::new(theme::dim());
+            for line in text.lines() {
+                block.push(Line::from(Span::styled(line.to_string(), theme::dim())));
+            }
+            blocks.push(block.render(width));
+        }
+        ChatItem::Tool(tool) => {
+            blocks.push(tool_block(tool, spinner).render(width));
+        }
+    }
+    blocks
 }
 
 /// 消息块组件：聊天区每条消息的视觉单元，gutter 竖条是组件的一部分。
@@ -216,6 +245,16 @@ impl MessageBlock {
         spans.extend(line.spans);
         Line::from(spans)
     }
+}
+
+/// 把消息块每行的 gutter span（首个 span）换为指定样式
+///（消息游标/选择区高亮）。
+fn restyle_gutter(line: Line<'static>, style: Style) -> Line<'static> {
+    let mut spans = line.spans;
+    if let Some(first) = spans.first_mut() {
+        first.style = style;
+    }
+    Line::from(spans)
 }
 
 /// 工具条目组件：gutter 竖条取状态色，加粗工具名 + 暗色 (参数)，
@@ -952,6 +991,29 @@ mod tests {
         assert!(compact.contains("nomic"), "{compact}");
         assert!(compact.contains("test-model"), "{compact}");
         assert!(compact.contains("/help"), "{compact}");
+    }
+
+    /// NORMAL：状态栏显示模式徽标与浏览键位提示，条目行号回写状态层。
+    #[test]
+    fn renders_normal_mode_badge_and_syncs_item_lines() {
+        use super::super::app::Key;
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        app.handle_event(&AgentEvent::MessageStart(Box::new(Message::User(
+            nomic_ai::UserMessage {
+                content: nomic_ai::UserMessageContent::Text("你好".to_string()),
+                timestamp: 0,
+            },
+        ))));
+        app.press(Key::Esc);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let compact = compact_text(&terminal);
+        assert!(compact.contains("NORMAL"), "{compact}");
+        assert!(compact.contains("j/k"), "{compact}");
+        // 渲染后条目起始行已回写（游标滚动定位依赖）
+        assert_eq!(app.chat_cursor(), Some(0));
     }
 
     /// `/resume` 选择器弹层：session 行、标题与选中标记均可见。

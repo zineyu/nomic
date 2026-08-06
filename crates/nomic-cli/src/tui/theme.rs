@@ -108,6 +108,14 @@ pub(super) const fn normal_badge() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+/// 消息游标 gutter（NORMAL）：反色 accent 块，标出 `yy`/`yc` 的作用目标。
+pub(super) const fn cursor_marker() -> Style {
+    Style::new()
+        .fg(Color::Black)
+        .bg(ACCENT)
+        .add_modifier(Modifier::BOLD)
+}
+
 /// Markdown 标题：accent + 加粗。
 pub(super) const fn heading() -> Style {
     Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)

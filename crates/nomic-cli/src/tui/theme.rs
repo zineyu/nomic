@@ -108,6 +108,11 @@ pub(super) const fn normal_badge() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+/// 搜索命中高亮：反色黄块（与选中态的反色 accent 区分）。
+pub(super) const fn search_hit() -> Style {
+    Style::new().fg(Color::Black).bg(BUSY)
+}
+
 /// 消息游标 gutter（NORMAL）：反色 accent 块，标出 `yy`/`yc` 的作用目标。
 pub(super) const fn cursor_marker() -> Style {
     Style::new()

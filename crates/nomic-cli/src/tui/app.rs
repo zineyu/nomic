@@ -469,6 +469,8 @@ pub(super) enum Mode {
     Insert,
     /// 浏览：滚动聊天区、跳转、复制；输入字符不进入缓冲（草稿保留）
     Normal,
+    /// 搜索：输入框复用为搜索框（增量命中），Enter/Esc 回 NORMAL
+    Search,
     /// 选择器打开（`/resume`、`/models`、`/tree`），接管键位。
     /// 派生态：由 `picker.is_some()` 决定，不入 `App::mode` 字段
     Picker,
@@ -566,6 +568,10 @@ pub(super) struct App {
     item_lines: Vec<u16>,
     /// `yc` 代码块循环序号（同一游标消息内重复 yc 依次取下一个块）
     yc_block: usize,
+    /// 搜索串（NORMAL `/` 进入 SEARCH；Esc 清空，Enter 保留供 n/N）
+    search_query: String,
+    /// 搜索命中条目（items 下标，升序）
+    search_matches: Vec<usize>,
     /// 序列键首键（NORMAL 的 `g`/`[`/`]`/`y`），等待第二键
     pending_key: Option<char>,
     /// 首次进入 NORMAL 的一次性键位提示是否已展示
@@ -623,6 +629,8 @@ impl App {
             cursor_item: None,
             item_lines: Vec::new(),
             yc_block: 0,
+            search_query: String::new(),
+            search_matches: Vec::new(),
             pending_key: None,
             normal_hint_shown: false,
             input: String::new(),
@@ -854,6 +862,7 @@ impl App {
             // 选择器打开时接管键位（slash 命令仅在空闲时可提交，
             // 此时 agent 必空闲，无运行可取消）
             Mode::Picker => self.press_picker(key),
+            Mode::Search => self.press_search(key),
             Mode::Normal => self.press_normal(key),
             Mode::Insert => self.press_insert(key),
         }
@@ -1029,6 +1038,20 @@ impl App {
                 self.yc_block = 0;
                 Vec::new()
             }
+            // `/` 进入搜索（输入框复用为搜索框；保留上次查询可编辑）
+            Key::Char('/') => {
+                self.mode = Mode::Search;
+                Vec::new()
+            }
+            // n/N：在搜索命中条目间循环跳转
+            Key::Char('n') => {
+                self.search_jump(1);
+                Vec::new()
+            }
+            Key::Char('N') => {
+                self.search_jump(-1);
+                Vec::new()
+            }
             Key::Char('k') | Key::Up => {
                 self.scroll_up(1);
                 Vec::new()
@@ -1095,6 +1118,106 @@ impl App {
         Some(Vec::new())
     }
 
+    /// SEARCH 模式键位：输入即搜（增量跳转第一个命中），Enter 保留命中
+    /// 回 NORMAL（n/N 可继续跳），Esc 清空搜索回 NORMAL。
+    fn press_search(&mut self, key: Key) -> Vec<Effect> {
+        match key {
+            Key::Char(c) => {
+                self.search_query.push(c);
+                self.refresh_search();
+            }
+            Key::Backspace => {
+                self.search_query.pop();
+                self.refresh_search();
+            }
+            Key::Enter => {
+                self.mode = Mode::Normal;
+                let count = self.search_matches.len();
+                self.notice = Some(if count == 0 {
+                    "没有搜索命中".to_string()
+                } else {
+                    format!("{count} 处命中 · n/N 跳转")
+                });
+            }
+            Key::Esc => {
+                self.mode = Mode::Normal;
+                self.search_query.clear();
+                self.search_matches.clear();
+            }
+            Key::Ctrl('c') => self.should_quit = true,
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// 重算搜索命中（输入即搜）：游标跳到当前位置之后（含）的第一个
+    /// 命中（循环），无命中保持游标。
+    fn refresh_search(&mut self) {
+        let query = self.search_query.to_lowercase();
+        self.search_matches = if query.is_empty() {
+            Vec::new()
+        } else {
+            self.items
+                .iter()
+                .enumerate()
+                .filter_map(|(index, item)| {
+                    item_text(item)
+                        .filter(|text| text.to_lowercase().contains(&query))
+                        .map(|_| index)
+                })
+                .collect()
+        };
+        if self.search_matches.is_empty() {
+            return;
+        }
+        let current = self.cursor_item.unwrap_or(0);
+        let next = self.search_matches.partition_point(|&m| m < current);
+        let next = if next >= self.search_matches.len() {
+            0
+        } else {
+            next
+        };
+        self.cursor_item = Some(self.search_matches[next]);
+        self.yc_block = 0;
+        self.scroll_to_cursor_item();
+    }
+
+    /// NORMAL `n`/`N`：在搜索命中条目间循环跳转。
+    fn search_jump(&mut self, direction: isize) {
+        if self.search_matches.is_empty() {
+            self.notice = Some("没有搜索命中（NORMAL 下 / 开始搜索）".to_string());
+            return;
+        }
+        let current = self.cursor_item.unwrap_or(0);
+        let len = self.search_matches.len();
+        let next = if direction > 0 {
+            let p = self.search_matches.partition_point(|&m| m <= current);
+            if p >= len { 0 } else { p }
+        } else {
+            let p = self.search_matches.partition_point(|&m| m < current);
+            if p == 0 { len - 1 } else { p - 1 }
+        };
+        self.cursor_item = Some(self.search_matches[next]);
+        self.yc_block = 0;
+        self.scroll_to_cursor_item();
+        self.notice = Some(format!("命中 {}/{len}", next + 1));
+    }
+
+    /// 当前搜索串（SEARCH 输入框与命中高亮用）。
+    pub(super) fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
+    /// 搜索命中数（SEARCH 输入框标题用）。
+    pub(super) const fn search_match_count(&self) -> usize {
+        self.search_matches.len()
+    }
+
+    /// 命中高亮词：搜索串非空时返回（Enter 后保留高亮，Esc 清空）。
+    pub(super) fn search_highlight(&self) -> Option<&str> {
+        (!self.search_query.is_empty()).then_some(self.search_query.as_str())
+    }
+
     /// 进入 NORMAL：草稿保留；消息游标定位到最新一条对话消息；
     /// 首次进入给一次性键位提示。
     fn enter_normal(&mut self) {
@@ -1118,9 +1241,9 @@ impl App {
         self.pending_key = None;
     }
 
-    /// NORMAL 消息游标（渲染 gutter 高亮用）；仅 NORMAL 下返回。
+    /// 消息游标（渲染 gutter 高亮用）；浏览类模式（NORMAL/SEARCH）下返回。
     pub(super) fn chat_cursor(&self) -> Option<usize> {
-        (self.mode() == Mode::Normal)
+        matches!(self.mode(), Mode::Normal | Mode::Search)
             .then_some(self.cursor_item)
             .flatten()
     }
@@ -3863,6 +3986,48 @@ mod tests {
         app.press(Key::Char('m'));
         assert!(copy(&mut app).is_empty());
         assert_eq!(app.notice(), Some("该消息中没有代码块"));
+    }
+
+    /// NORMAL `/` 搜索：输入即搜（增量跳第一个命中），Enter 保留命中
+    /// 供 n/N 循环跳转，Esc 清空搜索与高亮。
+    #[test]
+    fn normal_slash_search_incremental_and_jump() {
+        let mut app = app_with_history();
+        app.press(Key::Esc);
+
+        // 输入即搜：「问题」命中两条 user 消息（下标 0、3）
+        app.press(Key::Char('/'));
+        assert_eq!(app.mode(), Mode::Search);
+        for c in "问题".chars() {
+            app.press(Key::Char(c));
+        }
+        assert_eq!(app.search_matches, vec![0, 3]);
+        assert_eq!(app.cursor_item, Some(0), "游标在尾部，增量回绕到首个命中");
+
+        // Enter 保留命中；n 循环跳转
+        app.press(Key::Enter);
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.notice(), Some("2 处命中 · n/N 跳转"));
+        app.press(Key::Char('n'));
+        assert_eq!(app.cursor_item, Some(3), "n 循环到下一处");
+        app.press(Key::Char('n'));
+        assert_eq!(app.cursor_item, Some(0));
+        // N 反向
+        app.press(Key::Char('N'));
+        assert_eq!(app.cursor_item, Some(3));
+
+        // 再次 / 保留上次查询可编辑；Esc 清空
+        app.press(Key::Char('/'));
+        assert_eq!(app.search_query(), "问题");
+        app.press(Key::Backspace);
+        assert_eq!(app.search_query(), "问");
+        app.press(Key::Esc);
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.search_query(), "");
+        assert!(app.search_highlight().is_none(), "Esc 清空高亮");
+        // 无命中时 n 给提示
+        assert!(app.press(Key::Char('n')).is_empty());
+        assert_eq!(app.notice(), Some("没有搜索命中（NORMAL 下 / 开始搜索）"));
     }
 
     /// 消息游标滚动定位：渲染回写条目行号后，移动游标滚动到该条目。

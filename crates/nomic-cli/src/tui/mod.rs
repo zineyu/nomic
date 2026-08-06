@@ -228,7 +228,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
 fn set_cursor_style(mode: Mode) {
     let style = match mode {
         Mode::Normal => SetCursorStyle::SteadyBlock,
-        Mode::Insert | Mode::Picker => SetCursorStyle::SteadyBar,
+        Mode::Insert | Mode::Search | Mode::Picker => SetCursorStyle::SteadyBar,
     };
     let _ = execute!(io::stdout(), style);
 }

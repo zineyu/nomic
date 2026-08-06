@@ -7,7 +7,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block as Border, BorderType, Clear, Paragraph},
 };
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::{
     app::{
@@ -90,6 +90,15 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 
     // 自行折行（硬换行，CJK 友好），使行数精确可知、滚动偏移精确
     let lines = wrap_lines(&lines, area.width);
+    // 搜索命中高亮：Enter 后保留（Esc 清空搜索串即消除）
+    let lines = if let Some(query) = app.search_highlight() {
+        lines
+            .iter()
+            .map(|line| highlight_line(line, query, theme::search_hit()))
+            .collect()
+    } else {
+        lines
+    };
     let total = lines.len();
     let max_scroll =
         u16::try_from(total.saturating_sub(usize::from(area.height))).unwrap_or(u16::MAX);
@@ -257,6 +266,79 @@ fn restyle_gutter(line: Line<'static>, style: Style) -> Line<'static> {
     Line::from(spans)
 }
 
+/// 把行内所有大小写不敏感的 `query` 命中片段覆盖为 `hit` 样式
+///（搜索高亮）；无命中原样返回。
+fn highlight_line(line: &Line<'static>, query: &str, hit: Style) -> Line<'static> {
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    let hits = match_positions(&text, query);
+    if hits.iter().all(|hit| !hit) {
+        return line.clone();
+    }
+    // 重建 spans：按命中边界切分，命中片段用 hit 样式、其余保留原样式
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut pos = 0_usize; // 行内字符下标
+    for span in &line.spans {
+        let mut buf = String::new();
+        let mut buf_hit = None;
+        for c in span.content.chars() {
+            let current_hit = hits.get(pos).copied().unwrap_or(false);
+            pos += 1;
+            match buf_hit {
+                None => {
+                    buf_hit = Some(current_hit);
+                    buf.push(c);
+                }
+                Some(previous) if previous == current_hit => buf.push(c),
+                Some(previous) => {
+                    out.push(Span::styled(
+                        std::mem::take(&mut buf),
+                        if previous { hit } else { span.style },
+                    ));
+                    buf.push(c);
+                    buf_hit = Some(current_hit);
+                }
+            }
+        }
+        if !buf.is_empty() {
+            out.push(Span::styled(
+                buf,
+                if buf_hit == Some(true) {
+                    hit
+                } else {
+                    span.style
+                },
+            ));
+        }
+    }
+    Line::from(out)
+}
+
+/// `query` 在 `text` 中大小写不敏感命中的字符位置表（逐字符 bool）。
+fn match_positions(text: &str, query: &str) -> Vec<bool> {
+    let mut hits = vec![false; text.chars().count()];
+    if query.is_empty() {
+        return hits;
+    }
+    let lower = text.to_lowercase();
+    let needle = query.to_lowercase();
+    let mut from = 0;
+    while let Some(found) = lower.get(from..).and_then(|rest| rest.find(&needle)) {
+        let byte_start = from + found;
+        let byte_end = byte_start + needle.len();
+        let start = lower[..byte_start].chars().count();
+        let end = lower[..byte_end].chars().count();
+        for hit in &mut hits[start..end] {
+            *hit = true;
+        }
+        from = byte_end;
+    }
+    hits
+}
+
 /// 工具条目组件：gutter 竖条取状态色，加粗工具名 + 暗色 (参数)，
 /// 结果摘要首行 `⎿` 引导、后续行对齐缩进，保持树形层次。
 fn tool_block(tool: &ToolItem, spinner: &str) -> MessageBlock {
@@ -394,6 +476,17 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Line::from(Span::styled(title, theme::accent())),
             theme::accent(),
         )
+    } else if app.mode() == Mode::Search {
+        (
+            Line::from(Span::styled(
+                format!(
+                    "搜索 · Enter 完成 · Esc 取消（{} 处命中）",
+                    app.search_match_count()
+                ),
+                theme::accent(),
+            )),
+            theme::accent(),
+        )
     } else if app.completion().is_some() {
         (
             Line::from(Span::styled("输入 · Tab 补全", theme::accent())),
@@ -431,14 +524,27 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
             theme::accent(),
         )));
     }
-    lines.extend(
+    // SEARCH 下输入框复用为搜索框：显示搜索串而非草稿，光标在其末尾
+    let searching = app.mode() == Mode::Search;
+    let text = if searching {
+        app.search_query()
+    } else {
         app.input()
-            .split('\n')
+    };
+    lines.extend(
+        text.split('\n')
             .map(|text| Line::from(Span::raw(text.to_string()))),
     );
     // 行数超过可见高度时滚动到光标所在行
     let attachment_offset = u16::from(app.has_attachments());
-    let (cursor_row, cursor_col) = app.cursor_position();
+    let (cursor_row, cursor_col) = if searching {
+        (
+            0,
+            u16::try_from(UnicodeWidthStr::width(app.search_query())).unwrap_or(u16::MAX),
+        )
+    } else {
+        app.cursor_position()
+    };
     let cursor_row = cursor_row + attachment_offset;
     let visible = inner.height.max(1);
     let scroll = cursor_row.saturating_sub(visible - 1);
@@ -460,6 +566,7 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // accent 文本，避免与相邻的模型徽标（反色块）糊成一片
     let mode_badge = match app.mode() {
         Mode::Normal => Span::styled(" NORMAL ", theme::normal_badge()),
+        Mode::Search => Span::styled(" SEARCH ", theme::warn()),
         Mode::Insert => Span::styled(" INSERT ", theme::accent()),
         Mode::Picker => Span::styled(" PICKER ", theme::accent()),
     };
@@ -484,7 +591,8 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ));
     }
     let hint = match app.mode() {
-        Mode::Normal => "i 输入 · j/k 滚动 · gg/G 顶/底 · Y 复制 · Ctrl+C 退出 ",
+        Mode::Normal => "i 输入 · ]m 消息 · / 搜索 · yy 复制 · : 命令 · Ctrl+C 退出 ",
+        Mode::Search => "输入即搜 · Enter 完成 · Esc 取消 ",
         Mode::Picker => "输入过滤 · ↑/↓ 选择 · Home/End 首/尾 · Enter 确认 · Esc 取消 ",
         Mode::Insert => "/ 命令 · Tab 补全 · Enter 发送 · Esc 浏览 ",
     };
@@ -689,6 +797,31 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
+
+    /// 搜索高亮：命中片段覆盖 hit 样式（大小写不敏感），跨 span 命中也能切分。
+    #[test]
+    fn highlight_line_covers_case_insensitive_matches() {
+        let line = Line::from(vec![
+            Span::styled("Hello ", Style::new()),
+            Span::styled("WORLD hello", Style::new()),
+        ]);
+        let hit = Style::new().fg(ratatui::style::Color::Black);
+        let highlighted = highlight_line(&line, "hello", hit);
+        let styles: Vec<Style> = highlighted.spans.iter().map(|span| span.style).collect();
+        // 「Hello 」命中 + 「WORLD hello」尾部命中：命中片段为 hit，其余原样
+        assert_eq!(highlighted.spans[0].content.as_ref(), "Hello");
+        assert_eq!(styles[0], hit);
+        assert_eq!(
+            highlighted.spans.last().expect("last").content.as_ref(),
+            "hello"
+        );
+        assert_eq!(*styles.last().expect("last"), hit);
+        assert!(styles.iter().any(|style| *style != hit), "保留未命中片段");
+
+        // 无命中原样返回；空 query 不高亮
+        assert_eq!(highlight_line(&line, "xyz", hit).spans.len(), 2);
+        assert_eq!(highlight_line(&line, "", hit).spans.len(), 2);
+    }
 
     /// 渲染冒烟：空状态、流式中、工具条目三种画面都能无 panic 绘制。
     #[test]

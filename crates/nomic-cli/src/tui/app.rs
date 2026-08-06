@@ -1018,6 +1018,15 @@ impl App {
                 self.pending_key = Some('y');
                 Vec::new()
             }
+            Key::Char('d') => {
+                self.pending_key = Some('d');
+                Vec::new()
+            }
+            // x：删除草稿光标处字符（草稿编辑，不动消息游标）
+            Key::Char('x') => {
+                self.delete_char_at_cursor();
+                Vec::new()
+            }
             Key::Char('G') => {
                 self.scroll_to_bottom();
                 self.cursor_item = self.items.iter().rposition(ChatItem::is_message);
@@ -1090,16 +1099,21 @@ impl App {
     }
 
     /// NORMAL 的「离开浏览」键位：`i`/`a`/`Esc` 回 INSERT（光标原位），
-    /// `Enter` 回 INSERT 到输入末尾，`:` 预填 `/` 进入命令输入。
-    /// 返回 `Some` 表示已处理。
+    /// `Enter`/`A` 回 INSERT 到输入末尾，`I` 到当前行首，`:` 预填 `/`
+    /// 进入命令输入。返回 `Some` 表示已处理。
     fn normal_exit(&mut self, key: Key) -> Option<Vec<Effect>> {
         match key {
             // i/a 回到光标原处继续编辑；Esc 放弃浏览直接返回
             Key::Char('i' | 'a') | Key::Esc => self.leave_normal(),
-            // Enter 回 INSERT 并把光标置于输入末尾（ADR-0011）
-            Key::Enter => {
+            // Enter/A 回 INSERT 并把光标置于输入末尾（ADR-0011）；
+            // I 回 INSERT 到当前逻辑行首
+            Key::Enter | Key::Char('A') => {
                 self.leave_normal();
                 self.cursor_end();
+            }
+            Key::Char('I') => {
+                self.leave_normal();
+                self.cursor_line_home();
             }
             // `:` 进入命令输入：回 INSERT 并预填 `/`（补全弹层随之出现）。
             // 草稿非空时不覆盖用户文本，提示先处理草稿
@@ -1118,8 +1132,8 @@ impl App {
     }
 
     /// NORMAL 的序列键第二键：`gg` 到顶、`[m`/`]m` 消息跳转、`[t`/`]t`
-    /// 工具跳转、`yy`/`yc` 复制。返回 `Some` 表示已处理；`None` 表示
-    /// 组合不匹配，调用方把按键照常分发。
+    /// 工具跳转、`yy`/`yc` 复制、`dd`/`dw` 草稿删除。返回 `Some` 表示
+    /// 已处理；`None` 表示组合不匹配，调用方把按键照常分发。
     fn normal_sequence(&mut self, pending: char, key: Key) -> Option<Vec<Effect>> {
         match (pending, key) {
             // gg：到顶（渲染时经 clamp_scroll 钳到实际上限）
@@ -1137,6 +1151,9 @@ impl App {
             // yy：复制游标条目；yc：复制游标消息中的代码块
             ('y', Key::Char('y')) => return Some(self.copy_cursor_item()),
             ('y', Key::Char('c')) => return Some(self.copy_cursor_code_block()),
+            // dd：删除草稿当前逻辑行；dw：删除到后一词开头
+            ('d', Key::Char('d')) => self.delete_draft_line(),
+            ('d', Key::Char('w')) => self.delete_word_forward(),
             _ => return None,
         }
         Some(Vec::new())
@@ -1895,6 +1912,15 @@ impl App {
 
     /// Alt+F：光标移到后一个词的开头（先跳过当前所在的词，再跳过词间隔）。
     fn cursor_word_right(&mut self) {
+        let target = self.word_right_pos();
+        if target != self.cursor {
+            self.cursor = target;
+            self.refresh_completion();
+        }
+    }
+
+    /// 光标后一词开头的字节索引（Alt+F 与 NORMAL `dw` 共用）。
+    fn word_right_pos(&self) -> usize {
         let after = &self.input[self.cursor..];
         // 光标在词中时先跳过该词剩余部分
         let rest = if after.chars().next().is_some_and(is_word_char) {
@@ -1912,11 +1938,46 @@ impl App {
             .take_while(|&c| !is_word_char(c))
             .map(char::len_utf8)
             .sum();
-        let target = self.input.len() - rest.len() + gap_len;
-        if target != self.cursor {
-            self.cursor = target;
+        self.input.len() - rest.len() + gap_len
+    }
+
+    /// NORMAL `x`：删除草稿光标处字符（光标不动）。
+    fn delete_char_at_cursor(&mut self) {
+        if let Some(c) = self.input[self.cursor..].chars().next() {
+            self.input
+                .replace_range(self.cursor..self.cursor + c.len_utf8(), "");
             self.refresh_completion();
         }
+    }
+
+    /// NORMAL `dw`：删除到后一词开头（光标不动）。
+    fn delete_word_forward(&mut self) {
+        let target = self.word_right_pos();
+        if target > self.cursor {
+            self.input.replace_range(self.cursor..target, "");
+            self.refresh_completion();
+        }
+    }
+
+    /// NORMAL `dd`：删除草稿当前逻辑行（连同其换行；单行即清空草稿）。
+    fn delete_draft_line(&mut self) {
+        if self.input.is_empty() {
+            return;
+        }
+        let mut start = self.input[..self.cursor]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        let end = self.input[self.cursor..]
+            .find('\n')
+            .map_or(self.input.len(), |offset| self.cursor + offset + 1)
+            .min(self.input.len());
+        // 末行没有后随换行：连同前置换行，避免留下空尾行
+        if end == self.input.len() && start > 0 {
+            start -= 1;
+        }
+        self.input.replace_range(start..end, "");
+        self.cursor = start.min(self.input.len());
+        self.refresh_completion();
     }
 
     /// 取出待提交的输入并清空缓冲；空输入返回 `None`。
@@ -4151,6 +4212,57 @@ mod tests {
         assert!(app.press(Key::Esc).is_empty());
         assert_eq!(app.mode(), Mode::Normal);
         assert_eq!(app.visual_range(), None);
+    }
+
+    /// NORMAL 草稿编辑：x 删光标处字符、dw 删到后一词、dd 删当前逻辑行、
+    /// A/I 分别到末尾/行首回 INSERT；消息游标与聊天区不受影响。
+    #[test]
+    fn normal_draft_editing() {
+        // dd：多行草稿删当前逻辑行（连同换行）
+        let mut multiline = app();
+        multiline.paste_text("first\nsecond\nthird");
+        multiline.press(Key::Esc);
+        // 光标在末尾（third 行）：删末行连同前置换行
+        multiline.press(Key::Char('d'));
+        multiline.press(Key::Char('d'));
+        assert_eq!(multiline.input(), "first\nsecond");
+        // 光标回行首，再 dd 两次：逐行删清
+        multiline.press(Key::Char('d'));
+        multiline.press(Key::Char('d'));
+        assert_eq!(multiline.input(), "first");
+        multiline.press(Key::Char('d'));
+        multiline.press(Key::Char('d'));
+        assert_eq!(multiline.input(), "");
+        // 空草稿上 dd/x 安全无操作
+        multiline.press(Key::Char('d'));
+        multiline.press(Key::Char('d'));
+        multiline.press(Key::Char('x'));
+        assert_eq!(multiline.input(), "");
+
+        let mut app = app();
+        app.paste_text("hello world foo");
+        app.press(Key::Home);
+        app.press(Key::Esc);
+        assert_eq!(app.mode(), Mode::Normal);
+
+        // x：删除光标处字符（光标在行首，删 'h'）
+        app.press(Key::Char('x'));
+        assert_eq!(app.input(), "ello world foo");
+        assert_eq!(app.cursor_position().1, 0);
+
+        // dw：删到后一词开头（"ello "）
+        app.press(Key::Char('d'));
+        app.press(Key::Char('w'));
+        assert_eq!(app.input(), "world foo");
+
+        // A：回 INSERT 到末尾；I：回 INSERT 到行首
+        app.press(Key::Char('A'));
+        assert_eq!(app.mode(), Mode::Insert);
+        assert_eq!(app.cursor_position().1, 9);
+        app.press(Key::Esc);
+        app.press(Key::Char('I'));
+        assert_eq!(app.mode(), Mode::Insert);
+        assert_eq!(app.cursor_position().1, 0);
     }
 
     /// 消息游标滚动定位：渲染回写条目行号后，移动游标滚动到该条目。

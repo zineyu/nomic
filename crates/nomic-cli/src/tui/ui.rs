@@ -466,10 +466,12 @@ fn input_height(app: &App) -> u16 {
 /// 输入框（多行，高度随行数变化，最多 5 行）+ 光标定位。
 fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let (title, border_style) = input_title(app);
-    let border = Border::bordered()
+    let mut border = Border::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(border_style)
-        .title(title);
+        .border_style(border_style);
+    if let Some(title) = title {
+        border = border.title(title);
+    }
     let inner = border.inner(area);
     // 附件行（可选）在输入文本上方：🖼 文件名列表
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -514,15 +516,16 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.set_cursor_position(Position::new(x, y));
 }
 
-/// 输入框标题与边框样式：运行中（黄 + spinner）/ picker / 搜索 / 补全 /
-/// VISUAL / NORMAL / 空闲。
-fn input_title(app: &App) -> (Line<'static>, Style) {
+/// 输入框标题与边框样式：标题只保留运行/picker/搜索等临时功能态；
+/// INSERT/NORMAL/VISUAL 等常驻模式的提示由状态栏徽标与右侧键位提示
+/// 承担（ADR-0011），输入框不再叠加，避免同一信息两处渲染。
+fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
     if app.is_running() {
         (
-            Line::from(vec![
+            Some(Line::from(vec![
                 Span::styled(format!("{} ", app.spinner()), theme::busy()),
                 Span::styled("运行中 · Esc 取消", theme::busy()),
-            ]),
+            ])),
             theme::busy(),
         )
     } else if let Some(picker) = app.picker() {
@@ -533,50 +536,30 @@ fn input_title(app: &App) -> (Line<'static>, Style) {
             PickerKind::Reasoning => "思考级别 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
         };
         (
-            Line::from(Span::styled(title, theme::accent())),
+            Some(Line::from(Span::styled(title, theme::accent()))),
             theme::accent(),
         )
     } else if app.mode() == Mode::Search {
         (
-            Line::from(Span::styled(
+            Some(Line::from(Span::styled(
                 format!(
                     "搜索 · Enter 完成 · Esc 取消（{} 处命中）",
                     app.search_match_count()
                 ),
                 theme::accent(),
-            )),
+            ))),
             theme::accent(),
         )
     } else if app.completion().is_some() {
-        (
-            Line::from(Span::styled("输入 · Tab 补全", theme::accent())),
-            theme::accent(),
-        )
+        // 补全弹层自带标题；输入框只以 accent 边框表示补全中
+        (None, theme::accent())
     } else if app.mode() == Mode::Visual {
-        (
-            Line::from(Span::styled(
-                "可视选择 · j/k 扩展 · y 复制 · Esc 取消",
-                theme::visual_badge(),
-            )),
-            theme::dim(),
-        )
+        (None, theme::dim())
     } else if app.mode() == Mode::Normal {
         // NORMAL：输入框不是焦点，降为暗色；草稿保留可见
-        (
-            Line::from(Span::styled(
-                "浏览 · i 返回输入 · ]m 消息 · / 搜索 · V 选择",
-                theme::dim(),
-            )),
-            theme::dim(),
-        )
+        (None, theme::dim())
     } else {
-        (
-            Line::from(Span::styled(
-                "输入 · Enter 发送 · Shift+Enter 换行",
-                theme::dim(),
-            )),
-            theme::dim(),
-        )
+        (None, theme::dim())
     }
 }
 

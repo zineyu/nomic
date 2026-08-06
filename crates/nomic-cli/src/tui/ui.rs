@@ -467,7 +467,7 @@ fn input_height(app: &App) -> u16 {
 fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let (title, border_style) = input_title(app);
     let mut border = Border::bordered()
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(border_style);
     if let Some(title) = title {
         border = border.title(title);
@@ -707,7 +707,7 @@ fn draw_completion(frame: &mut Frame<'_>, completion: &Completion, input_area: R
         kind.to_string()
     };
     let block = Border::bordered()
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(theme::accent())
         .title(Span::styled(title, theme::accent()));
     // 宽度对齐最长候选 + 边框与右留白；高度 = 可见候选 + 上下边框
@@ -776,7 +776,7 @@ fn draw_picker(frame: &mut Frame<'_>, picker: &Picker, input_area: Rect) {
             .collect()
     };
     let block = Border::bordered()
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(theme::accent())
         .title(Span::styled(title, theme::accent()));
     // 宽度对齐最长行 + 边框与右留白；高度 = 可见行 + 上下边框

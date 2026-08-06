@@ -7,11 +7,18 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 
 ## 安装
 
+### 预编译二进制
+
+从 [GitHub Releases](https://github.com/zineyu/nomic/releases) 下载对应平台的
+`nomic-<版本>-<target>.tar.gz`（提供 x86_64/aarch64 的 Linux 与 macOS 构建，
+附 SHA256 校验和），解压后将 `nomic` 放入 `PATH` 即可。
+
 ### Nix（flake）
 
 ```bash
-nix run github:zine/nomic              # 直接运行
-nix profile install github:zine/nomic  # 安装到 profile
+nix run github:zineyu/nomic              # 直接运行
+nix profile install github:zineyu/nomic  # 安装到 profile
+nix profile install github:zineyu/nomic/v0.1.0  # 或安装指定版本（tag 即 flake ref）
 ```
 
 构建工具链由 `rust-toolchain.toml` 固定，与 devenv / CI 完全一致；设计见
@@ -283,6 +290,14 @@ print 模式同样支持：prompt 以 `/` 开头时按模板调用展开（未�
 ```bash
 check               # 与 CI 等价的全部检查：fmt / clippy / nextest / doc / deny / machete / taplo / typos
 ```
+
+## 发布
+
+```bash
+release 0.2.0       # bump 版本 + 生成 CHANGELOG + check + 打 tag，推 tag 后 CI 自动发布
+```
+
+完整流程见 [docs/releasing.md](docs/releasing.md)。
 
 ## 结构
 

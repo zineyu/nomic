@@ -1,0 +1,144 @@
+name: Release
+
+# tag 推送触发（由 devenv `release` 脚本创建），流程：
+#   check/nix 门禁（与 ci.yml 等价）→ 多平台构建 → GitHub Release
+# 发布流程详见 docs/releasing.md
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 门禁：与 ci.yml 相同的完整检查，防止把未通过 check 的提交打上 tag
+  check:
+    name: devenv check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: cachix/install-nix-action@v31
+
+      - uses: cachix/cachix-action@v16
+        with:
+          name: devenv
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install devenv.sh
+        run: nix profile add nixpkgs#devenv
+
+      # tag 版本必须与 workspace 版本一致，防止发错版本号
+      - name: Verify tag matches workspace version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          echo "tag: $tag_version, workspace: $pkg_version"
+          test "$tag_version" = "$pkg_version"
+
+      - name: Run git hooks
+        run: devenv test
+
+      - name: Run checks
+        run: devenv shell check
+
+  # 保证发布的 tag 上 nix 包可构建（flake 是官方安装方式之一）
+  nix:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: nix flake check
+        run: nix flake check --print-build-logs
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: [check, nix]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 全部使用对应架构的原生 runner，避免交叉编译配置腐烂；
+          # ubuntu-24.04-arm 公开仓库免费，私有仓库若不可用可改 cross 方案
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # runner 预装 rustup，`rustup show` 按 rust-toolchain.toml 自动安装固定工具链
+      - name: Install toolchain
+        run: rustup show
+
+      - name: Build
+        run: cargo build --release --locked --package nomic-cli --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="nomic-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/nomic" dist/nomic
+          strip dist/nomic
+          cp README.md CHANGELOG.md dist/
+          tar -C dist -czf "${name}.tar.gz" .
+          if command -v sha256sum >/dev/null; then
+            sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          else
+            shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            *.tar.gz
+            *.tar.gz.sha256
+
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      # 需要完整历史与 tag，git-cliff 才能定位当前版本的提交范围
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: taiki-e/install-action@git-cliff
+
+      # --current：仅渲染当前 tag 对应的提交区间，作为 Release notes
+      - name: Generate release notes
+        run: git cliff --current --strip all -o RELEASE_NOTES.md
+
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: RELEASE_NOTES.md
+          files: |
+            *.tar.gz
+            *.tar.gz.sha256
+          fail_on_unmatched_files: true

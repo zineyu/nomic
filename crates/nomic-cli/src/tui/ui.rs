@@ -400,7 +400,7 @@ fn draw_welcome(frame: &mut Frame<'_>, app: &App, area: Rect) {
             theme::dim(),
         )),
         Line::from(Span::styled(
-            "Esc 进入浏览模式：j/k 滚动 · gg/G 顶/底 · Y 复制 · i 返回输入",
+            "Esc 浏览：j/k 滚动 · ]m 跳消息 · / 搜索 · V 选择 · yy 复制 · i 返回",
             theme::dim(),
         )),
         Line::from(Span::styled(

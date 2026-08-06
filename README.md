@@ -46,6 +46,7 @@ cargo run -p nomic-cli -- --model anthropic/claude-sonnet-4-5
 #         x/dd/dw 编辑草稿 · i/a/A/I/Enter 回输入 · : 命令（预填 /）
 # picker（/resume、/models、/tree）：输入即过滤 · ↑/↓ 选择 · Home/End 首尾
 # 通用：Ctrl+C 取消运行/退出 · ↑/↓/PgUp/PgDn/滚轮滚动
+#       Shift+拖选复制文本（TUI 捕获鼠标用于滚轮，原生选择需按住 Shift）
 # 命令：/help 查看全部（/new 开启新对话，/resume 恢复历史 session，/tree 浏览会话树并创建分支，/models 跨 provider 切换模型或设置思考级别，/thinking 切换 thinking 折叠/展开，/goal 开关 goal 模式——开启后 react loop 停止时若 todo 未全部完成将自动追问，/compact 压缩上下文，/retry 重试失败的响应，/quit 退出），输入 / 自动补全
 
 # print 模式（非交互，管道可用）

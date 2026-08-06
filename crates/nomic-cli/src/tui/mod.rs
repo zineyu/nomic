@@ -1519,7 +1519,9 @@ impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
         // bracketed paste：终端粘贴/拖入的内容整体作为 Event::Paste 上报，
-        // 便于识别图片路径；不支持的终端忽略该序列，退化为逐键事件
+        // 便于识别图片路径；不支持的终端忽略该序列，退化为逐键事件。
+        // 鼠标捕获用于滚轮滚动聊天区；代价是终端原生文本选择被劫持，
+        // 用户需按住 Shift 拖选（README 与欢迎页已说明）
         execute!(
             io::stdout(),
             EnterAlternateScreen,

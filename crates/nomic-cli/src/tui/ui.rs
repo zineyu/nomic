@@ -404,7 +404,7 @@ fn draw_welcome(frame: &mut Frame<'_>, app: &App, area: Rect) {
             theme::dim(),
         )),
         Line::from(Span::styled(
-            "↑↓/PgUp/PgDn/滚轮滚动 · Ctrl+C 退出",
+            "↑↓/PgUp/PgDn/滚轮滚动 · Shift+拖选复制 · Ctrl+C 退出",
             theme::dim(),
         )),
     ];

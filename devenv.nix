@@ -123,6 +123,11 @@
     end-of-file-fixer.enable = true;
   };
 
+  # ── devenv test：与 CI 等价的完整检查 ───────────────────────────────────
+  enterTest = ''
+    check
+  '';
+
   enterShell = ''
     echo "🦀 nomic dev shell"
     echo "  rustc: $(rustc --version)"

@@ -38,7 +38,7 @@ jobs:
       commit: ${{ steps.bump.outputs.commit }}
       branch: ${{ steps.bump.outputs.branch }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0 # git-cliff 需要完整历史定位上个 tag 以来的提交
@@ -108,7 +108,7 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.branch }}
 
@@ -135,7 +135,7 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.branch }}
 
@@ -159,7 +159,7 @@ jobs:
           - { os: macos-13, target: x86_64-apple-darwin }
           - { os: macos-latest, target: aarch64-apple-darwin }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.branch }}
 
@@ -206,7 +206,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # 需要完整历史，git-cliff 才能定位当前版本的提交范围
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.branch }}
           fetch-depth: 0
@@ -244,7 +244,7 @@ jobs:
     if: ${{ inputs.dry_run == false && github.ref_name == 'main' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: main
 

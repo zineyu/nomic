@@ -52,7 +52,7 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     // 每个 MessageBlock 渲染为一组物理行，组间统一空行分隔：用户消息、
     // assistant 的 Text/Thinking、错误、System、工具调用都是
     // 独立消息块，块间空行由拼接处保证，而非各分支自行追加。
-    // 运行中状态由输入框标题（spinner + 「运行中 · Esc 取消」）统一表达，
+    // 运行中状态由输入框标题（spinner + 「运行中 · Ctrl+C 取消」）统一表达，
     // 聊天区不再叠加流式指示，避免思考时出现两处"生成中"标记。
     let cursor = app.chat_cursor();
     let visual = app.visual_range();
@@ -524,7 +524,7 @@ fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
         (
             Some(Line::from(vec![
                 Span::styled(format!("{} ", app.spinner()), theme::busy()),
-                Span::styled("运行中 · Esc 取消", theme::busy()),
+                Span::styled("运行中 · Ctrl+C 取消", theme::busy()),
             ])),
             theme::busy(),
         )

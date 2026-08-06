@@ -102,7 +102,7 @@ enum DriverDone {
 
 /// 一轮 prompt 的结束回执（goal 模式是否自动追问的判定依据）。
 struct PromptEnd {
-    /// 是否正常结束：用户取消（Esc/Ctrl+C）或响应以 Error/Aborted
+    /// 是否正常结束：用户取消（Ctrl+C）或响应以 Error/Aborted
     /// 收尾时为 false——失败与中断的恢复由用户主导，不自动追问
     ended_normally: bool,
 }
@@ -258,7 +258,7 @@ fn spawn_driver(
                         .await;
                     let done = match result {
                         Ok(messages) => {
-                            // goal 模式追问判定：用户取消（Esc/Ctrl+C）或
+                            // goal 模式追问判定：用户取消（Ctrl+C）或
                             // 响应以 Error/Aborted 收尾时不算正常结束
                             let last_stop =
                                 messages.iter().rev().find_map(|message| match message {

@@ -516,12 +516,12 @@ pub(super) enum Effect {
         text: String,
         images: Vec<nomic_ai::ImageContent>,
     },
-    /// `/compact` 手动压缩上下文（`running` 已置位，Esc 可取消）
+    /// `/compact` 手动压缩上下文（`running` 已置位，Ctrl+C 可取消）
     Compact(Option<String>),
     /// `/retry` 重试最近一轮失败的响应（`running` 已置位，聊天区尾部
     /// 失败/未定稿条目已随历史中的失败消息一并移除）
     Retry,
-    /// 取消当前运行（Esc / Ctrl+C）
+    /// 取消当前运行（Ctrl+C）
     Cancel,
     /// `/resume`：列出历史 session 并打开选择器
     ListSessions,
@@ -964,17 +964,13 @@ impl App {
         }
     }
 
-    /// INSERT 的 Esc 退回栈（ADR-0011）：关补全弹层 → 取消运行 → 回 NORMAL。
-    /// 每层都是无损操作，任何时刻按 Esc 都安全。
+    /// INSERT 的 Esc 退回栈（ADR-0011）：关补全弹层 → 回 NORMAL。
+    /// Esc 一律是模式切换，不再取消运行；取消运行由 Ctrl+C 承担。
     fn insert_esc(&mut self) -> Vec<Effect> {
-        if self.dismiss_completion() {
-            Vec::new()
-        } else if self.running {
-            vec![Effect::Cancel]
-        } else {
+        if !self.dismiss_completion() {
             self.enter_normal();
-            Vec::new()
         }
+        Vec::new()
     }
 
     /// INSERT 的 ↑/↓：补全弹层可见时移动选中项，否则滚动聊天区。
@@ -1648,7 +1644,7 @@ impl App {
                 Vec::new()
             }
             SlashAction::Compact(instructions) => {
-                // 压缩是一次 LLM 调用：按 mini-run 处理，Esc 可取消
+                // 压缩是一次 LLM 调用：按 mini-run 处理，Ctrl+C 可取消
                 self.running = true;
                 self.notice = None;
                 vec![Effect::Compact(instructions)]
@@ -3764,16 +3760,20 @@ mod tests {
         assert!(!running.should_quit());
     }
 
-    /// Esc 退回栈（ADR-0011）：关补全弹层 → 取消运行 → 回 NORMAL。
-    /// 每层无损：弹层关闭留在 INSERT，取消运行留在 INSERT，空闲才进 NORMAL。
+    /// Esc 退回栈（ADR-0011）：关补全弹层 → 回 NORMAL（运行中亦然）。
+    /// Esc 只做无损的模式切换；取消运行由 Ctrl+C 承担。
     #[test]
     fn esc_retreat_stack() {
-        // 3. 运行中：取消运行，留在 INSERT
+        // 运行中：Esc 不取消运行，进 NORMAL 浏览；Ctrl+C 才取消
         let mut running = app();
         running.handle_event(&AgentEvent::AgentStart);
-        let effects = running.press(Key::Esc);
-        assert!(matches!(&effects[..], [Effect::Cancel]));
-        assert_eq!(running.mode(), Mode::Insert);
+        assert!(running.press(Key::Esc).is_empty());
+        assert_eq!(running.mode(), Mode::Normal);
+        assert!(running.is_running(), "Esc 不影响运行");
+        assert!(matches!(
+            &running.press(Key::Ctrl('c'))[..],
+            [Effect::Cancel]
+        ));
 
         // 1. 弹层开着：关弹层，留在 INSERT
         let mut app = app();

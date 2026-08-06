@@ -39,7 +39,7 @@ export ANTHROPIC_API_KEY=sk-ant-...     # 或 OPENAI_API_KEY / OPENAI_BASE_URL
 # 首次用 --model <provider>/<模型id> 启动，之后经 /models 切换并记住选择
 cargo run -p nomic-cli -- --model anthropic/claude-sonnet-4-5
 # 交互为 vim-like 模式（ADR-0011），默认 INSERT（输入），Esc 逐层退回：
-# INSERT：Enter 发送 · Tab 补全 · Esc 关弹层/取消运行/进 NORMAL
+# INSERT：Enter 发送 · Tab 补全 · Esc 关弹层/进 NORMAL（取消运行用 Ctrl+C）
 #         Ctrl+W 删词 · Ctrl+U 清行 · Ctrl+A/E 行首/行尾 · Alt+B/F 词移动
 # NORMAL：j/k 滚动 · Ctrl+D/U 半页 · gg/G 顶/底 · [m]m 跳消息 · [t]t 跳工具
 #         / 搜索（n/N 跳转）· yy 复制消息 · yc 复制代码块 · V 选择后 y 复制

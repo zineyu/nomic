@@ -11,6 +11,7 @@
 ### CI
 
 - 使用 devenv 统一执行 CI 检查
+- Tag 触发的 release workflow（多平台二进制 + GitHub Release）
 
 ### 代码风格
 
@@ -28,6 +29,7 @@
 - **(cli)** 移除思考块开头的 Thinking 标记
 - **(core)** 流建立前失败补发 MessageStart，保证消息事件配对
 - **(tui)** /tree 按分叉缩进并折叠工具调用条目
+- 仓库地址统一为 zineyu/nomic
 
 ### 文档
 
@@ -40,6 +42,8 @@
 - **(adr)** 0011 vim-like 交互模式重构
 - README 与欢迎页键位同步为模式化交互（ADR-0011）
 - 说明 TUI 捕获鼠标，文本选择需 Shift+拖选
+- 发布流程文档与 README 安装说明
+- 更新README
 
 ### 新功能
 
@@ -111,6 +115,7 @@
 - **(tui)** VISUAL 消息选择与 y 复制（ADR-0011 Phase 3）
 - **(tui)** NORMAL 草稿编辑——x/dd/dw 删除与 A/I 插入（ADR-0011 Phase 3）
 - **(tui)** [**breaking**] Esc 统一为模式切换，取消运行收归 Ctrl+C
+- **(release)** Git-cliff CHANGELOG 与 devenv release 脚本
 
 ### 杂项
 

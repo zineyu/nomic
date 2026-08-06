@@ -55,7 +55,8 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     // 运行中状态由输入框标题（spinner + 「运行中 · Esc 取消」）统一表达，
     // 聊天区不再叠加流式指示，避免思考时出现两处"生成中"标记。
     let cursor = app.chat_cursor();
-    // 每个块标注所属条目下标：消息游标 gutter 高亮与条目起始行回写用
+    let visual = app.visual_range();
+    // 每个块标注所属条目下标：游标/选择区 gutter 高亮与条目起始行回写用
     let mut blocks: Vec<(usize, Vec<Line<'static>>)> = Vec::new();
     for (index, item) in app.items().iter().enumerate() {
         for block in item_blocks(item, area.width, app.thinking_collapsed(), spinner) {
@@ -70,10 +71,18 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         if starts[index] == u16::MAX {
             starts[index] = u16::try_from(lines.len()).unwrap_or(u16::MAX);
         }
-        let block = if cursor == Some(index) {
+        // 选择区高亮优先于游标（游标总在选择范围内）
+        let highlight = if visual.is_some_and(|(start, end)| (start..=end).contains(&index)) {
+            Some(theme::visual_marker())
+        } else if cursor == Some(index) {
+            Some(theme::cursor_marker())
+        } else {
+            None
+        };
+        let block = if let Some(style) = highlight {
             block
                 .into_iter()
-                .map(|line| restyle_gutter(line, theme::cursor_marker()))
+                .map(|line| restyle_gutter(line, style))
                 .collect::<Vec<_>>()
         } else {
             block
@@ -456,60 +465,7 @@ fn input_height(app: &App) -> u16 {
 
 /// 输入框（多行，高度随行数变化，最多 5 行）+ 光标定位。
 fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    // 三态边框：运行中（黄 + spinner）/ 补全打开（accent）/ 空闲（暗色）
-    let (title, border_style) = if app.is_running() {
-        (
-            Line::from(vec![
-                Span::styled(format!("{} ", app.spinner()), theme::busy()),
-                Span::styled("运行中 · Esc 取消", theme::busy()),
-            ]),
-            theme::busy(),
-        )
-    } else if let Some(picker) = app.picker() {
-        let title = match picker.kind {
-            PickerKind::Resume => "恢复 session · 输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
-            PickerKind::Tree => "会话树 · 输入过滤 · ↑/↓ 选择 · Enter 创建分支 · Esc 取消",
-            PickerKind::Models => "切换模型 · 输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
-            PickerKind::Reasoning => "思考级别 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
-        };
-        (
-            Line::from(Span::styled(title, theme::accent())),
-            theme::accent(),
-        )
-    } else if app.mode() == Mode::Search {
-        (
-            Line::from(Span::styled(
-                format!(
-                    "搜索 · Enter 完成 · Esc 取消（{} 处命中）",
-                    app.search_match_count()
-                ),
-                theme::accent(),
-            )),
-            theme::accent(),
-        )
-    } else if app.completion().is_some() {
-        (
-            Line::from(Span::styled("输入 · Tab 补全", theme::accent())),
-            theme::accent(),
-        )
-    } else if app.mode() == Mode::Normal {
-        // NORMAL：输入框不是焦点，降为暗色；草稿保留可见
-        (
-            Line::from(Span::styled(
-                "浏览 · i 返回输入 · j/k 滚动 · Y 复制",
-                theme::dim(),
-            )),
-            theme::dim(),
-        )
-    } else {
-        (
-            Line::from(Span::styled(
-                "输入 · Enter 发送 · Shift+Enter 换行",
-                theme::dim(),
-            )),
-            theme::dim(),
-        )
-    };
+    let (title, border_style) = input_title(app);
     let border = Border::bordered()
         .border_type(BorderType::Rounded)
         .border_style(border_style)
@@ -558,6 +514,72 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.set_cursor_position(Position::new(x, y));
 }
 
+/// 输入框标题与边框样式：运行中（黄 + spinner）/ picker / 搜索 / 补全 /
+/// VISUAL / NORMAL / 空闲。
+fn input_title(app: &App) -> (Line<'static>, Style) {
+    if app.is_running() {
+        (
+            Line::from(vec![
+                Span::styled(format!("{} ", app.spinner()), theme::busy()),
+                Span::styled("运行中 · Esc 取消", theme::busy()),
+            ]),
+            theme::busy(),
+        )
+    } else if let Some(picker) = app.picker() {
+        let title = match picker.kind {
+            PickerKind::Resume => "恢复 session · 输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
+            PickerKind::Tree => "会话树 · 输入过滤 · ↑/↓ 选择 · Enter 创建分支 · Esc 取消",
+            PickerKind::Models => "切换模型 · 输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
+            PickerKind::Reasoning => "思考级别 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
+        };
+        (
+            Line::from(Span::styled(title, theme::accent())),
+            theme::accent(),
+        )
+    } else if app.mode() == Mode::Search {
+        (
+            Line::from(Span::styled(
+                format!(
+                    "搜索 · Enter 完成 · Esc 取消（{} 处命中）",
+                    app.search_match_count()
+                ),
+                theme::accent(),
+            )),
+            theme::accent(),
+        )
+    } else if app.completion().is_some() {
+        (
+            Line::from(Span::styled("输入 · Tab 补全", theme::accent())),
+            theme::accent(),
+        )
+    } else if app.mode() == Mode::Visual {
+        (
+            Line::from(Span::styled(
+                "可视选择 · j/k 扩展 · y 复制 · Esc 取消",
+                theme::visual_badge(),
+            )),
+            theme::dim(),
+        )
+    } else if app.mode() == Mode::Normal {
+        // NORMAL：输入框不是焦点，降为暗色；草稿保留可见
+        (
+            Line::from(Span::styled(
+                "浏览 · i 返回输入 · ]m 消息 · / 搜索 · V 选择",
+                theme::dim(),
+            )),
+            theme::dim(),
+        )
+    } else {
+        (
+            Line::from(Span::styled(
+                "输入 · Enter 发送 · Shift+Enter 换行",
+                theme::dim(),
+            )),
+            theme::dim(),
+        )
+    }
+}
+
 /// 状态栏：左侧模式徽标 + 模型徽标 + 会话标题 + 上下文用量 + 告警；
 /// 右侧滚动位置 + 随模式切换的键位提示。
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -567,6 +589,7 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mode_badge = match app.mode() {
         Mode::Normal => Span::styled(" NORMAL ", theme::normal_badge()),
         Mode::Search => Span::styled(" SEARCH ", theme::warn()),
+        Mode::Visual => Span::styled(" VISUAL ", theme::visual_badge()),
         Mode::Insert => Span::styled(" INSERT ", theme::accent()),
         Mode::Picker => Span::styled(" PICKER ", theme::accent()),
     };
@@ -593,6 +616,7 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let hint = match app.mode() {
         Mode::Normal => "i 输入 · ]m 消息 · / 搜索 · yy 复制 · : 命令 · Ctrl+C 退出 ",
         Mode::Search => "输入即搜 · Enter 完成 · Esc 取消 ",
+        Mode::Visual => "j/k 扩展选择 · y 复制 · Esc 取消 ",
         Mode::Picker => "输入过滤 · ↑/↓ 选择 · Home/End 首/尾 · Enter 确认 · Esc 取消 ",
         Mode::Insert => "/ 命令 · Tab 补全 · Enter 发送 · Esc 浏览 ",
     };
@@ -1144,7 +1168,6 @@ mod tests {
 
         let compact = compact_text(&terminal);
         assert!(compact.contains("NORMAL"), "{compact}");
-        assert!(compact.contains("j/k"), "{compact}");
         // 渲染后条目起始行已回写（游标滚动定位依赖）
         assert_eq!(app.chat_cursor(), Some(0));
     }

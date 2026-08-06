@@ -20,6 +20,8 @@ pub(super) const ERR: Color = Color::Red;
 pub(super) const BUSY: Color = Color::Yellow;
 /// 代码文本（行内代码与代码块，与 BUSY 同色但语义独立）。
 pub(super) const CODE: Color = Color::Yellow;
+/// VISUAL 模式（徽标与选择区 gutter）。
+pub(super) const VISUAL: Color = Color::Magenta;
 
 /// 加粗正文（工具名等）。
 pub(super) const fn bold() -> Style {
@@ -111,6 +113,19 @@ pub(super) const fn normal_badge() -> Style {
 /// 搜索命中高亮：反色黄块（与选中态的反色 accent 区分）。
 pub(super) const fn search_hit() -> Style {
     Style::new().fg(Color::Black).bg(BUSY)
+}
+
+/// VISUAL 模式徽标：反色块（模式必须一眼可辨，ADR-0011）。
+pub(super) const fn visual_badge() -> Style {
+    Style::new()
+        .fg(Color::Black)
+        .bg(VISUAL)
+        .add_modifier(Modifier::BOLD)
+}
+
+/// VISUAL 选择区 gutter：反色块标出 `y` 的作用范围。
+pub(super) const fn visual_marker() -> Style {
+    Style::new().fg(Color::Black).bg(VISUAL)
 }
 
 /// 消息游标 gutter（NORMAL）：反色 accent 块，标出 `yy`/`yc` 的作用目标。

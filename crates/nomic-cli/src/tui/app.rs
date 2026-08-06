@@ -471,6 +471,8 @@ pub(super) enum Mode {
     Normal,
     /// 搜索：输入框复用为搜索框（增量命中），Enter/Esc 回 NORMAL
     Search,
+    /// 可视选择：以消息为粒度选择范围，`y` 复制后回 NORMAL
+    Visual,
     /// 选择器打开（`/resume`、`/models`、`/tree`），接管键位。
     /// 派生态：由 `picker.is_some()` 决定，不入 `App::mode` 字段
     Picker,
@@ -568,6 +570,8 @@ pub(super) struct App {
     item_lines: Vec<u16>,
     /// `yc` 代码块循环序号（同一游标消息内重复 yc 依次取下一个块）
     yc_block: usize,
+    /// VISUAL 的选择锚点（items 下标；进入 VISUAL 时取消息游标）
+    visual_anchor: Option<usize>,
     /// 搜索串（NORMAL `/` 进入 SEARCH；Esc 清空，Enter 保留供 n/N）
     search_query: String,
     /// 搜索命中条目（items 下标，升序）
@@ -629,6 +633,7 @@ impl App {
             cursor_item: None,
             item_lines: Vec::new(),
             yc_block: 0,
+            visual_anchor: None,
             search_query: String::new(),
             search_matches: Vec::new(),
             pending_key: None,
@@ -863,6 +868,7 @@ impl App {
             // 此时 agent 必空闲，无运行可取消）
             Mode::Picker => self.press_picker(key),
             Mode::Search => self.press_search(key),
+            Mode::Visual => self.press_visual(key),
             Mode::Normal => self.press_normal(key),
             Mode::Insert => self.press_insert(key),
         }
@@ -992,18 +998,10 @@ impl App {
         {
             return effects;
         }
+        if let Some(effects) = self.normal_exit(key) {
+            return effects;
+        }
         match key {
-            // i/a 回到光标原处继续编辑；Esc 放弃浏览直接返回
-            Key::Char('i' | 'a') | Key::Esc => {
-                self.leave_normal();
-                Vec::new()
-            }
-            // Enter 回 INSERT 并把光标置于输入末尾（ADR-0011）
-            Key::Enter => {
-                self.leave_normal();
-                self.cursor_end();
-                Vec::new()
-            }
             Key::Char('g') => {
                 self.pending_key = Some('g');
                 Vec::new()
@@ -1020,22 +1018,20 @@ impl App {
                 self.pending_key = Some('y');
                 Vec::new()
             }
-            // `:` 进入命令输入：回 INSERT 并预填 `/`（补全弹层随之出现）。
-            // 草稿非空时不覆盖用户文本，提示先处理草稿
-            Key::Char(':') => {
-                let empty = self.input.is_empty();
-                self.leave_normal();
-                if empty {
-                    self.insert_char('/');
-                } else {
-                    self.notice = Some("草稿非空：i 返回编辑，清空后再用 : 命令".to_string());
-                }
-                Vec::new()
-            }
             Key::Char('G') => {
                 self.scroll_to_bottom();
                 self.cursor_item = self.items.iter().rposition(ChatItem::is_message);
                 self.yc_block = 0;
+                Vec::new()
+            }
+            // V 进入可视选择：锚点取消息游标（无可选消息时提示）
+            Key::Char('V') => {
+                if self.cursor_item.is_some() {
+                    self.visual_anchor = self.cursor_item;
+                    self.mode = Mode::Visual;
+                } else {
+                    self.notice = Some("没有可选择的消息".to_string());
+                }
                 Vec::new()
             }
             // `/` 进入搜索（输入框复用为搜索框；保留上次查询可编辑）
@@ -1093,6 +1089,34 @@ impl App {
         }
     }
 
+    /// NORMAL 的「离开浏览」键位：`i`/`a`/`Esc` 回 INSERT（光标原位），
+    /// `Enter` 回 INSERT 到输入末尾，`:` 预填 `/` 进入命令输入。
+    /// 返回 `Some` 表示已处理。
+    fn normal_exit(&mut self, key: Key) -> Option<Vec<Effect>> {
+        match key {
+            // i/a 回到光标原处继续编辑；Esc 放弃浏览直接返回
+            Key::Char('i' | 'a') | Key::Esc => self.leave_normal(),
+            // Enter 回 INSERT 并把光标置于输入末尾（ADR-0011）
+            Key::Enter => {
+                self.leave_normal();
+                self.cursor_end();
+            }
+            // `:` 进入命令输入：回 INSERT 并预填 `/`（补全弹层随之出现）。
+            // 草稿非空时不覆盖用户文本，提示先处理草稿
+            Key::Char(':') => {
+                let empty = self.input.is_empty();
+                self.leave_normal();
+                if empty {
+                    self.insert_char('/');
+                } else {
+                    self.notice = Some("草稿非空：i 返回编辑，清空后再用 : 命令".to_string());
+                }
+            }
+            _ => return None,
+        }
+        Some(Vec::new())
+    }
+
     /// NORMAL 的序列键第二键：`gg` 到顶、`[m`/`]m` 消息跳转、`[t`/`]t`
     /// 工具跳转、`yy`/`yc` 复制。返回 `Some` 表示已处理；`None` 表示
     /// 组合不匹配，调用方把按键照常分发。
@@ -1116,6 +1140,61 @@ impl App {
             _ => return None,
         }
         Some(Vec::new())
+    }
+
+    /// VISUAL 模式键位：j/k 以消息为粒度扩展选择，`y` 复制范围后回
+    /// NORMAL，Esc 放弃选择回 NORMAL。
+    fn press_visual(&mut self, key: Key) -> Vec<Effect> {
+        match key {
+            Key::Char('j') | Key::Down => self.step_cursor(1, ChatItem::is_message),
+            Key::Char('k') | Key::Up => self.step_cursor(-1, ChatItem::is_message),
+            Key::Char('y') => {
+                let effects = self.yank_visual_selection();
+                self.mode = Mode::Normal;
+                self.visual_anchor = None;
+                return effects;
+            }
+            Key::Esc => {
+                self.mode = Mode::Normal;
+                self.visual_anchor = None;
+            }
+            Key::Ctrl('c') => self.should_quit = true,
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// VISUAL `y`：复制锚点到游标的消息范围（各条目纯文本以空行拼接）。
+    fn yank_visual_selection(&mut self) -> Vec<Effect> {
+        let Some((start, end)) = self.visual_range_inner() else {
+            self.notice = Some("没有选择范围".to_string());
+            return Vec::new();
+        };
+        let text = self.items[start..=end]
+            .iter()
+            .filter_map(item_text)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if text.is_empty() {
+            self.notice = Some("选中范围没有可复制的文本".to_string());
+            Vec::new()
+        } else {
+            vec![Effect::CopyText(text)]
+        }
+    }
+
+    /// 选择范围（锚点与游标的闭区间，小端在前）。
+    fn visual_range_inner(&self) -> Option<(usize, usize)> {
+        let anchor = self.visual_anchor?;
+        let cursor = self.cursor_item?;
+        Some((anchor.min(cursor), anchor.max(cursor)))
+    }
+
+    /// 渲染用：VISUAL 的选择范围（仅 VISUAL 下返回）。
+    pub(super) fn visual_range(&self) -> Option<(usize, usize)> {
+        (self.mode() == Mode::Visual)
+            .then_some(self.visual_range_inner())
+            .flatten()
     }
 
     /// SEARCH 模式键位：输入即搜（增量跳转第一个命中），Enter 保留命中
@@ -1241,9 +1320,10 @@ impl App {
         self.pending_key = None;
     }
 
-    /// 消息游标（渲染 gutter 高亮用）；浏览类模式（NORMAL/SEARCH）下返回。
+    /// 消息游标（渲染 gutter 高亮用）；浏览类模式（NORMAL/SEARCH/VISUAL）
+    /// 下返回。
     pub(super) fn chat_cursor(&self) -> Option<usize> {
-        matches!(self.mode(), Mode::Normal | Mode::Search)
+        matches!(self.mode(), Mode::Normal | Mode::Search | Mode::Visual)
             .then_some(self.cursor_item)
             .flatten()
     }
@@ -4028,6 +4108,49 @@ mod tests {
         // 无命中时 n 给提示
         assert!(app.press(Key::Char('n')).is_empty());
         assert_eq!(app.notice(), Some("没有搜索命中（NORMAL 下 / 开始搜索）"));
+    }
+
+    /// VISUAL：V 以游标为锚点进入，j/k 以消息为粒度扩展选择，y 复制
+    /// 范围后回 NORMAL；Esc 放弃；无可选消息时提示。
+    #[test]
+    fn visual_selects_message_range_and_yanks() {
+        // 无消息时 V 提示
+        let mut empty = app();
+        empty.press(Key::Esc);
+        assert!(empty.press(Key::Char('V')).is_empty());
+        assert_eq!(empty.mode(), Mode::Normal);
+        assert_eq!(empty.notice(), Some("没有可选择的消息"));
+
+        let mut app = app_with_history();
+        app.press(Key::Esc);
+
+        // 锚点取游标（最新 assistant，下标 4），k 扩展两条（到 tool 前的
+        // user 1 再上一跳越过 tool 到 assistant 1）
+        app.press(Key::Char('V'));
+        assert_eq!(app.mode(), Mode::Visual);
+        assert_eq!(app.visual_range(), Some((4, 4)));
+        app.press(Key::Char('k'));
+        app.press(Key::Char('k'));
+        assert_eq!(app.cursor_item, Some(1), "k 逐消息上移，跳过 tool");
+        assert_eq!(app.visual_range(), Some((1, 4)));
+
+        // y 复制范围：assistant/user/tool/user/assistant 各条目文本拼接
+        let effects = app.press(Key::Char('y'));
+        let [Effect::CopyText(text)] = &effects[..] else {
+            panic!("应产出 CopyText：{effects:?}");
+        };
+        assert!(text.contains("第一个回答"), "{text}");
+        assert!(text.contains("第二个问题"), "{text}");
+        assert!(text.contains("bash(ls)"), "工具条目文本也在范围内：{text}");
+        assert_eq!(app.mode(), Mode::Normal, "y 后回 NORMAL");
+        assert_eq!(app.visual_range(), None);
+
+        // Esc 放弃选择
+        app.press(Key::Char('V'));
+        app.press(Key::Char('k'));
+        assert!(app.press(Key::Esc).is_empty());
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.visual_range(), None);
     }
 
     /// 消息游标滚动定位：渲染回写条目行号后，移动游标滚动到该条目。

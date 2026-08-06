@@ -227,7 +227,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
 /// 光标形状随模式切换：NORMAL 实心块，INSERT/PICKER 竖条。
 fn set_cursor_style(mode: Mode) {
     let style = match mode {
-        Mode::Normal => SetCursorStyle::SteadyBlock,
+        Mode::Normal | Mode::Visual => SetCursorStyle::SteadyBlock,
         Mode::Insert | Mode::Search | Mode::Picker => SetCursorStyle::SteadyBar,
     };
     let _ = execute!(io::stdout(), style);
@@ -1392,7 +1392,7 @@ async fn paste_clipboard(app: &mut App) {
 async fn copy_to_clipboard(app: &mut App, text: String) {
     let chars = text.chars().count();
     match tokio::task::spawn_blocking(move || crate::clipboard::write_text(&text)).await {
-        Ok(Ok(())) => app.push_system(format!("已复制最新一条消息到剪贴板（{chars} 字）。")),
+        Ok(Ok(())) => app.push_system(format!("已复制到剪贴板（{chars} 字）。")),
         Ok(Err(error)) => app.warn(format!("复制失败：{error:#}")),
         Err(join) => app.warn(format!("复制失败：{join}")),
     }

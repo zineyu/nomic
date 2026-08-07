@@ -1,13 +1,18 @@
 name: Release
 
-# tag 推送触发（由 devenv `release` 脚本创建），流程：
-#   check/nix 门禁（与 ci.yml 等价）→ 多平台构建 → GitHub Release
-# 本 workflow 服务于 minor/major 手动发版；patch 版本由 release-patch.yml
-# （workflow_dispatch）自动发版。发布流程详见 docs/releasing.md
+# 触发方式：
+#   1. tag 推送（本地手动打 tag 的逃生门场景）
+#   2. workflow_dispatch：release-tag.yml 在 release PR 合并到 main 后打 tag，
+#      并以 --ref <tag> 派发本 workflow。GITHUB_TOKEN 推送的 tag 不会级联触发
+#      workflow（官方限制），workflow_dispatch 是例外；--ref 为 tag 时各步骤
+#      行为与 tag 推送完全等价（GITHUB_REF_NAME 均为 vX.Y.Z）
+# 流程：check/nix 门禁（与 ci.yml 等价）→ 多平台构建 → GitHub Release
+# 发布流程详见 docs/releasing.md
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -74,10 +79,11 @@ jobs:
       matrix:
         include:
           # 全部使用对应架构的原生 runner，避免交叉编译配置腐烂；
-          # ubuntu-24.04-arm 公开仓库免费，私有仓库若不可用可改 cross 方案
+          # ubuntu-24.04-arm 公开仓库免费，私有仓库若不可用可改 cross 方案；
+          # macos-13 已被 GitHub 弃用，Intel macOS 构建使用接替镜像 macos-15-intel
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
-          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
           - { os: macos-latest, target: aarch64-apple-darwin }
     steps:
       - uses: actions/checkout@v7

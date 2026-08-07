@@ -1,0 +1,78 @@
+name: Release (tag on merge)
+
+# release PR（chore(release): vX.Y.Z）合并到 main 后，自动在 main 上打 tag
+# 并派发 release.yml 完成门禁/构建/发布。
+#
+# 为什么需要本 workflow：
+#   - main 受 ruleset 保护（必须走 PR），release commit 无法本地直推 main + tag；
+#   - GITHUB_TOKEN 推送的 tag 不会级联触发 release.yml（官方限制），但
+#     workflow_dispatch 是例外，因此打 tag 与触发发布都在这里完成。
+#
+# 判定为 release 合并需同时满足：
+#   1. HEAD 提交 subject 以 "chore(release): v<semver>" 开头
+#      （squash 合并尾部会追加 "(#123)"，故用前缀匹配）；
+#   2. workspace 版本（Cargo.toml）与 tag 版本一致；
+#   3. 远端尚不存在该 tag（本地手动已打 tag 时不重复处理）。
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write # 创建并推送 tag
+  actions: write  # gh workflow run 派发 release.yml
+
+# 不可中途取消：避免 tag 已推而 dispatch 未发的中间态
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: tag & dispatch release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Detect release merge
+        id: detect
+        run: |
+          set -euo pipefail
+          subject="$(git log -1 --format=%s)"
+          echo "HEAD: $subject"
+
+          if ! echo "$subject" | grep -qE '^chore\(release\): v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?'; then
+            echo "非 release 合并，跳过"
+            exit 0
+          fi
+
+          TAG=$(echo "$subject" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?' | head -1)
+          PKG_VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "$TAG" != "v$PKG_VERSION" ]; then
+            echo "::error::release 合并的 tag（$TAG）与 workspace 版本（$PKG_VERSION）不一致" >&2
+            exit 1
+          fi
+
+          if [ -n "$(git ls-remote --tags origin "$TAG")" ]; then
+            echo "远端已存在 tag $TAG（本地手动推送等场景），跳过"
+            exit 0
+          fi
+
+          echo "检测到 release 合并：$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Tag & push
+        if: steps.detect.outputs.tag != ''
+        run: |
+          set -euo pipefail
+          # 附注 tag 需要提交者身份
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.detect.outputs.tag }}" -m "${{ steps.detect.outputs.tag }}"
+          git push origin "${{ steps.detect.outputs.tag }}"
+
+      # --ref 指定 tag，release.yml 各步骤行为与 tag 推送触发等价
+      - name: Dispatch release.yml
+        if: steps.detect.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run release.yml --ref "${{ steps.detect.outputs.tag }}"

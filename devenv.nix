@@ -47,12 +47,14 @@
     echo "== typos =="     && typos
   '';
 
-  # ── 版本发布（minor/major 手动；patch 走 release-patch.yml 自动发版）────────
+  # ── 版本发布 ─────────────────────────────────────────────────────────────
   # 用法：release <semver>（不带 v 前缀），如 `release 0.2.0`
   # 流程：前置校验 → bump 版本 → git-cliff 生成 CHANGELOG → 完整 check →
-  #       jj 提交 + 移动 main 书签 + git tag。推送由人工执行，防止误发。
+  #       jj 提交并放到 release/vX.Y.Z 分支。推分支、建/合并 PR 由人工执行；
+  #       PR 合并后 release-tag.yml 自动在 main 上打 tag 并派发 release.yml 发布。
+  #       （main 受 ruleset 保护必须走 PR，不能本地直推 main + tag）
   scripts.release = {
-    description = "手动发布 minor/major 版本：release <semver>，例如 release 0.2.0（patch 请用 GitHub Action「Release (patch)」）";
+    description = "发布新版本：release <semver>（不带 v 前缀），例如 release 0.2.0（生成 release 分支，PR 合并后自动发布）";
     exec = ''
       set -euo pipefail
 
@@ -62,6 +64,7 @@
         exit 1
       fi
       TAG="v$VERSION"
+      BRANCH="release/$TAG"
 
       if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
         echo "错误: '$VERSION' 不是合法的 semver 版本号" >&2
@@ -70,17 +73,6 @@
 
       if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
         echo "错误: tag $TAG 已存在" >&2
-        exit 1
-      fi
-
-      # patch 版本统一走 GitHub Action「Release (patch)」自动发版（bump/门禁/
-      # 构建/发布/回写 main 全自动），本地脚本只发布 minor/major；
-      # 确需本地发 patch 时设 RELEASE_ALLOW_PATCH=1 绕过。
-      CURRENT=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-      if [ "''${RELEASE_ALLOW_PATCH:-0}" != "1" ] \
-        && [ "$(echo "$CURRENT" | cut -d. -f1,2)" = "$(echo "$VERSION" | cut -d. -f1,2)" ]; then
-        echo "错误: patch 版本（$CURRENT → $VERSION）请使用 GitHub Action「Release (patch)」发布" >&2
-        echo "   确需本地发布时：RELEASE_ALLOW_PATCH=1 release $VERSION" >&2
         exit 1
       fi
 
@@ -118,15 +110,19 @@
         check
       fi
 
-      echo "== commit & tag =="
+      echo "== commit =="
       jj commit -m "chore(release): $TAG"
-      jj bookmark set main -r @-
-      git tag -a "$TAG" -m "$TAG" "$(jj log -r @- --no-graph -T commit_id)"
+      jj bookmark set "$BRANCH" -r @-
 
       echo ""
-      echo "✅ 本地发布完成。推送命令（人工确认后执行）："
-      echo "   jj git push --bookmark main"
-      echo "   git push origin $TAG   # 推 tag 触发 release workflow"
+      echo "✅ release 分支已就绪（main 受保护，必须走 PR）。后续步骤："
+      echo "   1. 推送分支并创建 PR（人工确认后执行）："
+      echo "      jj git push --bookmark $BRANCH"
+      echo "      gh pr create --base main --head $BRANCH \\"
+      echo "        --title 'chore(release): $TAG' \\"
+      echo "        --body '发布 $TAG。合并后 release-tag.yml 自动打 tag 并派发 release.yml 完成发布。'"
+      echo "   2. PR 检查全绿后合并（merge/squash/rebase 均可）"
+      echo "   3. 合并后自动进行：打 tag $TAG → 派发 release.yml → 门禁/构建/发布"
     '';
   };
 

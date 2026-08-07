@@ -2,15 +2,15 @@ name: Release (patch)
 
 # patch 版本自动发版，手动触发（Actions → Release (patch) → Run workflow）。
 # 流程：bump patch 版本 + CHANGELOG → 推送 release/vX.Y.Z 分支 → 完整门禁 →
-#       多平台构建 → GitHub Release（创建 tag）→ 成功后回写 main 并清理分支。
-# 关键保证：只有 GitHub Release 发布成功，bump 提交才会进入 main；
+#       多平台构建 → GitHub Release（创建 tag）→ 成功后创建回写 main 的 PR。
+# 关键保证：只有 GitHub Release 发布成功，才会创建将 bump 提交合入 main 的 PR；
 # 任何一步失败，main 与 tag 均不受影响，修复后直接重跑即可。
 # minor/major 版本不走本流程，必须本地手动发版（见 docs/releasing.md）。
 on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "只做 bump/检查/构建，不创建 Release、不回写 main（用于验证流程）"
+        description: "只做 bump/检查/构建，不创建 Release、不创建回写 main 的 PR（用于验证流程）"
         type: boolean
         default: false
 
@@ -21,7 +21,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
 
-# 发版不可并行，也不允许中途取消（避免 Release 已建而 main 未回写的中间态）
+# 发版不可并行，也不允许中途取消（避免 Release 已建而 PR 未创建的中间态）
 concurrency:
   group: release-patch
   cancel-in-progress: false
@@ -236,30 +236,38 @@ jobs:
             *.tar.gz.sha256
           fail_on_unmatched_files: true
 
-  # 发布成功后才把 release 提交回写 main（快进推送），并清理 release 分支
+  # 发布成功后创建 release 分支 → main 的 PR，不直接推送 main（兼容分支保护）。
+  # 关键保证不变：只有 Release 发布成功才会创建 PR；tag 指向 release 分支上的
+  # 提交，PR 需用 merge commit 合并，保证 tag 指向的提交留在 main 历史中。
   finalize:
-    name: push main & cleanup
+    name: create PR to main
     needs: [prepare, release]
     if: ${{ inputs.dry_run == false && github.ref_name == 'main' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: main
-
-      - name: Fast-forward main to release commit
+      - name: Create pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ needs.prepare.outputs.branch }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
         run: |
           set -euo pipefail
-          BRANCH="${{ needs.prepare.outputs.branch }}"
-          git fetch --depth 1 origin "$BRANCH"
-          # 非 force 推送：release 分支基于 prepare 时的 main，若发版期间 main 前进
-          # 则此处失败——此时 Release 已发布，需人工 rebase bump 提交后推 main
-          # （见 docs/releasing.md 故障处理）。
-          # 注意：GITHUB_TOKEN 的推送不会再触发 main 上的 CI，但该提交刚刚
-          # 通过本 workflow 与 CI 完全等价的门禁，无需重复检查。
-          git push origin "FETCH_HEAD:refs/heads/main"
 
-      - name: Delete release branch
-        run: |
-          git push origin --delete "${{ needs.prepare.outputs.branch }}" || \
-            echo "警告: 清理分支失败，可手动删除 ${{ needs.prepare.outputs.branch }}"
+          # 幂等：上次运行若在创建 PR 后失败，重跑时直接复用已存在的 PR
+          PR_URL=$(gh pr list --head "$BRANCH" --base main --state open \
+            --json url --jq '.[0].url')
+          if [ -z "$PR_URL" ]; then
+            PR_URL=$(gh pr create --base main --head "$BRANCH" \
+              --title "chore(release): $TAG" \
+              --body "自动发版：$TAG 已发布（tag 指向 $COMMIT）。请用 **merge commit** 合并本 PR，保证 tag 指向的提交留在 main 历史中；合并后删除 release 分支。")
+          fi
+          echo "PR: $PR_URL"
+
+          # 尝试开启自动合并（使用 merge commit，见上）；仓库未启用 auto-merge
+          # 或保护规则未满足时忽略失败，转为等待人工合并
+          gh pr merge "$PR_URL" --auto --merge || \
+            echo "提示: 自动合并不可用，请人工审核合并 $PR_URL"

@@ -143,6 +143,8 @@ async fn main() -> Result<()> {
 }
 
 /// 无子命令时的常规对话分发：print 模式或交互 TUI。
+// future 非 Send 的原因与安全性见 tui/mod.rs 的模块级说明（同上）
+#[allow(clippy::future_not_send)]
 pub(crate) async fn dispatch(cli: &Cli) -> Result<()> {
     if let Some(prompt) = &cli.print {
         print::run(cli, prompt).await

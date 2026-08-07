@@ -187,8 +187,8 @@ impl<M, P, S> AgentBuilder<M, P, S> {
         self
     }
 
-    /// 设置共享 steering 队列（默认新建；交互端与 agent 各持克隆，
-    /// 运行中直推转向消息，见 [`SteeringQueue`]）。
+    /// 设置共享消息队列（默认新建；交互端与 agent 各持克隆，
+    /// 运行中直推排队消息，见 [`SteeringQueue`]）。
     pub fn steering_queue(mut self, steering: SteeringQueue) -> Self {
         self.steering = steering;
         self

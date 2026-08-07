@@ -1,10 +1,11 @@
-//! steering 队列（pi 式运行中转向，ADR-0013）。
+//! 统一消息队列（ADR-0014，由 ADR-0013 的 steering 队列扩展而来）。
 //!
-//! 运行中（含工具执行中）入队的转向消息，在当前 assistant turn 的工具
-//! 调用执行完后、下一次 LLM 调用前，作为 user 消息注入当前 run——
-//! 与 follow-up（本轮结束后发送）不同，steering 用于「看到走偏立即
-//! 纠偏」。投递口径 one-at-a-time：每个完成的 turn 注入一条；队列未
-//! 清空时 run 不结束（模型无工具调用也注入续行）。
+//! 运行中（含工具执行中）入队的消息，在当前 assistant turn 的工具调用
+//! 执行完后、下一次 LLM 调用前，作为 user 消息注入当前 run（pi 式转向）；
+//! run 异常结束（取消/失败）时队列保留，交互端恢复后从同一队列弹出队首
+//! 作为下一轮 prompt 发送（ADR-0012 的暂停保留口径）。投递口径
+//! one-at-a-time：每个完成的 turn 注入一条；队列未清空时 run 不结束
+//!（模型无工具调用也注入续行）。
 //!
 //! 队列经共享句柄 [`SteeringQueue`] 在 agent 与交互端之间直推：agent
 //! 运行期间 driver 的串行 job 通道被 prompt 占用，无法中转运行中消息，
@@ -16,7 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use nomic_ai::ImageContent;
 
-/// 一条待注入的 steering 消息（运行中由交互端入队，turn 边界注入）。
+/// 一条排队消息（运行中由交互端入队；turn 边界注入本轮，或异常
+/// 结束后作为下一轮 prompt 发送）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SteeringMessage {
     /// 消息文本
@@ -25,7 +27,7 @@ pub struct SteeringMessage {
     pub images: Vec<ImageContent>,
 }
 
-/// 共享 steering 队列句柄：agent 与交互端各持克隆，内部为同一份队列。
+/// 共享队列句柄：agent 与交互端各持克隆，内部为同一份队列。
 ///
 /// 全部方法可在任意时机调用（锁持有时间仅为单次队列操作，无跨 await
 /// 持锁）。`Default` 即新建空队列。

@@ -8,7 +8,7 @@
 //!
 //! M1 裁剪（事件枚举预留扩展空间）：follow-up 队列、
 //! `prepareNextTurn`、`shouldStopAfterTurn`。
-//! steering 队列（运行中 turn 边界注入转向消息）已实现，见 [`crate::SteeringQueue`]。
+//! 统一消息队列（运行中 turn 边界注入，ADR-0014）已实现，见 [`crate::SteeringQueue`]。
 
 use std::sync::Arc;
 
@@ -213,7 +213,7 @@ impl Agent {
         )
     }
 
-    /// steering 队列句柄（pi 式运行中转向，ADR-0013）。
+    /// 统一消息队列句柄（ADR-0014）。
     ///
     /// 交互端持克隆随时入队/编辑（运行期间 driver 串行 job 通道被
     /// prompt 占用，无法中转）；agent 在每个 turn 边界（当前 assistant
@@ -538,8 +538,8 @@ impl Agent {
             if terminate || cancel.is_cancelled() {
                 return Ok(());
             }
-            // steering（pi 式 one-at-a-time，ADR-0013）：turn 边界弹出一条
-            // 转向消息注入当前 run（QUEUE 编辑冻结期跳过）；队列未清空时
+            // 统一队列注入（pi 式 one-at-a-time，ADR-0014）：turn 边界弹出一条
+            // 排队消息注入当前 run（QUEUE 编辑冻结期跳过）；队列未清空时
             // run 不结束——模型无工具调用也注入续行，直至队列排空
             if let Some(steered) = self.steering.pop_front() {
                 self.inject_steered(&steered, new_messages);

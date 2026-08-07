@@ -12,7 +12,6 @@ use nomic_core::{
 };
 use nomic_prompts::{PromptTemplate, PromptsError};
 use nomic_skills::{ActivatedSkill, SkillScope, parse_active_skill_tag};
-use std::collections::VecDeque;
 use unicode_width::UnicodeWidthStr;
 
 use crate::print::brief_args;
@@ -350,10 +349,10 @@ fn help_text() -> String {
         );
     }
     text.push_str(
-        "\n\n排队输入（steering / follow-up）：运行中 Enter 把消息排入转向队列（当前步骤完成后\n\
-         注入本轮运行），Alt+Enter 排入 follow-up 队列（本轮正常结束后按序自动发送）；\n\
-         Esc 进 NORMAL 后按 Q 打开队列编辑（j/k 移动、i 就地编辑、dd 删除、J/K 换位、\n\
-         o 新增、Esc 返回）。运行被取消或失败时队列暂停：空闲下按 Enter 发送下一条。",
+        "\n\n排队输入（统一消息队列）：运行中 Enter 把消息排队，当前步骤完成后注入\n\
+         本轮运行（未清空则持续续行）；Esc 进 NORMAL 后按 Q 打开队列编辑（j/k 移动、\n\
+         i 就地编辑、dd 删除、J/K 换位、o 新增、Esc 返回）。运行被取消或失败时队列\n\
+         暂停保留：空闲下按 Enter 把队首作为下一轮发送。",
     );
     text
 }
@@ -459,38 +458,9 @@ struct PendingImage {
     image: nomic_ai::ImageContent,
 }
 
-/// 一条排队消息（ADR-0012，pi 式 follow-up）：运行中 Alt+Enter 入队，
-/// 本轮正常结束后按 FIFO 自动发送。附件在入队时随文本一起带走。
-#[derive(Debug)]
-pub(super) struct QueuedMessage {
-    pub(super) text: String,
-    pub(super) images: Vec<nomic_ai::ImageContent>,
-}
-
-/// Enter 提交的运行中入队去向（ADR-0013，与 pi 默认映射一致）：
-/// Enter = steering 转向，Alt+Enter = follow-up 排队。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Route {
-    /// steering：当前 turn 的工具调用执行完后注入本轮运行
-    Steering,
-    /// follow-up：本轮正常结束后按 FIFO 自动发送
-    FollowUp,
-}
-
-/// 队列条目归属（双队列 QUEUE 模式，ADR-0013）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum QueueKind {
-    /// steering 转向（当前步骤完成后注入本轮运行）
-    Steering,
-    /// follow-up 排队（本轮结束后发送）
-    FollowUp,
-}
-
-/// 队列区渲染条目：steering 快照与 follow-up 的统一视图（条目空间 =
-/// steering 在前 + follow-up 在后，QUEUE 模式游标跨两队导航）。
+/// 队列区渲染条目（统一队列视图，与 QUEUE 模式游标的条目空间一致）。
 #[derive(Debug)]
 pub(super) struct QueueEntry {
-    pub(super) kind: QueueKind,
     pub(super) text: String,
     pub(super) images: usize,
 }
@@ -539,9 +509,6 @@ pub(super) enum Key {
     /// Alt+字母（INSERT 下 Alt+B/F 词级移动）
     Alt(char),
     Enter,
-    /// Alt+Enter（运行中入 follow-up 队列，ADR-0013；空闲下与 Enter 同义；
-    /// 依赖 kitty 键盘增强协议，与 Shift+Enter 同一前提）
-    AltEnter,
     /// Shift+Enter 手动换行
     Newline,
     Backspace,
@@ -667,15 +634,13 @@ pub(super) struct App {
     /// goal 模式（默认关闭，`/goal` 开关）：开启后 react loop 停止且
     /// todo 未全部完成时，由事件循环自动以 user 消息追问
     goal_mode: bool,
-    /// 排队消息队列（ADR-0012，pi 式 follow-up）：运行中 Alt+Enter 入队，
-    /// 本轮正常结束后按 FIFO 自动发送；QUEUE 模式打开期间冻结发送
-    queue: VecDeque<QueuedMessage>,
-    /// steering 队列（ADR-0013，pi 式运行中转向）：运行中 Enter 入队，
-    /// 当前 turn 的工具调用执行完后由 core 在 turn 边界注入本轮运行；
-    /// 与 agent 共享同一份队列（启动时经 [`Self::steering_handle`] 传给
-    /// builder），QUEUE 模式打开期间冻结注入
+    /// 统一消息队列（ADR-0014）：运行中 Enter 入队，当前 turn 的工具
+    /// 调用执行完后由 core 在 turn 边界注入本轮运行；run 异常结束时
+    /// 保留，恢复后弹出队首作为下一轮 prompt。与 agent 共享同一份
+    /// 队列（启动时经 [`Self::steering_handle`] 传给 builder），QUEUE
+    /// 模式打开期间冻结注入
     steering: SteeringQueue,
-    /// QUEUE 模式的条目游标（queue 下标）
+    /// QUEUE 模式的条目游标（队列下标）
     queue_cursor: usize,
     /// QUEUE 模式的编辑子状态：正在就地编辑的队列槽位
     ///（草稿缓冲即该槽位内容，Enter/Esc 保存回队列）
@@ -713,14 +678,13 @@ impl App {
             templates: Vec::new(),
             thinking_collapsed: true,
             goal_mode: false,
-            queue: VecDeque::new(),
             steering: SteeringQueue::new(),
             queue_cursor: 0,
             queue_editing: None,
         }
     }
 
-    /// steering 队列句柄：启动时传给 agent builder，与 core 共享同一份
+    /// 统一消息队列句柄：启动时传给 agent builder，与 core 共享同一份
     /// 队列（运行中入队直推，不经 driver 串行 job 通道）。
     pub(super) fn steering_handle(&self) -> SteeringQueue {
         self.steering.clone()
@@ -952,7 +916,6 @@ impl App {
             Key::Esc => return self.insert_esc(),
             Key::Tab => self.tab_complete(),
             Key::Enter => return self.press_enter(),
-            Key::AltEnter => return self.press_alt_enter(),
             other => self.apply_edit_key(other),
         }
         Vec::new()
@@ -1573,25 +1536,15 @@ impl App {
 
     /// Enter：补全弹层未精确匹配时先填入候选；否则取出输入，
     /// 按 slash 命令或普通 prompt 分发（运行中的口径见
-    /// [`Self::press_enter_running`]）。运行中 Enter = steering 转向
-    ///（ADR-0013，pi 默认映射）。
+    /// [`Self::press_enter_running`]）。运行中 Enter = 排入统一消息
+    /// 队列（ADR-0014）。
     fn press_enter(&mut self) -> Vec<Effect> {
-        self.press_enter_routed(Route::Steering)
-    }
-
-    /// Alt+Enter：运行中入 follow-up 队列（ADR-0012 的原 Enter 行为
-    /// 移键）；空闲下与 Enter 同义（无运行可转向，直接提交）。
-    fn press_alt_enter(&mut self) -> Vec<Effect> {
-        self.press_enter_routed(Route::FollowUp)
-    }
-
-    fn press_enter_routed(&mut self, route: Route) -> Vec<Effect> {
         if self.accept_completion_on_enter() {
             // 已填入补全候选；再次 Enter 提交
             return Vec::new();
         }
         if self.running {
-            return self.press_enter_running(route);
+            return self.press_enter_running();
         }
         let Some(text) = self.take_input() else {
             if self.has_attachments() {
@@ -1619,15 +1572,13 @@ impl App {
         }
     }
 
-    /// 运行中（含工具执行中）的 Enter / Alt+Enter：本地 slash 命令照常
+    /// 运行中（含工具执行中）的 Enter：本地 slash 命令照常
     /// 执行——它们不触碰 agent/driver 状态（[`SlashAction::is_local`]），
-    /// 长时间运行的工具调用不应阻塞它们；普通输入与模板调用按去向
-    /// **排队**——Enter = steering 转向队列（ADR-0013，当前 turn 的
-    /// 工具调用执行完后注入本轮运行），Alt+Enter = follow-up 队列
-    ///（ADR-0012，本轮正常结束后按 FIFO 自动发送）；Esc→NORMAL→Q
-    /// 进 QUEUE 模式编辑双队列。会话命令仍须等本轮结束（输入保留，
-    /// 结束后可再提交）。
-    fn press_enter_running(&mut self, route: Route) -> Vec<Effect> {
+    /// 长时间运行的工具调用不应阻塞它们；普通输入与模板调用
+    /// **排队**——入统一消息队列（ADR-0014，当前 turn 的工具调用执行
+    /// 完后注入本轮运行）；Esc→NORMAL→Q 进 QUEUE 模式编辑队列。
+    /// 会话命令仍须等本轮结束（输入保留，结束后可再提交）。
+    fn press_enter_running(&mut self) -> Vec<Effect> {
         let text = self.input.trim().to_string();
         if text.is_empty() {
             if self.has_attachments() {
@@ -1638,7 +1589,7 @@ impl App {
         match parse_slash(&text) {
             SlashParse::NotCommand => {
                 self.take_input();
-                self.enqueue_routed(route, text)
+                self.enqueue(text)
             }
             SlashParse::Known(action) if action.is_local() => {
                 self.take_input();
@@ -1661,7 +1612,7 @@ impl App {
                 match nomic_prompts::expand_invocation(&self.templates, &text) {
                     Ok(Some(expanded)) => {
                         self.take_input();
-                        self.enqueue_routed(route, expanded)
+                        self.enqueue(expanded)
                     }
                     Err(PromptsError::UnterminatedQuote { .. }) => {
                         self.notice = Some("参数形式不对：引号未闭合".to_string());
@@ -1676,58 +1627,31 @@ impl App {
         }
     }
 
-    // ── 排队输入与 QUEUE 模式（ADR-0012/0013）───────────────────────────
+    // ── 排队输入与 QUEUE 模式（ADR-0014）───────────────────────────
 
-    /// 按去向入队（运行中 Enter = steering，Alt+Enter = follow-up）。
-    fn enqueue_routed(&mut self, route: Route, text: String) -> Vec<Effect> {
-        match route {
-            Route::Steering => self.enqueue_steering(text),
-            Route::FollowUp => self.enqueue(text),
-        }
-    }
-
-    /// steering 入队（ADR-0013，pi 式运行中转向）：随暂存附件一起入队，
-    /// 当前 turn 的工具调用执行完后由 core 在 turn 边界注入本轮运行；
-    /// Esc→NORMAL→Q 进 QUEUE 模式可编辑（编辑期间冻结注入）。
-    fn enqueue_steering(&mut self, text: String) -> Vec<Effect> {
+    /// 入队（ADR-0014，统一消息队列）：随暂存附件一起入队，当前 turn
+    /// 的工具调用执行完后由 core 在 turn 边界注入本轮运行（run 异常
+    /// 结束时保留，恢复后作为下一轮 prompt）；Esc→NORMAL→Q 进 QUEUE
+    /// 模式可编辑（编辑期间冻结注入）。
+    fn enqueue(&mut self, text: String) -> Vec<Effect> {
         let images = self.take_attachments();
         self.steering.push(SteeringMessage { text, images });
         self.notice = Some(format!(
-            "已排队转向（第 {} 条），当前步骤完成后注入本轮 · Esc→Q 编辑队列",
+            "已排队（第 {} 条），当前步骤完成后注入本轮 · Esc→Q 编辑队列",
             self.steering.len()
         ));
         Vec::new()
     }
 
-    /// follow-up 入队（ADR-0012）：随暂存附件一起入队，本轮正常结束后
-    /// 按 FIFO 自动发送；Esc→NORMAL→Q 进 QUEUE 模式可编辑队列。
-    fn enqueue(&mut self, text: String) -> Vec<Effect> {
-        let images = self.take_attachments();
-        self.queue.push_back(QueuedMessage { text, images });
-        self.notice = Some(format!(
-            "已排队（第 {} 条），本轮结束后按序发送 · Esc→Q 编辑队列",
-            self.queue.len()
-        ));
-        Vec::new()
-    }
-
-    /// 取出下一条待发消息（steering 优先于 follow-up：异常暂停恢复
-    /// 路径，正常结束的 run 其 steering 已被 core 排空）：双队列均非空
-    /// 且 QUEUE 模式未打开时返回提交效果（`running` 已置位，与用户
-    /// 手动提交同一口径）；QUEUE 模式打开期间冻结发送，均空返回 `None`。
+    /// 取出下一条待发消息（run 异常结束后恢复路径；正常结束的 run
+    /// 其队列已被 core 排空）：队列非空且 QUEUE 模式未打开时返回提交
+    /// 效果（`running` 已置位，与用户手动提交同一口径）；QUEUE 模式
+    /// 打开期间冻结发送，空队列返回 `None`。
     pub(super) fn drain_queue(&mut self) -> Option<Effect> {
         if self.mode == Mode::Queue {
             return None;
         }
-        if let Some(steered) = self.steering.pop_front() {
-            self.running = true;
-            self.notice = None;
-            return Some(Effect::Prompt {
-                text: steered.text,
-                images: steered.images,
-            });
-        }
-        let queued = self.queue.pop_front()?;
+        let queued = self.steering.pop_front()?;
         self.running = true;
         self.notice = None;
         Some(Effect::Prompt {
@@ -1801,30 +1725,20 @@ impl App {
         Vec::new()
     }
 
-    /// QUEUE `j`/`k`：移动条目游标（钳制不循环；跨 steering/follow-up
-    /// 双队导航，统一条目空间 = steering 在前 + follow-up 在后）。
+    /// QUEUE `j`/`k`：移动条目游标（钳制不循环）。
     fn queue_move(&mut self, delta: isize) {
         if let Some(next) = step_row(self.queue_cursor, delta, self.queue_len()) {
             self.queue_cursor = next;
         }
     }
 
-    /// 统一条目空间的下标是否落在 steering 段（前半）。
-    fn in_steering(&self, index: usize) -> bool {
-        index < self.steering.len()
-    }
-
-    /// QUEUE `dd`/`x`：删除游标条目（oil.nvim 删行语义，按归属分发到
-    /// steering / follow-up 队列）；双队列均空时退出 QUEUE 回 NORMAL。
+    /// QUEUE `dd`/`x`：删除游标条目（oil.nvim 删行语义）；队列清空时
+    /// 退出 QUEUE 回 NORMAL。
     fn queue_delete(&mut self) {
         if self.queue_len() == 0 {
             return;
         }
-        if self.in_steering(self.queue_cursor) {
-            self.steering.remove(self.queue_cursor);
-        } else {
-            self.queue.remove(self.queue_cursor - self.steering.len());
-        }
+        self.steering.remove(self.queue_cursor);
         if self.queue_len() == 0 {
             self.mode = Mode::Normal;
             self.notice = Some("队列已清空".to_string());
@@ -1834,38 +1748,24 @@ impl App {
     }
 
     /// QUEUE `J`/`K`：游标条目与下/上一条换位（vim `:move` 语义，
-    /// 到底/顶不动；换位不跨 steering/follow-up 边界——条目归属不变）。
+    /// 到底/顶不动）。
     fn queue_swap(&mut self, delta: isize) {
         let Some(next) = step_row(self.queue_cursor, delta, self.queue_len()) else {
             return;
         };
-        if self.in_steering(self.queue_cursor) != self.in_steering(next) {
-            return;
-        }
-        if self.in_steering(next) {
-            self.steering.swap(self.queue_cursor, next);
-        } else {
-            let offset = self.steering.len();
-            self.queue.swap(self.queue_cursor - offset, next - offset);
-        }
+        self.steering.swap(self.queue_cursor, next);
         self.queue_cursor = next;
     }
 
     /// QUEUE `i`/`a`/Enter：开始就地编辑游标槽位（草稿缓冲即槽位内容，
-    /// 光标置于末尾；附件保留在槽位上，不随文本进缓冲），按归属取自
-    /// steering / follow-up 队列。
+    /// 光标置于末尾；附件保留在槽位上，不随文本进缓冲）。
     fn queue_begin_edit(&mut self) {
-        let text = if self.in_steering(self.queue_cursor) {
-            self.steering
-                .snapshot()
-                .get(self.queue_cursor)
-                .map(|m| m.text.clone())
-        } else {
-            self.queue
-                .get(self.queue_cursor - self.steering.len())
-                .map(|queued| queued.text.clone())
-        };
-        let Some(text) = text else {
+        let Some(text) = self
+            .steering
+            .snapshot()
+            .get(self.queue_cursor)
+            .map(|m| m.text.clone())
+        else {
             return;
         };
         self.input = text;
@@ -1875,33 +1775,22 @@ impl App {
     }
 
     /// QUEUE `o`/`O`：在游标下/上方插入空槽位并就地编辑（保存空文本
-    /// 即撤销该槽位，与保存语义一致）；新槽位继承游标条目所在队列。
+    /// 即撤销该槽位，与保存语义一致）。
     fn queue_insert_slot(&mut self, offset: usize) {
         let index = self.queue_cursor + offset;
-        if self.in_steering(self.queue_cursor) {
-            self.steering.insert(
-                index,
-                SteeringMessage {
-                    text: String::new(),
-                    images: Vec::new(),
-                },
-            );
-        } else {
-            let at = (index - self.steering.len()).min(self.queue.len());
-            self.queue.insert(
-                at,
-                QueuedMessage {
-                    text: String::new(),
-                    images: Vec::new(),
-                },
-            );
-        }
+        self.steering.insert(
+            index,
+            SteeringMessage {
+                text: String::new(),
+                images: Vec::new(),
+            },
+        );
         self.queue_cursor = index;
         self.queue_begin_edit();
     }
 
-    /// 保存就地编辑：按归属写回 steering / follow-up 槽位；空文本删除
-    /// 槽位（oil.nvim 空行忽略语义）。双队列均空时退出 QUEUE 回 NORMAL。
+    /// 保存就地编辑：写回槽位；空文本删除槽位（oil.nvim 空行忽略
+    /// 语义）。队列清空时退出 QUEUE 回 NORMAL。
     fn queue_save_edit(&mut self) {
         let Some(slot) = self.queue_editing.take() else {
             return;
@@ -1909,16 +1798,10 @@ impl App {
         let text = self.input.trim().to_string();
         self.input.clear();
         self.cursor = 0;
-        if self.in_steering(slot) {
-            if text.is_empty() {
-                self.steering.remove(slot);
-            } else {
-                self.steering.update_text(slot, text);
-            }
-        } else if text.is_empty() {
-            self.queue.remove(slot - self.steering.len());
-        } else if let Some(queued) = self.queue.get_mut(slot - self.steering.len()) {
-            queued.text = text;
+        if text.is_empty() {
+            self.steering.remove(slot);
+        } else {
+            self.steering.update_text(slot, text);
         }
         if self.queue_len() == 0 {
             self.mode = Mode::Normal;
@@ -1928,13 +1811,13 @@ impl App {
         self.queue_cursor = slot.min(self.queue_len() - 1);
     }
 
-    /// NORMAL `Q`：进入 QUEUE 模式（oil.nvim 式队列编辑，双队列）。
-    /// 双队列均空或草稿非空时拒绝并提示；进入即冻结 steering 注入——
-    /// 用户手持缓冲编辑时 run 仍在推进，不冻结会让 core 在 turn 边界
-    /// 弹走 steering 条目导致游标下标漂移。
+    /// NORMAL `Q`：进入 QUEUE 模式（oil.nvim 式队列编辑）。队列为空
+    /// 或草稿非空时拒绝并提示；进入即冻结队列注入——用户手持缓冲
+    /// 编辑时 run 仍在推进，不冻结会让 core 在 turn 边界弹走条目
+    /// 导致游标下标漂移。
     fn enter_queue(&mut self) {
         if self.queue_len() == 0 {
-            self.notice = Some("队列为空：运行中 Enter 转向 / Alt+Enter 排队".to_string());
+            self.notice = Some("队列为空：运行中 Enter 排队".to_string());
             return;
         }
         if !self.input.is_empty() {
@@ -1948,10 +1831,9 @@ impl App {
         self.queue_editing = None;
     }
 
-    /// QUEUE 导航子状态的 Esc：退出回 NORMAL，解冻 steering 注入；
+    /// QUEUE 导航子状态的 Esc：退出回 NORMAL，解冻队列注入；
     /// QUEUE 打开期间冻结的发送在退出时恢复——空闲且队列非空即取出
-    /// 下一条提交（steering 优先），运行中则由本轮结束后的自动 drain
-    /// 继续。
+    /// 队首提交，运行中则由本轮结束后的自动 drain 继续。
     fn leave_queue(&mut self) -> Vec<Effect> {
         self.mode = Mode::Normal;
         self.steering.unfreeze();
@@ -1963,14 +1845,9 @@ impl App {
         self.drain_queue().into_iter().collect()
     }
 
-    /// 排队消息总条数（steering + follow-up；运行中标题与暂停提示用）。
+    /// 排队消息总条数（运行中标题与暂停提示用）。
     pub(super) fn queue_len(&self) -> usize {
-        self.steering.len() + self.queue.len()
-    }
-
-    /// steering / follow-up 分列条数（运行中标题的分列提示用）。
-    pub(super) fn queue_lens(&self) -> (usize, usize) {
-        (self.steering.len(), self.queue.len())
+        self.steering.len()
     }
 
     /// QUEUE 模式是否打开（drain 冻结与渲染布局用）。
@@ -1988,25 +1865,17 @@ impl App {
         self.queue_cursor
     }
 
-    /// 双队列统一条目视图（输入框队列区渲染用）：steering 在前、
-    /// follow-up 在后，与 QUEUE 模式游标的条目空间一致。
+    /// 队列条目视图（输入框队列区渲染用），与 QUEUE 模式游标的
+    /// 条目空间一致。
     pub(super) fn queue_entries(&self) -> Vec<QueueEntry> {
-        let mut entries: Vec<QueueEntry> = self
-            .steering
+        self.steering
             .snapshot()
             .into_iter()
             .map(|m| QueueEntry {
-                kind: QueueKind::Steering,
                 text: m.text,
                 images: m.images.len(),
             })
-            .collect();
-        entries.extend(self.queue.iter().map(|queued| QueueEntry {
-            kind: QueueKind::FollowUp,
-            text: queued.text.clone(),
-            images: queued.images.len(),
-        }));
-        entries
+            .collect()
     }
 
     /// 就地编辑的槽位下标（渲染时用草稿行替换该槽位内容）。
@@ -2160,10 +2029,9 @@ impl App {
 
     /// `/new`：清空聊天区开启新对话；session 切换由调用方随后经
     /// [`Self::set_session`] / [`Self::warn`] 回报。
-    /// 排队消息（steering 与 follow-up）属于旧对话的后续意图，随上下文一起清空。
+    /// 排队消息属于旧对话的后续意图，随上下文一起清空。
     pub(super) fn start_new_conversation(&mut self) {
         self.clear_items();
-        self.queue.clear();
         self.steering.clear();
         self.context_tokens = 0;
         self.push_system("已开启新对话，上下文已清空。");
@@ -2178,7 +2046,6 @@ impl App {
     /// 排队消息属于切换前对话的后续意图，随上下文一起清空。
     pub(super) fn restore_conversation(&mut self, messages: &[Message], session_id: String) {
         self.clear_items();
-        self.queue.clear();
         self.steering.clear();
         self.load_history(messages);
         self.session_id = Some(session_id);
@@ -2189,7 +2056,6 @@ impl App {
     /// 排队消息属于切换前分支的后续意图，随上下文一起清空。
     pub(super) fn restore_branch(&mut self, messages: &[Message]) {
         self.clear_items();
-        self.queue.clear();
         self.steering.clear();
         self.load_history(messages);
     }
@@ -4079,8 +3945,8 @@ mod tests {
         );
     }
 
-    /// 运行中（ADR-0013）：普通输入 Enter 排入 steering 转向队列（pi 式，
-    /// 当前步骤完成后注入本轮运行），暂存附件随入队消息一起带走。
+    /// 运行中（ADR-0014）：普通输入 Enter 排入统一消息队列（当前
+    /// 步骤完成后注入本轮运行），暂存附件随入队消息一起带走。
     #[test]
     fn enter_while_running_queues_prompt_with_attachments() {
         let mut app = app();
@@ -4089,14 +3955,14 @@ mod tests {
         app.paste_text("hi");
         assert!(app.press(Key::Enter).is_empty());
         assert_eq!(app.input(), "");
-        assert_eq!(app.queue_lens(), (1, 0));
+        assert_eq!(app.queue_len(), 1);
         assert!(!app.has_attachments());
-        assert!(app.notice().is_some_and(|n| n.contains("已排队转向")));
+        assert!(app.notice().is_some_and(|n| n.contains("已排队")));
 
         // 再排一条，附件只随各自的消息走
         app.paste_text("second");
         assert!(app.press(Key::Enter).is_empty());
-        assert_eq!(app.queue_lens(), (2, 0));
+        assert_eq!(app.queue_len(), 2);
 
         // drain 按 FIFO 取出并置 running（与用户提交同一口径）
         let Some(Effect::Prompt { text, images }) = app.drain_queue() else {
@@ -4116,45 +3982,7 @@ mod tests {
         assert!(app.drain_queue().is_none());
     }
 
-    /// 运行中 Alt+Enter（ADR-0013）：排入 follow-up 队列（ADR-0012 的原
-    /// Enter 行为移键），steering 队列不受影响。
-    #[test]
-    fn alt_enter_while_running_queues_follow_up() {
-        let mut app = app();
-        app.handle_event(&AgentEvent::AgentStart);
-        app.paste_text("先转向");
-        app.press(Key::Enter);
-        app.paste_text("等结束");
-        assert!(app.press(Key::AltEnter).is_empty());
-        assert_eq!(app.queue_lens(), (1, 1));
-        assert!(app.notice().is_some_and(|n| n.contains("已排队")));
-
-        // drain 顺序：steering 优先于 follow-up
-        app.finish_run(None);
-        let Some(Effect::Prompt { text, .. }) = app.drain_queue() else {
-            panic!("expected Prompt effect from drain");
-        };
-        assert_eq!(text, "先转向");
-        app.finish_run(None);
-        let Some(Effect::Prompt { text, .. }) = app.drain_queue() else {
-            panic!("expected Prompt effect from drain");
-        };
-        assert_eq!(text, "等结束");
-        assert_eq!(app.queue_len(), 0);
-    }
-
-    /// 空闲下 Alt+Enter 与 Enter 同义（无运行可转向，直接提交）。
-    #[test]
-    fn idle_alt_enter_submits_like_enter() {
-        let mut app = app();
-        app.paste_text("hi");
-        let effects = app.press(Key::AltEnter);
-        assert!(matches!(&effects[..], [Effect::Prompt { text, .. }] if text == "hi"));
-        assert!(app.is_running());
-        assert_eq!(app.queue_len(), 0);
-    }
-
-    /// 运行中：模板调用展开后按同一键位入队（Enter = steering），不直接提交。
+    /// 运行中：模板调用展开后同样入队，不直接提交。
     #[test]
     fn enter_while_running_queues_expanded_template() {
         let mut app = app();
@@ -4188,7 +4016,7 @@ mod tests {
 
     // ── QUEUE 模式（ADR-0012，oil.nvim 式队列编辑）─────────────────────────
 
-    /// 构造空闲态且队列中有两条 steering 消息的 App（第一条带一张图片附件）。
+    /// 构造空闲态且队列中有两条排队消息的 App（第一条带一张图片附件）。
     fn queued_app() -> App {
         let mut app = app();
         app.handle_event(&AgentEvent::AgentStart);
@@ -4377,62 +4205,57 @@ mod tests {
         assert_eq!(idle.queue_len(), 1);
     }
 
-    /// 双队列 QUEUE 模式（ADR-0013）：统一条目空间跨 steering / follow-up
-    /// 导航与编辑；换位不跨边界；进入 QUEUE 冻结 steering 注入、退出解冻；
-    /// 恢复发送时 steering 优先于 follow-up。
+    /// 统一队列 QUEUE 模式（ADR-0014）：进入 QUEUE 冻结注入、退出
+    /// 解冻；导航/换位/就地编辑直接作用于队列；恢复发送按 FIFO。
     #[test]
-    fn queue_mode_dual_queue_editing() {
+    fn queue_mode_unified_queue_editing() {
         let mut app = app();
         app.handle_event(&AgentEvent::AgentStart);
-        app.paste_text("steer-1");
+        app.paste_text("msg-1");
         app.press(Key::Enter);
-        app.paste_text("steer-2");
+        app.paste_text("msg-2");
         app.press(Key::Enter);
-        app.paste_text("follow-1");
-        app.press(Key::AltEnter);
-        // 异常结束（取消）：双队列暂停保留，空闲下进入 QUEUE 编辑
+        app.paste_text("msg-3");
+        app.press(Key::Enter);
+        // 异常结束（取消）：队列暂停保留，空闲下进入 QUEUE 编辑
         app.finish_run(Some("已取消".to_string()));
         app.press(Key::Esc);
         app.press(Key::Char('Q'));
         assert!(app.queue_mode_active());
-        assert_eq!(app.queue_lens(), (2, 1));
-        // 进入 QUEUE 即冻结 steering 注入（core 在 turn 边界不再弹出）
+        assert_eq!(app.queue_len(), 3);
+        // 进入 QUEUE 即冻结注入（core 在 turn 边界不再弹出）
         assert!(app.steering_handle().is_frozen());
 
-        // 游标跨边界导航：steer-1 → steer-2 → follow-1
+        // 导航与换位：msg-1/msg-2 交换
         app.press(Key::Char('j'));
         app.press(Key::Char('j'));
         assert_eq!(app.queue_cursor(), 2);
-        // 边界处换位是无操作（条目归属不变）
-        app.press(Key::Char('K'));
-        assert_eq!(app.queue_cursor(), 2, "换位不跨 steering/follow-up 边界");
-        // steering 段内换位：先移到段首，再下交换 steer-1/steer-2
         app.press(Key::Char('k'));
         app.press(Key::Char('k'));
         app.press(Key::Char('J'));
         assert_eq!(app.queue_cursor(), 1);
 
-        // 就地编辑 follow-up 条目（下标 2 → 按归属写回 follow-up 队列）
+        // 就地编辑第三条
         app.press(Key::Char('G'));
         app.press(Key::Char('i'));
-        assert_eq!(app.input(), "follow-1");
+        assert_eq!(app.input(), "msg-3");
         app.paste_text("-edited");
         app.press(Key::Enter);
 
-        // 退出 QUEUE：解冻；恢复发送 steering 优先（换位后 steer-2 在首）
+        // 退出 QUEUE：解冻；恢复发送按 FIFO（换位后 msg-2 在首）
         let effects = app.press(Key::Esc);
         assert!(!app.steering_handle().is_frozen());
-        assert!(matches!(&effects[..], [Effect::Prompt { text, .. }] if text == "steer-2"));
+        assert!(matches!(&effects[..], [Effect::Prompt { text, .. }] if text == "msg-2"));
         app.finish_run(None);
         let Some(Effect::Prompt { text, .. }) = app.drain_queue() else {
             panic!("expected Prompt effect from drain");
         };
-        assert_eq!(text, "steer-1");
+        assert_eq!(text, "msg-1");
         app.finish_run(None);
         let Some(Effect::Prompt { text, .. }) = app.drain_queue() else {
             panic!("expected Prompt effect from drain");
         };
-        assert_eq!(text, "follow-1-edited");
+        assert_eq!(text, "msg-3-edited");
         assert_eq!(app.queue_len(), 0);
     }
 

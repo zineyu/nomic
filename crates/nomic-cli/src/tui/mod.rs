@@ -168,7 +168,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
         .messages(boot.history)
         .stream_options(boot.stream_options)
         .compaction(boot.compaction)
-        // steering 队列（ADR-0013）：TUI 与 agent 共享同一份，运行中
+        // 统一消息队列（ADR-0014）：TUI 与 agent 共享同一份，运行中
         // Enter 直推入队，core 在 turn 边界注入（不经 driver job 通道）
         .steering_queue(app.steering_handle())
         .build();
@@ -485,7 +485,7 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
     false
 }
 
-/// 一轮 prompt 结束：队列（ADR-0012）优先于 goal 模式追问——
+/// 一轮 prompt 结束：队列（ADR-0014）优先于 goal 模式追问——
 /// 队列非空时，正常结束即取出队首自动提交（QUEUE 模式打开期间冻结，
 /// 退出 QUEUE 时恢复）；被取消/失败等异常结束则队列暂停保留，
 /// 用户可空闲 Enter 或 Esc→Q 恢复。队列为空时才走 goal 模式追问：
@@ -646,8 +646,7 @@ const fn map_key(key: KeyEvent) -> Option<Key> {
         (KeyCode::Tab, _) => Key::Tab,
         // 换行必须在提交之前匹配；依赖 kitty 键盘增强协议区分两者
         (KeyCode::Enter, KeyModifiers::SHIFT) => Key::Newline,
-        // 运行中的 follow-up 入队（ADR-0013），同一协议前提
-        (KeyCode::Enter, KeyModifiers::ALT) => Key::AltEnter,
+        // Alt+Enter 与 Enter 同义（统一消息队列，ADR-0014）
         (KeyCode::Enter, _) => Key::Enter,
         (KeyCode::Backspace, _) => Key::Backspace,
         (KeyCode::Left, _) => Key::Left,

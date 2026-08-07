@@ -14,6 +14,8 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 - **多 provider**：Anthropic Messages 与 OpenAI Completions 兼容端点（DeepSeek、各类网关代理等），
   模型规格分层解析（配置 > [models.dev](https://models.dev) > 中性兜底）
 - **双运行模式**：ratatui 全屏交互 TUI（vim-like 模式化交互）+ 非交互 print 模式（管道可用）
+- **排队输入**：运行中 `Enter` 把消息排入 follow-up 队列，本轮正常结束后按序自动发送；
+  oil.nvim 式 QUEUE 模式编辑队列（就地编辑/删除/换位），设计见 [ADR-0012](docs/adr/0012-follow-up-queue-and-oil-style-queue-editing.md)
 - **八件工具**：`read` / `write` / `edit` / `bash` / `grep` / `find` / `todo_read` / `todo_write`，
   schemars + serde 即校验，parallel 执行
 - **持久会话**：SQLite 树形存储，支持 resume（按 cwd 隔离）、会话分支浏览与创建、`sessions list`
@@ -109,7 +111,7 @@ nomic -p "..." --reasoning low
 
 | 模式 | 键位 | 说明 |
 | ---- | ---- | ---- |
-| INSERT | `Enter` / `Tab` | 发送消息 / 补全 |
+| INSERT | `Enter` / `Tab` | 发送消息（运行中则排队 follow-up）/ 补全 |
 | INSERT | `Esc` | 关弹层 / 进入 NORMAL（取消运行用 `Ctrl+C`） |
 | INSERT | `Ctrl+W` `Ctrl+U` `Ctrl+A/E` `Alt+B/F` | 删词 / 清行 / 行首行尾 / 词移动 |
 | NORMAL | `j` `k` `Ctrl+D/U` `gg` `G` | 滚动 / 半页 / 顶部 / 底部 |
@@ -117,8 +119,12 @@ nomic -p "..." --reasoning low
 | NORMAL | `/` `n` `N` | 聊天搜索与跳转 |
 | NORMAL | `yy` `yc` `V`+`y` | 复制消息 / 复制代码块 / 选择后复制 |
 | NORMAL | `x` `dd` `dw` | 编辑草稿 |
+| NORMAL | `Q` | 打开队列编辑（QUEUE 模式，队列非空时） |
 | NORMAL | `i` `a` `A` `I` `Enter` | 回到输入 |
 | NORMAL | `:` | 命令输入（预填 `/`） |
+| QUEUE | `j` `k` `gg` `G` | 移动条目游标 |
+| QUEUE | `i` `o` `O` `Enter` | 就地编辑 / 下方新增 / 上方新增（`Enter`/`Esc` 保存，空文本即删条目） |
+| QUEUE | `dd` `x` `J` `K` | 删除条目 / 下移 / 上移（换位）；打开期间冻结发送，退出恢复 |
 | picker | 输入即过滤 · `↑/↓` 选择 · `Home/End` 首尾 | 适用于 `/resume`、`/models`、`/tree` |
 | 通用 | `Ctrl+C` | 取消运行 / 退出 |
 | 通用 | `↑/↓` `PgUp/PgDn` 滚轮 | 滚动 |
@@ -145,6 +151,9 @@ nomic -p "..." --reasoning low
 | `/quit`（`/exit`） | 退出 TUI |
 
 运行中本地 slash 命令（`/help`、`/copy` 等）照常可用，不被工具调用阻塞。
+运行中输入的普通消息与模板调用会进入 follow-up 队列（见上「排队输入」），
+本轮正常结束后按序自动发送；会话命令（`/compact`、`/retry`、`/models` 等）
+仍须等本轮结束。
 
 ### 会话恢复与分支
 

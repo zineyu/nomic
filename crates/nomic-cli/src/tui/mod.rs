@@ -197,9 +197,9 @@ pub async fn run(cli: &Cli) -> Result<()> {
     let mut term_events = EventStream::new();
     // spinner 帧推进：仅运行中需要动画，空闲时分支挂起不唤醒事件循环
     let mut spinner_ticker = tokio::time::interval(std::time::Duration::from_millis(100));
-    // 光标形状随交互模式切换（vim 情境信号）：NORMAL 实心块，其余竖条
-    let mut last_mode = app.mode();
-    set_cursor_style(last_mode);
+    // 光标形状随交互模式切换（vim 情境信号）：浏览态实心块，可键入态竖条
+    let mut last_block_cursor = block_cursor(&app);
+    set_cursor_style(last_block_cursor);
     loop {
         terminal
             .draw(|frame| ui::draw(frame, &mut app))
@@ -216,19 +216,32 @@ pub async fn run(cli: &Cli) -> Result<()> {
         if handle_wake(wake, &mut app, &mut driver).await || app.should_quit() {
             break;
         }
-        if app.mode() != last_mode {
-            last_mode = app.mode();
-            set_cursor_style(last_mode);
+        // QUEUE 的就地编辑子状态不改变模式字段，同样触发形状切换
+        let block = block_cursor(&app);
+        if block != last_block_cursor {
+            last_block_cursor = block;
+            set_cursor_style(block);
         }
     }
     Ok(())
 }
 
-/// 光标形状随模式切换：NORMAL 实心块，INSERT/PICKER 竖条。
-fn set_cursor_style(mode: Mode) {
-    let style = match mode {
-        Mode::Normal | Mode::Visual => SetCursorStyle::SteadyBlock,
-        Mode::Insert | Mode::Search | Mode::Picker => SetCursorStyle::SteadyBar,
+/// 光标是否用实心块：NORMAL/VISUAL 与 QUEUE 导航子状态为实心块
+///（不可键入文本的浏览态），其余竖条。
+const fn block_cursor(app: &App) -> bool {
+    match app.mode() {
+        Mode::Normal | Mode::Visual => true,
+        Mode::Queue => !app.queue_editing(),
+        Mode::Insert | Mode::Search | Mode::Picker => false,
+    }
+}
+
+/// 应用光标形状：实心块（浏览态）/ 竖条（可键入态）。
+fn set_cursor_style(block: bool) {
+    let style = if block {
+        SetCursorStyle::SteadyBlock
+    } else {
+        SetCursorStyle::SteadyBar
     };
     let _ = execute!(io::stdout(), style);
 }
@@ -428,7 +441,7 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
         Wake::AgentDone(done) => match done {
             DriverDone::Prompt(result) => {
                 driver.current_cancel = None;
-                handle_prompt_done(app, driver, result);
+                handle_prompt_done(app, driver, result).await;
             }
             DriverDone::Compact(result) => {
                 driver.current_cancel = None;
@@ -469,11 +482,14 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
     false
 }
 
-/// 一轮 prompt 结束：goal 模式开启、run 正常结束且仍有未完成 todo 时，
-/// 自动以 user 消息追问（连续次数有上限，防模型反复不收尾时失控循环）；
-/// 其余情况回到空闲态。追问计数在用户提交新 prompt、run 异常结束或
-/// 清单全部完成时清零。
-fn handle_prompt_done(app: &mut App, driver: &mut Driver, result: Result<PromptEnd, String>) {
+/// 一轮 prompt 结束：队列（ADR-0012）优先于 goal 模式追问——
+/// 队列非空时，正常结束即取出队首自动提交（QUEUE 模式打开期间冻结，
+/// 退出 QUEUE 时恢复）；被取消/失败等异常结束则队列暂停保留，
+/// 用户可空闲 Enter 或 Esc→Q 恢复。队列为空时才走 goal 模式追问：
+/// goal 开启、run 正常结束且仍有未完成 todo 时自动以 user 消息追问
+///（连续次数有上限，防模型反复不收尾时失控循环）；其余情况回到空闲态。
+/// 追问计数在用户提交新 prompt、run 异常结束或清单全部完成时清零。
+async fn handle_prompt_done(app: &mut App, driver: &mut Driver, result: Result<PromptEnd, String>) {
     let end = match result {
         Ok(end) => end,
         Err(error) => {
@@ -482,6 +498,22 @@ fn handle_prompt_done(app: &mut App, driver: &mut Driver, result: Result<PromptE
             return;
         }
     };
+    if app.queue_len() > 0 {
+        driver.goal_nudges = 0;
+        if end.ended_normally {
+            app.finish_run(None);
+            // QUEUE 模式打开时 drain 冻结（返回 None）：退出 QUEUE 时恢复
+            if let Some(effect) = app.drain_queue() {
+                execute_effect(app, driver, effect).await;
+            }
+        } else {
+            app.finish_run(Some(format!(
+                "运行未正常结束，队列保留 {} 条：空闲 Enter 发送下一条，Esc→Q 编辑",
+                app.queue_len()
+            )));
+        }
+        return;
+    }
     let reminder = if end.ended_normally && app.goal_mode() {
         goal_reminder_prompt(&driver.todos)
     } else {

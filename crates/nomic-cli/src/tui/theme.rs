@@ -88,6 +88,15 @@ pub(super) const fn err_bold() -> Style {
     err().add_modifier(Modifier::BOLD)
 }
 
+/// QUEUE 模式徽标：反色蓝块，与 INSERT/NORMAL/VISUAL 的徽标色相区分
+///（模式必须一眼可辨，ADR-0012）。
+pub(super) const fn queue_badge() -> Style {
+    Style::new()
+        .fg(Color::Black)
+        .bg(Color::LightBlue)
+        .add_modifier(Modifier::BOLD)
+}
+
 /// 警告文本（状态栏提示）。
 pub(super) const fn warn() -> Style {
     Style::new().fg(BUSY)

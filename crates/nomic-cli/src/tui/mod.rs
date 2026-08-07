@@ -168,6 +168,9 @@ pub async fn run(cli: &Cli) -> Result<()> {
         .messages(boot.history)
         .stream_options(boot.stream_options)
         .compaction(boot.compaction)
+        // steering 队列（ADR-0013）：TUI 与 agent 共享同一份，运行中
+        // Enter 直推入队，core 在 turn 边界注入（不经 driver job 通道）
+        .steering_queue(app.steering_handle())
         .build();
 
     // 落库父指针：恢复的 session 从默认分支末端起算（分支场景下保证续写
@@ -643,6 +646,8 @@ const fn map_key(key: KeyEvent) -> Option<Key> {
         (KeyCode::Tab, _) => Key::Tab,
         // 换行必须在提交之前匹配；依赖 kitty 键盘增强协议区分两者
         (KeyCode::Enter, KeyModifiers::SHIFT) => Key::Newline,
+        // 运行中的 follow-up 入队（ADR-0013），同一协议前提
+        (KeyCode::Enter, KeyModifiers::ALT) => Key::AltEnter,
         (KeyCode::Enter, _) => Key::Enter,
         (KeyCode::Backspace, _) => Key::Backspace,
         (KeyCode::Left, _) => Key::Left,

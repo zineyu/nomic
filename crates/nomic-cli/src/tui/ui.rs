@@ -11,8 +11,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::{
     app::{
-        App, Block, ChatItem, Completion, CompletionCandidate, Mode, Picker, PickerKind, ToolItem,
-        ToolStatus,
+        App, Block, ChatItem, Completion, CompletionCandidate, Mode, Picker, PickerKind, QueueKind,
+        ToolItem, ToolStatus,
     },
     markdown, theme,
 };
@@ -496,12 +496,14 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     // SEARCH 下输入框复用为搜索框：显示搜索串而非草稿，光标在其末尾
     let searching = app.mode() == Mode::Search;
-    // 队列区（oil.nvim 式缓冲，ADR-0012）：每条排队消息一个条目；
-    // QUEUE 导航下 gutter 标出游标条目，就地编辑槽位的内容即草稿缓冲
+    // 队列区（oil.nvim 式缓冲，ADR-0012/0013）：steering 条目在前
+    //（accent：当前步骤完成后注入本轮）、follow-up 条目在后（暗色：
+    // 本轮结束后发送）；QUEUE 导航下 gutter 标出游标条目，就地编辑
+    // 槽位的内容即草稿缓冲
     let queue_cursor =
         (app.queue_mode_active() && !app.queue_editing()).then(|| app.queue_cursor());
     let editing_slot = app.queue_editing_slot();
-    for (index, queued) in app.queued_messages().enumerate() {
+    for (index, entry) in app.queue_entries().iter().enumerate() {
         if editing_slot == Some(index) {
             for (row, text) in app.input().split('\n').enumerate() {
                 let gutter = if row == 0 { "❯ " } else { "  " };
@@ -513,15 +515,15 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
             continue;
         }
         let cursor = queue_cursor == Some(index);
-        let text_style = if cursor {
+        let text_style = if cursor || entry.kind == QueueKind::Steering {
             theme::accent()
         } else {
             theme::dim()
         };
-        for (row, text) in queued.text.split('\n').enumerate() {
+        for (row, text) in entry.text.split('\n').enumerate() {
             let mut text = text.to_string();
-            if row == 0 && !queued.images.is_empty() {
-                text = format!("{text}  🖼×{}", queued.images.len());
+            if row == 0 && entry.images > 0 {
+                text = format!("{text}  🖼×{}", entry.images);
             }
             let gutter = match (row, cursor) {
                 (0, true) => "❯ ",
@@ -607,10 +609,19 @@ fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
             Span::styled(format!("{} ", app.spinner()), theme::busy()),
             Span::styled("运行中 · Ctrl+C 取消", theme::busy()),
         ];
-        // 排队消息数（ADR-0012）：运行中 Enter 入队的可见反馈
-        if app.queue_len() > 0 {
+        // 排队消息数（ADR-0012/0013）：运行中 Enter 转向 / Alt+Enter 排队
+        // 的可见反馈，steering 与 follow-up 分列
+        let (steering, follow_up) = app.queue_lens();
+        let mut parts = Vec::new();
+        if steering > 0 {
+            parts.push(format!("{steering} 条转向"));
+        }
+        if follow_up > 0 {
+            parts.push(format!("{follow_up} 条排队"));
+        }
+        if !parts.is_empty() {
             spans.push(Span::styled(
-                format!(" · {} 条排队（Esc→Q 编辑）", app.queue_len()),
+                format!(" · {}（Esc→Q 编辑）", parts.join(" · ")),
                 theme::busy(),
             ));
         }
@@ -1013,18 +1024,19 @@ mod tests {
         assert!(compact.contains(app.spinner()), "{compact}");
     }
 
-    /// 队列区渲染（ADR-0012）：排队消息显示在输入框草稿上方，运行中标题
-    /// 带排队条数；QUEUE 模式标题切换、游标条目以 `❯` gutter 标出。
+    /// 队列区渲染（ADR-0012/0013）：双队列（steering + follow-up）显示在
+    /// 输入框草稿上方，运行中标题分列条数；QUEUE 模式标题切换、游标
+    /// 条目以 `❯` gutter 标出。
     #[test]
     fn renders_queue_area_and_queue_mode_title() {
         use super::super::app::Key;
 
         let mut app = App::new("test-model".to_string(), None, 200_000);
         app.handle_event(&AgentEvent::AgentStart);
-        app.paste_text("第一条排队");
+        app.paste_text("第一条转向");
         app.press(Key::Enter);
         app.paste_text("第二条排队");
-        app.press(Key::Enter);
+        app.press(Key::AltEnter);
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -1036,9 +1048,10 @@ mod tests {
             .flat_map(|cell| cell.symbol().chars())
             .filter(|c| !c.is_whitespace())
             .collect();
-        // 运行中标题带排队条数；队列区条目以 `»` gutter 标出
-        assert!(compact.contains("2条排队"), "{compact}");
-        assert!(compact.contains("»第一条排队"), "{compact}");
+        // 运行中标题分列 steering / follow-up 条数；条目以 `»` gutter 标出
+        assert!(compact.contains("1条转向"), "{compact}");
+        assert!(compact.contains("1条排队"), "{compact}");
+        assert!(compact.contains("»第一条转向"), "{compact}");
         assert!(compact.contains("»第二条排队"), "{compact}");
 
         // 异常结束后空闲：标题提示队列暂停与恢复方式
@@ -1068,7 +1081,7 @@ mod tests {
             .collect();
         assert!(compact.contains("QUEUE"), "{compact}");
         assert!(compact.contains("消息队列2条"), "{compact}");
-        assert!(compact.contains("❯第一条排队"), "{compact}");
+        assert!(compact.contains("❯第一条转向"), "{compact}");
         assert!(compact.contains("»第二条排队"), "{compact}");
     }
 

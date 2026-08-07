@@ -14,8 +14,11 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 - **多 provider**：Anthropic Messages 与 OpenAI Completions 兼容端点（DeepSeek、各类网关代理等），
   模型规格分层解析（配置 > [models.dev](https://models.dev) > 中性兜底）
 - **双运行模式**：ratatui 全屏交互 TUI（vim-like 模式化交互）+ 非交互 print 模式（管道可用）
-- **排队输入**：运行中 `Enter` 把消息排入 follow-up 队列，本轮正常结束后按序自动发送；
-  oil.nvim 式 QUEUE 模式编辑队列（就地编辑/删除/换位），设计见 [ADR-0012](docs/adr/0012-follow-up-queue-and-oil-style-queue-editing.md)
+- **排队输入**：运行中 `Enter` 把消息排入 steering 转向队列（当前步骤完成后注入本轮运行），
+  `Alt+Enter` 排入 follow-up 队列（本轮正常结束后按序自动发送）；
+  oil.nvim 式 QUEUE 模式统一编辑双队列（就地编辑/删除/换位），设计见
+  [ADR-0012](docs/adr/0012-follow-up-queue-and-oil-style-queue-editing.md) 与
+  [ADR-0013](docs/adr/0013-steering-queue-and-dual-queue-editing.md)
 - **八件工具**：`read` / `write` / `edit` / `bash` / `grep` / `find` / `todo_read` / `todo_write`，
   schemars + serde 即校验，parallel 执行
 - **持久会话**：SQLite 树形存储，支持 resume（按 cwd 隔离）、会话分支浏览与创建、`sessions list`
@@ -111,7 +114,7 @@ nomic -p "..." --reasoning low
 
 | 模式 | 键位 | 说明 |
 | ---- | ---- | ---- |
-| INSERT | `Enter` / `Tab` | 发送消息（运行中则排队 follow-up）/ 补全 |
+| INSERT | `Enter` / `Alt+Enter` / `Tab` | 发送消息（运行中分别排入 steering 转向 / follow-up 队列）/ 补全 |
 | INSERT | `Esc` | 关弹层 / 进入 NORMAL（取消运行用 `Ctrl+C`） |
 | INSERT | `Ctrl+W` `Ctrl+U` `Ctrl+A/E` `Alt+B/F` | 删词 / 清行 / 行首行尾 / 词移动 |
 | NORMAL | `j` `k` `Ctrl+D/U` `gg` `G` | 滚动 / 半页 / 顶部 / 底部 |
@@ -151,8 +154,8 @@ nomic -p "..." --reasoning low
 | `/quit`（`/exit`） | 退出 TUI |
 
 运行中本地 slash 命令（`/help`、`/copy` 等）照常可用，不被工具调用阻塞。
-运行中输入的普通消息与模板调用会进入 follow-up 队列（见上「排队输入」），
-本轮正常结束后按序自动发送；会话命令（`/compact`、`/retry`、`/models` 等）
+运行中输入的普通消息与模板调用按 `Enter` / `Alt+Enter` 分别进入 steering /
+follow-up 队列（见上「排队输入」）；会话命令（`/compact`、`/retry`、`/models` 等）
 仍须等本轮结束。
 
 ### 会话恢复与分支

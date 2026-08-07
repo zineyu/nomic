@@ -24,7 +24,8 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 - **上下文工程**：AGENTS.md 向上发现注入、skills 系统、prompt templates、自动/手动上下文压缩
 - **图片输入**：`--image` 附件、`/image` 暂存、`Ctrl+V` 剪贴板图片粘贴
 - **内嵌编辑器**：INSERT 下 `Ctrl+G` 全屏打开内嵌编辑器（edtui，vim 键位）
-  编辑当前草稿（长文/多行 prompt），`Esc` 保存写回、`Ctrl+C` 放弃，不挂起 TUI
+  编辑当前草稿（长文/多行 prompt），`Esc` 保存写回、`Ctrl+C` 放弃，不挂起 TUI，
+  设计见 [ADR-0015](docs/adr/0015-embedded-draft-editor-edtui.md)
 - **工程化**：devenv 统一开发环境，`check` 一键执行与 CI 等价的全部检查，Nix flake 打包
 
 ## 目录

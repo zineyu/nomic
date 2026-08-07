@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted（follow-up 队列实现由 [ADR-0014](0014-unified-message-queue.md)
+并入统一消息队列；QUEUE 模式交互继续有效）
 
 ## Date
 

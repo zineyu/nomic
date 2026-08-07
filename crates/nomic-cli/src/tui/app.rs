@@ -354,6 +354,11 @@ fn help_text() -> String {
          i 就地编辑、dd 删除、J/K 换位、o 新增、Esc 返回）。运行被取消或失败时队列\n\
          暂停保留：空闲下按 Enter 把队首作为下一轮发送。",
     );
+    text.push_str(
+        "\n\n长文输入：INSERT 下按 Ctrl+G 挂起 TUI，用系统编辑器（$VISUAL / $EDITOR，\n\
+         缺省 vi）编辑当前草稿，保存退出后写回输入框；编辑器异常退出或内容为空时\n\
+         保留原草稿。",
+    );
     text
 }
 
@@ -542,6 +547,10 @@ pub(super) enum Effect {
     Retry,
     /// 取消当前运行（Ctrl+C）
     Cancel,
+    /// INSERT `Ctrl+G`：挂起 TUI，用 `$VISUAL`/`$EDITOR` 打开当前输入
+    /// 缓冲编辑，编辑器退出后由事件循环把结果写回
+    ///（[`App::apply_editor_result`]）；状态层不接触终端与文件系统
+    OpenEditor,
     /// `/resume`：列出历史 session 并打开选择器
     ListSessions,
     /// picker 确认：恢复选中的 session（加载历史 + 切换落库目标）
@@ -914,6 +923,9 @@ impl App {
                 self.should_quit = true;
             }
             Key::Esc => return self.insert_esc(),
+            // Ctrl+G：系统编辑器编辑当前草稿（长文/多行场景；写回由
+            // 事件循环执行，见 Effect::OpenEditor）
+            Key::Ctrl('g') => return vec![Effect::OpenEditor],
             Key::Tab => self.tab_complete(),
             Key::Enter => return self.press_enter(),
             other => self.apply_edit_key(other),
@@ -2103,6 +2115,22 @@ impl App {
         }
         self.input.insert_str(self.cursor, &text);
         self.cursor += text.len();
+        self.refresh_completion();
+    }
+
+    /// 外部编辑器写回（INSERT Ctrl+G，见 [`Effect::OpenEditor`]）：
+    /// 编辑器内容整体替换输入缓冲（编辑器是权威副本），`\r\n` 归一为
+    /// `\n`、去掉文件尾空白，光标移到末尾并重算补全；空白内容保留
+    /// 原草稿（保存空文件是常见误操作，不应清掉已有输入）。
+    pub(super) fn apply_editor_result(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let text = text.trim_end();
+        if text.is_empty() {
+            self.notice = Some("编辑器内容为空，输入保留未变".to_string());
+            return;
+        }
+        self.input = text.to_string();
+        self.cursor = self.input.len();
         self.refresh_completion();
     }
 
@@ -3980,6 +4008,30 @@ mod tests {
         assert!(images.is_empty());
         assert_eq!(app.queue_len(), 0);
         assert!(app.drain_queue().is_none());
+    }
+
+    /// INSERT `Ctrl+G`：请求外部编辑器（Effect::OpenEditor）；写回
+    /// 整体替换输入缓冲，光标移到末尾，\r\n 归一、尾部空白去除。
+    #[test]
+    fn ctrl_g_opens_editor_and_result_replaces_input() {
+        let mut app = app();
+        app.paste_text("草稿");
+        let effects = app.press(Key::Ctrl('g'));
+        assert!(matches!(&effects[..], [Effect::OpenEditor]));
+
+        app.apply_editor_result("第一行\r\n第二行\n\n");
+        assert_eq!(app.input(), "第一行\n第二行");
+        assert_eq!(app.cursor, app.input().len());
+    }
+
+    /// 编辑器写回空白内容：保留原草稿并提示（保存空文件是常见误操作）。
+    #[test]
+    fn editor_empty_result_keeps_draft() {
+        let mut app = app();
+        app.paste_text("未发草稿");
+        app.apply_editor_result("  \n\n");
+        assert_eq!(app.input(), "未发草稿");
+        assert!(app.notice().is_some_and(|n| n.contains("为空")));
     }
 
     /// 运行中：模板调用展开后同样入队，不直接提交。

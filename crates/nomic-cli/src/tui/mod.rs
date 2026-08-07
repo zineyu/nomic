@@ -53,6 +53,9 @@ use app::{App, Effect, Key, Mode, PickerRow, SkillEntry};
 use crate::bootstrap::{ModelChoice, ModelResolver, ModelSelection};
 use crate::{Cli, bootstrap};
 
+/// 事件循环持有的终端类型（draw 与外部编辑器后的全量重绘共用）。
+type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
+
 /// 提交给 agent driver 的任务。
 enum DriverJob {
     /// 运行一轮 prompt（附图片附件与本轮取消令牌）
@@ -216,7 +219,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
             &mut done_rx,
         )
         .await;
-        if handle_wake(wake, &mut app, &mut driver).await || app.should_quit() {
+        if handle_wake(wake, &mut app, &mut driver, &mut terminal).await || app.should_quit() {
             break;
         }
         // QUEUE 的就地编辑子状态不改变模式字段，同样触发形状切换
@@ -406,7 +409,12 @@ enum Wake {
 }
 
 /// 处理一次唤醒；返回 `true` 表示终端事件流关闭、退出循环。
-async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
+async fn handle_wake(
+    wake: Wake,
+    app: &mut App,
+    driver: &mut Driver,
+    terminal: &mut TuiTerminal,
+) -> bool {
     match wake {
         Wake::Key(key) => {
             // Ctrl+V 粘贴需异步读剪贴板，先于语义映射拦截
@@ -417,7 +425,7 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
                 paste_clipboard(app).await;
             } else if let Some(key) = map_key(key) {
                 for effect in app.press(key) {
-                    execute_effect(app, driver, effect).await;
+                    execute_effect(app, driver, terminal, effect).await;
                 }
             }
         }
@@ -444,7 +452,7 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
         Wake::AgentDone(done) => match done {
             DriverDone::Prompt(result) => {
                 driver.current_cancel = None;
-                handle_prompt_done(app, driver, result).await;
+                handle_prompt_done(app, driver, terminal, result).await;
             }
             DriverDone::Compact(result) => {
                 driver.current_cancel = None;
@@ -492,7 +500,12 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
 /// goal 开启、run 正常结束且仍有未完成 todo 时自动以 user 消息追问
 ///（连续次数有上限，防模型反复不收尾时失控循环）；其余情况回到空闲态。
 /// 追问计数在用户提交新 prompt、run 异常结束或清单全部完成时清零。
-async fn handle_prompt_done(app: &mut App, driver: &mut Driver, result: Result<PromptEnd, String>) {
+async fn handle_prompt_done(
+    app: &mut App,
+    driver: &mut Driver,
+    terminal: &mut TuiTerminal,
+    result: Result<PromptEnd, String>,
+) {
     let end = match result {
         Ok(end) => end,
         Err(error) => {
@@ -507,7 +520,7 @@ async fn handle_prompt_done(app: &mut App, driver: &mut Driver, result: Result<P
             app.finish_run(None);
             // QUEUE 模式打开时 drain 冻结（返回 None）：退出 QUEUE 时恢复
             if let Some(effect) = app.drain_queue() {
-                execute_effect(app, driver, effect).await;
+                execute_effect(app, driver, terminal, effect).await;
             }
         } else {
             app.finish_run(Some(format!(
@@ -664,8 +677,13 @@ const fn map_key(key: KeyEvent) -> Option<Key> {
 }
 
 /// 执行 [`App::press`] 返回的语义效果：driver job、取消令牌、session 库、
-/// skill resolver、图片加载等外部资源在此接线。
-async fn execute_effect(app: &mut App, driver: &mut Driver, effect: Effect) {
+/// skill resolver、图片加载、外部编辑器等外部资源在此接线。
+async fn execute_effect(
+    app: &mut App,
+    driver: &mut Driver,
+    terminal: &mut TuiTerminal,
+    effect: Effect,
+) {
     match effect {
         Effect::Prompt { text, images } => {
             // 用户主动提交：重置 goal 模式连续追问计数
@@ -707,6 +725,7 @@ async fn execute_effect(app: &mut App, driver: &mut Driver, effect: Effect) {
                 token.cancel();
             }
         }
+        Effect::OpenEditor => edit_input_in_editor(app, terminal).await,
         Effect::ListSessions => list_sessions(app, driver).await,
         Effect::Resume(id) => {
             resume_session(app, driver, id).await;
@@ -1422,6 +1441,76 @@ async fn paste_clipboard(app: &mut App) {
     }
 }
 
+/// INSERT `Ctrl+G`：挂起 TUI，用系统编辑器编辑当前输入缓冲，退出后
+/// 恢复终端并把结果写回（写回语义见 [`App::apply_editor_result`]）。
+///
+/// 编辑器运行期间事件循环挂起是本意的同步语义：tty 已交给编辑器，
+/// TUI 不应重绘；crossterm 的 EventStream 后台线程只 poll 就绪不读
+/// 字节（0.29 起 read 发生在消费侧 poll_next），不轮询就不会与编辑器
+/// 争抢 stdin，编辑器里的按键不会漏回 TUI。agent 运行不受影响
+///（driver 是独立任务），期间到的事件在 channel 里积压，恢复后照常处理。
+async fn edit_input_in_editor(app: &mut App, terminal: &mut TuiTerminal) {
+    let initial = app.input().to_string();
+    leave_tui_terminal();
+    // spawn_blocking 与剪贴板同一口径：编辑器可能运行很久，不占 runtime worker
+    let outcome = tokio::task::spawn_blocking(move || run_external_editor(&initial)).await;
+    // 恢复失败也只是渲染异常，编辑结果照常写回
+    if let Err(error) = enter_tui_terminal() {
+        app.warn(format!("恢复终端失败：{error}"));
+    }
+    // 离开期间缓冲区已与屏幕脱节：清屏强制下一帧全量重绘
+    let _ = terminal.clear();
+    // leave 时还原了用户惯用光标形状，按当前模式重新应用
+    set_cursor_style(block_cursor(app));
+    match outcome {
+        Ok(Ok(text)) => app.apply_editor_result(&text),
+        Ok(Err(error)) => app.warn(format!("{error:#}")),
+        Err(join) => app.warn(format!("打开编辑器失败：{join}")),
+    }
+}
+
+/// 在临时文件上运行系统编辑器，返回编辑后的内容。
+///
+/// 编辑器解析：`$VISUAL` → `$EDITOR` → `vi`（与 git 同一口径）；命令
+/// 经 `sh -c` 执行以支持带参数形式（如 `code --wait`）。退出码非 0
+///（如 vim `:cq`）视为放弃编辑：报错且调用方保留原草稿。临时文件
+/// 带 `.md` 后缀让编辑器启用 markdown 高亮，随 [`tempfile::NamedTempFile`]
+///  drop 自动删除。
+fn run_external_editor(initial: &str) -> Result<String> {
+    use std::io::Write as _;
+
+    let mut file = tempfile::Builder::new()
+        .prefix("nomic-prompt-")
+        .suffix(".md")
+        .tempfile()
+        .context("创建临时文件失败")?;
+    file.write_all(initial.as_bytes())
+        .context("写入临时文件失败")?;
+    file.flush().context("flush 临时文件失败")?;
+    let path = file.path().to_path_buf();
+
+    let editor = ["VISUAL", "EDITOR"]
+        .iter()
+        .filter_map(|var| std::env::var(var).ok())
+        .find(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "vi".to_string());
+    // 编辑器命令交 sh 解析（与 git 的 GIT_EDITOR 口径一致），支持
+    // "code --wait" 等带参数形式；`$@` 展开为临时文件路径
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} \"$@\""))
+        .arg(&editor)
+        .arg(&path)
+        .status()
+        .with_context(|| format!("启动编辑器 {editor:?} 失败"))?;
+    anyhow::ensure!(
+        status.success(),
+        "编辑器 {editor:?} 异常退出（{status}），输入未变"
+    );
+
+    std::fs::read_to_string(&path).context("读取编辑结果失败")
+}
+
 /// `/copy`：把文本写入系统剪贴板。
 ///
 /// 与粘贴同理，写入可能阻塞在 X11/Wayland 往返上，放 `spawn_blocking` 中执行。
@@ -1547,47 +1636,61 @@ async fn persist_compaction(
     }
 }
 
-/// 终端状态守卫：进入 raw mode + alternate screen + 鼠标捕获；
-/// Drop（含 panic 路径经 hook）时恢复。
+/// 终端状态守卫：进入 TUI 终端态；Drop（含 panic 路径经 hook）时恢复。
 struct TerminalGuard;
 
 impl TerminalGuard {
     fn enter() -> io::Result<Self> {
-        enable_raw_mode()?;
-        // bracketed paste：终端粘贴/拖入的内容整体作为 Event::Paste 上报，
-        // 便于识别图片路径；不支持的终端忽略该序列，退化为逐键事件。
-        // 鼠标捕获用于滚轮滚动聊天区；代价是终端原生文本选择被劫持，
-        // 用户需按住 Shift 拖选（README 与欢迎页已说明）
-        execute!(
-            io::stdout(),
-            EnterAlternateScreen,
-            EnableMouseCapture,
-            EnableBracketedPaste
-        )?;
-        // 启用 kitty 键盘增强协议，让支持它的终端把 Ctrl+Enter 与 Enter
-        // 区分开上报；不支持的终端忽略该序列，Ctrl+Enter 退化为提交
-        if matches!(supports_keyboard_enhancement(), Ok(true)) {
-            execute!(
-                io::stdout(),
-                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-            )?;
-        }
+        enter_tui_terminal()?;
         install_panic_hook();
         Ok(Self)
     }
 
     fn restore() {
-        let _ = disable_raw_mode();
-        let _ = execute!(
-            io::stdout(),
-            LeaveAlternateScreen,
-            DisableMouseCapture,
-            DisableBracketedPaste,
-            PopKeyboardEnhancementFlags,
-            // 恢复用户惯用光标形状（NORMAL 的实心块不残留到 shell）
-            SetCursorStyle::DefaultUserShape
-        );
+        leave_tui_terminal();
     }
+}
+
+/// 进入 TUI 终端态：raw mode + alternate screen + 鼠标捕获 +
+/// bracketed paste + kitty 键盘增强。启动（[`TerminalGuard`]）与
+/// 外部编辑器退出后的恢复共用，保证两处口径一致。
+fn enter_tui_terminal() -> io::Result<()> {
+    enable_raw_mode()?;
+    // bracketed paste：终端粘贴/拖入的内容整体作为 Event::Paste 上报，
+    // 便于识别图片路径；不支持的终端忽略该序列，退化为逐键事件。
+    // 鼠标捕获用于滚轮滚动聊天区；代价是终端原生文本选择被劫持，
+    // 用户需按住 Shift 拖选（README 与欢迎页已说明）
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
+    // 启用 kitty 键盘增强协议，让支持它的终端把 Ctrl+Enter 与 Enter
+    // 区分开上报；不支持的终端忽略该序列，Ctrl+Enter 退化为提交
+    if matches!(supports_keyboard_enhancement(), Ok(true)) {
+        execute!(
+            io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
+    Ok(())
+}
+
+/// 离开 TUI 终端态，把 tty 还给 shell/外部编辑器：恢复 cooked 模式、
+/// 退出 alternate screen、关鼠标捕获与 bracketed paste、弹键盘增强、
+/// 还原用户惯用光标形状（NORMAL 的实心块不残留到 shell）。
+/// 尽力而为：单项失败不中断后续恢复步骤（退出路径不能卡在半恢复态）。
+fn leave_tui_terminal() {
+    let _ = disable_raw_mode();
+    let _ = execute!(
+        io::stdout(),
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        PopKeyboardEnhancementFlags,
+        SetCursorStyle::DefaultUserShape
+    );
 }
 
 impl Drop for TerminalGuard {

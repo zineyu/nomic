@@ -396,7 +396,7 @@ fn draw_welcome(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )),
         Line::default(),
         Line::from(Span::styled(
-            "Enter 发送（运行中则排队）· / 命令（Tab 补全，/help 查看全部）",
+            "Enter 发送（运行中则排队）· Ctrl+G 系统编辑器编辑 · / 命令（Tab 补全，/help 查看全部）",
             theme::dim(),
         )),
         Line::from(Span::styled(
@@ -702,7 +702,7 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Mode::Search => "输入即搜 · Enter 完成 · Esc 取消 ",
         Mode::Visual => "j/k 扩展 · y 复制 · Esc 取消 ",
         Mode::Picker => "输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ",
-        Mode::Insert => "/ 命令 · Tab 补全 · Esc 浏览 ",
+        Mode::Insert => "/ 命令 · Tab 补全 · ^G 编辑器 · Esc 浏览 ",
         Mode::Queue => {
             if app.queue_editing() {
                 "Enter/Esc 保存 · Shift+Enter 换行 "

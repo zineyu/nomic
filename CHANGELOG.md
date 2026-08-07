@@ -6,6 +6,25 @@
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，
 由 [git-cliff](https://git-cliff.org) 从 conventional commits 自动生成。
 
+## [0.1.2] - 2026-08-07
+
+### CI
+
+- Patch 版本 GitHub Action 自动发版，发布成功后回写 main
+- Set ci
+
+### 修复
+
+- **(release)** 规范化 changelog 文件尾
+
+### 其他
+
+- Remove target of macos-intel (#4)
+
+### 杂项
+
+- **(deps)** Bump actions/checkout from 5 to 7 (#1)
+- **(deps)** Bump cachix/cachix-action from 16 to 17 (#3)
 ## [0.1.1] - 2026-08-06
 
 ### 杂项

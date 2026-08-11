@@ -83,7 +83,7 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 clap = { version = "4.6", features = ["derive"] }
 
 # ── 图片附件 base64 编码（nomic-cli）────────────────────────────────────────
-base64 = "0.22"
+base64 = "0.23"
 
 # ── 剪贴板图片粘贴（nomic-cli TUI）──────────────────────────────────────────
 # wayland-data-control：Wayland 剪贴板优先于 X11（运行时 dlopen，无构建期依赖）
@@ -106,7 +106,7 @@ globset = "0.4"
 
 # ── 进程组管理（nomic-tools 的 bash 工具超时强杀）───────────────────────────
 # killpg 是 safe 封装（workspace 禁用 unsafe_code）；仅启用所需 feature
-nix = { version = "0.29", default-features = false, features = [
+nix = { version = "0.31", default-features = false, features = [
   "signal",
   "process",
 ] }

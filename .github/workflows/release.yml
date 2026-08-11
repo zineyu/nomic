@@ -138,7 +138,7 @@ jobs:
       - name: Generate release notes
         run: git cliff --current --strip all -o RELEASE_NOTES.md
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
 

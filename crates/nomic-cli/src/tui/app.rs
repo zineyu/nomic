@@ -14,6 +14,7 @@ use nomic_prompts::{PromptTemplate, PromptsError};
 use nomic_skills::{ActivatedSkill, SkillScope, parse_active_skill_tag};
 use unicode_width::UnicodeWidthStr;
 
+use super::editor::DraftEditor;
 use crate::print::brief_args;
 
 /// braille spinner 帧序列（运行中工具与流式指示共用）。
@@ -354,6 +355,11 @@ fn help_text() -> String {
          i 就地编辑、dd 删除、J/K 换位、o 新增、Esc 返回）。运行被取消或失败时队列\n\
          暂停保留：空闲下按 Enter 把队首作为下一轮发送。",
     );
+    text.push_str(
+        "\n\n长文输入：INSERT 下按 Ctrl+G 打开内嵌编辑器（vim 键位）编辑当前草稿，\n\
+         编辑器内 NORMAL 下按 Esc 保存写回输入框，Ctrl+C 放弃修改；内容为空时\n\
+         保留原草稿。",
+    );
     text
 }
 
@@ -491,6 +497,10 @@ pub(super) enum Mode {
     /// 队列编辑（ADR-0012，oil.nvim 式）：排队消息作为可编辑缓冲，
     /// 导航/删除/换位/就地编辑；打开期间冻结队列发送
     Queue,
+    /// 内嵌草稿编辑器打开（INSERT Ctrl+G，edtui），接管键位。
+    /// 派生态：由 `draft_editor.is_some()` 决定，不入 `App::mode` 字段；
+    /// 原始 KeyEvent 由事件循环直接转发，不经语义 Key 映射
+    Editor,
     /// 选择器打开（`/resume`、`/models`、`/tree`），接管键位。
     /// 派生态：由 `picker.is_some()` 决定，不入 `App::mode` 字段
     Picker,
@@ -605,6 +615,9 @@ pub(super) struct App {
     completion: Option<Completion>,
     /// 选择器（`/resume` / `/models` / `/tree`，打开时接管键位）
     picker: Option<Picker>,
+    /// 内嵌草稿编辑器（INSERT Ctrl+G 打开，edtui 薄封装见 [`super::editor`]）；
+    /// 打开时接管键位，原始 KeyEvent 由事件循环直接转发
+    draft_editor: Option<DraftEditor>,
     /// 暂存的图片附件（随下一条 prompt 发送）
     attachments: Vec<PendingImage>,
     /// 从底部向上滚动的行数（0 = 跟随最新内容）
@@ -663,6 +676,7 @@ impl App {
             cursor: 0,
             completion: None,
             picker: None,
+            draft_editor: None,
             attachments: Vec::new(),
             scroll: 0,
             scroll_max: 0,
@@ -878,11 +892,13 @@ impl App {
 
     // ── 按键（语义分发） ────────────────────────────────────────────────────
 
-    /// 当前交互模式（渲染光标/徽标与外部查询用）：picker 打开时派生为
-    /// Picker，否则为字段值（Insert/Normal）。
+    /// 当前交互模式（渲染光标/徽标与外部查询用）：picker/编辑器打开时
+    /// 派生为对应模式，否则为字段值（Insert/Normal）。
     pub(super) const fn mode(&self) -> Mode {
         if self.picker.is_some() {
             Mode::Picker
+        } else if self.draft_editor.is_some() {
+            Mode::Editor
         } else {
             self.mode
         }
@@ -901,6 +917,9 @@ impl App {
             Mode::Normal => self.press_normal(key),
             Mode::Insert => self.press_insert(key),
             Mode::Queue => self.press_queue(key),
+            // 编辑器按键由事件循环以原始 KeyEvent 直接转发（不经语义
+            // Key 映射，见 handle_wake），此处不会到达
+            Mode::Editor => Vec::new(),
         }
     }
 
@@ -914,6 +933,9 @@ impl App {
                 self.should_quit = true;
             }
             Key::Esc => return self.insert_esc(),
+            // Ctrl+G：内嵌编辑器编辑当前草稿（长文/多行场景；编辑器
+            // 持有草稿副本，NORMAL 下 Esc 保存写回，Ctrl+C 放弃）
+            Key::Ctrl('g') => self.open_draft_editor(),
             Key::Tab => self.tab_complete(),
             Key::Enter => return self.press_enter(),
             other => self.apply_edit_key(other),
@@ -2103,6 +2125,52 @@ impl App {
         }
         self.input.insert_str(self.cursor, &text);
         self.cursor += text.len();
+        self.refresh_completion();
+    }
+
+    /// INSERT `Ctrl+G`：打开内嵌草稿编辑器。编辑器持有草稿副本，
+    /// 保存才写回（[`Self::save_draft_editor`]），放弃则输入缓冲原样保留。
+    fn open_draft_editor(&mut self) {
+        self.dismiss_completion();
+        let editor = DraftEditor::new(&self.input);
+        self.draft_editor = Some(editor);
+    }
+
+    /// 内嵌编辑器（渲染与光标形状查询用）：打开时为 Some。
+    pub(super) const fn draft_editor(&self) -> Option<&DraftEditor> {
+        self.draft_editor.as_ref()
+    }
+
+    /// 内嵌编辑器可变引用：事件循环转发原始 KeyEvent 用。
+    pub(super) const fn draft_editor_mut(&mut self) -> Option<&mut DraftEditor> {
+        self.draft_editor.as_mut()
+    }
+
+    /// 编辑器保存关闭（编辑器内 NORMAL 下 Esc）：写回后返回 INSERT。
+    pub(super) fn save_draft_editor(&mut self, text: &str) {
+        self.draft_editor = None;
+        self.apply_editor_result(text);
+    }
+
+    /// 编辑器放弃关闭（编辑器内 Ctrl+C）：输入缓冲不动，返回 INSERT。
+    pub(super) fn cancel_draft_editor(&mut self) {
+        self.draft_editor = None;
+        self.notice = Some("已放弃编辑器修改".to_string());
+    }
+
+    /// 编辑器写回（INSERT Ctrl+G 内嵌编辑器保存，见 [`Self::open_draft_editor`]）：
+    /// 编辑器内容整体替换输入缓冲（编辑器是权威副本），`\r\n` 归一为
+    /// `\n`、去掉文件尾空白，光标移到末尾并重算补全；空白内容保留
+    /// 原草稿（保存空文件是常见误操作，不应清掉已有输入）。
+    pub(super) fn apply_editor_result(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let text = text.trim_end();
+        if text.is_empty() {
+            self.notice = Some("编辑器内容为空，输入保留未变".to_string());
+            return;
+        }
+        self.input = text.to_string();
+        self.cursor = self.input.len();
         self.refresh_completion();
     }
 
@@ -3980,6 +4048,69 @@ mod tests {
         assert!(images.is_empty());
         assert_eq!(app.queue_len(), 0);
         assert!(app.drain_queue().is_none());
+    }
+
+    /// INSERT `Ctrl+G`：打开内嵌草稿编辑器（派生 Mode::Editor）；保存
+    /// 写回整体替换输入缓冲，光标移到末尾，\r\n 归一、尾部空白去除。
+    #[test]
+    fn ctrl_g_opens_editor_and_save_replaces_input() {
+        let mut app = app();
+        app.paste_text("草稿");
+        assert!(app.press(Key::Ctrl('g')).is_empty());
+        assert_eq!(app.mode(), Mode::Editor);
+        assert!(app.draft_editor().is_some());
+
+        app.save_draft_editor("第一行\r\n第二行\n\n");
+        assert_eq!(app.mode(), Mode::Insert);
+        assert_eq!(app.input(), "第一行\n第二行");
+        assert_eq!(app.cursor, app.input().len());
+    }
+
+    /// 编辑器放弃（Ctrl+C）：原草稿保留，返回 INSERT 并提示。
+    #[test]
+    fn cancel_editor_keeps_draft() {
+        let mut app = app();
+        app.paste_text("未发草稿");
+        app.press(Key::Ctrl('g'));
+        app.cancel_draft_editor();
+        assert_eq!(app.mode(), Mode::Insert);
+        assert_eq!(app.input(), "未发草稿");
+        assert!(app.notice().is_some_and(|n| n.contains("放弃")));
+    }
+
+    /// 编辑器内按键端到端：打开即 INSERT，输入追加到草稿末尾，
+    /// Esc 回 NORMAL 后再 Esc 保存写回。
+    #[test]
+    fn editor_keys_roundtrip() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = app();
+        app.paste_text("draft");
+        app.press(Key::Ctrl('g'));
+        let editor = app.draft_editor_mut().expect("editor open");
+        assert!(editor.is_insert());
+        editor.handle_key(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::NONE));
+        assert_eq!(
+            editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            crate::tui::editor::DraftAction::Continue
+        );
+        let crate::tui::editor::DraftAction::Save(text) =
+            editor.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        else {
+            panic!("expected Save")
+        };
+        app.save_draft_editor(&text);
+        assert_eq!(app.input(), "draft+");
+    }
+
+    /// 编辑器写回空白内容：保留原草稿并提示（保存空文件是常见误操作）。
+    #[test]
+    fn editor_empty_result_keeps_draft() {
+        let mut app = app();
+        app.paste_text("未发草稿");
+        app.apply_editor_result("  \n\n");
+        assert_eq!(app.input(), "未发草稿");
+        assert!(app.notice().is_some_and(|n| n.contains("为空")));
     }
 
     /// 运行中：模板调用展开后同样入队，不直接提交。

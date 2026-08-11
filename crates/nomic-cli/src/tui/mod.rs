@@ -4,6 +4,8 @@
 //! - [`app`]：纯状态层——对外为语义操作（按键 [`app::Key`] → [`app::Effect`]、
 //!   应用事件、滚动、会话/附件管理），编辑器/补全/picker/slash 分发是其内部实现，
 //!   脱离终端可测
+//! - [`editor`]：内嵌草稿编辑器（edtui 薄封装；INSERT `Ctrl+G` 打开，
+//!   保存/放弃协议与渲染、光标查询）
 //! - [`ui`]：纯渲染（聊天区 + 输入框 + 状态栏）
 //! - 本文件：终端生命周期、事件循环（`KeyEvent` → `Key` 映射、`Effect` 接线执行）、
 //!   agent driver 任务
@@ -16,7 +18,14 @@
 //! 状态栏/聊天区提示；意外错误（driver 任务 panic）经 JoinHandle 捕获后在
 //! 聊天区提示，TUI 保持存活供查看记录，而非静默退出。
 
+// App 持有 edtui EditorState（其剪贴板为 Rc<RefCell<dyn ClipboardTrait>>，
+// 非 Send，无法从外部替换），本模块所有持 App 跨 await 的 future 都非 Send。
+// 运行结构上安全：main 以 block_on 在主线程驱动整个 TUI，future 不会跨线程
+// 迁移；tokio::spawn 的任务（driver、剪贴板读写）均不接触 App。
+#![allow(clippy::future_not_send)]
+
 mod app;
+mod editor;
 mod markdown;
 mod theme;
 mod ui;
@@ -52,6 +61,9 @@ use app::{App, Effect, Key, Mode, PickerRow, SkillEntry};
 
 use crate::bootstrap::{ModelChoice, ModelResolver, ModelSelection};
 use crate::{Cli, bootstrap};
+
+/// 事件循环持有的终端类型（draw 与外部编辑器后的全量重绘共用）。
+type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
 /// 提交给 agent driver 的任务。
 enum DriverJob {
@@ -216,7 +228,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
             &mut done_rx,
         )
         .await;
-        if handle_wake(wake, &mut app, &mut driver).await || app.should_quit() {
+        if handle_wake(wake, &mut app, &mut driver, &mut terminal).await || app.should_quit() {
             break;
         }
         // QUEUE 的就地编辑子状态不改变模式字段，同样触发形状切换
@@ -230,11 +242,12 @@ pub async fn run(cli: &Cli) -> Result<()> {
 }
 
 /// 光标是否用实心块：NORMAL/VISUAL 与 QUEUE 导航子状态为实心块
-///（不可键入文本的浏览态），其余竖条。
-const fn block_cursor(app: &App) -> bool {
+///（不可键入文本的浏览态），其余竖条；编辑器内跟随 edtui 自身模式。
+fn block_cursor(app: &App) -> bool {
     match app.mode() {
         Mode::Normal | Mode::Visual => true,
         Mode::Queue => !app.queue_editing(),
+        Mode::Editor => app.draft_editor().is_some_and(|editor| !editor.is_insert()),
         Mode::Insert | Mode::Search | Mode::Picker => false,
     }
 }
@@ -406,18 +419,31 @@ enum Wake {
 }
 
 /// 处理一次唤醒；返回 `true` 表示终端事件流关闭、退出循环。
-async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
+async fn handle_wake(
+    wake: Wake,
+    app: &mut App,
+    driver: &mut Driver,
+    terminal: &mut TuiTerminal,
+) -> bool {
     match wake {
         Wake::Key(key) => {
+            if let Some(editor) = app.draft_editor_mut() {
+                // 编辑器打开时接管键位：原始 KeyEvent 直接转发（edtui 需要
+                // 完整按键信息，语义 Key 映射粒度不够）；保存/放弃写回状态层
+                match editor.handle_key(key) {
+                    editor::DraftAction::Continue => {}
+                    editor::DraftAction::Save(text) => app.save_draft_editor(&text),
+                    editor::DraftAction::Cancel => app.cancel_draft_editor(),
+                }
             // Ctrl+V 粘贴需异步读剪贴板，先于语义映射拦截
-            if matches!(
+            } else if matches!(
                 (key.code, key.modifiers),
                 (KeyCode::Char('v'), KeyModifiers::CONTROL)
             ) {
                 paste_clipboard(app).await;
             } else if let Some(key) = map_key(key) {
                 for effect in app.press(key) {
-                    execute_effect(app, driver, effect).await;
+                    execute_effect(app, driver, terminal, effect).await;
                 }
             }
         }
@@ -444,7 +470,7 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
         Wake::AgentDone(done) => match done {
             DriverDone::Prompt(result) => {
                 driver.current_cancel = None;
-                handle_prompt_done(app, driver, result).await;
+                handle_prompt_done(app, driver, terminal, result).await;
             }
             DriverDone::Compact(result) => {
                 driver.current_cancel = None;
@@ -492,7 +518,12 @@ async fn handle_wake(wake: Wake, app: &mut App, driver: &mut Driver) -> bool {
 /// goal 开启、run 正常结束且仍有未完成 todo 时自动以 user 消息追问
 ///（连续次数有上限，防模型反复不收尾时失控循环）；其余情况回到空闲态。
 /// 追问计数在用户提交新 prompt、run 异常结束或清单全部完成时清零。
-async fn handle_prompt_done(app: &mut App, driver: &mut Driver, result: Result<PromptEnd, String>) {
+async fn handle_prompt_done(
+    app: &mut App,
+    driver: &mut Driver,
+    terminal: &mut TuiTerminal,
+    result: Result<PromptEnd, String>,
+) {
     let end = match result {
         Ok(end) => end,
         Err(error) => {
@@ -507,7 +538,7 @@ async fn handle_prompt_done(app: &mut App, driver: &mut Driver, result: Result<P
             app.finish_run(None);
             // QUEUE 模式打开时 drain 冻结（返回 None）：退出 QUEUE 时恢复
             if let Some(effect) = app.drain_queue() {
-                execute_effect(app, driver, effect).await;
+                execute_effect(app, driver, terminal, effect).await;
             }
         } else {
             app.finish_run(Some(format!(
@@ -665,7 +696,12 @@ const fn map_key(key: KeyEvent) -> Option<Key> {
 
 /// 执行 [`App::press`] 返回的语义效果：driver job、取消令牌、session 库、
 /// skill resolver、图片加载等外部资源在此接线。
-async fn execute_effect(app: &mut App, driver: &mut Driver, effect: Effect) {
+async fn execute_effect(
+    app: &mut App,
+    driver: &mut Driver,
+    _terminal: &mut TuiTerminal,
+    effect: Effect,
+) {
     match effect {
         Effect::Prompt { text, images } => {
             // 用户主动提交：重置 goal 模式连续追问计数
@@ -1547,47 +1583,61 @@ async fn persist_compaction(
     }
 }
 
-/// 终端状态守卫：进入 raw mode + alternate screen + 鼠标捕获；
-/// Drop（含 panic 路径经 hook）时恢复。
+/// 终端状态守卫：进入 TUI 终端态；Drop（含 panic 路径经 hook）时恢复。
 struct TerminalGuard;
 
 impl TerminalGuard {
     fn enter() -> io::Result<Self> {
-        enable_raw_mode()?;
-        // bracketed paste：终端粘贴/拖入的内容整体作为 Event::Paste 上报，
-        // 便于识别图片路径；不支持的终端忽略该序列，退化为逐键事件。
-        // 鼠标捕获用于滚轮滚动聊天区；代价是终端原生文本选择被劫持，
-        // 用户需按住 Shift 拖选（README 与欢迎页已说明）
-        execute!(
-            io::stdout(),
-            EnterAlternateScreen,
-            EnableMouseCapture,
-            EnableBracketedPaste
-        )?;
-        // 启用 kitty 键盘增强协议，让支持它的终端把 Ctrl+Enter 与 Enter
-        // 区分开上报；不支持的终端忽略该序列，Ctrl+Enter 退化为提交
-        if matches!(supports_keyboard_enhancement(), Ok(true)) {
-            execute!(
-                io::stdout(),
-                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-            )?;
-        }
+        enter_tui_terminal()?;
         install_panic_hook();
         Ok(Self)
     }
 
     fn restore() {
-        let _ = disable_raw_mode();
-        let _ = execute!(
-            io::stdout(),
-            LeaveAlternateScreen,
-            DisableMouseCapture,
-            DisableBracketedPaste,
-            PopKeyboardEnhancementFlags,
-            // 恢复用户惯用光标形状（NORMAL 的实心块不残留到 shell）
-            SetCursorStyle::DefaultUserShape
-        );
+        leave_tui_terminal();
     }
+}
+
+/// 进入 TUI 终端态：raw mode + alternate screen + 鼠标捕获 +
+/// bracketed paste + kitty 键盘增强。启动（[`TerminalGuard`]）与
+/// 外部编辑器退出后的恢复共用，保证两处口径一致。
+fn enter_tui_terminal() -> io::Result<()> {
+    enable_raw_mode()?;
+    // bracketed paste：终端粘贴/拖入的内容整体作为 Event::Paste 上报，
+    // 便于识别图片路径；不支持的终端忽略该序列，退化为逐键事件。
+    // 鼠标捕获用于滚轮滚动聊天区；代价是终端原生文本选择被劫持，
+    // 用户需按住 Shift 拖选（README 与欢迎页已说明）
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
+    // 启用 kitty 键盘增强协议，让支持它的终端把 Ctrl+Enter 与 Enter
+    // 区分开上报；不支持的终端忽略该序列，Ctrl+Enter 退化为提交
+    if matches!(supports_keyboard_enhancement(), Ok(true)) {
+        execute!(
+            io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
+    Ok(())
+}
+
+/// 离开 TUI 终端态，把 tty 还给 shell/外部编辑器：恢复 cooked 模式、
+/// 退出 alternate screen、关鼠标捕获与 bracketed paste、弹键盘增强、
+/// 还原用户惯用光标形状（NORMAL 的实心块不残留到 shell）。
+/// 尽力而为：单项失败不中断后续恢复步骤（退出路径不能卡在半恢复态）。
+fn leave_tui_terminal() {
+    let _ = disable_raw_mode();
+    let _ = execute!(
+        io::stdout(),
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        PopKeyboardEnhancementFlags,
+        SetCursorStyle::DefaultUserShape
+    );
 }
 
 impl Drop for TerminalGuard {

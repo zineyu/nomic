@@ -35,6 +35,9 @@ pub async fn list() -> Result<()> {
 ///
 /// 选择器需要交互终端；非 TTY 场景（管道、脚本）报错并提示用 `--session <ID>`。
 /// 用户取消（Esc/q/Ctrl-C）时静默退出，不进入对话。
+// future 非 Send 的原因与安全性见 tui/mod.rs 的模块级说明（TUI 传播的
+// future_not_send；block_on 主线程驱动，不跨线程迁移）
+#[allow(clippy::future_not_send)]
 pub async fn resume(cli: &Cli) -> Result<()> {
     let store = SessionStore::open_default()
         .await

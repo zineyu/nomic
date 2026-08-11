@@ -74,6 +74,8 @@ tracing-appender = "0.2"
 
 # ── TUI（nomic-cli）─────────────────────────────────────────────────────────
 ratatui = "0.30"
+# 内嵌草稿编辑器（Ctrl+G）；裁掉默认特性（arboard/syntect/mouse），只要基础 vim 编辑
+edtui = { version = "0.11", default-features = false }
 unicode-width = "0.2"
 crossterm = { version = "0.29", features = ["event-stream"] }
 

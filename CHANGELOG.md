@@ -6,6 +6,36 @@
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，
 由 [git-cliff](https://git-cliff.org) 从 conventional commits 自动生成。
 
+## [0.1.3] - 2026-08-11
+
+### CI
+
+- Patch 版本 GitHub Action 自动发版，发布成功后回写 main
+- Set ci
+- **(release)** Patch 发版改为创建 PR 回写 main，不再直接推送 (#5)
+- **(release)** 统一为 PR 发版 + 合并后自动打 tag，Intel macOS 迁移 macos-15-intel (#6)
+
+### 修复
+
+- **(release)** 规范化 changelog 文件尾
+
+### 其他
+
+- Remove target of macos-intel (#4)
+
+### 新功能
+
+- **(tui)** Steering 与 follow-up 合并 (#11)
+- **(tui)** Vim like editor
+
+### 杂项
+
+- **(deps)** Bump actions/checkout from 5 to 7 (#1)
+- **(deps)** Bump cachix/cachix-action from 16 to 17 (#3)
+- **(deps)** Bump actions/upload-artifact from 4 to 7 (#7)
+- **(deps)** Bump softprops/action-gh-release from 2 to 3 (#8)
+- **(deps)** Bump actions/download-artifact from 4 to 8 (#9)
+- **(deps)** Bump the rust-dependencies group across 1 directory with 8 updates (#13)
 ## [0.1.1] - 2026-08-06
 
 ### 杂项

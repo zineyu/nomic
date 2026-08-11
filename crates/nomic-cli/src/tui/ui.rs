@@ -396,11 +396,11 @@ fn draw_welcome(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )),
         Line::default(),
         Line::from(Span::styled(
-            "Enter 发送 · / 命令（Tab 补全，/help 查看全部）",
+            "Enter 发送（运行中则排队）· / 命令（Tab 补全，/help 查看全部）",
             theme::dim(),
         )),
         Line::from(Span::styled(
-            "Esc 浏览：j/k 滚动 · ]m 跳消息 · / 搜索 · V 选择 · yy 复制 · i 返回",
+            "Esc 浏览：j/k 滚动 · ]m 跳消息 · / 搜索 · V 选择 · yy 复制 · Q 队列 · i 返回",
             theme::dim(),
         )),
         Line::from(Span::styled(
@@ -455,15 +455,27 @@ fn wrap_lines(lines: &[Line<'static>], width: u16) -> Vec<Line<'static>> {
     lines.iter().flat_map(|line| wrap_line(line, max)).collect()
 }
 
-/// 输入框内容区行数上限：高度随行数伸缩，超过后内部滚动。
-const MAX_INPUT_LINES: u16 = 5;
+/// 草稿区行数上限：高度随行数伸缩，超过后内部滚动。
+const MAX_DRAFT_LINES: u16 = 5;
 
-/// 输入框总高度（含上下边框）：附件行（可选）+ 1..=5 行内容 + 2 行边框。
+/// 输入框内容总行数上限（附件行 + 队列区 + 草稿区）：
+/// 队列区可见时（ADR-0012）允许比纯草稿更高的伸缩。
+const MAX_INPUT_LINES: u16 = 10;
+
+/// 输入框总高度（含上下边框）：附件行（可选）+ 队列区 + 草稿区 + 2 行边框。
+/// QUEUE 模式下草稿不单独渲染（就地编辑槽位的行即草稿内容）。
 fn input_height(app: &App) -> u16 {
-    app.line_count().min(MAX_INPUT_LINES) + 2 + u16::from(app.has_attachments())
+    let draft = if app.queue_mode_active() {
+        0
+    } else {
+        app.line_count().min(MAX_DRAFT_LINES)
+    };
+    let content = u16::from(app.has_attachments()) + app.queue_display_lines() + draft;
+    content.clamp(1, MAX_INPUT_LINES) + 2
 }
 
-/// 输入框（多行，高度随行数变化，最多 5 行）+ 光标定位。
+/// 输入框（多行，高度随行数变化）+ 光标定位。
+/// 内容顺序：附件行（可选）→ 队列区（排队消息，ADR-0012）→ 草稿行。
 fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let (title, border_style) = input_title(app);
     let mut border = Border::bordered()
@@ -484,24 +496,77 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     // SEARCH 下输入框复用为搜索框：显示搜索串而非草稿，光标在其末尾
     let searching = app.mode() == Mode::Search;
-    let text = if searching {
-        app.search_query()
-    } else {
-        app.input()
-    };
-    lines.extend(
-        text.split('\n')
-            .map(|text| Line::from(Span::raw(text.to_string()))),
-    );
+    // 队列区（oil.nvim 式缓冲，ADR-0014）：运行中入队的消息（当前
+    // 步骤完成后注入本轮）；QUEUE 导航下 gutter 标出游标条目，就地
+    // 编辑槽位的内容即草稿缓冲
+    let queue_cursor =
+        (app.queue_mode_active() && !app.queue_editing()).then(|| app.queue_cursor());
+    let editing_slot = app.queue_editing_slot();
+    for (index, entry) in app.queue_entries().iter().enumerate() {
+        if editing_slot == Some(index) {
+            for (row, text) in app.input().split('\n').enumerate() {
+                let gutter = if row == 0 { "❯ " } else { "  " };
+                lines.push(Line::from(vec![
+                    Span::styled(gutter, theme::accent()),
+                    Span::raw(text.to_string()),
+                ]));
+            }
+            continue;
+        }
+        let cursor = queue_cursor == Some(index);
+        let text_style = if cursor {
+            theme::accent()
+        } else {
+            theme::dim()
+        };
+        for (row, text) in entry.text.split('\n').enumerate() {
+            let mut text = text.to_string();
+            if row == 0 && entry.images > 0 {
+                text = format!("{text}  🖼×{}", entry.images);
+            }
+            let gutter = match (row, cursor) {
+                (0, true) => "❯ ",
+                (0, false) => "» ",
+                _ => "  ",
+            };
+            lines.push(Line::from(vec![
+                Span::styled(gutter, text_style),
+                Span::styled(text, text_style),
+            ]));
+        }
+    }
+    // 草稿行（QUEUE 模式下不单独渲染；SEARCH 显示搜索串）
+    if !app.queue_mode_active() {
+        let text = if searching {
+            app.search_query()
+        } else {
+            app.input()
+        };
+        lines.extend(
+            text.split('\n')
+                .map(|text| Line::from(Span::raw(text.to_string()))),
+        );
+    }
     // 行数超过可见高度时滚动到光标所在行
     let attachment_offset = u16::from(app.has_attachments());
+    let queue_offset = app.queue_display_lines();
     let (cursor_row, cursor_col) = if searching {
         (
-            0,
+            queue_offset,
             u16::try_from(UnicodeWidthStr::width(app.search_query())).unwrap_or(u16::MAX),
         )
+    } else if app.queue_mode_active() {
+        if app.queue_editing() {
+            // 就地编辑：槽位起始行 + 草稿缓冲内的光标行（gutter 宽 2 列）
+            let (row, col) = app.cursor_position();
+            (app.queue_cursor_row() + row, col.saturating_add(2))
+        } else {
+            // QUEUE 导航：光标停在游标条目行首（块光标即条目高亮）
+            (app.queue_cursor_row(), 0)
+        }
     } else {
-        app.cursor_position()
+        let (row, col) = app.cursor_position();
+        (queue_offset + row, col)
     };
     let cursor_row = cursor_row + attachment_offset;
     let visible = inner.height.max(1);
@@ -520,15 +585,39 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
 /// INSERT/NORMAL/VISUAL 等常驻模式的提示由状态栏徽标与右侧键位提示
 /// 承担（ADR-0011），输入框不再叠加，避免同一信息两处渲染。
 fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
+    // QUEUE 模式（ADR-0012）：队列缓冲标题；运行中叠加 spinner
+    if app.queue_mode_active() {
+        let mut spans = Vec::new();
+        if app.is_running() {
+            spans.push(Span::styled(format!("{} ", app.spinner()), theme::busy()));
+            spans.push(Span::styled("运行中 · ", theme::busy()));
+        }
+        let text = if app.queue_editing() {
+            "队列编辑 · Enter/Esc 保存 · Shift+Enter 换行".to_string()
+        } else {
+            format!(
+                "消息队列 {} 条 · i 编辑 · dd 删除 · J/K 换位 · o 新增 · Esc 返回",
+                app.queue_len()
+            )
+        };
+        spans.push(Span::styled(text, theme::accent()));
+        return (Some(Line::from(spans)), theme::accent());
+    }
     if app.is_running() {
-        (
-            Some(Line::from(vec![
-                Span::styled(format!("{} ", app.spinner()), theme::busy()),
-                Span::styled("运行中 · Ctrl+C 取消", theme::busy()),
-            ])),
-            theme::busy(),
-        )
-    } else if let Some(picker) = app.picker() {
+        let mut spans = vec![
+            Span::styled(format!("{} ", app.spinner()), theme::busy()),
+            Span::styled("运行中 · Ctrl+C 取消", theme::busy()),
+        ];
+        // 排队消息数（ADR-0014）：运行中 Enter 排队的可见反馈
+        if app.queue_len() > 0 {
+            spans.push(Span::styled(
+                format!(" · {} 条排队（Esc→Q 编辑）", app.queue_len()),
+                theme::busy(),
+            ));
+        }
+        return (Some(Line::from(spans)), theme::busy());
+    }
+    if let Some(picker) = app.picker() {
         let title = match picker.kind {
             PickerKind::Resume => "恢复 session · 输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
             PickerKind::Tree => "会话树 · 输入过滤 · ↑/↓ 选择 · Enter 创建分支 · Esc 取消",
@@ -553,6 +642,18 @@ fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
     } else if app.completion().is_some() {
         // 补全弹层自带标题；输入框只以 accent 边框表示补全中
         (None, theme::accent())
+    } else if app.queue_len() > 0 {
+        // 空闲 + 队列非空 = 异常结束后暂停的排队消息（ADR-0012）
+        (
+            Some(Line::from(Span::styled(
+                format!(
+                    "队列暂停 {} 条 · Enter 发送下一条 · Esc→Q 编辑",
+                    app.queue_len()
+                ),
+                theme::warn(),
+            ))),
+            theme::warn(),
+        )
     } else if app.mode() == Mode::Visual {
         (None, theme::dim())
     } else if app.mode() == Mode::Normal {
@@ -572,6 +673,7 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Mode::Normal => Span::styled(" NORMAL ", theme::normal_badge()),
         Mode::Search => Span::styled(" SEARCH ", theme::warn()),
         Mode::Visual => Span::styled(" VISUAL ", theme::visual_badge()),
+        Mode::Queue => Span::styled(" QUEUE ", theme::queue_badge()),
         Mode::Insert => Span::styled(" INSERT ", theme::accent()),
         Mode::Picker => Span::styled(" PICKER ", theme::accent()),
     };
@@ -601,6 +703,13 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Mode::Visual => "j/k 扩展 · y 复制 · Esc 取消 ",
         Mode::Picker => "输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ",
         Mode::Insert => "/ 命令 · Tab 补全 · Esc 浏览 ",
+        Mode::Queue => {
+            if app.queue_editing() {
+                "Enter/Esc 保存 · Shift+Enter 换行 "
+            } else {
+                "j/k 移动 · i 编辑 · dd 删除 · J/K 换位 · o 新增 "
+            }
+        }
     };
     right.push(Span::styled(hint, theme::dim()));
     let left_line = Line::from(left);
@@ -903,6 +1012,65 @@ mod tests {
         assert!(!compact.contains("生成中"), "{compact}");
         assert!(compact.contains("运行中"), "{compact}");
         assert!(compact.contains(app.spinner()), "{compact}");
+    }
+
+    /// 队列区渲染（ADR-0014）：排队消息显示在输入框草稿上方，运行中
+    /// 标题显示条数；QUEUE 模式标题切换、游标条目以 `❯` gutter 标出。
+    #[test]
+    fn renders_queue_area_and_queue_mode_title() {
+        use super::super::app::Key;
+
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        app.handle_event(&AgentEvent::AgentStart);
+        app.paste_text("第一条");
+        app.press(Key::Enter);
+        app.paste_text("第二条");
+        app.press(Key::Enter);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let compact: String = buffer
+            .content()
+            .iter()
+            .flat_map(|cell| cell.symbol().chars())
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        // 运行中标题显示排队条数；条目以 `»` gutter 标出
+        assert!(compact.contains("2条排队"), "{compact}");
+        assert!(compact.contains("»第一条"), "{compact}");
+        assert!(compact.contains("»第二条"), "{compact}");
+
+        // 异常结束后空闲：标题提示队列暂停与恢复方式
+        app.finish_run(Some("已取消".to_string()));
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let compact: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .flat_map(|cell| cell.symbol().chars())
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(compact.contains("队列暂停2条"), "{compact}");
+
+        // QUEUE 模式：徽标、标题与游标条目 gutter（❯）
+        app.press(Key::Esc);
+        app.press(Key::Char('Q'));
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let compact: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .flat_map(|cell| cell.symbol().chars())
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(compact.contains("QUEUE"), "{compact}");
+        assert!(compact.contains("消息队列2条"), "{compact}");
+        assert!(compact.contains("❯第一条"), "{compact}");
+        assert!(compact.contains("»第二条"), "{compact}");
     }
 
     /// 工具条目树形渲染：参数用语义摘要，多行结果首行 `⎿`、后续行对齐。

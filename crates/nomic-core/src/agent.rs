@@ -6,8 +6,9 @@
 //! - parallel/sequential 工具执行；任何工具声明 `Sequential` 则整批串行
 //! - 工具错误回喂模型而非中断 loop
 //!
-//! M1 裁剪（事件枚举预留扩展空间）：steering/follow-up 队列、
+//! M1 裁剪（事件枚举预留扩展空间）：follow-up 队列、
 //! `prepareNextTurn`、`shouldStopAfterTurn`。
+//! 统一消息队列（运行中 turn 边界注入，ADR-0014）已实现，见 [`crate::SteeringQueue`]。
 
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ use crate::compaction::{
     estimate_context_tokens, should_compact,
 };
 use crate::hooks::{AfterToolCall, AgentHooks, BeforeToolCall, ToolCallDecision};
+use crate::steering::{SteeringMessage, SteeringQueue};
 use crate::tool::{DynTool, ExecutionMode, ToolResult, ToolUpdate};
 
 /// agent 生命周期事件。
@@ -142,6 +144,7 @@ pub struct Agent {
     messages: Vec<Message>,
     tools: Vec<DynTool>,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
+    steering: SteeringQueue,
 }
 
 impl std::fmt::Debug for Agent {
@@ -161,6 +164,26 @@ struct FinalizedToolCall {
     is_error: bool,
 }
 
+/// 构建 user 消息：有图片附件时为内容块列表（图片块在前、文本块在后，
+/// 与 Anthropic 官方建议的排序一致）；空附件为纯文本。prompt 提交与
+/// steering 注入共用同一口径。
+fn user_message(text: &str, images: &[ImageContent]) -> Message {
+    let content = if images.is_empty() {
+        UserMessageContent::Text(text.to_string())
+    } else {
+        let mut blocks: Vec<UserContent> = images.iter().cloned().map(UserContent::Image).collect();
+        blocks.push(UserContent::Text(TextContent {
+            text: text.to_string(),
+            text_signature: None,
+        }));
+        UserMessageContent::Blocks(blocks)
+    };
+    Message::User(UserMessage {
+        content,
+        timestamp: now_millis(),
+    })
+}
+
 impl Agent {
     /// 创建 agent builder（typestate）：`model` / `provider` / `system_prompt`
     /// 为编译期强制必填项，其余创建项带默认值，见 [`crate::AgentBuilder`]。
@@ -174,6 +197,7 @@ impl Agent {
         tools: Vec<DynTool>,
         system_prompt: String,
         messages: Vec<Message>,
+        steering: SteeringQueue,
     ) -> (Self, mpsc::UnboundedReceiver<AgentEvent>) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         (
@@ -183,9 +207,20 @@ impl Agent {
                 messages,
                 tools,
                 event_tx,
+                steering,
             },
             event_rx,
         )
+    }
+
+    /// 统一消息队列句柄（ADR-0014）。
+    ///
+    /// 交互端持克隆随时入队/编辑（运行期间 driver 串行 job 通道被
+    /// prompt 占用，无法中转）；agent 在每个 turn 边界（当前 assistant
+    /// turn 的工具调用执行完后、下一次 LLM 调用前）弹出一条注入当前
+    /// run（one-at-a-time），队列未清空时 run 不结束。
+    pub fn steering_handle(&self) -> SteeringQueue {
+        self.steering.clone()
     }
 
     /// 当前消息历史。
@@ -345,21 +380,7 @@ impl Agent {
         cancel: CancellationToken,
     ) -> Result<Vec<Message>, AgentError> {
         let mut new_messages = Vec::new();
-        let content = if images.is_empty() {
-            UserMessageContent::Text(text.to_string())
-        } else {
-            let mut blocks: Vec<UserContent> =
-                images.iter().cloned().map(UserContent::Image).collect();
-            blocks.push(UserContent::Text(TextContent {
-                text: text.to_string(),
-                text_signature: None,
-            }));
-            UserMessageContent::Blocks(blocks)
-        };
-        let user = Message::User(UserMessage {
-            content,
-            timestamp: now_millis(),
-        });
+        let user = user_message(text, images);
         tracing::debug!(
             prompt_len = text.len(),
             images = images.len(),
@@ -517,11 +538,30 @@ impl Agent {
             if terminate || cancel.is_cancelled() {
                 return Ok(());
             }
+            // 统一队列注入（pi 式 one-at-a-time，ADR-0014）：turn 边界弹出一条
+            // 排队消息注入当前 run（QUEUE 编辑冻结期跳过）；队列未清空时
+            // run 不结束——模型无工具调用也注入续行，直至队列排空
+            if let Some(steered) = self.steering.pop_front() {
+                self.inject_steered(&steered, new_messages);
+                continue;
+            }
             // 只要执行过工具调用就继续下一 turn（与 pi 一致：不依赖 stop_reason）
             if tool_calls.is_empty() {
                 return Ok(());
             }
         }
+    }
+
+    /// 注入一条 steering 消息：作为 user 消息进入历史与本次新增，发出
+    /// `MessageStart`/`MessageEnd` 事件（交互端渲染与 session 落库经
+    /// 既有事件管线自动生效，与 [`Self::inject_user_message`] 同一口径）。
+    fn inject_steered(&mut self, steered: &SteeringMessage, new_messages: &mut Vec<Message>) {
+        let user = user_message(&steered.text, &steered.images);
+        tracing::debug!(text_len = steered.text.len(), "steering message injected");
+        self.emit(AgentEvent::MessageStart(Box::new(user.clone())));
+        self.messages.push(user.clone());
+        new_messages.push(user.clone());
+        self.emit(AgentEvent::MessageEnd(Box::new(user)));
     }
 
     /// 将一批已决工具调用落为 toolResult 消息（历史 + 本次新增），

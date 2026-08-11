@@ -9,6 +9,7 @@ mod agent;
 mod builder;
 mod compaction;
 mod hooks;
+mod steering;
 mod tool;
 
 pub use agent::{Agent, AgentError, AgentEvent};
@@ -20,6 +21,7 @@ pub use compaction::{
 pub use hooks::{
     AfterToolCall, AfterToolCallOverride, AgentHooks, BeforeToolCall, NoopHooks, ToolCallDecision,
 };
+pub use steering::{SteeringMessage, SteeringQueue};
 pub use tool::{
     AgentTool, DynTool, ExecutionMode, ToolError, ToolResult, ToolUpdate, ToolUpdateCallback,
 };

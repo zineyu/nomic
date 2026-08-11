@@ -7,7 +7,9 @@
 use nomic_ai::{
     AssistantContent, AssistantEvent, Message, StopReason, UserContent, UserMessageContent,
 };
-use nomic_core::{AgentEvent, estimate_context_tokens, usage_context_tokens};
+use nomic_core::{
+    AgentEvent, SteeringMessage, SteeringQueue, estimate_context_tokens, usage_context_tokens,
+};
 use nomic_prompts::{PromptTemplate, PromptsError};
 use nomic_skills::{ActivatedSkill, SkillScope, parse_active_skill_tag};
 use unicode_width::UnicodeWidthStr;
@@ -346,6 +348,12 @@ fn help_text() -> String {
             command.name, command.summary, aliases
         );
     }
+    text.push_str(
+        "\n\n排队输入（统一消息队列）：运行中 Enter 把消息排队，当前步骤完成后注入\n\
+         本轮运行（未清空则持续续行）；Esc 进 NORMAL 后按 Q 打开队列编辑（j/k 移动、\n\
+         i 就地编辑、dd 删除、J/K 换位、o 新增、Esc 返回）。运行被取消或失败时队列\n\
+         暂停保留：空闲下按 Enter 把队首作为下一轮发送。",
+    );
     text
 }
 
@@ -450,6 +458,13 @@ struct PendingImage {
     image: nomic_ai::ImageContent,
 }
 
+/// 队列区渲染条目（统一队列视图，与 QUEUE 模式游标的条目空间一致）。
+#[derive(Debug)]
+pub(super) struct QueueEntry {
+    pub(super) text: String,
+    pub(super) images: usize,
+}
+
 /// PgUp/PgDn 的滚动步长。
 const PAGE_SCROLL: u16 = 10;
 
@@ -473,6 +488,9 @@ pub(super) enum Mode {
     Search,
     /// 可视选择：以消息为粒度选择范围，`y` 复制后回 NORMAL
     Visual,
+    /// 队列编辑（ADR-0012，oil.nvim 式）：排队消息作为可编辑缓冲，
+    /// 导航/删除/换位/就地编辑；打开期间冻结队列发送
+    Queue,
     /// 选择器打开（`/resume`、`/models`、`/tree`），接管键位。
     /// 派生态：由 `picker.is_some()` 决定，不入 `App::mode` 字段
     Picker,
@@ -511,7 +529,8 @@ pub(super) enum Key {
 /// 由事件循环接线执行。
 #[derive(Debug)]
 pub(super) enum Effect {
-    /// 提交一轮 prompt（`running` 已置位，避免提交空窗期重复提交）
+    /// 提交一轮 prompt（`running` 已置位，避免提交空窗期重复提交）；
+    /// 来源：用户提交、模板展开、队列 drain（ADR-0012）
     Prompt {
         text: String,
         images: Vec<nomic_ai::ImageContent>,
@@ -615,14 +634,21 @@ pub(super) struct App {
     /// goal 模式（默认关闭，`/goal` 开关）：开启后 react loop 停止且
     /// todo 未全部完成时，由事件循环自动以 user 消息追问
     goal_mode: bool,
+    /// 统一消息队列（ADR-0014）：运行中 Enter 入队，当前 turn 的工具
+    /// 调用执行完后由 core 在 turn 边界注入本轮运行；run 异常结束时
+    /// 保留，恢复后弹出队首作为下一轮 prompt。与 agent 共享同一份
+    /// 队列（启动时经 [`Self::steering_handle`] 传给 builder），QUEUE
+    /// 模式打开期间冻结注入
+    steering: SteeringQueue,
+    /// QUEUE 模式的条目游标（队列下标）
+    queue_cursor: usize,
+    /// QUEUE 模式的编辑子状态：正在就地编辑的队列槽位
+    ///（草稿缓冲即该槽位内容，Enter/Esc 保存回队列）
+    queue_editing: Option<usize>,
 }
 
 impl App {
-    pub(super) const fn new(
-        model_name: String,
-        session_id: Option<String>,
-        context_window: u64,
-    ) -> Self {
+    pub(super) fn new(model_name: String, session_id: Option<String>, context_window: u64) -> Self {
         Self {
             items: Vec::new(),
             mode: Mode::Insert,
@@ -652,7 +678,16 @@ impl App {
             templates: Vec::new(),
             thinking_collapsed: true,
             goal_mode: false,
+            steering: SteeringQueue::new(),
+            queue_cursor: 0,
+            queue_editing: None,
         }
+    }
+
+    /// 统一消息队列句柄：启动时传给 agent builder，与 core 共享同一份
+    /// 队列（运行中入队直推，不经 driver 串行 job 通道）。
+    pub(super) fn steering_handle(&self) -> SteeringQueue {
+        self.steering.clone()
     }
 
     /// 设置 `/skill:` 补全用的可用 skill 快照（启动时从 resolver catalog 取）。
@@ -865,6 +900,7 @@ impl App {
             Mode::Visual => self.press_visual(key),
             Mode::Normal => self.press_normal(key),
             Mode::Insert => self.press_insert(key),
+            Mode::Queue => self.press_queue(key),
         }
     }
 
@@ -873,88 +909,41 @@ impl App {
         match key {
             Key::Ctrl('c' | 'd') => {
                 if self.running {
-                    vec![Effect::Cancel]
-                } else {
-                    self.should_quit = true;
-                    Vec::new()
+                    return vec![Effect::Cancel];
                 }
+                self.should_quit = true;
             }
-            Key::Esc => self.insert_esc(),
-            Key::Ctrl('w') => {
-                self.delete_word_back();
-                Vec::new()
-            }
-            Key::Ctrl('u') => {
-                self.delete_to_line_start();
-                Vec::new()
-            }
-            Key::Ctrl('a') => {
-                self.cursor_line_home();
-                Vec::new()
-            }
-            Key::Ctrl('e') => {
-                self.cursor_line_end();
-                Vec::new()
-            }
-            Key::Alt('b') => {
-                self.cursor_word_left();
-                Vec::new()
-            }
-            Key::Alt('f') => {
-                self.cursor_word_right();
-                Vec::new()
-            }
-            Key::Tab => {
-                self.tab_complete();
-                Vec::new()
-            }
-            Key::Newline => {
-                self.insert_newline();
-                Vec::new()
-            }
-            Key::Enter => self.press_enter(),
-            Key::Backspace => {
-                self.backspace();
-                Vec::new()
-            }
-            Key::Left => {
-                self.cursor_left();
-                Vec::new()
-            }
-            Key::Right => {
-                self.cursor_right();
-                Vec::new()
-            }
-            Key::Home => {
-                self.cursor_home();
-                Vec::new()
-            }
-            Key::End => {
-                self.cursor_end();
-                Vec::new()
-            }
+            Key::Esc => return self.insert_esc(),
+            Key::Tab => self.tab_complete(),
+            Key::Enter => return self.press_enter(),
+            other => self.apply_edit_key(other),
+        }
+        Vec::new()
+    }
+
+    /// 缓冲编辑键（INSERT 与 QUEUE 就地编辑共用）：字符输入、删除、
+    /// 光标移动、换行与聊天区滚动；提交、补全与模式切换由调用方各自处理。
+    fn apply_edit_key(&mut self, key: Key) {
+        match key {
+            Key::Ctrl('w') => self.delete_word_back(),
+            Key::Ctrl('u') => self.delete_to_line_start(),
+            Key::Ctrl('a') => self.cursor_line_home(),
+            Key::Ctrl('e') => self.cursor_line_end(),
+            Key::Alt('b') => self.cursor_word_left(),
+            Key::Alt('f') => self.cursor_word_right(),
+            Key::Newline => self.insert_newline(),
+            Key::Backspace => self.backspace(),
+            Key::Left => self.cursor_left(),
+            Key::Right => self.cursor_right(),
+            Key::Home => self.cursor_home(),
+            Key::End => self.cursor_end(),
             // 补全弹层可见时 ↑/↓ 移动选中项，否则滚动聊天区
-            Key::Up => {
-                self.insert_vertical(-1);
-                Vec::new()
-            }
-            Key::Down => {
-                self.insert_vertical(1);
-                Vec::new()
-            }
-            Key::PageUp => {
-                self.scroll_up(PAGE_SCROLL);
-                Vec::new()
-            }
-            Key::PageDown => {
-                self.scroll_down(PAGE_SCROLL);
-                Vec::new()
-            }
-            Key::Char(c) => {
-                self.insert_char(c);
-                Vec::new()
-            }
-            Key::Ctrl(_) | Key::Alt(_) => Vec::new(),
+            Key::Up => self.insert_vertical(-1),
+            Key::Down => self.insert_vertical(1),
+            Key::PageUp => self.scroll_up(PAGE_SCROLL),
+            Key::PageDown => self.scroll_down(PAGE_SCROLL),
+            Key::Char(c) => self.insert_char(c),
+            _ => {}
         }
     }
 
@@ -1031,6 +1020,11 @@ impl App {
                 } else {
                     self.notice = Some("没有可选择的消息".to_string());
                 }
+                Vec::new()
+            }
+            // Q 进入 QUEUE 模式：oil.nvim 式队列编辑（ADR-0012）
+            Key::Char('Q') => {
+                self.enter_queue();
                 Vec::new()
             }
             // `/` 进入搜索（输入框复用为搜索框；保留上次查询可编辑）
@@ -1542,7 +1536,8 @@ impl App {
 
     /// Enter：补全弹层未精确匹配时先填入候选；否则取出输入，
     /// 按 slash 命令或普通 prompt 分发（运行中的口径见
-    /// [`Self::press_enter_running`]）。
+    /// [`Self::press_enter_running`]）。运行中 Enter = 排入统一消息
+    /// 队列（ADR-0014）。
     fn press_enter(&mut self) -> Vec<Effect> {
         if self.accept_completion_on_enter() {
             // 已填入补全候选；再次 Enter 提交
@@ -1554,6 +1549,9 @@ impl App {
         let Some(text) = self.take_input() else {
             if self.has_attachments() {
                 self.notice = Some("已附加图片，输入文本后 Enter 一起发送".to_string());
+            } else if let Some(effect) = self.drain_queue() {
+                // 空闲 + 空草稿 + 队列有暂停的排队消息：Enter 直接发送下一条
+                return vec![effect];
             }
             return Vec::new();
         };
@@ -1574,25 +1572,343 @@ impl App {
         }
     }
 
-    /// 运行中（含工具执行中）的 Enter：本地 slash 命令照常执行——
-    /// 它们不触碰 agent/driver 状态（[`SlashAction::is_local`]），
-    /// 长时间运行的工具调用不应阻塞它们；会话命令、prompt 与模板调用
-    /// 仍须等本轮结束（输入保留，结束后可再提交）。
+    /// 运行中（含工具执行中）的 Enter：本地 slash 命令照常
+    /// 执行——它们不触碰 agent/driver 状态（[`SlashAction::is_local`]），
+    /// 长时间运行的工具调用不应阻塞它们；普通输入与模板调用
+    /// **排队**——入统一消息队列（ADR-0014，当前 turn 的工具调用执行
+    /// 完后注入本轮运行）；Esc→NORMAL→Q 进 QUEUE 模式编辑队列。
+    /// 会话命令仍须等本轮结束（输入保留，结束后可再提交）。
     fn press_enter_running(&mut self) -> Vec<Effect> {
         let text = self.input.trim().to_string();
-        if !text.is_empty()
-            && let SlashParse::Known(action) = parse_slash(&text)
-            && action.is_local()
-        {
-            self.take_input();
-            self.notice = None;
-            return self.execute_slash(action);
+        if text.is_empty() {
+            if self.has_attachments() {
+                self.notice = Some("已附加图片，输入文本后 Enter 一起排队".to_string());
+            }
+            return Vec::new();
         }
-        self.notice = Some(
-            "运行中，等待本轮结束（/help、/copy、/thinking、/goal、/skill、/image、/quit 不受影响）"
-                .to_string(),
-        );
+        match parse_slash(&text) {
+            SlashParse::NotCommand => {
+                self.take_input();
+                self.enqueue(text)
+            }
+            SlashParse::Known(action) if action.is_local() => {
+                self.take_input();
+                self.notice = None;
+                self.execute_slash(action)
+            }
+            // 会话命令要经 driver 串行修改 agent 上下文，仍须等本轮结束；
+            // 输入保留为草稿，不排队（排队只承载发给模型的 prompt）
+            SlashParse::Known(_) => {
+                self.notice = Some(
+                    "运行中：会话命令（/compact、/retry、/models 等）须等本轮结束".to_string(),
+                );
+                Vec::new()
+            }
+            SlashParse::InvalidUsage(usage) => {
+                self.notice = Some(format!("参数形式不对，用法：{usage}"));
+                Vec::new()
+            }
+            SlashParse::Unknown(name) => {
+                match nomic_prompts::expand_invocation(&self.templates, &text) {
+                    Ok(Some(expanded)) => {
+                        self.take_input();
+                        self.enqueue(expanded)
+                    }
+                    Err(PromptsError::UnterminatedQuote { .. }) => {
+                        self.notice = Some("参数形式不对：引号未闭合".to_string());
+                        Vec::new()
+                    }
+                    _ => {
+                        self.notice = Some(format!("未知命令 /{name}，输入 /help 查看可用命令"));
+                        Vec::new()
+                    }
+                }
+            }
+        }
+    }
+
+    // ── 排队输入与 QUEUE 模式（ADR-0014）───────────────────────────
+
+    /// 入队（ADR-0014，统一消息队列）：随暂存附件一起入队，当前 turn
+    /// 的工具调用执行完后由 core 在 turn 边界注入本轮运行（run 异常
+    /// 结束时保留，恢复后作为下一轮 prompt）；Esc→NORMAL→Q 进 QUEUE
+    /// 模式可编辑（编辑期间冻结注入）。
+    fn enqueue(&mut self, text: String) -> Vec<Effect> {
+        let images = self.take_attachments();
+        self.steering.push(SteeringMessage { text, images });
+        self.notice = Some(format!(
+            "已排队（第 {} 条），当前步骤完成后注入本轮 · Esc→Q 编辑队列",
+            self.steering.len()
+        ));
         Vec::new()
+    }
+
+    /// 取出下一条待发消息（run 异常结束后恢复路径；正常结束的 run
+    /// 其队列已被 core 排空）：队列非空且 QUEUE 模式未打开时返回提交
+    /// 效果（`running` 已置位，与用户手动提交同一口径）；QUEUE 模式
+    /// 打开期间冻结发送，空队列返回 `None`。
+    pub(super) fn drain_queue(&mut self) -> Option<Effect> {
+        if self.mode == Mode::Queue {
+            return None;
+        }
+        let queued = self.steering.pop_front()?;
+        self.running = true;
+        self.notice = None;
+        Some(Effect::Prompt {
+            text: queued.text,
+            images: queued.images,
+        })
+    }
+
+    /// QUEUE 模式键位：导航子状态移动/删除/换位/新增，`i`/`Enter` 就地
+    /// 编辑；编辑子状态复用缓冲编辑键，Enter/Esc 保存回队列。
+    fn press_queue(&mut self, key: Key) -> Vec<Effect> {
+        if self.queue_editing.is_some() {
+            return self.press_queue_edit(key);
+        }
+        // 序列键第二键（gg 到队首、dd 删除）；不匹配照常分发
+        if let Some(pending) = self.pending_key.take()
+            && let Some(effects) = self.queue_sequence(pending, key)
+        {
+            return effects;
+        }
+        match key {
+            Key::Char('g') => self.pending_key = Some('g'),
+            Key::Char('d') => self.pending_key = Some('d'),
+            Key::Char('j') | Key::Down => self.queue_move(1),
+            Key::Char('k') | Key::Up => self.queue_move(-1),
+            Key::Char('G') => self.queue_cursor = self.queue_len().saturating_sub(1),
+            Key::Char('x') => self.queue_delete(),
+            Key::Char('J') => self.queue_swap(1),
+            Key::Char('K') => self.queue_swap(-1),
+            Key::Char('i' | 'a') | Key::Enter => self.queue_begin_edit(),
+            Key::Char('o') => self.queue_insert_slot(1),
+            Key::Char('O') => self.queue_insert_slot(0),
+            Key::Esc => return self.leave_queue(),
+            Key::Ctrl('c') => {
+                if self.running {
+                    return vec![Effect::Cancel];
+                }
+                self.should_quit = true;
+            }
+            Key::PageUp => self.scroll_up(PAGE_SCROLL),
+            Key::PageDown => self.scroll_down(PAGE_SCROLL),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// QUEUE 的序列键第二键：`gg` 到队首、`dd` 删除游标条目。
+    /// 返回 `Some` 表示已处理。
+    fn queue_sequence(&mut self, pending: char, key: Key) -> Option<Vec<Effect>> {
+        match (pending, key) {
+            ('g', Key::Char('g')) => self.queue_cursor = 0,
+            ('d', Key::Char('d')) => self.queue_delete(),
+            _ => return None,
+        }
+        Some(Vec::new())
+    }
+
+    /// QUEUE 编辑子状态键位：Enter/Esc 保存（vim 保存即应用），
+    /// 其余按键与 INSERT 的缓冲编辑一致（补全在 QUEUE 下不启用）。
+    fn press_queue_edit(&mut self, key: Key) -> Vec<Effect> {
+        match key {
+            Key::Enter | Key::Esc => self.queue_save_edit(),
+            Key::Ctrl('c') => {
+                if self.running {
+                    return vec![Effect::Cancel];
+                }
+                self.should_quit = true;
+            }
+            other => self.apply_edit_key(other),
+        }
+        Vec::new()
+    }
+
+    /// QUEUE `j`/`k`：移动条目游标（钳制不循环）。
+    fn queue_move(&mut self, delta: isize) {
+        if let Some(next) = step_row(self.queue_cursor, delta, self.queue_len()) {
+            self.queue_cursor = next;
+        }
+    }
+
+    /// QUEUE `dd`/`x`：删除游标条目（oil.nvim 删行语义）；队列清空时
+    /// 退出 QUEUE 回 NORMAL。
+    fn queue_delete(&mut self) {
+        if self.queue_len() == 0 {
+            return;
+        }
+        self.steering.remove(self.queue_cursor);
+        if self.queue_len() == 0 {
+            self.mode = Mode::Normal;
+            self.notice = Some("队列已清空".to_string());
+            return;
+        }
+        self.queue_cursor = self.queue_cursor.min(self.queue_len() - 1);
+    }
+
+    /// QUEUE `J`/`K`：游标条目与下/上一条换位（vim `:move` 语义，
+    /// 到底/顶不动）。
+    fn queue_swap(&mut self, delta: isize) {
+        let Some(next) = step_row(self.queue_cursor, delta, self.queue_len()) else {
+            return;
+        };
+        self.steering.swap(self.queue_cursor, next);
+        self.queue_cursor = next;
+    }
+
+    /// QUEUE `i`/`a`/Enter：开始就地编辑游标槽位（草稿缓冲即槽位内容，
+    /// 光标置于末尾；附件保留在槽位上，不随文本进缓冲）。
+    fn queue_begin_edit(&mut self) {
+        let Some(text) = self
+            .steering
+            .snapshot()
+            .get(self.queue_cursor)
+            .map(|m| m.text.clone())
+        else {
+            return;
+        };
+        self.input = text;
+        self.cursor = self.input.len();
+        self.completion = None;
+        self.queue_editing = Some(self.queue_cursor);
+    }
+
+    /// QUEUE `o`/`O`：在游标下/上方插入空槽位并就地编辑（保存空文本
+    /// 即撤销该槽位，与保存语义一致）。
+    fn queue_insert_slot(&mut self, offset: usize) {
+        let index = self.queue_cursor + offset;
+        self.steering.insert(
+            index,
+            SteeringMessage {
+                text: String::new(),
+                images: Vec::new(),
+            },
+        );
+        self.queue_cursor = index;
+        self.queue_begin_edit();
+    }
+
+    /// 保存就地编辑：写回槽位；空文本删除槽位（oil.nvim 空行忽略
+    /// 语义）。队列清空时退出 QUEUE 回 NORMAL。
+    fn queue_save_edit(&mut self) {
+        let Some(slot) = self.queue_editing.take() else {
+            return;
+        };
+        let text = self.input.trim().to_string();
+        self.input.clear();
+        self.cursor = 0;
+        if text.is_empty() {
+            self.steering.remove(slot);
+        } else {
+            self.steering.update_text(slot, text);
+        }
+        if self.queue_len() == 0 {
+            self.mode = Mode::Normal;
+            self.notice = Some("队列已清空".to_string());
+            return;
+        }
+        self.queue_cursor = slot.min(self.queue_len() - 1);
+    }
+
+    /// NORMAL `Q`：进入 QUEUE 模式（oil.nvim 式队列编辑）。队列为空
+    /// 或草稿非空时拒绝并提示；进入即冻结队列注入——用户手持缓冲
+    /// 编辑时 run 仍在推进，不冻结会让 core 在 turn 边界弹走条目
+    /// 导致游标下标漂移。
+    fn enter_queue(&mut self) {
+        if self.queue_len() == 0 {
+            self.notice = Some("队列为空：运行中 Enter 排队".to_string());
+            return;
+        }
+        if !self.input.is_empty() {
+            self.notice = Some("草稿非空：i 继续编辑，或清空后再进队列".to_string());
+            return;
+        }
+        self.mode = Mode::Queue;
+        self.steering.freeze();
+        self.pending_key = None;
+        self.queue_cursor = 0;
+        self.queue_editing = None;
+    }
+
+    /// QUEUE 导航子状态的 Esc：退出回 NORMAL，解冻队列注入；
+    /// QUEUE 打开期间冻结的发送在退出时恢复——空闲且队列非空即取出
+    /// 队首提交，运行中则由本轮结束后的自动 drain 继续。
+    fn leave_queue(&mut self) -> Vec<Effect> {
+        self.mode = Mode::Normal;
+        self.steering.unfreeze();
+        self.queue_editing = None;
+        self.pending_key = None;
+        if self.running {
+            return Vec::new();
+        }
+        self.drain_queue().into_iter().collect()
+    }
+
+    /// 排队消息总条数（运行中标题与暂停提示用）。
+    pub(super) fn queue_len(&self) -> usize {
+        self.steering.len()
+    }
+
+    /// QUEUE 模式是否打开（drain 冻结与渲染布局用）。
+    pub(super) fn queue_mode_active(&self) -> bool {
+        self.mode == Mode::Queue
+    }
+
+    /// QUEUE 是否处于编辑子状态（光标形状与状态栏提示用）。
+    pub(super) const fn queue_editing(&self) -> bool {
+        self.queue_editing.is_some()
+    }
+
+    /// QUEUE 条目游标（渲染高亮用；仅 QUEUE 模式下有意义）。
+    pub(super) const fn queue_cursor(&self) -> usize {
+        self.queue_cursor
+    }
+
+    /// 队列条目视图（输入框队列区渲染用），与 QUEUE 模式游标的
+    /// 条目空间一致。
+    pub(super) fn queue_entries(&self) -> Vec<QueueEntry> {
+        self.steering
+            .snapshot()
+            .into_iter()
+            .map(|m| QueueEntry {
+                text: m.text,
+                images: m.images.len(),
+            })
+            .collect()
+    }
+
+    /// 就地编辑的槽位下标（渲染时用草稿行替换该槽位内容）。
+    pub(super) const fn queue_editing_slot(&self) -> Option<usize> {
+        self.queue_editing
+    }
+
+    /// 输入框队列区展示行数：各条目逻辑行数之和
+    ///（就地编辑的槽位按草稿缓冲行数计）。
+    pub(super) fn queue_display_lines(&self) -> u16 {
+        let mut total = 0_u16;
+        for (index, entry) in self.queue_entries().iter().enumerate() {
+            let lines = if self.queue_editing == Some(index) {
+                self.line_count()
+            } else {
+                line_count_of(&entry.text)
+            };
+            total = total.saturating_add(lines);
+        }
+        total
+    }
+
+    /// QUEUE 游标条目的起始展示行（队列区内，不含附件行）：
+    /// 渲染光标定位用；就地编辑时另加草稿缓冲内的光标行。
+    pub(super) fn queue_cursor_row(&self) -> u16 {
+        let mut row = 0_u16;
+        for (index, entry) in self.queue_entries().iter().enumerate() {
+            if index == self.queue_cursor {
+                break;
+            }
+            row = row.saturating_add(line_count_of(&entry.text));
+        }
+        row
     }
 
     /// 未知 slash 命令：按 prompt template 调用尝试展开提交；未命中模板时
@@ -1713,8 +2029,10 @@ impl App {
 
     /// `/new`：清空聊天区开启新对话；session 切换由调用方随后经
     /// [`Self::set_session`] / [`Self::warn`] 回报。
+    /// 排队消息属于旧对话的后续意图，随上下文一起清空。
     pub(super) fn start_new_conversation(&mut self) {
         self.clear_items();
+        self.steering.clear();
         self.context_tokens = 0;
         self.push_system("已开启新对话，上下文已清空。");
     }
@@ -1725,16 +2043,20 @@ impl App {
     }
 
     /// `/resume`：以恢复的历史消息替换聊天区并切换 session。
+    /// 排队消息属于切换前对话的后续意图，随上下文一起清空。
     pub(super) fn restore_conversation(&mut self, messages: &[Message], session_id: String) {
         self.clear_items();
+        self.steering.clear();
         self.load_history(messages);
         self.session_id = Some(session_id);
     }
 
     /// `/tree` 选择器确认：以分支重放的消息替换聊天区（session 不变；
     /// 落库父指针切换由调用方随后完成）。
+    /// 排队消息属于切换前分支的后续意图，随上下文一起清空。
     pub(super) fn restore_branch(&mut self, messages: &[Message]) {
         self.clear_items();
+        self.steering.clear();
         self.load_history(messages);
     }
 
@@ -1757,8 +2079,7 @@ impl App {
 
     /// 输入的逻辑行数（空输入为 1），输入框高度据此伸缩。
     pub(super) fn line_count(&self) -> u16 {
-        let count = self.input.bytes().filter(|b| *b == b'\n').count() + 1;
-        u16::try_from(count).unwrap_or(u16::MAX)
+        line_count_of(&self.input)
     }
 
     fn insert_char(&mut self, c: char) {
@@ -1769,8 +2090,13 @@ impl App {
 
     /// 粘贴一段文本到光标处（可含换行；`\r\n` 统一为 `\n`），随后重算补全。
     pub(super) fn paste_text(&mut self, text: &str) {
-        // 粘贴的意图是编辑：NORMAL 下先回到 INSERT（草稿保留）
-        self.mode = Mode::Insert;
+        // 粘贴的意图是编辑：NORMAL 下先回到 INSERT（草稿保留）；
+        // QUEUE 导航下先进入就地编辑（粘贴即修改游标槽位）
+        match self.mode {
+            Mode::Queue if self.queue_editing.is_none() => self.queue_begin_edit(),
+            Mode::Queue => {}
+            _ => self.mode = Mode::Insert,
+        }
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         if text.is_empty() {
             return;
@@ -2004,7 +2330,12 @@ impl App {
 
     /// 按当前输入重算补全候选：仅在「以 `/` 开头、光标在末尾、命令名
     /// 未输入完整参数（无空白）」时弹出；`/skill:` 后切换为 skill 名候选。
+    /// QUEUE 就地编辑的是排队消息文本而非命令，补全不启用。
     fn refresh_completion(&mut self) {
+        if self.mode != Mode::Insert {
+            self.completion = None;
+            return;
+        }
         let Some(fragment) = self.slash_fragment().map(str::to_string) else {
             self.completion = None;
             return;
@@ -2400,6 +2731,12 @@ fn insert_block(blocks: &mut Vec<Block>, index: usize, block: Block) {
 fn step_row(index: usize, direction: isize, len: usize) -> Option<usize> {
     let next = index.checked_add_signed(direction)?;
     (next < len).then_some(next)
+}
+
+/// 文本的逻辑行数（空文本为 1）：草稿与队列条目共用的行数口径。
+fn line_count_of(text: &str) -> u16 {
+    let count = text.bytes().filter(|b| *b == b'\n').count() + 1;
+    u16::try_from(count).unwrap_or(u16::MAX)
 }
 
 /// 词字符判定（INSERT 词级移动/删除共用）：字母数字与下划线。
@@ -3608,15 +3945,318 @@ mod tests {
         );
     }
 
+    /// 运行中（ADR-0014）：普通输入 Enter 排入统一消息队列（当前
+    /// 步骤完成后注入本轮运行），暂存附件随入队消息一起带走。
     #[test]
-    fn enter_while_running_only_warns() {
+    fn enter_while_running_queues_prompt_with_attachments() {
         let mut app = app();
         app.handle_event(&AgentEvent::AgentStart);
+        app.stage_image("a.png".to_string(), image());
         app.paste_text("hi");
         assert!(app.press(Key::Enter).is_empty());
-        assert!(app.notice().is_some_and(|n| n.contains("运行中")));
-        // 输入保留，待运行结束后可再提交
-        assert_eq!(app.input(), "hi");
+        assert_eq!(app.input(), "");
+        assert_eq!(app.queue_len(), 1);
+        assert!(!app.has_attachments());
+        assert!(app.notice().is_some_and(|n| n.contains("已排队")));
+
+        // 再排一条，附件只随各自的消息走
+        app.paste_text("second");
+        assert!(app.press(Key::Enter).is_empty());
+        assert_eq!(app.queue_len(), 2);
+
+        // drain 按 FIFO 取出并置 running（与用户提交同一口径）
+        let Some(Effect::Prompt { text, images }) = app.drain_queue() else {
+            panic!("expected Prompt effect from drain");
+        };
+        assert_eq!(text, "hi");
+        assert_eq!(images.len(), 1);
+        assert!(app.is_running());
+
+        app.finish_run(None);
+        let Some(Effect::Prompt { text, images }) = app.drain_queue() else {
+            panic!("expected Prompt effect from drain");
+        };
+        assert_eq!(text, "second");
+        assert!(images.is_empty());
+        assert_eq!(app.queue_len(), 0);
+        assert!(app.drain_queue().is_none());
+    }
+
+    /// 运行中：模板调用展开后同样入队，不直接提交。
+    #[test]
+    fn enter_while_running_queues_expanded_template() {
+        let mut app = app();
+        app.set_available_templates(vec![template("greet", "Hello $1", None)]);
+        app.handle_event(&AgentEvent::AgentStart);
+        app.paste_text("/greet world");
+        assert!(app.press(Key::Enter).is_empty());
+        assert!(app.is_running(), "排队不改变运行态");
+        assert_eq!(app.queue_len(), 1);
+        app.finish_run(None);
+        let Some(Effect::Prompt { text, .. }) = app.drain_queue() else {
+            panic!("expected Prompt effect from drain");
+        };
+        assert_eq!(text, "Hello world");
+    }
+
+    /// 空闲 + 空草稿 + 队列有暂停消息：Enter 直接发送下一条。
+    #[test]
+    fn idle_enter_with_empty_draft_drains_queue() {
+        let mut app = app();
+        app.handle_event(&AgentEvent::AgentStart);
+        app.paste_text("queued");
+        app.press(Key::Enter);
+        app.finish_run(Some("已取消".to_string()));
+        // 异常结束后队列保留（drain 由事件循环按结束方式裁决，这里手动模拟）
+        assert_eq!(app.queue_len(), 1);
+        let effects = app.press(Key::Enter);
+        assert!(matches!(&effects[..], [Effect::Prompt { text, .. }] if text == "queued"));
+        assert!(app.is_running());
+    }
+
+    // ── QUEUE 模式（ADR-0012，oil.nvim 式队列编辑）─────────────────────────
+
+    /// 构造空闲态且队列中有两条排队消息的 App（第一条带一张图片附件）。
+    fn queued_app() -> App {
+        let mut app = app();
+        app.handle_event(&AgentEvent::AgentStart);
+        app.stage_image("a.png".to_string(), image());
+        app.paste_text("first");
+        app.press(Key::Enter);
+        app.paste_text("second\n两行");
+        app.press(Key::Enter);
+        app.finish_run(None);
+        assert_eq!(app.queue_len(), 2);
+        app
+    }
+
+    /// NORMAL `Q` 的进入守卫：队列为空或草稿非空时拒绝并提示。
+    #[test]
+    fn queue_mode_enter_guards() {
+        let mut empty = app();
+        empty.press(Key::Esc);
+        empty.press(Key::Char('Q'));
+        assert!(!empty.queue_mode_active());
+        assert!(empty.notice().is_some_and(|n| n.contains("队列为空")));
+
+        let mut drafting = queued_app();
+        drafting.paste_text("未发草稿");
+        drafting.press(Key::Esc);
+        drafting.press(Key::Char('Q'));
+        assert!(!drafting.queue_mode_active());
+        assert!(drafting.notice().is_some_and(|n| n.contains("草稿非空")));
+
+        // 草稿清空后可进入
+        drafting.press(Key::Char('i'));
+        drafting.press(Key::Ctrl('u'));
+        drafting.press(Key::Esc);
+        drafting.press(Key::Char('Q'));
+        assert!(drafting.queue_mode_active());
+        assert_eq!(drafting.queue_cursor(), 0);
+    }
+
+    /// QUEUE 导航：j/k 钳制移动、G/gg 跳队尾/队首、dd 删除游标条目，
+    /// 删空队列自动退出回 NORMAL。
+    #[test]
+    fn queue_mode_navigate_and_delete() {
+        let mut app = queued_app();
+        app.press(Key::Esc);
+        app.press(Key::Char('Q'));
+        assert!(app.queue_mode_active());
+
+        app.press(Key::Char('j'));
+        assert_eq!(app.queue_cursor(), 1);
+        app.press(Key::Char('j'));
+        assert_eq!(app.queue_cursor(), 1, "到底钳制");
+        app.press(Key::Char('g'));
+        app.press(Key::Char('g'));
+        assert_eq!(app.queue_cursor(), 0);
+        app.press(Key::Char('G'));
+        assert_eq!(app.queue_cursor(), 1);
+
+        // dd 删除队尾条目，游标收钳到新的末尾
+        app.press(Key::Char('d'));
+        app.press(Key::Char('d'));
+        assert_eq!(app.queue_len(), 1);
+        assert_eq!(app.queue_cursor(), 0);
+        // 再删即空：退出 QUEUE 回 NORMAL 并提示
+        app.press(Key::Char('x'));
+        assert_eq!(app.queue_len(), 0);
+        assert!(!app.queue_mode_active());
+        assert_eq!(app.mode(), Mode::Normal);
+        assert!(app.notice().is_some_and(|n| n.contains("队列已清空")));
+    }
+
+    /// QUEUE `J`/`K`：条目下移/上移一位（换位后游标跟随条目）。
+    #[test]
+    fn queue_mode_swap_reorders() {
+        let mut app = queued_app();
+        app.press(Key::Esc);
+        app.press(Key::Char('Q'));
+        app.press(Key::Char('J'));
+        assert_eq!(app.queue_cursor(), 1);
+        app.press(Key::Char('J'));
+        assert_eq!(app.queue_cursor(), 1, "到底不再移动");
+        // 退出 QUEUE（空闲）：drain 恢复，换位后的队首立即提交
+        let effects = app.press(Key::Esc);
+        assert!(matches!(&effects[..], [Effect::Prompt { text, .. }] if text == "second\n两行"));
+        assert!(app.is_running());
+        // 换位不影响条目自身附件
+        app.finish_run(None);
+        let Some(Effect::Prompt { text, images }) = app.drain_queue() else {
+            panic!("expected Prompt effect from drain");
+        };
+        assert_eq!(text, "first");
+        assert_eq!(images.len(), 1);
+    }
+
+    /// QUEUE 就地编辑：`i` 载入槽位文本进草稿缓冲，Enter 保存写回；
+    /// 附件保留在槽位上。
+    #[test]
+    fn queue_mode_edit_and_save() {
+        let mut app = queued_app();
+        app.press(Key::Esc);
+        app.press(Key::Char('Q'));
+        app.press(Key::Char('i'));
+        assert!(app.queue_editing());
+        assert_eq!(app.input(), "first");
+        app.paste_text(" edited");
+        app.press(Key::Enter);
+        assert!(!app.queue_editing(), "保存后回到导航子状态");
+        assert!(app.queue_mode_active());
+        assert_eq!(app.input(), "");
+
+        // 退出 QUEUE（空闲）：编辑后的队首提交，附件保留
+        let effects = app.press(Key::Esc);
+        assert!(
+            matches!(&effects[..], [Effect::Prompt { text, images }] if text == "first edited" && images.len() == 1)
+        );
+    }
+
+    /// QUEUE 编辑子状态：补全不启用（`/he` 不会弹补全），Enter 是保存
+    /// 而非接受候选或执行命令。
+    #[test]
+    fn queue_editing_disables_completion() {
+        let mut app = queued_app();
+        app.press(Key::Esc);
+        app.press(Key::Char('Q'));
+        app.press(Key::Char('i'));
+        app.press(Key::Ctrl('u'));
+        app.paste_text("/he");
+        assert!(app.completion().is_none());
+        app.press(Key::Enter);
+        let effects = app.press(Key::Esc);
+        assert!(matches!(&effects[..], [Effect::Prompt { text, .. }] if text == "/he"));
+    }
+
+    /// QUEUE `o`：游标下方插入空槽位并就地编辑；保存空文本即撤销槽位。
+    #[test]
+    fn queue_mode_insert_slot_and_empty_save_discards() {
+        let mut app = queued_app();
+        app.press(Key::Esc);
+        app.press(Key::Char('Q'));
+        app.press(Key::Char('o'));
+        assert!(app.queue_editing());
+        assert_eq!(app.queue_len(), 3);
+        app.paste_text("inserted");
+        app.press(Key::Esc); // Esc 同样保存
+        assert_eq!(app.queue_len(), 3);
+        assert!(!app.queue_editing());
+
+        // 保存空文本：槽位被删除（oil.nvim 空行忽略语义）
+        app.press(Key::Char('o'));
+        app.press(Key::Esc);
+        assert_eq!(app.queue_len(), 3);
+
+        // 退出 QUEUE 恢复发送，顺序验证：first, inserted, second
+        let mut texts = Vec::new();
+        let mut effects = app.press(Key::Esc);
+        while let Some(Effect::Prompt { text, .. }) = effects.pop() {
+            texts.push(text);
+            app.finish_run(None);
+            effects = app.drain_queue().into_iter().collect();
+        }
+        assert_eq!(texts, ["first", "inserted", "second\n两行"]);
+    }
+
+    /// QUEUE 打开期间 drain 冻结；退出时恢复：空闲即取出队首提交，
+    /// 运行中不产生效果（等本轮结束后自动 drain）。
+    #[test]
+    fn queue_mode_freezes_drain_and_leave_resumes() {
+        // 运行中进入 QUEUE：drain 冻结，退出不产生效果
+        let mut running = queued_app();
+        running.handle_event(&AgentEvent::AgentStart);
+        running.press(Key::Esc);
+        running.press(Key::Char('Q'));
+        assert!(running.drain_queue().is_none(), "QUEUE 打开期间冻结 drain");
+        assert!(running.press(Key::Esc).is_empty(), "运行中退出不提交");
+        assert_eq!(running.mode(), Mode::Normal);
+        // 退出后恢复：本轮正常结束后可 drain
+        running.finish_run(None);
+        assert!(matches!(running.drain_queue(), Some(Effect::Prompt { .. })));
+
+        // 空闲退出 QUEUE：立即取出队首提交
+        let mut idle = queued_app();
+        idle.press(Key::Esc);
+        idle.press(Key::Char('Q'));
+        let effects = idle.press(Key::Esc);
+        assert!(matches!(&effects[..], [Effect::Prompt { text, .. }] if text == "first"));
+        assert!(idle.is_running());
+        assert_eq!(idle.queue_len(), 1);
+    }
+
+    /// 统一队列 QUEUE 模式（ADR-0014）：进入 QUEUE 冻结注入、退出
+    /// 解冻；导航/换位/就地编辑直接作用于队列；恢复发送按 FIFO。
+    #[test]
+    fn queue_mode_unified_queue_editing() {
+        let mut app = app();
+        app.handle_event(&AgentEvent::AgentStart);
+        app.paste_text("msg-1");
+        app.press(Key::Enter);
+        app.paste_text("msg-2");
+        app.press(Key::Enter);
+        app.paste_text("msg-3");
+        app.press(Key::Enter);
+        // 异常结束（取消）：队列暂停保留，空闲下进入 QUEUE 编辑
+        app.finish_run(Some("已取消".to_string()));
+        app.press(Key::Esc);
+        app.press(Key::Char('Q'));
+        assert!(app.queue_mode_active());
+        assert_eq!(app.queue_len(), 3);
+        // 进入 QUEUE 即冻结注入（core 在 turn 边界不再弹出）
+        assert!(app.steering_handle().is_frozen());
+
+        // 导航与换位：msg-1/msg-2 交换
+        app.press(Key::Char('j'));
+        app.press(Key::Char('j'));
+        assert_eq!(app.queue_cursor(), 2);
+        app.press(Key::Char('k'));
+        app.press(Key::Char('k'));
+        app.press(Key::Char('J'));
+        assert_eq!(app.queue_cursor(), 1);
+
+        // 就地编辑第三条
+        app.press(Key::Char('G'));
+        app.press(Key::Char('i'));
+        assert_eq!(app.input(), "msg-3");
+        app.paste_text("-edited");
+        app.press(Key::Enter);
+
+        // 退出 QUEUE：解冻；恢复发送按 FIFO（换位后 msg-2 在首）
+        let effects = app.press(Key::Esc);
+        assert!(!app.steering_handle().is_frozen());
+        assert!(matches!(&effects[..], [Effect::Prompt { text, .. }] if text == "msg-2"));
+        app.finish_run(None);
+        let Some(Effect::Prompt { text, .. }) = app.drain_queue() else {
+            panic!("expected Prompt effect from drain");
+        };
+        assert_eq!(text, "msg-1");
+        app.finish_run(None);
+        let Some(Effect::Prompt { text, .. }) = app.drain_queue() else {
+            panic!("expected Prompt effect from drain");
+        };
+        assert_eq!(text, "msg-3-edited");
+        assert_eq!(app.queue_len(), 0);
     }
 
     /// 运行中（含工具执行中）：本地 slash 命令照常执行，不被工具调用阻塞。

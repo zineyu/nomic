@@ -1,7 +1,7 @@
 //! agent 生命周期 hooks（借鉴 pi 的可选闭包，改为 trait + 默认空实现）。
 //!
 //! M1 只提供工具调用前后的挂点（权限门控、结果改写的位置）；
-//! steering/follow-up 队列、turn 后停止等留待后续里程碑（ADR-0001）。
+//! turn 后停止等留待后续里程碑（ADR-0001；统一消息队列见 ADR-0014）。
 
 use async_trait::async_trait;
 use nomic_ai::{AssistantMessage, ToolCall};

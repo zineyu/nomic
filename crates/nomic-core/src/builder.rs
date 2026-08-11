@@ -34,6 +34,7 @@ use crate::AgentEvent;
 use crate::agent::{Agent, AgentConfig};
 use crate::compaction::CompactionSettings;
 use crate::hooks::{AgentHooks, NoopHooks};
+use crate::steering::SteeringQueue;
 use crate::tool::{DynTool, ExecutionMode};
 
 /// 类型状态标记：必填项已设置。
@@ -63,6 +64,7 @@ pub struct AgentBuilder<M = Unset, P = Unset, S = Unset> {
     hooks: Arc<dyn AgentHooks>,
     tool_execution: ExecutionMode,
     compaction: CompactionSettings,
+    steering: SteeringQueue,
     _state: PhantomData<(M, P, S)>,
 }
 
@@ -87,6 +89,7 @@ impl AgentBuilder<Unset, Unset, Unset> {
             hooks: Arc::new(NoopHooks),
             tool_execution: ExecutionMode::Parallel,
             compaction: CompactionSettings::default(),
+            steering: SteeringQueue::new(),
             _state: PhantomData,
         }
     }
@@ -105,6 +108,7 @@ impl<M, P, S> AgentBuilder<M, P, S> {
             hooks: self.hooks,
             tool_execution: self.tool_execution,
             compaction: self.compaction,
+            steering: self.steering,
             _state: PhantomData,
         }
     }
@@ -121,6 +125,7 @@ impl<M, P, S> AgentBuilder<M, P, S> {
             hooks: self.hooks,
             tool_execution: self.tool_execution,
             compaction: self.compaction,
+            steering: self.steering,
             _state: PhantomData,
         }
     }
@@ -137,6 +142,7 @@ impl<M, P, S> AgentBuilder<M, P, S> {
             hooks: self.hooks,
             tool_execution: self.tool_execution,
             compaction: self.compaction,
+            steering: self.steering,
             _state: PhantomData,
         }
     }
@@ -180,6 +186,13 @@ impl<M, P, S> AgentBuilder<M, P, S> {
         self.compaction = compaction;
         self
     }
+
+    /// 设置共享消息队列（默认新建；交互端与 agent 各持克隆，
+    /// 运行中直推排队消息，见 [`SteeringQueue`]）。
+    pub fn steering_queue(mut self, steering: SteeringQueue) -> Self {
+        self.steering = steering;
+        self
+    }
 }
 
 impl AgentBuilder<Set, Set, Set> {
@@ -199,7 +212,13 @@ impl AgentBuilder<Set, Set, Set> {
         let system_prompt = self
             .system_prompt
             .expect("typestate 保证 system_prompt 已设置");
-        Agent::from_parts(config, self.tools, system_prompt, self.messages)
+        Agent::from_parts(
+            config,
+            self.tools,
+            system_prompt,
+            self.messages,
+            self.steering,
+        )
     }
 }
 

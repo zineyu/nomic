@@ -4,6 +4,10 @@
 
 Accepted
 
+（2026-08-13 部分修订：[ADR-0018](0018-browse-default-and-edtui-input.md)
+反转默认模式为 BROWSE-first，草稿编辑收编进 INPUT 的 edtui 子态；
+本 ADR 与之冲突的部分以 ADR-0018 为准。）
+
 ## Date
 
 2026-08-05

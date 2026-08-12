@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+**Superseded by [ADR-0016](0016-external-editor-nixvim.md)**（2026-08-11：改用 nixvim standalone 二进制，以 `nvim --embed` 嵌入 TUI；edtui 依赖已移除）。
+
+Accepted（2026-08-07 至 2026-08-11 生效期）
 
 ## Date
 

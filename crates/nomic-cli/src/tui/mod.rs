@@ -2,10 +2,9 @@
 //!
 //! 结构：
 //! - [`app`]：纯状态层——对外为语义操作（按键 [`app::Key`] → [`app::Effect`]、
-//!   应用事件、滚动、会话/附件管理），编辑器/补全/picker/slash 分发是其内部实现，
-//!   脱离终端可测
-//! - [`editor`]：内嵌草稿编辑器（edtui 薄封装；INSERT `Ctrl+G` 打开，
-//!   保存/放弃协议与渲染、光标查询）
+//!   应用事件、滚动、会话/附件管理），补全/picker/slash 分发是其内部实现，
+//!   脱离终端可测；INSERT `Ctrl+G` 外部编辑器（ADR-0017）由本文件
+//!   [`edit_input_in_editor`] 接线，状态层只消费写回结果
 //! - [`ui`]：纯渲染（聊天区 + 输入框 + 状态栏）
 //! - 本文件：终端生命周期、事件循环（`KeyEvent` → `Key` 映射、`Effect` 接线执行）、
 //!   agent driver 任务
@@ -18,14 +17,7 @@
 //! 状态栏/聊天区提示；意外错误（driver 任务 panic）经 JoinHandle 捕获后在
 //! 聊天区提示，TUI 保持存活供查看记录，而非静默退出。
 
-// App 持有 edtui EditorState（其剪贴板为 Rc<RefCell<dyn ClipboardTrait>>，
-// 非 Send，无法从外部替换），本模块所有持 App 跨 await 的 future 都非 Send。
-// 运行结构上安全：main 以 block_on 在主线程驱动整个 TUI，future 不会跨线程
-// 迁移；tokio::spawn 的任务（driver、剪贴板读写）均不接触 App。
-#![allow(clippy::future_not_send)]
-
 mod app;
-mod editor;
 mod markdown;
 mod theme;
 mod ui;
@@ -220,7 +212,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
             .draw(|frame| ui::draw(frame, &mut app))
             .context("绘制失败")?;
         let wake = next_wake(
-            app.is_running(),
+            &app,
             &mut driver,
             &mut term_events,
             &mut spinner_ticker,
@@ -242,12 +234,11 @@ pub async fn run(cli: &Cli) -> Result<()> {
 }
 
 /// 光标是否用实心块：NORMAL/VISUAL 与 QUEUE 导航子状态为实心块
-///（不可键入文本的浏览态），其余竖条；编辑器内跟随 edtui 自身模式。
-fn block_cursor(app: &App) -> bool {
+///（不可键入文本的浏览态）。
+const fn block_cursor(app: &App) -> bool {
     match app.mode() {
         Mode::Normal | Mode::Visual => true,
         Mode::Queue => !app.queue_editing(),
-        Mode::Editor => app.draft_editor().is_some_and(|editor| !editor.is_insert()),
         Mode::Insert | Mode::Search | Mode::Picker => false,
     }
 }
@@ -410,7 +401,7 @@ enum Wake {
     AgentDone(DriverDone),
     /// spinner 帧推进
     Tick,
-    /// 仅需重绘（resize、其他鼠标事件）
+    /// 仅需重绘（其他鼠标事件）
     Redraw,
     /// agent driver 任务意外退出（panic 或提前返回），附详情
     DriverFailed(String),
@@ -427,16 +418,8 @@ async fn handle_wake(
 ) -> bool {
     match wake {
         Wake::Key(key) => {
-            if let Some(editor) = app.draft_editor_mut() {
-                // 编辑器打开时接管键位：原始 KeyEvent 直接转发（edtui 需要
-                // 完整按键信息，语义 Key 映射粒度不够）；保存/放弃写回状态层
-                match editor.handle_key(key) {
-                    editor::DraftAction::Continue => {}
-                    editor::DraftAction::Save(text) => app.save_draft_editor(&text),
-                    editor::DraftAction::Cancel => app.cancel_draft_editor(),
-                }
             // Ctrl+V 粘贴需异步读剪贴板，先于语义映射拦截
-            } else if matches!(
+            if matches!(
                 (key.code, key.modifiers),
                 (KeyCode::Char('v'), KeyModifiers::CONTROL)
             ) {
@@ -587,7 +570,7 @@ async fn handle_prompt_done(
 /// agent 侧 channel 与 driver 任务同生命周期：channel 关闭即任务退出
 /// （job 发送端不会先于任务丢弃），统一转为 [`Wake::DriverFailed`]。
 async fn next_wake(
-    running: bool,
+    app: &App,
     driver: &mut Driver,
     term_events: &mut EventStream,
     spinner_ticker: &mut tokio::time::Interval,
@@ -595,6 +578,7 @@ async fn next_wake(
     done_rx: &mut mpsc::UnboundedReceiver<DriverDone>,
 ) -> Wake {
     let driver_alive = driver.alive;
+    let running = app.is_running();
     tokio::select! {
         // spinner 动画仅在运行中推进；空闲时此分支永久挂起，不空转重绘
         () = async {
@@ -699,7 +683,7 @@ const fn map_key(key: KeyEvent) -> Option<Key> {
 async fn execute_effect(
     app: &mut App,
     driver: &mut Driver,
-    _terminal: &mut TuiTerminal,
+    terminal: &mut TuiTerminal,
     effect: Effect,
 ) {
     match effect {
@@ -743,6 +727,8 @@ async fn execute_effect(
                 token.cancel();
             }
         }
+        // INSERT `Ctrl+G`：挂起 TUI 运行外部编辑器（ADR-0017），退出后写回
+        Effect::OpenEditor => edit_input_in_editor(app, terminal).await,
         Effect::ListSessions => list_sessions(app, driver).await,
         Effect::Resume(id) => {
             resume_session(app, driver, id).await;
@@ -1468,6 +1454,76 @@ async fn copy_to_clipboard(app: &mut App, text: String) {
         Ok(Err(error)) => app.warn(format!("复制失败：{error:#}")),
         Err(join) => app.warn(format!("复制失败：{join}")),
     }
+}
+
+/// INSERT `Ctrl+G`：挂起 TUI，用外部编辑器编辑当前输入缓冲，退出后
+/// 恢复终端并把结果写回（写回语义见 [`App::apply_editor_result`]）。
+///
+/// 编辑器运行期间事件循环挂起是本意的同步语义：tty 已交给编辑器，
+/// TUI 不应重绘；crossterm 的 EventStream 后台线程只 poll 就绪不读
+/// 字节（0.29 起 read 发生在消费侧 poll_next），不轮询就不会与编辑器
+/// 争抢 stdin，编辑器里的按键不会漏回 TUI。agent 运行不受影响
+///（driver 是独立任务），期间到的事件在 channel 里积压，恢复后照常处理。
+async fn edit_input_in_editor(app: &mut App, terminal: &mut TuiTerminal) {
+    let initial = app.input().to_string();
+    leave_tui_terminal();
+    // spawn_blocking 与剪贴板同一口径：编辑器可能运行很久，不占 runtime worker
+    let outcome = tokio::task::spawn_blocking(move || run_external_editor(&initial)).await;
+    // 恢复失败也只是渲染异常，编辑结果照常写回
+    if let Err(error) = enter_tui_terminal() {
+        app.warn(format!("恢复终端失败：{error}"));
+    }
+    // 离开期间缓冲区已与屏幕脱节：清屏强制下一帧全量重绘
+    let _ = terminal.clear();
+    // leave 时还原了用户惯用光标形状，按当前模式重新应用
+    set_cursor_style(block_cursor(app));
+    match outcome {
+        Ok(Ok(text)) => app.apply_editor_result(&text),
+        Ok(Err(error)) => app.warn(format!("{error:#}")),
+        Err(join) => app.warn(format!("打开编辑器失败：{join}")),
+    }
+}
+
+/// 在临时文件上运行外部编辑器，返回编辑后的内容。
+///
+/// 编辑器解析：`$VISUAL` → `$EDITOR` → `vi`（与 git 同一口径）；命令
+/// 经 `sh -c` 执行以支持带参数形式（如 `code --wait`）。退出码非 0
+///（如 vim `:cq`）视为放弃编辑：报错且调用方保留原草稿。临时文件
+/// 带 `.md` 后缀让编辑器启用 markdown 高亮，随 [`tempfile::NamedTempFile`]
+/// drop 自动删除。
+fn run_external_editor(initial: &str) -> Result<String> {
+    use std::io::Write as _;
+
+    let mut file = tempfile::Builder::new()
+        .prefix("nomic-prompt-")
+        .suffix(".md")
+        .tempfile()
+        .context("创建临时文件失败")?;
+    file.write_all(initial.as_bytes())
+        .context("写入临时文件失败")?;
+    file.flush().context("flush 临时文件失败")?;
+    let path = file.path().to_path_buf();
+
+    let editor = ["VISUAL", "EDITOR"]
+        .iter()
+        .filter_map(|var| std::env::var(var).ok())
+        .find(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "vi".to_string());
+    // 编辑器命令交 sh 解析（与 git 的 GIT_EDITOR 口径一致），支持
+    // "code --wait" 等带参数形式；`$@` 展开为临时文件路径
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} \"$@\""))
+        .arg(&editor)
+        .arg(&path)
+        .status()
+        .with_context(|| format!("启动编辑器 {editor:?} 失败"))?;
+    anyhow::ensure!(
+        status.success(),
+        "编辑器 {editor:?} 异常退出（{status}），输入未变"
+    );
+
+    std::fs::read_to_string(&path).context("读取编辑结果失败")
 }
 
 /// 附件展示名：取文件名，缺失时回退完整路径。

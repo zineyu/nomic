@@ -204,6 +204,15 @@ append_system = "Always reply in Chinese."
     }
 
     #[test]
+    fn removed_editor_key_is_rejected() {
+        // 外部编辑器走 $VISUAL/$EDITOR 环境变量（ADR-0017），config `editor`
+        // 不是合法键：按未知键硬报错，提示用户删除该配置而非静默忽略
+        let (_dir, path) = write_temp("editor = \"/nix/store/xxx-nvim/bin/nvim\"\n");
+        let error = load_from(&path).expect_err("editor 键必须报错");
+        assert!(format!("{error:#}").contains("解析配置文件失败"));
+    }
+
+    #[test]
     fn empty_config_is_default() {
         let (_dir, path) = write_temp("");
         let config = load_from(&path).expect("load").expect("some");

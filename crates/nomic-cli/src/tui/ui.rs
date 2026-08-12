@@ -22,12 +22,6 @@ const CHAT_H_MARGIN: u16 = 1;
 
 /// 绘制整帧。
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    // 内嵌草稿编辑器打开时全屏接管（聊天区被遮盖期间 agent 事件继续
-    // 累积，关闭后下一帧照常恢复）
-    if app.mode() == Mode::Editor {
-        draw_editor(frame, app);
-        return;
-    }
     let chunks = Layout::vertical([
         Constraint::Min(3),
         Constraint::Length(input_height(app)),
@@ -45,25 +39,6 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if let Some(picker) = app.picker() {
         draw_picker(frame, picker, chunks[1]);
     }
-}
-
-/// 内嵌草稿编辑器：全屏编辑区（edtui，自带模式状态行）+ 底部键位提示。
-fn draw_editor(frame: &mut Frame<'_>, app: &mut App) {
-    let chunks = Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).split(frame.area());
-    frame.render_widget(Clear, frame.area());
-    let Some(editor) = app.draft_editor_mut() else {
-        return;
-    };
-    editor.render(chunks[0], frame.buffer_mut());
-    if let Some(pos) = editor.cursor_position() {
-        frame.set_cursor_position(pos);
-    }
-    let hint = Paragraph::new(Line::from(Span::styled(
-        " Esc 保存退出（NORMAL 下）· Ctrl+C 放弃修改 ",
-        theme::dim(),
-    )))
-    .alignment(Alignment::Right);
-    frame.render_widget(hint, chunks[1]);
 }
 
 /// 聊天区：历史条目 + 流式累积，软换行，`scroll` 从底部向上计。
@@ -421,7 +396,7 @@ fn draw_welcome(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )),
         Line::default(),
         Line::from(Span::styled(
-            "Enter 发送（运行中则排队）· Ctrl+G 系统编辑器编辑 · / 命令（Tab 补全，/help 查看全部）",
+            "Enter 发送（运行中则排队）· Ctrl+G 外部编辑器编辑 · / 命令（Tab 补全，/help 查看全部）",
             theme::dim(),
         )),
         Line::from(Span::styled(
@@ -701,8 +676,6 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Mode::Queue => Span::styled(" QUEUE ", theme::queue_badge()),
         Mode::Insert => Span::styled(" INSERT ", theme::accent()),
         Mode::Picker => Span::styled(" PICKER ", theme::accent()),
-        // 编辑器打开时 draw 提前返回，状态栏不可达；臂仅为完备性
-        Mode::Editor => Span::styled(" EDITOR ", theme::accent()),
     };
     let mut left = vec![
         mode_badge,
@@ -730,8 +703,6 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Mode::Visual => "j/k 扩展 · y 复制 · Esc 取消 ",
         Mode::Picker => "输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ",
         Mode::Insert => "/ 命令 · Tab 补全 · ^G 编辑器 · Esc 浏览 ",
-        // 编辑器打开时 draw 提前返回，状态栏不可达；臂仅为完备性
-        Mode::Editor => "Esc 保存退出 · Ctrl+C 放弃 ",
         Mode::Queue => {
             if app.queue_editing() {
                 "Enter/Esc 保存 · Shift+Enter 换行 "

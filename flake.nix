@@ -60,9 +60,9 @@
 
           # 第一阶段：仅构建依赖（Cargo.lock 不变即可复用缓存）
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-        in
-        {
-          default = craneLib.buildPackage (
+
+          # nomic 本体
+          nomic = craneLib.buildPackage (
             commonArgs
             // {
               inherit cargoArtifacts;
@@ -87,6 +87,9 @@
               };
             }
           );
+        in
+        {
+          default = nomic;
         }
       );
 

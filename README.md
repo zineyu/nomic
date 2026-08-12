@@ -23,9 +23,10 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 - **持久会话**：SQLite 树形存储，支持 resume（按 cwd 隔离）、会话分支浏览与创建、`sessions list`
 - **上下文工程**：AGENTS.md 向上发现注入、skills 系统、prompt templates、自动/手动上下文压缩
 - **图片输入**：`--image` 附件、`/image` 暂存、`Ctrl+V` 剪贴板图片粘贴
-- **内嵌编辑器**：INSERT 下 `Ctrl+G` 全屏打开内嵌编辑器（edtui，vim 键位）
-  编辑当前草稿（长文/多行 prompt），`Esc` 保存写回、`Ctrl+C` 放弃，不挂起 TUI，
-  设计见 [ADR-0015](docs/adr/0015-embedded-draft-editor-edtui.md)
+- **外部编辑器**：INSERT 下 `Ctrl+G` 挂起 TUI，用 `$VISUAL`/`$EDITOR`
+  （缺省 `vi`）编辑当前草稿（长文/多行 prompt），保存退出后写回；
+  编辑器异常退出或内容为空时原草稿保留，
+  设计见 [ADR-0017](docs/adr/0017-external-editor.md)
 - **工程化**：devenv 统一开发环境，`check` 一键执行与 CI 等价的全部检查，Nix flake 打包
 
 ## 目录
@@ -119,7 +120,7 @@ nomic -p "..." --reasoning low
 | INSERT | `Enter` / `Tab` | 发送消息（运行中排入队列，当前步骤完成后注入本轮）/ 补全 |
 | INSERT | `Esc` | 关弹层 / 进入 NORMAL（取消运行用 `Ctrl+C`） |
 | INSERT | `Ctrl+W` `Ctrl+U` `Ctrl+A/E` `Alt+B/F` | 删词 / 清行 / 行首行尾 / 词移动 |
-| INSERT | `Ctrl+G` | 内嵌编辑器（vim 键位）编辑当前草稿；编辑器内 NORMAL 下 `Esc` 保存写回，`Ctrl+C` 放弃 |
+| INSERT | `Ctrl+G` | 外部编辑器（`$VISUAL`/`$EDITOR`，缺省 `vi`）编辑当前草稿；保存退出后写回，异常退出或内容为空时原草稿保留 |
 | NORMAL | `j` `k` `Ctrl+D/U` `gg` `G` | 滚动 / 半页 / 顶部 / 底部 |
 | NORMAL | `[m` `]m` `[t` `]t` | 跳上/下一条消息、工具调用 |
 | NORMAL | `/` `n` `N` | 聊天搜索与跳转 |

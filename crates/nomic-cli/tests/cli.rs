@@ -1,8 +1,9 @@
 //! nomic 二进制的进程级集成测试。
 //!
-//! 每个测试用独立的 `XDG_DATA_HOME`/`XDG_CONFIG_HOME` 指向临时目录，隔离用户
-//! 真实配置与 session 库；不访问网络（provider 错误用例连接 127.0.0.1:1，
-//! 立即拒绝）。
+//! 每个测试用独立的 `XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`XDG_STATE_HOME` 指向
+//! 临时目录，隔离用户真实配置、session 库与日志目录（滚动日志默认写入
+//! `$XDG_STATE_HOME/nomic/logs`，不隔离会污染真实 state 目录）；
+//! 不访问网络（provider 错误用例连接 127.0.0.1:1，立即拒绝）。
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -16,7 +17,8 @@ fn run_in(args: &[&str], xdg_home: &Path, dir: Option<&Path>) -> Output {
     command
         .args(args)
         .env("XDG_DATA_HOME", xdg_home)
-        .env("XDG_CONFIG_HOME", xdg_home);
+        .env("XDG_CONFIG_HOME", xdg_home)
+        .env("XDG_STATE_HOME", xdg_home);
     if let Some(dir) = dir {
         command.current_dir(dir);
     }

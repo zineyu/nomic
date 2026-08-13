@@ -1,12 +1,12 @@
 # 历史超限文件豁免清单（棘轮机制：只许缩小，不许增长）
 # 格式：<路径><TAB><登记时行数>；缩小到 800 行以内后必须移除对应条目
-crates/nomic-ai/src/providers/anthropic.rs	815
-crates/nomic-ai/src/providers/openai.rs	887
-crates/nomic-cli/src/model.rs	979
-crates/nomic-cli/src/tui/app/mod.rs	4486
-crates/nomic-cli/src/tui/mod.rs	1006
-crates/nomic-core/src/agent.rs	820
-crates/nomic-core/src/compaction.rs	856
-crates/nomic-core/tests/agent_loop.rs	1096
-crates/nomic-prompts/src/lib.rs	1117
-crates/nomic-skills/src/lib.rs	1143
+# crates/nomic-ai/src/providers/anthropic.rs	815
+# crates/nomic-ai/src/providers/openai.rs	887
+# crates/nomic-cli/src/model.rs	979
+# crates/nomic-cli/src/tui/app/mod.rs	4486
+# crates/nomic-cli/src/tui/mod.rs	1006
+# crates/nomic-core/src/agent.rs	820
+# crates/nomic-core/src/compaction.rs	856
+# crates/nomic-core/tests/agent_loop.rs	1096
+# crates/nomic-prompts/src/lib.rs	1117
+# crates/nomic-skills/src/lib.rs	1143

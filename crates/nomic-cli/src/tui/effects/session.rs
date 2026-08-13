@@ -6,7 +6,7 @@ use nomic_ai::Message;
 use nomic_session::{CompactionRecord, SessionStore, TreeEntry};
 
 use crate::tui::app::{App, PickerRow};
-use crate::tui::{Driver, DriverJob};
+use crate::tui::driver::{Driver, DriverJob};
 
 /// `/resume`：列出历史 session 并打开选择器。
 pub(in crate::tui) async fn list_sessions(app: &mut App, driver: &Driver) {

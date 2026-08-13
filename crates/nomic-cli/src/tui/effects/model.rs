@@ -5,8 +5,8 @@ use nomic_ai::{Model, ThinkingLevel};
 
 use crate::model::{self, ModelChoice, ModelSelection};
 use crate::tui::app::{App, PickerRow};
+use crate::tui::driver::{Driver, DriverJob, ModelSwitch, ProviderSwitch};
 use crate::tui::widgets;
-use crate::tui::{Driver, DriverJob, ModelSwitch, ProviderSwitch};
 
 /// `/models`：跨 provider 列出候选模型并打开选择器（预选中当前模型）。
 pub(in crate::tui) fn list_models(app: &mut App, driver: &Driver) {

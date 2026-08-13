@@ -196,6 +196,88 @@ async fn read_missing_skill_lists_available_names() {
 }
 
 #[tokio::test]
+async fn read_skill_sub_resource_file_dir_and_traversal() {
+    let dir = temp_dir();
+    let skills_dir = dir.join("skills");
+    let demo_dir = skills_dir.join("demo");
+    std::fs::create_dir_all(demo_dir.join("scripts")).expect("skill dir");
+    std::fs::create_dir_all(demo_dir.join("references")).expect("skill dir");
+    std::fs::write(demo_dir.join("SKILL.md"), "demo body").expect("write skill");
+    std::fs::write(demo_dir.join("scripts/run.sh"), "echo one\necho two\n").expect("write");
+    std::fs::write(demo_dir.join("notes.md"), "notes").expect("write");
+    std::fs::write(skills_dir.join("secret.txt"), "secret").expect("write");
+    let resolver = SkillResolver::new(
+        &dir,
+        ProjectDiscovery::Roots(Vec::new()),
+        vec![SkillRoot {
+            path: skills_dir.clone(),
+            scope: SkillScope::Project,
+        }],
+    )
+    .expect("resolver");
+    let tool = ReadTool::with_skill_resolver(resolver);
+    let read = |path: &str| {
+        let tool = tool.clone();
+        let path = path.to_string();
+        async move {
+            tool.execute(
+                serde_json::from_value(serde_json::json!({"path": path})).expect("params"),
+                CancellationToken::new(),
+                no_update(),
+            )
+            .await
+        }
+    };
+    let text_of = |result: nomic_core::ToolResult| {
+        let nomic_ai::UserContent::Text(text) = &result.content[0] else {
+            panic!("expected text")
+        };
+        text.text.clone()
+    };
+
+    // 文件子资源：内容与现有截断/分页契约一致，details 标注 resource
+    let result = read("skill://demo/scripts/run.sh")
+        .await
+        .expect("read file");
+    assert_eq!(text_of(result.clone()), "echo one\necho two\n");
+    let details = result.details.expect("details");
+    assert_eq!(details["source"]["kind"].as_str(), Some("skill"));
+    assert_eq!(
+        details["source"]["resource"].as_str(),
+        Some("scripts/run.sh")
+    );
+
+    // 尾随斜杠的空子路径：退化为正文（与无子路径一致）
+    let result = read("skill://demo/").await.expect("read trailing slash");
+    assert_eq!(text_of(result), "demo body");
+
+    // 目录子资源：返回清单，目录以 / 结尾，按名称排序
+    let result = read("skill://demo").await.expect("read root");
+    assert_eq!(text_of(result), "demo body"); // 无子路径仍是正文
+    let result = read("skill://demo/.").await.expect("read dot");
+    assert_eq!(text_of(result), "demo body"); // `.` 同样退化为正文
+    let result = read("skill://demo/scripts").await.expect("read dir");
+    assert_eq!(text_of(result.clone()), "run.sh");
+    assert_eq!(
+        result.details.expect("details")["source"]["resource"].as_str(),
+        Some("scripts/")
+    );
+
+    // skill 根目录本身作为子资源（显式 `/` 以外想看全部文件时可读根清单）
+    // 穿越与绝对路径：可读错误
+    let error = read("skill://demo/../secret.txt").await.unwrap_err();
+    assert!(error.to_string().contains("skill://demo/../secret.txt"));
+    let error = read("skill://demo/scripts/../../secret.txt")
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("inside the skill directory"));
+
+    // 根内不存在的资源
+    let error = read("skill://demo/scripts/missing.sh").await.unwrap_err();
+    assert!(error.to_string().contains("missing.sh"));
+}
+
+#[tokio::test]
 async fn edit_applies_and_returns_diff() {
     let dir = temp_dir();
     let path = dir.join("code.rs");

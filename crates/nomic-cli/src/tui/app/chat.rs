@@ -1,8 +1,7 @@
 //! 聊天区状态：条目列表、流式增量累积、消息游标与滚动。
 //!
 //! 条目模型（user/assistant/tool/system）与 [`Chat`] 状态结构自持；
-//! 复制/VISUAL 选择等操作返回数据，提示语由模式路由层（[`super::App`]）
-//! 落到状态栏。
+//! 复制等操作返回数据，提示语由模式路由层（[`super::App`]）落到状态栏。
 
 use nomic_ai::{
     AssistantContent, AssistantEvent, Message, StopReason, UserContent, UserMessageContent,
@@ -25,12 +24,12 @@ pub(in crate::tui) enum ChatItem {
 }
 
 impl ChatItem {
-    /// 是否为对话消息（user/assistant）：NORMAL `]m`/`[m` 的跳转目标。
+    /// 是否为对话消息（user/assistant）：NORMAL `]`/`[` 的跳转目标。
     pub(super) const fn is_message(&self) -> bool {
         matches!(self, Self::User(_) | Self::Assistant(_))
     }
 
-    /// 是否为工具调用条目：NORMAL `]t`/`[t` 的跳转目标。
+    /// 是否为工具调用条目：NORMAL `}`/`{` 的跳转目标。
     pub(super) const fn is_tool(&self) -> bool {
         matches!(self, Self::Tool(_))
     }
@@ -43,6 +42,8 @@ pub(in crate::tui) struct AssistantItem {
     pub(in crate::tui) done: bool,
     /// `stop_reason` 为 Error/Aborted 时的错误信息
     pub(in crate::tui) error: Option<String>,
+    /// 条目级折叠（NORMAL `Space` 切换）：折叠为单行摘要显示
+    pub(in crate::tui) collapsed: bool,
 }
 
 /// assistant 内容块（工具调用块不进聊天区，由 `ToolExecution*` 事件承载）。
@@ -71,6 +72,8 @@ pub(in crate::tui) struct ToolItem {
     pub(in crate::tui) status: ToolStatus,
     /// 进度/结果的尾部摘要（最多 `DETAIL_LINES` 行）
     pub(in crate::tui) detail: Vec<String>,
+    /// 条目级折叠（NORMAL `Space` 切换）：折叠为单行摘要显示
+    pub(in crate::tui) collapsed: bool,
 }
 
 /// 聊天区状态：条目 + 消息游标 + 滚动。不碰交互模式，由 [`super::App`]
@@ -82,10 +85,6 @@ pub(in crate::tui) struct Chat {
     pub(super) cursor_item: Option<usize>,
     /// 渲染回写的各条目起始行（draw_chat 折行后同步；未经渲染时为空）
     item_lines: Vec<u16>,
-    /// `yc` 代码块循环序号（同一游标消息内重复 yc 依次取下一个块）
-    yc_block: usize,
-    /// VISUAL 的选择锚点（items 下标；进入 VISUAL 时取消息游标）
-    visual_anchor: Option<usize>,
     /// 从底部向上滚动的行数（0 = 跟随最新内容）
     pub(super) scroll: u16,
     /// 聊天区最大可上滚行数（渲染时更新，状态栏滚动位置显示用）
@@ -121,13 +120,11 @@ impl Chat {
     }
 
     /// 清空聊天区（`/new` 开启新对话、`/resume` 恢复前）。
-    /// 游标/选择锚点一并重置，保持「游标指向有效条目或 None」的不变量，
+    /// 游标一并重置，保持「游标指向有效条目或 None」的不变量，
     /// 避免残留旧下标越界。
     pub(super) fn clear_items(&mut self) {
         self.items.clear();
         self.cursor_item = None;
-        self.visual_anchor = None;
-        self.yc_block = 0;
         self.scroll_to_bottom();
     }
 
@@ -155,6 +152,7 @@ impl Chat {
                             .collect(),
                         done: true,
                         error,
+                        collapsed: false,
                     }));
                 }
                 Message::ToolResult(result) => {
@@ -168,6 +166,7 @@ impl Chat {
                             ToolStatus::Ok
                         },
                         detail: result_summary(&result.content),
+                        collapsed: false,
                     }));
                 }
             }
@@ -323,16 +322,14 @@ impl Chat {
         self.cursor_item
     }
 
-    /// 游标定位到最早一条对话消息（NORMAL `gg`）。
+    /// 游标定位到最早一条对话消息（NORMAL `g`）。
     pub(super) fn move_cursor_to_first_message(&mut self) {
         self.cursor_item = self.items.iter().position(ChatItem::is_message);
-        self.yc_block = 0;
     }
 
     /// 游标定位到最新一条对话消息（进入 NORMAL、`G`）。
     pub(super) fn move_cursor_to_last_message(&mut self) {
         self.cursor_item = self.items.iter().rposition(ChatItem::is_message);
-        self.yc_block = 0;
     }
 
     /// 移动消息游标到方向上下一个匹配谓词的条目（钳制不循环），并滚动到位。
@@ -350,11 +347,29 @@ impl Chat {
         }
     }
 
-    /// 游标聚焦指定条目（重置 `yc` 循环并滚动到位）：搜索命中跳转用。
+    /// 游标聚焦指定条目并滚动到位：搜索命中跳转用。
     pub(super) fn focus_item(&mut self, index: usize) {
         self.cursor_item = Some(index);
-        self.yc_block = 0;
         self.scroll_to_cursor_item();
+    }
+
+    /// 切换游标条目的折叠状态（NORMAL `Space`）：仅 assistant 与 tool
+    /// 条目可折叠；返回是否确实切换（user/system 不可折叠返回 `false`）。
+    pub(super) fn toggle_collapsed(&mut self) -> bool {
+        let Some(index) = self.cursor_item else {
+            return false;
+        };
+        match &mut self.items[index] {
+            ChatItem::Assistant(assistant) => {
+                assistant.collapsed = !assistant.collapsed;
+                true
+            }
+            ChatItem::Tool(tool) => {
+                tool.collapsed = !tool.collapsed;
+                true
+            }
+            ChatItem::User(_) | ChatItem::System(_) => false,
+        }
     }
 
     /// 把消息游标条目滚到视野顶部（渲染同步过行号才生效；未经渲染不动）。
@@ -368,88 +383,6 @@ impl Chat {
         // u16::MAX：条目无可见块（空 assistant），没有可定位的行
         if line != u16::MAX {
             self.scroll = self.scroll_max.saturating_sub(line);
-        }
-    }
-
-    // ── 复制 ────────────────────────────────────────────────────────────────
-
-    /// NORMAL `yy`：复制消息游标所在条目的纯文本；
-    /// `Err` 为状态栏提示语（由模式路由层落到 notice）。
-    pub(super) fn copy_cursor_item(&self) -> Result<String, &'static str> {
-        let Some(index) = self.cursor_item else {
-            return Err("没有可复制的消息");
-        };
-        self.items
-            .get(index)
-            .and_then(item_text)
-            .ok_or("该条目没有可复制的文本")
-    }
-
-    /// NORMAL `yc`：复制游标消息中的 ``` 围栏代码块；多个时按 yc 循环
-    /// 依次取下一个。返回（代码块文本, 循环进度提示）。
-    pub(super) fn copy_cursor_code_block(
-        &mut self,
-    ) -> Result<(String, Option<String>), &'static str> {
-        let Some(index) = self.cursor_item else {
-            return Err("没有可复制的消息");
-        };
-        let Some(text) = self.items.get(index).and_then(item_text) else {
-            return Err("该条目没有可复制的文本");
-        };
-        let blocks = code_blocks(&text);
-        if blocks.is_empty() {
-            return Err("该消息中没有代码块");
-        }
-        let block_index = self.yc_block % blocks.len();
-        self.yc_block += 1;
-        let progress = (blocks.len() > 1).then(|| {
-            format!(
-                "已选第 {}/{} 个代码块（重复 yc 循环）",
-                block_index + 1,
-                blocks.len()
-            )
-        });
-        Ok((blocks[block_index].clone(), progress))
-    }
-
-    // ── VISUAL 选择 ─────────────────────────────────────────────────────────
-
-    /// 进入 VISUAL：锚点取消息游标；无可选消息时返回 `false`。
-    pub(super) const fn begin_visual(&mut self) -> bool {
-        let Some(cursor) = self.cursor_item else {
-            return false;
-        };
-        self.visual_anchor = Some(cursor);
-        true
-    }
-
-    /// 退出 VISUAL：清除选择锚点。
-    pub(super) const fn end_visual(&mut self) {
-        self.visual_anchor = None;
-    }
-
-    /// 选择范围（锚点与游标的闭区间，小端在前）。
-    pub(super) fn visual_range(&self) -> Option<(usize, usize)> {
-        let anchor = self.visual_anchor?;
-        let cursor = self.cursor_item?;
-        Some((anchor.min(cursor), anchor.max(cursor)))
-    }
-
-    /// VISUAL `y`：复制锚点到游标的消息范围（各条目纯文本以空行拼接）；
-    /// `Err` 为状态栏提示语。
-    pub(super) fn yank_visual_range(&self) -> Result<String, &'static str> {
-        let Some((start, end)) = self.visual_range() else {
-            return Err("没有选择范围");
-        };
-        let text = self.items[start..=end]
-            .iter()
-            .filter_map(item_text)
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        if text.is_empty() {
-            Err("选中范围没有可复制的文本")
-        } else {
-            Ok(text)
         }
     }
 }
@@ -490,7 +423,7 @@ pub(super) fn item_text(item: &ChatItem) -> Option<String> {
 }
 
 /// 提取文本中的 ``` 围栏代码块内容（依次返回；未闭合的块丢弃）。
-fn code_blocks(text: &str) -> Vec<String> {
+pub(super) fn code_blocks(text: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut in_block = false;
     let mut current = String::new();

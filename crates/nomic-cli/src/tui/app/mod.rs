@@ -15,6 +15,7 @@
 //! [`Effect`] 分发）由本壳完成。
 
 mod chat;
+mod copymenu;
 mod input;
 mod picker;
 mod queue;
@@ -31,6 +32,7 @@ use queue::Queue;
 use search::Search;
 
 pub(super) use chat::{AssistantItem, Block, ChatItem, ToolItem, ToolStatus, skill_load_message};
+pub(super) use copymenu::CopyMenu;
 pub(super) use input::{Completion, CompletionCandidate, SkillEntry};
 pub(super) use picker::{Picker, PickerKind, PickerRow};
 
@@ -333,7 +335,7 @@ fn help_text() -> String {
     }
     text.push_str(
         "\n\n排队输入（统一消息队列）：运行中 Enter 把消息排队，当前步骤完成后注入\n\
-         本轮运行（未清空则持续续行）；Esc 进 NORMAL 后按 Q 打开队列编辑（j/k 移动、\n\
+         本轮运行（未清空则持续续行）；Esc 进 NORMAL 后按 m 打开队列编辑（j/k 移动、\n\
          i 就地编辑、dd 删除、J/K 换位、o 新增、Esc 返回）。运行被取消或失败时队列\n\
          暂停保留：空闲下按 Enter 把队首作为下一轮发送。",
     );
@@ -352,7 +354,7 @@ const PAGE_SCROLL: u16 = 10;
 /// NORMAL 模式 Ctrl+D/Ctrl+U 的半页滚动步长。
 const HALF_PAGE_SCROLL: u16 = 5;
 
-/// TUI 交互模式（ADR-0011/0020）：模式是一等状态，每个按键在当前模式
+/// TUI 交互模式（ADR-0021）：模式是一等状态，每个按键在当前模式
 /// 只有一个语义。
 ///
 /// SEARCH 复用输入框显示搜索串；COMMAND 有专门的命令输入框（独立缓冲）。
@@ -360,15 +362,14 @@ const HALF_PAGE_SCROLL: u16 = 5;
 pub(super) enum Mode {
     /// 输入（默认）：编辑与提交 prompt；不触发命令，`/` 开头按普通文本发送
     Insert,
-    /// 浏览：滚动聊天区、跳转、复制；输入字符不进入缓冲（草稿保留）
+    /// 动作层（ADR-0021）：单字母直达——滚动、跳转、复制、队列、会话；
+    /// 输入字符不进入缓冲（草稿保留）
     Normal,
     /// 命令（ADR-0020）：NORMAL `:` 进入的专门命令输入框（独立缓冲，预填
     /// `/`）；Tab 补全、Enter 执行命令或展开模板、Esc 放弃回 NORMAL
     Command,
     /// 搜索：输入框复用为搜索框（增量命中），Enter/Esc 回 NORMAL
     Search,
-    /// 可视选择：以消息为粒度选择范围，`y` 复制后回 NORMAL
-    Visual,
     /// 队列编辑（ADR-0012，oil.nvim 式）：排队消息作为可编辑缓冲，
     /// 导航/删除/换位/就地编辑；打开期间冻结队列发送
     Queue,
@@ -376,6 +377,9 @@ pub(super) enum Mode {
     /// Esc/q/`?` 关闭。派生态：由 `help_scroll.is_some()` 决定，
     /// 不入 `App::mode` 字段（与 Picker 同构）
     Help,
+    /// 复制菜单（NORMAL `y` 打开，ADR-0021）：消息与代码块快照列表，
+    /// Enter/数字键复制、Esc/q 关闭。派生态：由 `copy_menu.is_some()` 决定
+    CopyMenu,
     /// 选择器打开（`/resume`、`/models`、`/tree`），接管键位。
     /// 派生态：由 `picker.is_some()` 决定，不入 `App::mode` 字段
     Picker,
@@ -482,11 +486,14 @@ pub(super) struct App {
     search: Search,
     /// 选择器（`/resume` / `/models` / `/tree`，打开时接管键位）
     picker: Option<Picker>,
-    /// 交互模式（ADR-0011）：只取 Insert/Normal/Search/Visual/Queue；
-    /// Picker/Help 是派生态（`picker.is_some()` / `help_scroll.is_some()`
-    /// 时 [`Self::mode`] 返回 Picker/Help），不入此字段
+    /// 复制菜单（NORMAL `y` 打开；`Some` 即打开）
+    copy_menu: Option<CopyMenu>,
+    /// 交互模式（ADR-0021）：只取 Insert/Normal/Search/Queue；
+    /// Picker/Help/CopyMenu 是派生态（`picker.is_some()` /
+    /// `help_scroll.is_some()` / `copy_menu.is_some()` 时 [`Self::mode`]
+    /// 返回对应值），不入此字段
     mode: Mode,
-    /// 序列键首键（NORMAL/QUEUE/HELP 的 `g`/`[`/`]`/`y`/`d`），等待第二键
+    /// 序列键首键（QUEUE/HELP 的 `g`/`d`），等待第二键
     pending_key: Option<char>,
     /// 键位帮助弹层的滚动偏移（NORMAL `?` 打开；`Some` 即打开，
     /// 0 为顶部）。派生模式 Help 的判定字段
@@ -524,6 +531,7 @@ impl App {
             queue: Queue::default(),
             search: Search::default(),
             picker: None,
+            copy_menu: None,
             mode: Mode::Insert,
             pending_key: None,
             help_scroll: None,
@@ -632,6 +640,7 @@ impl App {
                     args: brief_args(tool_name, args),
                     status: ToolStatus::Running,
                     detail: Vec::new(),
+                    collapsed: false,
                 });
             }
             AgentEvent::ToolExecutionUpdate {
@@ -670,13 +679,15 @@ impl App {
 
     // ── 按键（语义分发） ────────────────────────────────────────────────────
 
-    /// 当前交互模式（渲染光标/徽标与外部查询用）：picker/帮助弹层
-    /// 打开时派生为 Picker/Help，否则为字段值（Insert/Normal）。
+    /// 当前交互模式（渲染光标/徽标与外部查询用）：picker/帮助弹层/
+    /// 复制菜单打开时派生为对应模式，否则为字段值（Insert/Normal）。
     pub(super) const fn mode(&self) -> Mode {
         if self.picker.is_some() {
             Mode::Picker
         } else if self.help_scroll.is_some() {
             Mode::Help
+        } else if self.copy_menu.is_some() {
+            Mode::CopyMenu
         } else {
             self.mode
         }
@@ -691,8 +702,8 @@ impl App {
             // 此时 agent 必空闲，无运行可取消）
             Mode::Picker => self.press_picker(key),
             Mode::Help => self.press_help(key),
+            Mode::CopyMenu => self.press_copy_menu(key),
             Mode::Search => self.press_search(key),
-            Mode::Visual => self.press_visual(key),
             Mode::Normal => self.press_normal(key),
             Mode::Insert => self.press_insert(key),
             Mode::Command => self.press_command(key),
@@ -877,128 +888,103 @@ impl App {
         }
     }
 
-    /// NORMAL 模式键位（ADR-0011）：浏览聊天区与复制；输入字符不进入
-    /// 缓冲（草稿保留，`i`/`a`/`Enter` 回到 INSERT 继续编辑）。
+    /// NORMAL 模式键位（ADR-0021）：单字母动作层——less 式滚动（j/k、
+    /// d/u 半页、g/G 顶底）、`[`/`]` 消息跳转、`/` 搜索、`y` 复制菜单、
+    /// `m` 队列、`r` 重试、`e` 编辑器、`q` 退出；输入字符不进入缓冲
+    ///（草稿保留，`i`/`a`/`Enter` 回到 INSERT 继续编辑）。
     fn press_normal(&mut self, key: Key) -> Vec<Effect> {
-        // 序列键第二键；不匹配的键清掉 pending 后照常处理
-        //（比 vim 的「无效序列吞键」宽容）
-        if let Some(pending) = self.pending_key.take()
-            && let Some(effects) = self.normal_sequence(pending, key)
-        {
-            return effects;
-        }
         if let Some(effects) = self.normal_exit(key) {
             return effects;
         }
         match key {
+            // g/G：到顶/回底（less 惯例；渲染时经 clamp_scroll 钳到上限）
             Key::Char('g') => {
-                self.pending_key = Some('g');
-                Vec::new()
-            }
-            Key::Char('[') => {
-                self.pending_key = Some('[');
-                Vec::new()
-            }
-            Key::Char(']') => {
-                self.pending_key = Some(']');
-                Vec::new()
-            }
-            Key::Char('y') => {
-                self.pending_key = Some('y');
-                Vec::new()
-            }
-            Key::Char('d') => {
-                self.pending_key = Some('d');
-                Vec::new()
-            }
-            // x：删除草稿光标处字符（草稿编辑，不动消息游标）
-            Key::Char('x') => {
-                self.input.delete_char_at_cursor();
-                Vec::new()
+                self.chat.scroll_up(u16::MAX);
+                self.chat.move_cursor_to_first_message();
             }
             Key::Char('G') => {
                 self.chat.scroll_to_bottom();
                 self.chat.move_cursor_to_last_message();
-                Vec::new()
             }
-            // v 进入可视选择：锚点取消息游标（无可选消息时提示）
-            Key::Char('v') => {
-                if self.chat.begin_visual() {
-                    self.mode = Mode::Visual;
-                } else {
-                    self.notice = Some("没有可选择的消息".to_string());
-                }
-                Vec::new()
-            }
-            // Q 进入 QUEUE 模式：oil.nvim 式队列编辑（ADR-0012）
-            Key::Char('Q') => {
-                self.enter_queue();
-                Vec::new()
-            }
+            // d/u：半页下/上（less 惯例）
+            Key::Char('d') => self.chat.scroll_down(HALF_PAGE_SCROLL),
+            Key::Char('u') => self.chat.scroll_up(HALF_PAGE_SCROLL),
+            // [/]：上一条/下一条对话消息；{/}：上一个/下一个工具调用
+            Key::Char('[') => self.chat.step_cursor(-1, ChatItem::is_message),
+            Key::Char(']') => self.chat.step_cursor(1, ChatItem::is_message),
+            Key::Char('{') => self.chat.step_cursor(-1, ChatItem::is_tool),
+            Key::Char('}') => self.chat.step_cursor(1, ChatItem::is_tool),
             // `/` 进入搜索（输入框复用为搜索框；保留上次查询可编辑）
-            Key::Char('/') => {
-                self.mode = Mode::Search;
-                Vec::new()
-            }
-            // `?` 打开键位帮助弹层（只读；Esc/q/`?` 关闭）
-            Key::Char('?') => self.open_help(),
+            Key::Char('/') => self.mode = Mode::Search,
             // n/N：在搜索命中条目间循环跳转
-            Key::Char('n') => {
-                self.search_jump(1);
-                Vec::new()
-            }
-            Key::Char('N') => {
-                self.search_jump(-1);
-                Vec::new()
-            }
-            Key::Char('k') | Key::Up => {
-                self.chat.scroll_up(1);
-                Vec::new()
-            }
-            Key::Char('j') | Key::Down => {
-                self.chat.scroll_down(1);
-                Vec::new()
-            }
-            // Ctrl+D 在 NORMAL 让位 vim 语义（半页滚动）；取消/退出
-            // 统一由 Ctrl+C 承担（与 INSERT 的 Ctrl+C 同口径）
-            Key::Ctrl('u') => {
-                self.chat.scroll_up(HALF_PAGE_SCROLL);
-                Vec::new()
-            }
-            Key::Ctrl('d') => {
-                self.chat.scroll_down(HALF_PAGE_SCROLL);
-                Vec::new()
-            }
-            Key::PageUp => {
-                self.chat.scroll_up(PAGE_SCROLL);
-                Vec::new()
-            }
-            Key::PageDown => {
-                self.chat.scroll_down(PAGE_SCROLL);
-                Vec::new()
-            }
-            // 复制最新一条消息（等价 `/copy`）
-            Key::Char('Y') => self.copy_latest(),
-            Key::Ctrl('c') => {
-                if self.running {
-                    vec![Effect::Cancel]
-                } else {
-                    self.should_quit = true;
-                    Vec::new()
+            Key::Char('n') => self.search_jump(1),
+            Key::Char('N') => self.search_jump(-1),
+            // y：复制菜单（消息与代码块快照）；Y：直接复制最新一条（等价 /copy）
+            Key::Char('y') => self.open_copy_menu(),
+            Key::Char('Y') => return self.copy_latest(),
+            // Space：折叠/展开游标条目（assistant/工具；user/system 不可折叠）
+            Key::Char(' ') => {
+                if !self.chat.toggle_collapsed() {
+                    self.notice = Some("该条目不可折叠".to_string());
                 }
             }
+            // m：队列编辑 overlay（oil.nvim 式，ADR-0014）
+            Key::Char('m') => self.enter_queue(),
+            // r：重试最近失败的一轮（与 /retry 同一口径；运行中拒绝）
+            Key::Char('r') => return self.retry_last(),
+            // e：外部编辑器编辑草稿（与 INSERT Ctrl+G 同一效果）
+            Key::Char('e') => return vec![Effect::OpenEditor],
+            // `?` 打开键位帮助弹层（只读；Esc/q/`?` 关闭）
+            Key::Char('?') => return self.open_help(),
+            // q：退出（运行中先中断再退出）
+            Key::Char('q') | Key::Ctrl('c') => return self.quit(),
+            Key::Char('k') | Key::Up => self.chat.scroll_up(1),
+            Key::Char('j') | Key::Down => self.chat.scroll_down(1),
+            Key::PageUp => self.chat.scroll_up(PAGE_SCROLL),
+            Key::PageDown => self.chat.scroll_down(PAGE_SCROLL),
             // 其余按键（含普通字符）忽略：不污染输入缓冲
-            _ => Vec::new(),
+            _ => {}
         }
+        Vec::new()
     }
 
-    /// NORMAL 的「离开浏览」键位：`i`/`a`/`Esc` 回 INSERT（光标原位），
-    /// `Enter`/`A` 回 INSERT 到输入末尾，`I` 到当前行首，`:` 进入
-    /// COMMAND 命令输入框（ADR-0020）。返回 `Some` 表示已处理。
+    /// 退出 TUI（NORMAL `q`/`Ctrl+C`）：运行中先中断本轮再退出。
+    fn quit(&mut self) -> Vec<Effect> {
+        self.should_quit = true;
+        if self.running {
+            return vec![Effect::Cancel];
+        }
+        Vec::new()
+    }
+
+    /// NORMAL `r`：重试最近失败的一轮（与 `/retry` 同一口径）；
+    /// 运行中拒绝并提示。
+    fn retry_last(&mut self) -> Vec<Effect> {
+        if self.running {
+            self.notice = Some("运行中：等本轮结束后再重试".to_string());
+            return Vec::new();
+        }
+        self.chat.pop_trailing_failed_assistant();
+        self.running = true;
+        self.notice = None;
+        vec![Effect::Retry]
+    }
+
+    /// NORMAL 的「离开动作层」键位：`i`/`a` 回 INSERT（光标原位），
+    /// `Enter`/`A` 到输入末尾，`I` 到当前行首，`:` 进入 COMMAND 命令
+    /// 输入框（ADR-0020）；`Esc` 逐层退回——运行中先中断运行（留在
+    /// NORMAL），空闲回 INSERT。返回 `Some` 表示已处理。
     fn normal_exit(&mut self, key: Key) -> Option<Vec<Effect>> {
         match key {
-            // i/a 回到光标原处继续编辑；Esc 放弃浏览直接返回
-            Key::Char('i' | 'a') | Key::Esc => self.leave_normal(),
+            // Esc 逐层退回（ADR-0021）：运行中优先中断运行
+            Key::Esc => {
+                if self.running {
+                    return Some(vec![Effect::Cancel]);
+                }
+                self.leave_normal();
+            }
+            // i/a 回到光标原处继续编辑
+            Key::Char('i' | 'a') => self.leave_normal(),
             // Enter/A 回 INSERT 并把光标置于输入末尾（ADR-0011）；
             // I 回 INSERT 到当前逻辑行首
             Key::Enter | Key::Char('A') => {
@@ -1017,71 +1003,43 @@ impl App {
         Some(Vec::new())
     }
 
-    /// NORMAL 的序列键第二键：`gg` 到顶、`[m`/`]m` 消息跳转、`[t`/`]t`
-    /// 工具跳转、`yy`/`yc` 复制、`dd`/`dw` 草稿删除。返回 `Some` 表示
-    /// 已处理；`None` 表示组合不匹配，调用方把按键照常分发。
-    fn normal_sequence(&mut self, pending: char, key: Key) -> Option<Vec<Effect>> {
-        match (pending, key) {
-            // gg：到顶（渲染时经 clamp_scroll 钳到实际上限）
-            ('g', Key::Char('g')) => {
-                self.chat.scroll_up(u16::MAX);
-                self.chat.move_cursor_to_first_message();
-            }
-            // [m / ]m：上一条/下一条对话消息
-            ('[', Key::Char('m')) => self.chat.step_cursor(-1, ChatItem::is_message),
-            (']', Key::Char('m')) => self.chat.step_cursor(1, ChatItem::is_message),
-            // [t / ]t：上一个/下一个工具调用
-            ('[', Key::Char('t')) => self.chat.step_cursor(-1, ChatItem::is_tool),
-            (']', Key::Char('t')) => self.chat.step_cursor(1, ChatItem::is_tool),
-            // yy：复制游标条目；yc：复制游标消息中的代码块
-            ('y', Key::Char('y')) => return Some(self.copy_cursor_item()),
-            ('y', Key::Char('c')) => return Some(self.copy_cursor_code_block()),
-            // dd：删除草稿当前逻辑行；dw：删除到后一词开头
-            ('d', Key::Char('d')) => self.input.delete_draft_line(),
-            ('d', Key::Char('w')) => self.input.delete_word_forward(),
-            _ => return None,
-        }
-        Some(Vec::new())
-    }
-
-    /// VISUAL 模式键位：j/k 以消息为粒度扩展选择，`y` 复制范围后回
-    /// NORMAL，Esc 放弃选择回 NORMAL。
-    fn press_visual(&mut self, key: Key) -> Vec<Effect> {
+    /// 复制菜单键位（NORMAL `y` 打开，ADR-0021）：j/k/g/G 导航，
+    /// Enter 复制选中行后关闭，数字键 `1`-`9` 直达复制对应行，
+    /// Esc/q 关闭。
+    fn press_copy_menu(&mut self, key: Key) -> Vec<Effect> {
+        let Some(menu) = &mut self.copy_menu else {
+            return Vec::new();
+        };
         match key {
-            Key::Char('j') | Key::Down => self.chat.step_cursor(1, ChatItem::is_message),
-            Key::Char('k') | Key::Up => self.chat.step_cursor(-1, ChatItem::is_message),
-            Key::Char('y') => {
-                let effects = self.yank_visual_selection();
-                self.mode = Mode::Normal;
-                self.chat.end_visual();
-                return effects;
+            Key::Char('j') | Key::Down => menu.select(1),
+            Key::Char('k') | Key::Up => menu.select(-1),
+            Key::Char('g') => menu.jump_first(),
+            Key::Char('G') => menu.jump_last(),
+            Key::Enter => {
+                let text = menu.selected_text();
+                self.copy_menu = None;
+                return vec![Effect::CopyText(text)];
             }
-            Key::Esc => {
-                self.mode = Mode::Normal;
-                self.chat.end_visual();
+            Key::Char(c @ '1'..='9') => {
+                let index = (c.to_digit(10).unwrap_or(1) - 1) as usize;
+                if let Some(text) = menu.select_index(index) {
+                    self.copy_menu = None;
+                    return vec![Effect::CopyText(text)];
+                }
             }
+            Key::Esc | Key::Char('q') => self.copy_menu = None,
             Key::Ctrl('c') => self.should_quit = true,
             _ => {}
         }
         Vec::new()
     }
 
-    /// VISUAL `y`：复制锚点到游标的消息范围（各条目纯文本以空行拼接）。
-    fn yank_visual_selection(&mut self) -> Vec<Effect> {
-        match self.chat.yank_visual_range() {
-            Ok(text) => vec![Effect::CopyText(text)],
-            Err(notice) => {
-                self.notice = Some(notice.to_string());
-                Vec::new()
-            }
+    /// NORMAL `y`：打开复制菜单（聊天条目快照；无可复制内容时提示）。
+    fn open_copy_menu(&mut self) {
+        match CopyMenu::build(self.chat.items(), self.chat.cursor()) {
+            Some(menu) => self.copy_menu = Some(menu),
+            None => self.notice = Some("没有可复制的消息".to_string()),
         }
-    }
-
-    /// 渲染用：VISUAL 的选择范围（仅 VISUAL 下返回）。
-    pub(super) fn visual_range(&self) -> Option<(usize, usize)> {
-        (self.mode() == Mode::Visual)
-            .then_some(self.chat.visual_range())
-            .flatten()
     }
 
     /// SEARCH 模式键位：输入即搜（增量跳转第一个命中），Enter 保留命中
@@ -1148,43 +1106,15 @@ impl App {
         self.pending_key = None;
     }
 
-    /// 消息游标（渲染 gutter 高亮用）；浏览类模式（NORMAL/COMMAND/SEARCH/
-    /// VISUAL）下返回。
+    /// 消息游标（渲染 gutter 高亮用）；浏览类模式（NORMAL/COMMAND/
+    /// SEARCH/COPYMENU）下返回。
     pub(super) fn chat_cursor(&self) -> Option<usize> {
         matches!(
             self.mode(),
-            Mode::Normal | Mode::Command | Mode::Search | Mode::Visual
+            Mode::Normal | Mode::Command | Mode::Search | Mode::CopyMenu
         )
         .then_some(self.chat.cursor())
         .flatten()
-    }
-
-    /// NORMAL `yy`：复制消息游标所在条目的纯文本。
-    fn copy_cursor_item(&mut self) -> Vec<Effect> {
-        match self.chat.copy_cursor_item() {
-            Ok(text) => vec![Effect::CopyText(text)],
-            Err(notice) => {
-                self.notice = Some(notice.to_string());
-                Vec::new()
-            }
-        }
-    }
-
-    /// NORMAL `yc`：复制游标消息中的 ``` 围栏代码块；多个时按 yc 循环
-    /// 依次取下一个。
-    fn copy_cursor_code_block(&mut self) -> Vec<Effect> {
-        match self.chat.copy_cursor_code_block() {
-            Ok((text, progress)) => {
-                if let Some(progress) = progress {
-                    self.notice = Some(progress);
-                }
-                vec![Effect::CopyText(text)]
-            }
-            Err(notice) => {
-                self.notice = Some(notice.to_string());
-                Vec::new()
-            }
-        }
     }
 
     /// 复制最新一条消息到剪贴板（`/copy` 与 NORMAL `Y` 共用）。
@@ -1300,7 +1230,7 @@ impl App {
 
     /// 运行中（含工具执行中）的 INSERT Enter：普通输入**排队**——入
     /// 统一消息队列（ADR-0014，当前 turn 的工具调用执行完后注入本轮
-    /// 运行）；Esc→NORMAL→Q 进 QUEUE 模式编辑队列。运行中执行命令走
+    /// 运行）；Esc→NORMAL→m 进 QUEUE 模式编辑队列。运行中执行命令走
     /// COMMAND 模式（本地命令照常，会话命令仍须等本轮结束）。
     fn press_enter_running(&mut self) -> Vec<Effect> {
         let Some(text) = self.input.take_input() else {
@@ -1316,13 +1246,13 @@ impl App {
 
     /// 入队（ADR-0014，统一消息队列）：随暂存附件一起入队，当前 turn
     /// 的工具调用执行完后由 core 在 turn 边界注入本轮运行（run 异常
-    /// 结束时保留，恢复后作为下一轮 prompt）；Esc→NORMAL→Q 进 QUEUE
+    /// 结束时保留，恢复后作为下一轮 prompt）；Esc→NORMAL→m 进 QUEUE
     /// 模式可编辑（编辑期间冻结注入）。
     fn enqueue(&mut self, text: String) -> Vec<Effect> {
         let images = self.input.take_attachments();
         self.queue.push(SteeringMessage { text, images });
         self.notice = Some(format!(
-            "已排队（第 {} 条），当前步骤完成后注入本轮 · Esc→Q 编辑队列",
+            "已排队（第 {} 条），当前步骤完成后注入本轮 · Esc→m 编辑队列",
             self.queue.len()
         ));
         Vec::new()
@@ -1498,7 +1428,7 @@ impl App {
         }
     }
 
-    /// NORMAL `Q`：进入 QUEUE 模式（oil.nvim 式队列编辑）。队列为空
+    /// NORMAL `m`：进入 QUEUE 模式（oil.nvim 式队列编辑）。队列为空
     /// 或草稿非空时拒绝并提示；进入即冻结队列注入——用户手持缓冲
     /// 编辑时 run 仍在推进，不冻结会让 core 在 turn 边界弹走条目
     /// 导致游标下标漂移。
@@ -1770,6 +1700,13 @@ impl App {
         let effective = scroll.min(max_scroll);
         self.help_scroll = Some(effective);
         effective
+    }
+
+    // ── 复制菜单 ────────────────────────────────────────────────────────────
+
+    /// 当前复制菜单（渲染用）。
+    pub(super) const fn copy_menu(&self) -> Option<&CopyMenu> {
+        self.copy_menu.as_ref()
     }
 
     // ── 渲染读接口 ──────────────────────────────────────────────────────────
@@ -2289,6 +2226,7 @@ mod tests {
             ],
             done: true,
             error: None,
+            collapsed: false,
         }));
         // thinking 不复制，多个正文块以空行连接
         let [Effect::CopyText(text)] = &app.execute_slash(SlashAction::Copy)[..] else {
@@ -3065,19 +3003,19 @@ mod tests {
         app
     }
 
-    /// NORMAL `Q` 的进入守卫：队列为空或草稿非空时拒绝并提示。
+    /// NORMAL `m` 的进入守卫：队列为空或草稿非空时拒绝并提示。
     #[test]
     fn queue_mode_enter_guards() {
         let mut empty = app();
         empty.press(Key::Esc);
-        empty.press(Key::Char('Q'));
+        empty.press(Key::Char('m'));
         assert!(!empty.queue_mode_active());
         assert!(empty.notice().is_some_and(|n| n.contains("队列为空")));
 
         let mut drafting = queued_app();
         drafting.paste_text("未发草稿");
         drafting.press(Key::Esc);
-        drafting.press(Key::Char('Q'));
+        drafting.press(Key::Char('m'));
         assert!(!drafting.queue_mode_active());
         assert!(drafting.notice().is_some_and(|n| n.contains("草稿非空")));
 
@@ -3085,7 +3023,7 @@ mod tests {
         drafting.press(Key::Char('i'));
         drafting.press(Key::Ctrl('u'));
         drafting.press(Key::Esc);
-        drafting.press(Key::Char('Q'));
+        drafting.press(Key::Char('m'));
         assert!(drafting.queue_mode_active());
         assert_eq!(drafting.queue.cursor(), 0);
     }
@@ -3096,7 +3034,7 @@ mod tests {
     fn queue_mode_navigate_and_delete() {
         let mut app = queued_app();
         app.press(Key::Esc);
-        app.press(Key::Char('Q'));
+        app.press(Key::Char('m'));
         assert!(app.queue_mode_active());
 
         app.press(Key::Char('j'));
@@ -3127,7 +3065,7 @@ mod tests {
     fn queue_mode_swap_reorders() {
         let mut app = queued_app();
         app.press(Key::Esc);
-        app.press(Key::Char('Q'));
+        app.press(Key::Char('m'));
         app.press(Key::Char('J'));
         assert_eq!(app.queue.cursor(), 1);
         app.press(Key::Char('J'));
@@ -3151,7 +3089,7 @@ mod tests {
     fn queue_mode_edit_and_save() {
         let mut app = queued_app();
         app.press(Key::Esc);
-        app.press(Key::Char('Q'));
+        app.press(Key::Char('m'));
         app.press(Key::Char('i'));
         assert!(app.queue.is_editing());
         assert_eq!(app.input.text(), "first");
@@ -3174,7 +3112,7 @@ mod tests {
     fn queue_editing_disables_completion() {
         let mut app = queued_app();
         app.press(Key::Esc);
-        app.press(Key::Char('Q'));
+        app.press(Key::Char('m'));
         app.press(Key::Char('i'));
         app.press(Key::Ctrl('u'));
         app.paste_text("/he");
@@ -3189,7 +3127,7 @@ mod tests {
     fn queue_mode_insert_slot_and_empty_save_discards() {
         let mut app = queued_app();
         app.press(Key::Esc);
-        app.press(Key::Char('Q'));
+        app.press(Key::Char('m'));
         app.press(Key::Char('o'));
         assert!(app.queue.is_editing());
         assert_eq!(app.queue.len(), 3);
@@ -3222,7 +3160,7 @@ mod tests {
         let mut running = queued_app();
         running.handle_event(&AgentEvent::AgentStart);
         running.press(Key::Esc);
-        running.press(Key::Char('Q'));
+        running.press(Key::Char('m'));
         assert!(running.drain_queue().is_none(), "QUEUE 打开期间冻结 drain");
         assert!(running.press(Key::Esc).is_empty(), "运行中退出不提交");
         assert_eq!(running.mode(), Mode::Normal);
@@ -3233,7 +3171,7 @@ mod tests {
         // 空闲退出 QUEUE：立即取出队首提交
         let mut idle = queued_app();
         idle.press(Key::Esc);
-        idle.press(Key::Char('Q'));
+        idle.press(Key::Char('m'));
         let effects = idle.press(Key::Esc);
         assert!(matches!(&effects[..], [Effect::Prompt { text, .. }] if text == "first"));
         assert!(idle.is_running());
@@ -3255,7 +3193,7 @@ mod tests {
         // 异常结束（取消）：队列暂停保留，空闲下进入 QUEUE 编辑
         app.finish_run(Some("已取消".to_string()));
         app.press(Key::Esc);
-        app.press(Key::Char('Q'));
+        app.press(Key::Char('m'));
         assert!(app.queue_mode_active());
         assert_eq!(app.queue.len(), 3);
         // 进入 QUEUE 即冻结注入（core 在 turn 边界不再弹出）
@@ -3486,32 +3424,28 @@ mod tests {
         assert_eq!(app.input.text().len(), draft_len);
     }
 
-    /// NORMAL：gg 到顶、G 回底（跟随模式）、Ctrl+D/U 半页滚动；
-    /// g 后接非 g 键吞掉 pending，该键照常处理。
+    /// NORMAL：g 到顶、G 回底（跟随模式）、d/u 半页滚动（less 式单键）。
     #[test]
-    fn normal_mode_gg_g_and_half_page_scroll() {
+    fn normal_mode_g_half_page_and_scroll() {
         let mut app = app();
         app.press(Key::Esc);
 
         app.press(Key::Char('g'));
-        app.press(Key::Char('g'));
-        assert_eq!(app.chat.scroll(), u16::MAX, "gg 滚到顶（渲染时钳到上限）");
+        assert_eq!(app.chat.scroll(), u16::MAX, "g 滚到顶（渲染时钳到上限）");
 
         app.press(Key::Char('G'));
         assert_eq!(app.chat.scroll(), 0, "G 回底");
 
-        app.press(Key::Ctrl('u'));
+        app.press(Key::Char('u'));
         assert_eq!(app.chat.scroll(), 5);
-        app.press(Key::Ctrl('d'));
+        app.press(Key::Char('d'));
         assert_eq!(app.chat.scroll(), 0);
 
-        // g + j：pending 清除，j 照常滚动
-        app.press(Key::Char('g'));
+        // j/k 单行滚动
+        app.press(Key::Char('k'));
+        assert_eq!(app.chat.scroll(), 1);
         app.press(Key::Char('j'));
         assert_eq!(app.chat.scroll(), 0, "j 向下滚动钳在 0");
-        app.press(Key::Char('g'));
-        app.press(Key::Char('k'));
-        assert_eq!(app.chat.scroll(), 1, "k 正常上滚，未被 gg 吞掉");
     }
 
     /// NORMAL：Y 复制最新一条消息（与 /copy 同效果）；无消息时提示。
@@ -3529,9 +3463,10 @@ mod tests {
         assert!(matches!(&effects[..], [Effect::CopyText(text)] if text == "你好"));
     }
 
-    /// NORMAL：Ctrl+C 与 INSERT 同口径（取消/退出）；Ctrl+D 让位半页滚动。
+    /// NORMAL：Ctrl+C 与 INSERT 同口径（运行中取消并退出，空闲退出）；
+    /// d/u 半页滚动。
     #[test]
-    fn normal_mode_ctrl_c_quits_ctrl_d_scrolls() {
+    fn normal_mode_ctrl_c_quits_and_d_scrolls() {
         let mut idle = app();
         idle.press(Key::Esc);
         assert!(idle.press(Key::Ctrl('c')).is_empty());
@@ -3544,6 +3479,7 @@ mod tests {
             &running.press(Key::Ctrl('c'))[..],
             [Effect::Cancel]
         ));
+        assert!(running.should_quit(), "运行中 Ctrl+C 也退出");
     }
 
     /// picker 打开时模式派生为 Picker（ADR-0011）。
@@ -3717,8 +3653,8 @@ mod tests {
         app
     }
 
-    /// NORMAL 消息游标：进入时定位最新一条消息；]m/[m 在消息间移动（跳过
-    /// 工具与系统条目），]t/[t 在工具条目间移动；越界钳制。
+    /// NORMAL 消息游标：进入时定位最新一条消息；[/] 在消息间移动（跳过
+    /// 工具与系统条目），{/} 在工具条目间移动；越界钳制。
     #[test]
     fn normal_cursor_steps_between_messages_and_tools() {
         let mut app = app_with_history();
@@ -3730,86 +3666,77 @@ mod tests {
             "进入 NORMAL 定位最新一条消息"
         );
 
-        // [m 逐条向前：assistant → user（跳过 tool）
+        // [ 逐条向前：assistant → user（跳过 tool）
         app.press(Key::Char('['));
-        app.press(Key::Char('m'));
         assert_eq!(app.chat.cursor_item, Some(3));
         app.press(Key::Char('['));
-        app.press(Key::Char('m'));
         assert_eq!(app.chat.cursor_item, Some(1), "跳过 tool 条目");
-        // ]m 回到尾部
+        // ] 回到尾部
         app.press(Key::Char(']'));
-        app.press(Key::Char('m'));
         assert_eq!(app.chat.cursor_item, Some(3));
 
-        // [t 定位工具条目；继续 [t 越界钳制在原位
-        app.press(Key::Char('['));
-        app.press(Key::Char('t'));
+        // { 定位工具条目；继续 { 越界钳制在原位
+        app.press(Key::Char('{'));
         assert_eq!(app.chat.cursor_item, Some(2));
-        app.press(Key::Char('['));
-        app.press(Key::Char('t'));
+        app.press(Key::Char('{'));
         assert_eq!(app.chat.cursor_item, Some(2), "没有更早的工具条目，钳制");
 
-        // gg/G：游标随滚动到首/尾消息
-        app.press(Key::Char('g'));
+        // g/G：游标随滚动到首/尾消息
         app.press(Key::Char('g'));
         assert_eq!(app.chat.cursor_item, Some(0));
         app.press(Key::Char('G'));
         assert_eq!(app.chat.cursor_item, Some(4));
     }
 
-    /// NORMAL `yy`：复制游标条目纯文本（assistant 取正文块拼接，不含 thinking）。
+    /// NORMAL `y` 复制菜单：预选中消息游标条目，Enter 复制；
+    /// 重新打开后选中用户消息条目同样可复制。
     #[test]
-    fn normal_yy_copies_cursor_item() {
+    fn normal_y_copy_menu_copies_selected() {
         let mut app = app_with_history();
         app.press(Key::Esc);
-        let effects = {
-            app.press(Key::Char('y'));
-            app.press(Key::Char('y'))
-        };
+        // 游标在最新 assistant（下标 4）：y 打开菜单预选其所在行，Enter 复制
+        app.press(Key::Char('y'));
+        assert_eq!(app.mode(), Mode::CopyMenu);
+        let effects = app.press(Key::Enter);
         assert!(
             matches!(&effects[..], [Effect::CopyText(text)] if text.contains("看这里")),
             "{effects:?}"
         );
 
-        // 游标移到 user 条目：复制 user 文本
+        // 游标移到 user 条目后重开菜单：预选 user 行，Enter 复制 user 文本
         app.press(Key::Char('['));
-        app.press(Key::Char('m'));
-        let effects = {
-            app.press(Key::Char('y'));
-            app.press(Key::Char('y'))
-        };
-        assert!(matches!(&effects[..], [Effect::CopyText(text)] if text == "第二个问题"));
+        app.press(Key::Char('y'));
+        let effects = app.press(Key::Enter);
+        assert!(
+            matches!(&effects[..], [Effect::CopyText(text)] if text == "第二个问题"),
+            "{effects:?}"
+        );
     }
 
-    /// NORMAL `yc`：复制游标消息中的代码块；多个循环选择，没有则提示。
+    /// NORMAL `y` 复制菜单的代码块行：数字键直达复制；j 导航后 Enter 复制。
     #[test]
-    fn normal_yc_copies_code_blocks_with_cycle() {
+    fn normal_y_copy_menu_code_blocks() {
         let mut app = app_with_history();
         app.press(Key::Esc);
-        let copy = |app: &mut App| {
-            app.press(Key::Char('y'));
-            app.press(Key::Char('c'))
-        };
-        // 第一块
-        let effects = copy(&mut app);
+        // 菜单行序（新条目在前）：助手消息、代码块 1/2、代码块 2/2、…
+        app.press(Key::Char('y'));
+        assert_eq!(app.mode(), Mode::CopyMenu);
+        // 数字键 3 直达第二个代码块（行下标 2 = 代码块 2/2）
+        let effects = app.press(Key::Char('3'));
+        assert!(
+            matches!(&effects[..], [Effect::CopyText(text)] if text == "第二块\n"),
+            "{effects:?}"
+        );
+        assert_eq!(app.mode(), Mode::Normal, "复制后关闭菜单");
+
+        // 重开菜单：j 选中代码块 1/2，Enter 复制
+        app.press(Key::Char('y'));
+        app.press(Key::Char('j'));
+        let effects = app.press(Key::Enter);
         assert!(
             matches!(&effects[..], [Effect::CopyText(text)] if text == "fn main() {}\n"),
             "{effects:?}"
         );
-        // 同一游标消息上重复 yc：循环到第二块，并给出进度提示
-        let effects = copy(&mut app);
-        assert!(matches!(&effects[..], [Effect::CopyText(text)] if text == "第二块\n"));
-        assert_eq!(app.notice(), Some("已选第 2/2 个代码块（重复 yc 循环）"));
-        // 循环回第一块
-        let effects = copy(&mut app);
-        assert!(matches!(&effects[..], [Effect::CopyText(text)] if text == "fn main() {}\n"));
-
-        // 无代码块的消息：提示
-        app.press(Key::Char('['));
-        app.press(Key::Char('m'));
-        assert!(copy(&mut app).is_empty());
-        assert_eq!(app.notice(), Some("该消息中没有代码块"));
     }
 
     /// NORMAL `/` 搜索：输入即搜（增量跳第一个命中），Enter 保留命中
@@ -3858,98 +3785,57 @@ mod tests {
         assert_eq!(app.notice(), Some("没有搜索命中（NORMAL 下 / 开始搜索）"));
     }
 
-    /// VISUAL：v 以游标为锚点进入，j/k 以消息为粒度扩展选择，y 复制
-    /// 范围后回 NORMAL；Esc 放弃；无可选消息时提示。
+    /// NORMAL：A/I 分别到输入末尾/行首回 INSERT（草稿编辑统一回 INSERT）。
     #[test]
-    fn visual_selects_message_range_and_yanks() {
-        // 无消息时 v 提示
-        let mut empty = app();
-        empty.press(Key::Esc);
-        assert!(empty.press(Key::Char('v')).is_empty());
-        assert_eq!(empty.mode(), Mode::Normal);
-        assert_eq!(empty.notice(), Some("没有可选择的消息"));
-
-        let mut app = app_with_history();
-        app.press(Key::Esc);
-
-        // 锚点取游标（最新 assistant，下标 4），k 扩展两条（到 tool 前的
-        // user 1 再上一跳越过 tool 到 assistant 1）
-        app.press(Key::Char('v'));
-        assert_eq!(app.mode(), Mode::Visual);
-        assert_eq!(app.visual_range(), Some((4, 4)));
-        app.press(Key::Char('k'));
-        app.press(Key::Char('k'));
-        assert_eq!(app.chat.cursor_item, Some(1), "k 逐消息上移，跳过 tool");
-        assert_eq!(app.visual_range(), Some((1, 4)));
-
-        // y 复制范围：assistant/user/tool/user/assistant 各条目文本拼接
-        let effects = app.press(Key::Char('y'));
-        let [Effect::CopyText(text)] = &effects[..] else {
-            panic!("应产出 CopyText：{effects:?}");
-        };
-        assert!(text.contains("第一个回答"), "{text}");
-        assert!(text.contains("第二个问题"), "{text}");
-        assert!(text.contains("bash(ls)"), "工具条目文本也在范围内：{text}");
-        assert_eq!(app.mode(), Mode::Normal, "y 后回 NORMAL");
-        assert_eq!(app.visual_range(), None);
-
-        // Esc 放弃选择
-        app.press(Key::Char('v'));
-        app.press(Key::Char('k'));
-        assert!(app.press(Key::Esc).is_empty());
-        assert_eq!(app.mode(), Mode::Normal);
-        assert_eq!(app.visual_range(), None);
-    }
-
-    /// NORMAL 草稿编辑：x 删光标处字符、dw 删到后一词、dd 删当前逻辑行、
-    /// A/I 分别到末尾/行首回 INSERT；消息游标与聊天区不受影响。
-    #[test]
-    fn normal_draft_editing() {
-        // dd：多行草稿删当前逻辑行（连同换行）
-        let mut multiline = app();
-        multiline.paste_text("first\nsecond\nthird");
-        multiline.press(Key::Esc);
-        // 光标在末尾（third 行）：删末行连同前置换行
-        multiline.press(Key::Char('d'));
-        multiline.press(Key::Char('d'));
-        assert_eq!(multiline.input.text(), "first\nsecond");
-        // 光标回行首，再 dd 两次：逐行删清
-        multiline.press(Key::Char('d'));
-        multiline.press(Key::Char('d'));
-        assert_eq!(multiline.input.text(), "first");
-        multiline.press(Key::Char('d'));
-        multiline.press(Key::Char('d'));
-        assert_eq!(multiline.input.text(), "");
-        // 空草稿上 dd/x 安全无操作
-        multiline.press(Key::Char('d'));
-        multiline.press(Key::Char('d'));
-        multiline.press(Key::Char('x'));
-        assert_eq!(multiline.input.text(), "");
-
+    fn normal_a_i_return_to_insert_at_edges() {
         let mut app = app();
         app.paste_text("hello world foo");
         app.press(Key::Home);
         app.press(Key::Esc);
         assert_eq!(app.mode(), Mode::Normal);
 
-        // x：删除光标处字符（光标在行首，删 'h'）
-        app.press(Key::Char('x'));
-        assert_eq!(app.input.text(), "ello world foo");
-        assert_eq!(app.input.cursor_position().1, 0);
-
-        // dw：删到后一词开头（"ello "）
-        app.press(Key::Char('d'));
-        app.press(Key::Char('w'));
-        assert_eq!(app.input.text(), "world foo");
-
-        // A：回 INSERT 到末尾；I：回 INSERT 到行首
         app.press(Key::Char('A'));
         assert_eq!(app.mode(), Mode::Insert);
-        assert_eq!(app.input.cursor_position().1, 9);
+        assert_eq!(app.input.cursor_position().1, 15);
+
         app.press(Key::Esc);
         app.press(Key::Char('I'));
         assert_eq!(app.mode(), Mode::Insert);
         assert_eq!(app.input.cursor_position().1, 0);
+    }
+
+    /// NORMAL `Space`：切换游标条目折叠（assistant/tool），user/system 不可折叠提示。
+    #[test]
+    fn normal_space_toggles_item_collapse() {
+        let mut app = app_with_history();
+        app.press(Key::Esc);
+        // 游标在最新 assistant（下标 4）
+        assert!(app.chat.cursor_item.is_some());
+        app.press(Key::Char(' '));
+        assert!(matches!(
+            &app.chat.items()[4],
+            ChatItem::Assistant(a) if a.collapsed
+        ));
+        app.press(Key::Char(' '));
+        assert!(matches!(
+            &app.chat.items()[4],
+            ChatItem::Assistant(a) if !a.collapsed
+        ));
+
+        // 游标移到工具条目（{ 向前到 tool），Space 折叠工具
+        app.press(Key::Char('{'));
+        app.press(Key::Char(' '));
+        assert!(matches!(
+            &app.chat.items()[2],
+            ChatItem::Tool(t) if t.collapsed
+        ));
+
+        // 游标移到 user 条目（[ 连按两次：tool→assistant→user），Space 不可折叠
+        app.press(Key::Char('['));
+        app.press(Key::Char('['));
+        assert_eq!(app.chat.cursor_item, Some(0));
+        app.press(Key::Char(' '));
+        assert!(app.notice().is_some_and(|n| n.contains("不可折叠")));
     }
 
     /// 消息游标滚动定位：渲染回写条目行号后，移动游标滚动到该条目。
@@ -3962,12 +3848,10 @@ mod tests {
         app.press(Key::Esc);
         assert_eq!(app.chat.cursor_item, Some(4));
         app.press(Key::Char('['));
-        app.press(Key::Char('m'));
         // 条目 3 起始行 30：scroll = 50 - 30
         assert_eq!(app.chat.scroll(), 20);
         app.press(Key::Char('g'));
-        app.press(Key::Char('g'));
-        assert_eq!(app.chat.scroll(), u16::MAX, "gg 仍然直接滚到顶");
+        assert_eq!(app.chat.scroll(), u16::MAX, "g 仍然直接滚到顶");
     }
 
     /// picker 过滤（fzf 风格）：可打印字符即过滤，选中随过滤对齐可选行；
@@ -4205,7 +4089,7 @@ mod tests {
 
     /// picker 确认恢复后底层模式是 NORMAL（命令受理即回 NORMAL，picker 是
     /// 派生态），消息游标必须立即有效：恢复前无消息（游标 None）或游标
-    /// 停在旧会话的越界下标时，`v`/`yy` 不应报「没有可选择的消息」。
+    /// 停在旧会话的越界下标时，`y` 复制菜单不应报「没有可复制的消息」。
     #[test]
     fn restore_conversation_positions_cursor_on_last_message() {
         // 恢复前无消息：游标 None
@@ -4220,7 +4104,13 @@ mod tests {
             "sid-1".to_string(),
         );
         assert_eq!(app.chat.cursor_item, Some(1), "游标定位到最新一条消息");
-        assert!(app.chat.begin_visual(), "恢复后 v 应可进入 VISUAL");
+        // y 复制菜单打开（游标有效）：预选最新消息，Enter 复制
+        app.press(Key::Char('y'));
+        assert_eq!(app.mode(), Mode::CopyMenu);
+        let [Effect::CopyText(text)] = &app.press(Key::Enter)[..] else {
+            panic!("恢复后 y 菜单应可复制游标消息");
+        };
+        assert_eq!(text, "回答");
 
         // 恢复前游标停在旧会话的大下标（越界）
         let mut app = app_with_history();
@@ -4228,8 +4118,9 @@ mod tests {
         assert_eq!(app.chat.cursor_item, Some(4));
         app.restore_conversation(&[*user_message("短历史")], "sid-2".to_string());
         assert_eq!(app.chat.cursor_item, Some(0), "越界游标被重置到新历史内");
-        let [Effect::CopyText(text)] = &app.copy_cursor_item()[..] else {
-            panic!("恢复后 yy 应可复制游标消息");
+        app.press(Key::Char('y'));
+        let [Effect::CopyText(text)] = &app.press(Key::Enter)[..] else {
+            panic!("恢复后 y 菜单应可复制游标消息");
         };
         assert_eq!(text, "短历史");
     }
@@ -4244,7 +4135,8 @@ mod tests {
             *assistant_message(vec![text_block("分支回答")], StopReason::Stop, None),
         ]);
         assert_eq!(app.chat.cursor_item, Some(1));
-        assert!(app.chat.begin_visual());
+        app.press(Key::Char('y'));
+        assert_eq!(app.mode(), Mode::CopyMenu);
     }
 
     /// `/tree` 解析：无参命令；带参数报用法错误。
@@ -4395,15 +4287,15 @@ mod tests {
         assert_eq!(app.mode(), Mode::Normal);
     }
 
-    /// NORMAL 序列键首键后按 `?`：pending 被清掉，`?` 照常打开帮助。
+    /// NORMAL `g` 是完整动作（less 式到顶，无 pending 状态），随后 `?`
+    /// 正常打开帮助弹层。
     #[test]
-    fn help_opens_after_pending_sequence_key() {
+    fn help_opens_after_scroll_to_top() {
         let mut app = app();
         app.press(Key::Esc);
         app.press(Key::Char('g'));
-        assert_eq!(app.pending_key, Some('g'));
+        assert_eq!(app.chat.scroll(), u16::MAX);
         assert!(app.press(Key::Char('?')).is_empty());
         assert_eq!(app.mode(), Mode::Help);
-        assert_eq!(app.pending_key, None);
     }
 }

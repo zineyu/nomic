@@ -298,7 +298,7 @@ impl Input {
         }
     }
 
-    /// 光标后一词开头的字节索引（Alt+F 与 NORMAL `dw` 共用）。
+    /// 光标后一词开头的字节索引（Alt+F 用）。
     fn word_right_pos(&self) -> usize {
         let after = &self.text[self.cursor..];
         // 光标在词中时先跳过该词剩余部分
@@ -318,45 +318,6 @@ impl Input {
             .map(char::len_utf8)
             .sum();
         self.text.len() - rest.len() + gap_len
-    }
-
-    /// NORMAL `x`：删除草稿光标处字符（光标不动）。
-    pub(super) fn delete_char_at_cursor(&mut self) {
-        if let Some(c) = self.text[self.cursor..].chars().next() {
-            self.text
-                .replace_range(self.cursor..self.cursor + c.len_utf8(), "");
-            self.refresh_completion();
-        }
-    }
-
-    /// NORMAL `dw`：删除到后一词开头（光标不动）。
-    pub(super) fn delete_word_forward(&mut self) {
-        let target = self.word_right_pos();
-        if target > self.cursor {
-            self.text.replace_range(self.cursor..target, "");
-            self.refresh_completion();
-        }
-    }
-
-    /// NORMAL `dd`：删除草稿当前逻辑行（连同其换行；单行即清空草稿）。
-    pub(super) fn delete_draft_line(&mut self) {
-        if self.text.is_empty() {
-            return;
-        }
-        let mut start = self.text[..self.cursor]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        let end = self.text[self.cursor..]
-            .find('\n')
-            .map_or(self.text.len(), |offset| self.cursor + offset + 1)
-            .min(self.text.len());
-        // 末行没有后随换行：连同前置换行，避免留下空尾行
-        if end == self.text.len() && start > 0 {
-            start -= 1;
-        }
-        self.text.replace_range(start..end, "");
-        self.cursor = start.min(self.text.len());
-        self.refresh_completion();
     }
 
     /// 取出待提交的输入并清空缓冲；空输入返回 `None`。

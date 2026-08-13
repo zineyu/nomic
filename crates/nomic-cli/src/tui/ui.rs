@@ -524,7 +524,7 @@ fn draw_welcome(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )),
         Line::default(),
         Line::from(Span::styled(
-            "Enter 发送（运行中则排队）· Esc 中断/浏览（NORMAL）· Ctrl+G 外部编辑器",
+            "Enter 发送（运行中则排队）· Esc 浏览（NORMAL；NORMAL 下再按 Esc 中断）· Ctrl+G 外部编辑器",
             theme::dim(),
         )),
         Line::from(Span::styled(
@@ -1076,7 +1076,7 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "通用",
         &[
-            ("Esc", "中断运行 / 逐层退回"),
+            ("Esc", "INSERT→NORMAL；NORMAL 运行中中断 / 空闲回 INSERT"),
             ("Ctrl+C", "清草稿 → 再按退出"),
             ("Ctrl+D", "草稿为空时退出"),
             ("PgUp/PgDn · 滚轮", "滚动聊天区"),
@@ -1093,7 +1093,7 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+A/E · Alt+B/F", "行首行尾 / 词级移动"),
             ("Ctrl+G", "外部编辑器（$VISUAL/$EDITOR）编辑草稿"),
             ("Ctrl+V", "粘贴剪贴板图片"),
-            ("Esc", "中断运行（运行中）/ 进入 NORMAL（空闲）"),
+            ("Esc", "进入 NORMAL（运行中亦然；中断在 NORMAL 再按 Esc）"),
         ],
     ),
     (

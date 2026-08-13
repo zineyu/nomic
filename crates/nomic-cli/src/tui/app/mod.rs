@@ -495,6 +495,12 @@ pub(super) struct App {
     mode: Mode,
     /// 序列键首键（QUEUE/HELP 的 `g`/`d`），等待第二键
     pending_key: Option<char>,
+    /// 已提交 prompt 的历史（INSERT ↑/↓ 召回，ADR-0021）；新条目在前
+    history: Vec<String>,
+    /// 召回游标：`None` 表示未在召回中（输入的是当前草稿）
+    history_index: Option<usize>,
+    /// 召回前暂存的当前草稿（↓ 回到底时还原）
+    history_stash: String,
     /// 键位帮助弹层的滚动偏移（NORMAL `?` 打开；`Some` 即打开，
     /// 0 为顶部）。派生模式 Help 的判定字段
     help_scroll: Option<u16>,
@@ -534,6 +540,9 @@ impl App {
             copy_menu: None,
             mode: Mode::Insert,
             pending_key: None,
+            history: Vec::new(),
+            history_index: None,
+            history_stash: String::new(),
             help_scroll: None,
             running: false,
             should_quit: false,
@@ -711,18 +720,47 @@ impl App {
         }
     }
 
-    /// INSERT 模式键位：编辑与提交 prompt。命令不在此触发（ADR-0020）：
-    /// `/` 开头的输入按普通 prompt 发送，命令走 COMMAND 模式。
+    /// INSERT 模式键位（ADR-0021）：编辑与提交 prompt；`Esc` 回 NORMAL
+    ///（运行中亦然，中断在 NORMAL 再按 Esc）、`Ctrl+C` 清草稿/退出、
+    /// `Ctrl+D` 空草稿退出/非空删字符、`↑/↓` 历史召回。命令不在此触发
+    ///（ADR-0020）：`/` 开头的输入按普通 prompt 发送，命令走 COMMAND 模式。
     fn press_insert(&mut self, key: Key) -> Vec<Effect> {
         match key {
-            Key::Ctrl('c' | 'd') => {
-                if self.running {
-                    return vec![Effect::Cancel];
+            // Ctrl+C：清草稿（含附件）；草稿已空时退出（运行中先中断再退出）
+            Key::Ctrl('c') => {
+                if !self.input.text().is_empty() || self.input.has_attachments() {
+                    self.input.clear_draft();
+                    self.history_index = None;
+                    self.notice = None;
+                } else {
+                    return self.quit();
                 }
-                self.should_quit = true;
             }
-            // Esc 一律是模式切换（ADR-0011），不再取消运行；取消由 Ctrl+C 承担
+            // Ctrl+D：空草稿退出（EOF 惯例）；非空删除光标处字符（readline）
+            Key::Ctrl('d') => {
+                if self.input.text().is_empty() && !self.input.has_attachments() {
+                    return self.quit();
+                }
+                self.input.delete_char_at_cursor();
+            }
+            // Esc：回 NORMAL（运行中亦然，不中断）；中断运行在 NORMAL 下
+            // 再按一次 Esc（逐层退回，ADR-0021）
             Key::Esc => self.enter_normal(),
+            // ↑/↓：补全弹层可见时移动选中，否则历史召回（草稿不启用补全）
+            Key::Up => {
+                if self.input.completion().is_some() {
+                    self.input.completion_select(-1);
+                } else {
+                    self.history_prev();
+                }
+            }
+            Key::Down => {
+                if self.input.completion().is_some() {
+                    self.input.completion_select(1);
+                } else {
+                    self.history_next();
+                }
+            }
             // Ctrl+G：外部编辑器编辑当前草稿（长文/多行场景；编辑器持有
             // 草稿副本，保存退出后整体写回，放弃则原样保留）
             Key::Ctrl('g') => return vec![Effect::OpenEditor],
@@ -730,6 +768,56 @@ impl App {
             other => Self::edit_key(&mut self.input, &mut self.chat, other),
         }
         Vec::new()
+    }
+
+    /// ↑：召回上一条历史（新条目在前，索引 0 最新；首次召回前暂存当前
+    /// 草稿供 ↓ 还原）。
+    fn history_prev(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        match self.history_index {
+            None => {
+                self.history_stash = self.input.text().to_string();
+                self.history_index = Some(0);
+            }
+            Some(index) if index + 1 < self.history.len() => {
+                self.history_index = Some(index + 1);
+            }
+            Some(_) => return,
+        }
+        let index = self.history_index.expect("index just set");
+        self.input.set_text(self.history[index].clone());
+    }
+
+    /// ↓：向新方向召回；到最新时还原暂存草稿并退出召回。
+    fn history_next(&mut self) {
+        match self.history_index {
+            None => {}
+            Some(0) => {
+                self.input.set_text(std::mem::take(&mut self.history_stash));
+                self.history_index = None;
+            }
+            Some(index) => {
+                self.history_index = Some(index - 1);
+                self.input.set_text(self.history[index - 1].clone());
+            }
+        }
+    }
+
+    /// 记录一条已提交的 prompt 到历史（去重相邻重复，新条目在前）。
+    fn record_history(&mut self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        if self.history.first().is_some_and(|last| last == text) {
+            return;
+        }
+        self.history.insert(0, text.to_string());
+        // 历史上限：只保留最近 200 条，避免长期会话无限增长
+        self.history.truncate(200);
+        self.history_index = None;
     }
 
     /// 缓冲编辑键（INSERT、COMMAND 与 QUEUE 就地编辑共用）：字符输入、
@@ -1227,6 +1315,7 @@ impl App {
             return Vec::new();
         };
         let images = self.input.take_attachments();
+        self.record_history(&text);
         // AgentStart 事件也会置位；先置避免提交空窗期重复提交
         self.running = true;
         self.notice = None;
@@ -1244,6 +1333,7 @@ impl App {
             }
             return Vec::new();
         };
+        self.record_history(&text);
         self.enqueue(text)
     }
 
@@ -3360,32 +3450,41 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_cancels_when_running_and_quits_when_idle() {
+    /// INSERT `Ctrl+C`：非空草稿先清草稿（不退出），草稿已空退出；
+    /// 运行中空草稿退出时先中断本轮。
+    fn ctrl_c_clears_draft_then_quits() {
+        // 非空草稿：清草稿，不退出
+        let mut drafting = app();
+        drafting.paste_text("未发内容");
+        assert!(drafting.press(Key::Ctrl('c')).is_empty());
+        assert!(drafting.input.text().is_empty());
+        assert!(!drafting.should_quit());
+
+        // 草稿已空：退出
         let mut idle = app();
         assert!(idle.press(Key::Ctrl('c')).is_empty());
         assert!(idle.should_quit());
 
+        // 运行中空草稿：中断并退出
         let mut running = app();
         running.handle_event(&AgentEvent::AgentStart);
         let effects = running.press(Key::Ctrl('c'));
         assert!(matches!(&effects[..], [Effect::Cancel]));
-        assert!(!running.should_quit());
+        assert!(running.should_quit());
     }
 
-    /// Esc 退回栈（ADR-0011）：关补全弹层 → 回 NORMAL（运行中亦然）。
-    /// Esc 只做无损的模式切换；取消运行由 Ctrl+C 承担。
+    /// Esc 逐层退回（ADR-0021）：INSERT→NORMAL（运行中亦然），NORMAL
+    /// 运行中 Esc 中断、空闲回 INSERT；COMMAND 先关补全再放弃。
     #[test]
     fn esc_retreat_stack() {
-        // 运行中：Esc 不取消运行，进 NORMAL 浏览；Ctrl+C 才取消
+        // 运行中：INSERT Esc 进 NORMAL 浏览（不中断）；NORMAL Esc 才中断
         let mut running = app();
         running.handle_event(&AgentEvent::AgentStart);
         assert!(running.press(Key::Esc).is_empty());
         assert_eq!(running.mode(), Mode::Normal);
-        assert!(running.is_running(), "Esc 不影响运行");
-        assert!(matches!(
-            &running.press(Key::Ctrl('c'))[..],
-            [Effect::Cancel]
-        ));
+        assert!(running.is_running(), "INSERT Esc 不影响运行");
+        assert!(matches!(&running.press(Key::Esc)[..], [Effect::Cancel]));
+        assert!(running.is_running(), "中断效果由事件循环落实，状态层不置位");
 
         // 1. INSERT 空闲：进 NORMAL，无模式切换提示（草稿不受 Esc 影响）
         let mut app = app();
@@ -3538,6 +3637,50 @@ mod tests {
         app.press(Key::Char('s'));
         assert!(app.press(Key::Enter).is_empty());
         assert!(app.notice().is_some_and(|n| n.contains("运行中")));
+    }
+
+    /// INSERT 历史召回：↑ 上一条 / ↓ 下一条，到最新后还原暂存草稿；
+    /// 提交记录历史（去重相邻重复，新条目在前）。
+    #[test]
+    fn insert_history_recall() {
+        let mut app = app();
+        // 提交两条 prompt 进入历史
+        app.paste_text("第一条");
+        app.press(Key::Enter);
+        app.finish_run(None);
+        app.paste_text("第二条");
+        app.press(Key::Enter);
+        app.finish_run(None);
+        assert_eq!(app.history, ["第二条", "第一条"]);
+
+        // 输入未发草稿后 ↑：暂存草稿并召回最近一条
+        app.paste_text("未发草稿");
+        app.press(Key::Up);
+        assert_eq!(app.input.text(), "第二条");
+        // 再 ↑：更早一条
+        app.press(Key::Up);
+        assert_eq!(app.input.text(), "第一条");
+        // ↓：回最近，再 ↓：还原暂存草稿并退出召回
+        app.press(Key::Down);
+        assert_eq!(app.input.text(), "第二条");
+        app.press(Key::Down);
+        assert_eq!(app.input.text(), "未发草稿");
+        assert!(app.history_index.is_none());
+    }
+
+    /// INSERT `Ctrl+D`：空草稿退出，非空删除光标处字符（readline 语义）。
+    #[test]
+    fn ctrl_d_quits_on_empty_or_deletes_char() {
+        let mut empty = app();
+        assert!(empty.press(Key::Ctrl('d')).is_empty());
+        assert!(empty.should_quit());
+
+        let mut app = app();
+        app.paste_text("abc");
+        app.press(Key::Home);
+        app.press(Key::Ctrl('d'));
+        assert_eq!(app.input.text(), "bc");
+        assert!(!app.should_quit());
     }
 
     /// picker 打开时模式派生为 Picker（ADR-0011）。

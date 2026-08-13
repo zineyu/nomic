@@ -493,7 +493,7 @@ pub(super) struct App {
     /// `help_scroll.is_some()` / `copy_menu.is_some()` 时 [`Self::mode`]
     /// 返回对应值），不入此字段
     mode: Mode,
-    /// 序列键首键（QUEUE/HELP 的 `g`/`d`），等待第二键
+    /// 序列键首键（QUEUE 的 `d`），等待第二键
     pending_key: Option<char>,
     /// 已提交 prompt 的历史（INSERT ↑/↓ 召回，ADR-0021）；新条目在前
     history: Vec<String>,
@@ -1376,15 +1376,15 @@ impl App {
         if self.queue.is_editing() {
             return self.press_queue_edit(key);
         }
-        // 序列键第二键（gg 到队首、dd 删除）；不匹配照常分发
+        // 序列键第二键（dd 删除）；不匹配照常分发
         if let Some(pending) = self.pending_key.take()
             && let Some(effects) = self.queue_sequence(pending, key)
         {
             return effects;
         }
         match key {
-            Key::Char('g') => self.pending_key = Some('g'),
             Key::Char('d') => self.pending_key = Some('d'),
+            Key::Char('g') => self.queue.jump_to_first(),
             Key::Char('j') | Key::Down => self.queue.move_cursor(1),
             Key::Char('k') | Key::Up => self.queue.move_cursor(-1),
             Key::Char('G') => self.queue.jump_to_last(),
@@ -1408,11 +1408,10 @@ impl App {
         Vec::new()
     }
 
-    /// QUEUE 的序列键第二键：`gg` 到队首、`dd` 删除游标条目。
+    /// QUEUE 的序列键第二键：`dd` 删除游标条目。
     /// 返回 `Some` 表示已处理。
     fn queue_sequence(&mut self, pending: char, key: Key) -> Option<Vec<Effect>> {
         match (pending, key) {
-            ('g', Key::Char('g')) => self.queue.jump_to_first(),
             ('d', Key::Char('d')) => self.queue_delete(),
             _ => return None,
         }
@@ -1442,18 +1441,13 @@ impl App {
     }
 
     /// HELP 弹层键位（NORMAL `?` 打开）：只读浏览，j/k 等滚动、
-    /// gg/G 到顶/底；Esc/q/`?` 关闭回到底层模式（mode 字段未动，
+    /// g/G 到顶/底；Esc/q/`?` 关闭回到底层模式（mode 字段未动，
     /// 天然回到打开前的 NORMAL）。其余按键忽略，不污染输入缓冲。
     fn press_help(&mut self, key: Key) -> Vec<Effect> {
-        // 序列键第二键（gg 到顶）；不匹配照常分发
-        if self.pending_key.take() == Some('g') && key == Key::Char('g') {
-            self.help_scroll = Some(0);
-            return Vec::new();
-        }
         match key {
             Key::Esc | Key::Char('q' | '?') => self.help_scroll = None,
-            Key::Char('g') => self.pending_key = Some('g'),
-            // G 到底：渲染时经 clamp_help_scroll 钳到实际上限
+            // g 到顶：渲染时经 clamp_help_scroll 钳到实际上限
+            Key::Char('g') => self.help_scroll = Some(0),
             Key::Char('G') => self.help_scroll = Some(u16::MAX),
             Key::Char('j') | Key::Down => self.help_scroll_by(1),
             Key::Char('k') | Key::Up => self.help_scroll_by(-1),
@@ -3142,7 +3136,7 @@ mod tests {
         assert_eq!(drafting.queue.cursor(), 0);
     }
 
-    /// QUEUE 导航：j/k 钳制移动、G/gg 跳队尾/队首、dd 删除游标条目，
+    /// QUEUE 导航：j/k 钳制移动、G/g 跳队尾/队首、dd 删除游标条目，
     /// 删空队列自动退出回 NORMAL。
     #[test]
     fn queue_mode_navigate_and_delete() {
@@ -3155,7 +3149,6 @@ mod tests {
         assert_eq!(app.queue.cursor(), 1);
         app.press(Key::Char('j'));
         assert_eq!(app.queue.cursor(), 1, "到底钳制");
-        app.press(Key::Char('g'));
         app.press(Key::Char('g'));
         assert_eq!(app.queue.cursor(), 0);
         app.press(Key::Char('G'));
@@ -4438,7 +4431,7 @@ mod tests {
     }
 
     /// HELP 弹层（NORMAL `?`）：打开派生 Help 模式，Esc/q/`?` 关闭后
-    /// 回到 NORMAL（底层 mode 字段未动）；j/k 滚动、gg/G 顶/底，
+    /// 回到 NORMAL（底层 mode 字段未动）；j/k 滚动、g/G 顶/底，
     /// 上限由渲染回写钳制。
     #[test]
     fn help_overlay_opens_scrolls_and_closes() {
@@ -4463,10 +4456,9 @@ mod tests {
         assert_eq!(app.help_scroll, Some(2));
         assert_eq!(app.clamp_help_scroll(1), 1, "渲染钳制到上限");
         assert_eq!(app.help_scroll, Some(1));
-        // G 到底（经钳制生效）、gg 回顶
+        // G 到底（经钳制生效）、g 回顶
         app.press(Key::Char('G'));
         assert_eq!(app.clamp_help_scroll(5), 5);
-        app.press(Key::Char('g'));
         app.press(Key::Char('g'));
         assert_eq!(app.help_scroll, Some(0));
 

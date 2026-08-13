@@ -164,3 +164,50 @@ YAML 解析并记录 ADR 修订。
   资源引用。
 - 后续若要支持 `artifact://`、URL、压缩包等资源，应抽象统一资源路由，而不是继续
   把新类型直接堆进 `read.rs`。
+
+## 修订（2026-08-13）：子资源寻址、可见性元数据与诊断
+
+对照 omp 的逆向结论补齐已验证有价值的差距，不改变本 ADR 的核心决策
+（skill 只读、三层 scope 覆盖、清单常驻 + 正文按需读取）：
+
+### `skill://<name>/<path>` 子资源
+
+`skill://` URI 在首个 `/` 切分名称与子路径：无子路径（含 `skill://name/` 与
+`skill://name/.`）仍返回去除 frontmatter 的正文；子路径返回 skill 根目录内的
+文件内容（复用 offset/limit、2000 行 / 50 KiB 截断契约）或目录清单（一行一条目，
+目录以 `/` 结尾）。`details.source` 增加 `resource` 字段。
+
+穿越防护只做词法规范化 + 深度计数（`SkillResolver::resolve_resource` →
+`resolve_resource_path`）：拒绝绝对路径、拒绝 `..` 越出 skill 根，不做符号链接
+解析——skill 目录内指向外部的符号链接不在此拦截（skill 对用户是可信资产，
+与“skill 正文可任意引用绝对路径”的事实一致）。
+
+### frontmatter `enabled` / `hide`
+
+手写 YAML 子集新增两个布尔标量（非布尔值报 `InvalidFrontmatter`，仍不升级完整
+YAML 解析器）：
+
+- `enabled: false`：catalog 直接跳过（`resolve` 也找不到），用于显式关闭；
+- `hide: true`：可 `resolve` / 显式激活，但不出现在 prompt 清单
+  （对齐 omp 的 `hide` / `disable-model-invocation`，用于只供显式调用的 skill）。
+
+### 注入指引与诊断
+
+- `<active_skill>` 注入块尾追加 `[Skill directory: <root 绝对路径>]` 指引：
+  正文中引用的相对路径以 skill 根目录为基准解析，附属文件经
+  `skill://<name>/<path>` 或文件系统读取、脚本经 bash 执行（对齐 omp 的
+  baseDir 注入）；`ActivatedSkill` 相应增加 `root` 字段。
+- prompt 清单头部说明子资源读取方式；bootstrap 启动时把
+  `catalog_with_diagnostics` 的加载错误以 stderr 告警 + tracing 日志输出
+  （此前坏 skill 静默跳过，无从排查）。
+- TUI `/skill:<name>` 后首个空白起的自由文本作为附加上下文，注入消息尾部以
+  `User: <args>` 追加（参考 omp 的 user-invocation 模板）。
+
+### 刻意排除（维持原决策）
+
+| omp 特性 | 排除理由 |
+| --- | --- |
+| 可写 skill / auto-learn | 违背“skill 对 agent 只读”决策；自修改 prompt 资产风险高于收益 |
+| 多 provider 生态发现（codex/opencode/插件包） | 复杂度与维护面大，无需求证据 |
+| frontmatter `name` 覆盖目录名 | 名称 = 目录名更直观，避免 URI 与磁盘结构脱节 |
+| `skill://<name>` 返回含 frontmatter 的完整文件 | 正文 / 元数据分离的设计更干净，保留 |

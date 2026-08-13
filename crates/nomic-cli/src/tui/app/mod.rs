@@ -3912,13 +3912,11 @@ mod tests {
     fn normal_y_copy_menu_code_blocks() {
         let mut app = app_with_history();
         app.press(Key::Esc);
-        // 菜单行序（新条目在前）：助手消息、代码块 1/2、代码块 2/2、…
         app.press(Key::Char('y'));
         assert_eq!(app.mode(), Mode::CopyMenu);
-        // 数字键 3 直达第二个代码块（行下标 2 = 代码块 2/2）
         let effects = app.press(Key::Char('3'));
         assert!(
-            matches!(&effects[..], [Effect::CopyText(text)] if text == "第二块\n"),
+            matches!(&effects[..], [Effect::CopyText(text)] if text == "bash(ls)\nfile.rs"),
             "{effects:?}"
         );
         assert_eq!(app.mode(), Mode::Normal, "复制后关闭菜单");
@@ -3928,7 +3926,7 @@ mod tests {
         app.press(Key::Char('j'));
         let effects = app.press(Key::Enter);
         assert!(
-            matches!(&effects[..], [Effect::CopyText(text)] if text == "fn main() {}\n"),
+            matches!(&effects[..], [Effect::CopyText(text)] if text == "第二个问题"),
             "{effects:?}"
         );
     }

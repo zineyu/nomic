@@ -2,8 +2,10 @@
 //!
 //! 结构：
 //! - [`app`]：纯状态层——对外为语义操作（按键 [`app::Key`] → [`app::Effect`]、
-//!   应用事件、滚动、会话/附件管理），补全/picker/slash 分发是其内部实现，
-//!   脱离终端可测；INSERT `Ctrl+G` 外部编辑器（ADR-0017）由本文件
+//!   应用事件、滚动、会话/附件管理），脱离终端可测；内部按关注点拆为
+//!   chat（条目 + delta 累积 + 滚动）、input（草稿 + 编辑 + 补全）、
+//!   queue（统一消息队列与 QUEUE 模式）、picker/search 子模块，`App`
+//!   只做组合与模式路由；INSERT `Ctrl+G` 外部编辑器（ADR-0017）由本文件
 //!   [`edit_input_in_editor`] 接线，状态层只消费写回结果
 //! - [`ui`]：纯渲染（聊天区 + 输入框 + 状态栏）
 //! - 本文件：终端生命周期、事件循环（`KeyEvent` → `Key` 映射、`Effect` 接线执行）、
@@ -144,7 +146,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
     // `--image` 附件在 TUI 模式同样生效：作为首轮消息的暂存附件
     stage_cli_images(&mut app, &cli.image);
     let skill_resolver = boot.skill_resolver.clone();
-    app.set_available_skills(
+    app.input_mut().set_available_skills(
         skill_resolver
             .catalog()
             .into_iter()
@@ -155,7 +157,8 @@ pub async fn run(cli: &Cli) -> Result<()> {
             })
             .collect(),
     );
-    app.set_available_templates(boot.prompt_templates.clone());
+    app.input_mut()
+        .set_available_templates(boot.prompt_templates.clone());
     // 启动解析的思考级别（CLI 参数 / 配置文件）在进入 builder 前取出，
     // driver 据此维护 `/models` 级别选择器的当前值
     let initial_reasoning = boot.stream_options.reasoning;
@@ -174,7 +177,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
         .compaction(boot.compaction)
         // 统一消息队列（ADR-0014）：TUI 与 agent 共享同一份，运行中
         // Enter 直推入队，core 在 turn 边界注入（不经 driver job 通道）
-        .steering_queue(app.steering_handle())
+        .steering_queue(app.queue().handle())
         .build();
 
     // 落库父指针：恢复的 session 从默认分支末端起算（分支场景下保证续写
@@ -238,7 +241,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
 const fn block_cursor(app: &App) -> bool {
     match app.mode() {
         Mode::Normal | Mode::Visual | Mode::Help => true,
-        Mode::Queue => !app.queue_editing(),
+        Mode::Queue => !app.queue().is_editing(),
         Mode::Insert | Mode::Search | Mode::Picker => false,
     }
 }
@@ -430,8 +433,8 @@ async fn handle_wake(
                 }
             }
         }
-        Wake::ScrollUp => app.scroll_up(3),
-        Wake::ScrollDown => app.scroll_down(3),
+        Wake::ScrollUp => app.chat_mut().scroll_up(3),
+        Wake::ScrollDown => app.chat_mut().scroll_down(3),
         Wake::Paste(text) => handle_paste(app, &text),
         Wake::AgentEvent(event) => {
             match &event {
@@ -485,7 +488,7 @@ async fn handle_wake(
             if app.is_running() {
                 app.finish_run(None);
             }
-            app.push_system(format!(
+            app.chat_mut().push_system(format!(
                 "内部错误：agent 任务意外退出（{detail}）。对话记录仍可查看，但无法继续发送消息。"
             ));
         }
@@ -515,7 +518,7 @@ async fn handle_prompt_done(
             return;
         }
     };
-    if app.queue_len() > 0 {
+    if !app.queue().is_empty() {
         driver.goal_nudges = 0;
         if end.ended_normally {
             app.finish_run(None);
@@ -526,7 +529,7 @@ async fn handle_prompt_done(
         } else {
             app.finish_run(Some(format!(
                 "运行未正常结束，队列保留 {} 条：空闲 Enter 发送下一条，Esc→Q 编辑",
-                app.queue_len()
+                app.queue().len()
             )));
         }
         return;
@@ -741,7 +744,7 @@ async fn execute_effect(
         Effect::CancelModelSwitch => {
             // 模型切换流程第二步被取消：放弃待切换模型，模型与级别均不变
             if driver.pending_model.take().is_some() {
-                app.push_system("已取消模型切换。".to_string());
+                app.chat_mut().push_system("已取消模型切换。".to_string());
             }
         }
         Effect::ListSkills => {
@@ -959,7 +962,7 @@ fn set_reasoning(app: &mut App, driver: &mut Driver, word: &str) {
     } else {
         format!("{}。", parts.join("，"))
     };
-    app.push_system(text);
+    app.chat_mut().push_system(text);
 }
 
 /// `/models:<p>/<id>` 或模型选择器确认：先选模型后选 effort——
@@ -986,11 +989,12 @@ fn select_model(app: &mut App, driver: &mut Driver, id: &str) {
             open_reasoning_picker(app, driver);
         }
         Ok(model) if same_model(&model, &driver.model) => {
-            app.push_system(format!("当前模型已是 {}（不支持思考）。", model.name));
+            app.chat_mut()
+                .push_system(format!("当前模型已是 {}（不支持思考）。", model.name));
         }
         Ok(model) => {
             if apply_model_switch(app, driver, model) {
-                app.push_system(switch_notice(&driver.model));
+                app.chat_mut().push_system(switch_notice(&driver.model));
             }
         }
     }
@@ -1101,7 +1105,7 @@ async fn list_sessions(app: &mut App, driver: &Driver) {
         Ok(store) => match store.list_sessions().await {
             Err(error) => app.warn(format!("列出 session 失败：{error}")),
             Ok(sessions) if sessions.is_empty() => {
-                app.push_system("没有历史 session。");
+                app.chat_mut().push_system("没有历史 session。");
             }
             Ok(sessions) => {
                 let rows = sessions
@@ -1147,7 +1151,8 @@ async fn list_tree(app: &mut App, driver: &Driver) {
     match store.list_tree(session_id).await {
         Err(error) => app.warn(format!("加载会话树失败：{error}")),
         Ok(entries) if entries.is_empty() => {
-            app.push_system("当前 session 还没有消息，发送一条后再来浏览会话树。");
+            app.chat_mut()
+                .push_system("当前 session 还没有消息，发送一条后再来浏览会话树。");
         }
         Ok(entries) => {
             let rows = tree_rows(&entries, driver.tip.as_deref());
@@ -1172,7 +1177,8 @@ async fn branch_to(app: &mut App, driver: &mut Driver, entry_id: String) {
         return; // ListTree 已挡住未持久化场景
     };
     if driver.tip.as_deref() == Some(entry_id.as_str()) {
-        app.push_system("所选条目就是当前分支末端，无需切换。");
+        app.chat_mut()
+            .push_system("所选条目就是当前分支末端，无需切换。");
         return;
     }
     match store.load_branch(session_id, &entry_id).await {
@@ -1190,7 +1196,7 @@ async fn branch_to(app: &mut App, driver: &mut Driver, entry_id: String) {
             let count = messages.len();
             app.restore_branch(&messages);
             driver.tip = Some(entry_id);
-            app.push_system(format!(
+            app.chat_mut().push_system(format!(
                 "已从所选条目创建分支（{count} 条消息），后续对话写入新分支；\
                  原分支保留，仍可在 /tree 中回访。"
             ));
@@ -1361,8 +1367,8 @@ fn attach_image(app: &mut App, path: &std::path::Path) {
     match crate::images::load_image(path) {
         Ok(image) => {
             let name = attachment_name(path);
-            let count = app.stage_image(name.clone(), image);
-            app.push_system(format!(
+            let count = app.input_mut().stage_image(name.clone(), image);
+            app.chat_mut().push_system(format!(
                 "已附加图片 {name}（共 {count} 张，随下一条消息发送）。"
             ));
         }
@@ -1432,8 +1438,8 @@ async fn paste_clipboard(app: &mut App) {
     match tokio::task::spawn_blocking(crate::clipboard::read).await {
         Ok(Ok(Some(crate::clipboard::ClipboardContent::Image(image)))) => {
             let name = format!("clipboard-{}.png", nomic_ai::now_millis());
-            let count = app.stage_image(name.clone(), image);
-            app.push_system(format!(
+            let count = app.input_mut().stage_image(name.clone(), image);
+            app.chat_mut().push_system(format!(
                 "已粘贴图片 {name}（共 {count} 张，随下一条消息发送）。"
             ));
         }
@@ -1450,7 +1456,9 @@ async fn paste_clipboard(app: &mut App) {
 async fn copy_to_clipboard(app: &mut App, text: String) {
     let chars = text.chars().count();
     match tokio::task::spawn_blocking(move || crate::clipboard::write_text(&text)).await {
-        Ok(Ok(())) => app.push_system(format!("已复制到剪贴板（{chars} 字）。")),
+        Ok(Ok(())) => app
+            .chat_mut()
+            .push_system(format!("已复制到剪贴板（{chars} 字）。")),
         Ok(Err(error)) => app.warn(format!("复制失败：{error:#}")),
         Err(join) => app.warn(format!("复制失败：{join}")),
     }
@@ -1465,7 +1473,7 @@ async fn copy_to_clipboard(app: &mut App, text: String) {
 /// 争抢 stdin，编辑器里的按键不会漏回 TUI。agent 运行不受影响
 ///（driver 是独立任务），期间到的事件在 channel 里积压，恢复后照常处理。
 async fn edit_input_in_editor(app: &mut App, terminal: &mut TuiTerminal) {
-    let initial = app.input().to_string();
+    let initial = app.input().text().to_string();
     leave_tui_terminal();
     // spawn_blocking 与剪贴板同一口径：编辑器可能运行很久，不占 runtime worker
     let outcome = tokio::task::spawn_blocking(move || run_external_editor(&initial)).await;
@@ -1540,12 +1548,14 @@ fn stage_cli_images(app: &mut App, paths: &[std::path::PathBuf]) {
         match crate::images::load_image(path) {
             Ok(image) => {
                 let name = attachment_name(path);
-                let count = app.stage_image(name.clone(), image);
-                app.push_system(format!(
+                let count = app.input_mut().stage_image(name.clone(), image);
+                app.chat_mut().push_system(format!(
                     "已附加图片 {name}（共 {count} 张，随下一条消息发送）。"
                 ));
             }
-            Err(error) => app.push_system(format!("加载图片附件失败：{error:#}")),
+            Err(error) => app
+                .chat_mut()
+                .push_system(format!("加载图片附件失败：{error:#}")),
         }
     }
 }
@@ -1591,7 +1601,7 @@ async fn resume_session(app: &mut App, driver: &mut Driver, id: String) {
             }
             let label = nomic_session::session_title(&messages)
                 .map_or_else(String::new, |title| format!("「{title}」"));
-            app.push_system(format!(
+            app.chat_mut().push_system(format!(
                 "已恢复 session {label}（{} 条消息），后续对话续写该 session。",
                 messages.len()
             ));

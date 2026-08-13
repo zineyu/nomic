@@ -22,6 +22,11 @@ pub(super) const BUSY: Color = Color::Yellow;
 pub(super) const CODE: Color = Color::Yellow;
 /// VISUAL 模式（徽标与选择区 gutter）。
 pub(super) const VISUAL: Color = Color::Magenta;
+/// 行高亮背景（NORMAL 消息游标 / VISUAL 选择区）：极暗的灰，
+/// 只提供「当前行」的面感，不引入新色相，与 accent/magenta gutter 叠加。
+/// 256 色索引值；16 色终端由渲染层近似映射（退化为默认背景时
+/// 仍有 gutter 符号变化兜底）。
+pub(super) const ROW_BG: Color = Color::Indexed(236);
 
 /// 加粗正文（工具名等）。
 pub(super) const fn bold() -> Style {
@@ -132,16 +137,25 @@ pub(super) const fn visual_badge() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-/// VISUAL 选择区 gutter：反色块标出 `y` 的作用范围。
-pub(super) const fn visual_marker() -> Style {
-    Style::new().fg(Color::Black).bg(VISUAL)
+/// 行高亮背景：整行铺 `ROW_BG`，游标/选择区呈现为完整色带。
+pub(super) const fn highlight_bg() -> Style {
+    Style::new().bg(ROW_BG)
 }
 
-/// 消息游标 gutter（NORMAL）：反色 accent 块，标出 `yy`/`yc` 的作用目标。
+/// VISUAL 选择区 gutter：magenta 加粗竖条叠加行背景，标出 `y` 的作用范围。
+pub(super) const fn visual_marker() -> Style {
+    Style::new()
+        .fg(VISUAL)
+        .bg(ROW_BG)
+        .add_modifier(Modifier::BOLD)
+}
+
+/// 消息游标 gutter（NORMAL）：accent 加粗竖条叠加行背景，标出 `yy`/`yc`
+/// 的作用目标；与选择区同族（同背景、同符号），仅以色相区分。
 pub(super) const fn cursor_marker() -> Style {
     Style::new()
-        .fg(Color::Black)
-        .bg(ACCENT)
+        .fg(ACCENT)
+        .bg(ROW_BG)
         .add_modifier(Modifier::BOLD)
 }
 

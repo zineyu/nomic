@@ -36,6 +36,7 @@
   scripts.check.exec = ''
     set -e
     echo "== fmt =="       && cargo fmt --all -- --check
+    echo "== size =="      && scripts/check-file-size.sh
     echo "== clippy =="    && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     echo "== test =="      && cargo nextest run --workspace --all-features --locked
     echo "== doctest =="   && cargo test --workspace --doc --locked

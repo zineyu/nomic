@@ -4,7 +4,7 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use nomic_core::{AgentTool, ToolError, ToolResult, ToolUpdateCallback};
-use nomic_skills::{SKILL_SCHEME, SkillResolver};
+use nomic_skills::{SKILL_SCHEME, SkillResolver, SkillResource, SkillsError};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -16,7 +16,7 @@ use crate::truncate::{
 /// 参数。
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadParams {
-    /// Path to the file to read (relative or absolute), or skill://<name>
+    /// Path to the file to read (relative or absolute), or skill://<name>[/<path>]
     pub path: String,
     /// Line number to start reading from (1-indexed)
     pub offset: Option<usize>,
@@ -53,38 +53,8 @@ impl ReadTool {
 
     async fn execute_read(&self, params: ReadParams) -> Result<ToolResult, ToolError> {
         tracing::debug!(path = %params.path, offset = ?params.offset, limit = ?params.limit, "read");
-        if let Some(name) = params.path.strip_prefix(SKILL_SCHEME) {
-            let resolver = self.skill_resolver.as_ref().ok_or_else(|| {
-                ToolError::new(format!(
-                    "Skill reading is not configured for this read tool. \
-                     Use a filesystem path, or start nomic from a directory where skills can be discovered. \
-                     Requested: {SKILL_SCHEME}{name}"
-                ))
-            })?;
-            let skill = resolver.resolve(name).map_err(|error| {
-                ToolError::new(format!("Could not resolve {SKILL_SCHEME}{name}. {error}"))
-            })?;
-            let mut result = read_text_path(
-                &skill.path,
-                &params.path,
-                Some(skill.document.body),
-                params.offset,
-                params.limit,
-            )
-            .await?;
-            result.details = Some(merge_details(
-                result.details.take(),
-                &serde_json::json!({
-                    "source": {
-                        "kind": "skill",
-                        "uri": params.path,
-                        "name": skill.name,
-                        "scope": skill.scope.to_string(),
-                        "path": skill.path.display().to_string(),
-                    }
-                }),
-            ));
-            return Ok(result);
+        if let Some(target) = params.path.strip_prefix(SKILL_SCHEME) {
+            return self.execute_skill_read(&params, target).await;
         }
 
         read_text_path(
@@ -96,11 +66,84 @@ impl ReadTool {
         )
         .await
     }
+
+    /// `skill://<name>[/<path>]` 读取：无子路径返回 SKILL.md 正文；
+    /// 子路径返回 skill 根目录内的文件内容或目录清单。
+    async fn execute_skill_read(
+        &self,
+        params: &ReadParams,
+        target: &str,
+    ) -> Result<ToolResult, ToolError> {
+        let resolver = self.skill_resolver.as_ref().ok_or_else(|| {
+            ToolError::new(format!(
+                "Skill reading is not configured for this read tool. \
+                 Use a filesystem path, or start nomic from a directory where skills can be discovered. \
+                 Requested: {SKILL_SCHEME}{target}"
+            ))
+        })?;
+        // 首个 `/` 切分 skill 名与子路径；`skill://name/` 的子路径为空串，
+        // 与无子路径同义（正文）。
+        let (name, rel) = match target.split_once('/') {
+            Some((name, rel)) => (name, Some(rel)),
+            None => (target, None),
+        };
+        let resolve_error = |error: SkillsError| {
+            ToolError::new(format!("Could not resolve {SKILL_SCHEME}{target}. {error}"))
+        };
+        let resource = resolver
+            .resolve_resource(name, rel)
+            .map_err(resolve_error)?;
+        match resource {
+            SkillResource::Instructions(skill) => {
+                let mut result = read_text_path(
+                    &skill.path,
+                    &params.path,
+                    Some(skill.document.body.clone()),
+                    params.offset,
+                    params.limit,
+                )
+                .await?;
+                result.details = Some(merge_details(
+                    result.details.take(),
+                    &serde_json::json!({
+                        "source": skill_source(&params.path, &skill, None),
+                    }),
+                ));
+                Ok(result)
+            }
+            SkillResource::File { skill, path } => {
+                let rel_display = rel.unwrap_or_default().to_string();
+                let mut result =
+                    read_text_path(&path, &params.path, None, params.offset, params.limit).await?;
+                result.details = Some(merge_details(
+                    result.details.take(),
+                    &serde_json::json!({
+                        "source": skill_source(&params.path, &skill, Some(rel_display.as_str())),
+                    }),
+                ));
+                Ok(result)
+            }
+            SkillResource::Directory { skill, path } => {
+                let listing = read_dir_listing(&path).await.map_err(|error| {
+                    ToolError::new(format!(
+                        "Could not read directory: {}. {error}",
+                        params.path
+                    ))
+                })?;
+                let mut result = ToolResult::text(listing);
+                let rel_display = format!("{}/", rel.unwrap_or_default().trim_end_matches('/'));
+                result.details = Some(serde_json::json!({
+                    "source": skill_source(&params.path, &skill, Some(rel_display.as_str())),
+                }));
+                Ok(result)
+            }
+        }
+    }
 }
 
 const LABEL: &str = "read";
 
-const DESCRIPTION: &str = "Read the contents of a file or skill://<name>. Supports text files and read-only skill instructions. Output is truncated to 2000 lines or 50KB \
+const DESCRIPTION: &str = "Read the contents of a file or skill://<name>[/<path>]. Supports text files and read-only skill instructions; a sub-path reads a file inside the skill directory, and a directory sub-path lists its entries. Output is truncated to 2000 lines or 50KB \
          (whichever is hit first). Use offset/limit for large files. When you need the full file, \
          continue with offset until complete.";
 
@@ -219,4 +262,38 @@ fn merge_details(base: Option<serde_json::Value>, extra: &serde_json::Value) -> 
         }
     }
     serde_json::Value::Object(merged)
+}
+
+/// `details.source` 的 skill 标注；`resource` 为子路径（目录以 `/` 结尾），无子路径时为 `None`。
+fn skill_source(
+    uri: &str,
+    skill: &nomic_skills::Skill,
+    resource: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "skill",
+        "uri": uri,
+        "name": skill.name,
+        "scope": skill.scope.to_string(),
+        "path": skill.path.display().to_string(),
+        "resource": resource,
+    })
+}
+
+/// 目录清单：一行一个条目，目录以 `/` 结尾，按名称排序（目录在前）。
+async fn read_dir_listing(path: &Path) -> std::io::Result<String> {
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    let mut entries = tokio::fs::read_dir(path).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if entry.file_type().await?.is_dir() {
+            dirs.push(format!("{name}/"));
+        } else {
+            files.push(name);
+        }
+    }
+    dirs.sort();
+    files.sort();
+    Ok(dirs.into_iter().chain(files).collect::<Vec<_>>().join("\n"))
 }

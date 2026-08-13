@@ -1028,7 +1028,7 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("[m ]m · [t ]t", "跳上/下一条消息 / 工具调用"),
             ("/ · n · N", "聊天搜索与跳转"),
             ("yy · yc · Y", "复制消息 / 代码块 / 最新消息"),
-            ("V 后 y", "复制选择区"),
+            ("v 后 y", "复制选择区"),
             ("x · dd · dw", "编辑草稿"),
             ("Q", "队列编辑（QUEUE 模式）"),
         ],
@@ -1615,7 +1615,7 @@ mod tests {
             ))));
         }
         app.press(Key::Esc);
-        app.press(Key::Char('V'));
+        app.press(Key::Char('v'));
         app.press(Key::Char('k'));
         assert_eq!(app.visual_range(), Some((0, 1)));
         let backend = TestBackend::new(80, 24);

@@ -921,8 +921,8 @@ impl App {
                 self.chat.move_cursor_to_last_message();
                 Vec::new()
             }
-            // V 进入可视选择：锚点取消息游标（无可选消息时提示）
-            Key::Char('V') => {
+            // v 进入可视选择：锚点取消息游标（无可选消息时提示）
+            Key::Char('v') => {
                 if self.chat.begin_visual() {
                     self.mode = Mode::Visual;
                 } else {
@@ -3854,14 +3854,14 @@ mod tests {
         assert_eq!(app.notice(), Some("没有搜索命中（NORMAL 下 / 开始搜索）"));
     }
 
-    /// VISUAL：V 以游标为锚点进入，j/k 以消息为粒度扩展选择，y 复制
+    /// VISUAL：v 以游标为锚点进入，j/k 以消息为粒度扩展选择，y 复制
     /// 范围后回 NORMAL；Esc 放弃；无可选消息时提示。
     #[test]
     fn visual_selects_message_range_and_yanks() {
-        // 无消息时 V 提示
+        // 无消息时 v 提示
         let mut empty = app();
         empty.press(Key::Esc);
-        assert!(empty.press(Key::Char('V')).is_empty());
+        assert!(empty.press(Key::Char('v')).is_empty());
         assert_eq!(empty.mode(), Mode::Normal);
         assert_eq!(empty.notice(), Some("没有可选择的消息"));
 
@@ -3870,7 +3870,7 @@ mod tests {
 
         // 锚点取游标（最新 assistant，下标 4），k 扩展两条（到 tool 前的
         // user 1 再上一跳越过 tool 到 assistant 1）
-        app.press(Key::Char('V'));
+        app.press(Key::Char('v'));
         assert_eq!(app.mode(), Mode::Visual);
         assert_eq!(app.visual_range(), Some((4, 4)));
         app.press(Key::Char('k'));
@@ -3890,7 +3890,7 @@ mod tests {
         assert_eq!(app.visual_range(), None);
 
         // Esc 放弃选择
-        app.press(Key::Char('V'));
+        app.press(Key::Char('v'));
         app.press(Key::Char('k'));
         assert!(app.press(Key::Esc).is_empty());
         assert_eq!(app.mode(), Mode::Normal);

@@ -75,7 +75,7 @@ ADR-0011 确立的 vim-like 多模式交互在实际使用中暴露出三类问�
 | `Ctrl+A/E` `Ctrl+W` `Ctrl+U` `Alt+B/F` | 行首/尾、删词、清行、词移动（readline 惯例） |
 | `Ctrl+V` | 粘贴剪贴板图片 |
 | `Ctrl+G` | 外部编辑器编辑草稿 |
-| `Esc` | 逐层退回：中断运行（运行中）→ 回 NORMAL（空闲） |
+| `Esc` | 回 NORMAL（运行中亦然，不中断；中断在 NORMAL 再按一次 Esc） |
 | `Ctrl+C` | 清草稿；草稿已空时退出（运行中同样退出，先中断） |
 | `Ctrl+D` | 草稿为空时退出（EOF 惯例）；非空时删除光标处字符 |
 | `PgUp` `PgDn` 滚轮 | 滚动聊天区（不切态，weechat 式） |

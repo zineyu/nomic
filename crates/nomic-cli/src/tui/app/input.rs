@@ -346,6 +346,23 @@ impl Input {
         self.cursor = 0;
     }
 
+    /// 清空草稿与附件（INSERT `Ctrl+C` 清草稿：文本与暂存图片一并丢弃）。
+    pub(super) fn clear_draft(&mut self) {
+        self.text.clear();
+        self.cursor = 0;
+        self.completion = None;
+        self.attachments.clear();
+    }
+
+    /// 删除光标处字符（INSERT `Ctrl+D` 的 readline 语义，光标不动）。
+    pub(super) fn delete_char_at_cursor(&mut self) {
+        if let Some(c) = self.text[self.cursor..].chars().next() {
+            self.text
+                .replace_range(self.cursor..self.cursor + c.len_utf8(), "");
+            self.refresh_completion();
+        }
+    }
+
     // ── 附件 ────────────────────────────────────────────────────────────────
 
     /// 暂存一张图片附件，返回当前附件总数。

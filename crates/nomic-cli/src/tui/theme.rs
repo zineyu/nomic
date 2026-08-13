@@ -20,9 +20,7 @@ pub(super) const ERR: Color = Color::Red;
 pub(super) const BUSY: Color = Color::Yellow;
 /// 代码文本（行内代码与代码块，与 BUSY 同色但语义独立）。
 pub(super) const CODE: Color = Color::Yellow;
-/// VISUAL 模式（徽标与选择区 gutter）。
-pub(super) const VISUAL: Color = Color::Magenta;
-/// 行高亮背景（NORMAL 消息游标 / VISUAL 选择区）：极暗的灰，
+/// 行高亮背景（NORMAL 消息游标）：极暗的灰，
 /// 只提供「当前行」的面感，不引入新色相，与 accent/magenta gutter 叠加。
 /// 256 色索引值；16 色终端由渲染层近似映射（退化为默认背景时
 /// 仍有 gutter 符号变化兜底）。
@@ -93,7 +91,7 @@ pub(super) const fn err_bold() -> Style {
     err().add_modifier(Modifier::BOLD)
 }
 
-/// QUEUE 模式徽标：反色蓝块，与 INSERT/NORMAL/VISUAL 的徽标色相区分
+/// QUEUE 模式徽标：反色蓝块，与 INSERT/NORMAL 的徽标色相区分
 ///（模式必须一眼可辨，ADR-0012）。
 pub(super) const fn queue_badge() -> Style {
     Style::new()
@@ -129,29 +127,13 @@ pub(super) const fn search_hit() -> Style {
     Style::new().fg(Color::Black).bg(BUSY)
 }
 
-/// VISUAL 模式徽标：反色块（模式必须一眼可辨，ADR-0011）。
-pub(super) const fn visual_badge() -> Style {
-    Style::new()
-        .fg(Color::Black)
-        .bg(VISUAL)
-        .add_modifier(Modifier::BOLD)
-}
-
-/// 行高亮背景：整行铺 `ROW_BG`，游标/选择区呈现为完整色带。
+/// 行高亮背景：整行铺 `ROW_BG`，游标呈现为完整色带。
 pub(super) const fn highlight_bg() -> Style {
     Style::new().bg(ROW_BG)
 }
 
-/// VISUAL 选择区 gutter：magenta 加粗竖条叠加行背景，标出 `y` 的作用范围。
-pub(super) const fn visual_marker() -> Style {
-    Style::new()
-        .fg(VISUAL)
-        .bg(ROW_BG)
-        .add_modifier(Modifier::BOLD)
-}
-
-/// 消息游标 gutter（NORMAL）：accent 加粗竖条叠加行背景，标出 `yy`/`yc`
-/// 的作用目标；与选择区同族（同背景、同符号），仅以色相区分。
+/// 消息游标 gutter（NORMAL）：accent 加粗竖条叠加行背景，标出 `y`
+/// 复制菜单/折叠的作用目标。
 pub(super) const fn cursor_marker() -> Style {
     Style::new()
         .fg(ACCENT)

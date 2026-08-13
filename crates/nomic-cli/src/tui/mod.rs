@@ -240,11 +240,11 @@ pub async fn run(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// 光标是否用实心块：NORMAL/VISUAL/HELP 与 QUEUE 导航子状态为实心块
+/// 光标是否用实心块：NORMAL/HELP/COPYMENU 与 QUEUE 导航子状态为实心块
 ///（不可键入文本的浏览态）；COMMAND 是键入态，用竖条。
 const fn block_cursor(app: &App) -> bool {
     match app.mode() {
-        Mode::Normal | Mode::Visual | Mode::Help => true,
+        Mode::Normal | Mode::Help | Mode::CopyMenu => true,
         Mode::Queue => !app.queue().is_editing(),
         Mode::Insert | Mode::Command | Mode::Search | Mode::Picker => false,
     }
@@ -505,7 +505,7 @@ async fn handle_wake(
 /// 一轮 prompt 结束：队列（ADR-0014）优先于 goal 模式追问——
 /// 队列非空时，正常结束即取出队首自动提交（QUEUE 模式打开期间冻结，
 /// 退出 QUEUE 时恢复）；被取消/失败等异常结束则队列暂停保留，
-/// 用户可空闲 Enter 或 Esc→Q 恢复。队列为空时才走 goal 模式追问：
+/// 用户可空闲 Enter 或 Esc→m 恢复。队列为空时才走 goal 模式追问：
 /// goal 开启、run 正常结束且仍有未完成 todo 时自动以 user 消息追问
 ///（连续次数有上限，防模型反复不收尾时失控循环）；其余情况回到空闲态。
 /// 追问计数在用户提交新 prompt、run 异常结束或清单全部完成时清零。
@@ -533,7 +533,7 @@ async fn handle_prompt_done(
             }
         } else {
             app.finish_run(Some(format!(
-                "运行未正常结束，队列保留 {} 条：空闲 Enter 发送下一条，Esc→Q 编辑",
+                "运行未正常结束，队列保留 {} 条：空闲 Enter 发送下一条，Esc→m 编辑",
                 app.queue().len()
             )));
         }

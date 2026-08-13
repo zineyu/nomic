@@ -13,7 +13,7 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 
 - **多 provider**：Anthropic Messages 与 OpenAI Completions 兼容端点（DeepSeek、各类网关代理等），
   模型规格分层解析（配置 > [models.dev](https://models.dev) > 中性兜底）
-- **双运行模式**：ratatui 全屏交互 TUI（vim-like 模式化交互）+ 非交互 print 模式（管道可用）
+- **双运行模式**：ratatui 全屏交互 TUI（单字母动作层，[ADR-0021](docs/adr/0021-single-letter-action-layer.md)）+ 非交互 print 模式（管道可用）
 - **排队输入**：运行中 `Enter` 把消息排入统一消息队列（当前步骤完成后注入本轮运行，
   未清空则持续续行；运行被取消或失败时队列保留，恢复后按序作为下一轮发送）；
   oil.nvim 式 QUEUE 模式编辑队列（就地编辑/删除/换位），设计见
@@ -35,7 +35,7 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 - [快速上手](#快速上手)
 - [使用](#使用)
   - [运行模式](#运行模式)
-  - [TUI 键位（vim-like）](#tui-键位vim-like)
+  - [TUI 键位](#tui-键位)
   - [TUI slash 命令](#tui-slash-命令)
   - [会话恢复与分支](#会话恢复与分支)
   - [图片输入](#图片输入)
@@ -110,35 +110,36 @@ nomic -p "..." --reasoning low
 # TUI 内：/models 选择模型后可为推理模型选择思考级别（含 off 关闭）
 ```
 
-### TUI 键位（vim-like）
+### TUI 键位
 
-交互为 vim-like 模式（[ADR-0011](docs/adr/0011-vim-like-interaction.md)），
-默认 INSERT（输入），Esc 逐层退回：
+交互为「双态 + 叠加层」：INSERT 输入（默认），NORMAL 为单字母动作层
+（less/lazygit 式，设计见 [ADR-0021](docs/adr/0021-single-letter-action-layer.md)）；
+`Esc` 逐层退回。
 
 | 模式 | 键位 | 说明 |
 | ---- | ---- | ---- |
 | INSERT | `Enter` | 发送消息（运行中排入队列，当前步骤完成后注入本轮）；`/` 开头按普通文本发送，不触发命令 |
-| INSERT | `Esc` | 进入 NORMAL（取消运行用 `Ctrl+C`） |
+| INSERT | `Esc` | 进入 NORMAL（运行中亦然；中断在 NORMAL 再按一次 `Esc`） |
 | INSERT | `Ctrl+W` `Ctrl+U` `Ctrl+A/E` `Alt+B/F` | 删词 / 清行 / 行首行尾 / 词移动 |
+| INSERT | `Ctrl+C` / `Ctrl+D` | 清草稿（再按退出）/ 空草稿退出、非空删字符 |
+| INSERT | `↑/↓` | 输入历史召回（提交过的 prompt，↓ 到底还原暂存草稿） |
 | INSERT | `Ctrl+G` | 外部编辑器（`$VISUAL`/`$EDITOR`，缺省 `vi`）编辑当前草稿；保存退出后写回，异常退出或内容为空时原草稿保留 |
-| NORMAL | `j` `k` `Ctrl+D/U` `gg` `G` | 滚动 / 半页 / 顶部 / 底部 |
-| NORMAL | `[m` `]m` `[t` `]t` | 跳上/下一条消息、工具调用 |
+| INSERT | `Ctrl+V` | 粘贴剪贴板图片 |
+| NORMAL | `j` `k` `d` `u` `g` `G` | 滚动 / 半页下上 / 顶部 / 底部（less 式） |
+| NORMAL | `[` `]` `{` `}` | 上/下一条消息、上/下一个工具调用 |
 | NORMAL | `/` `n` `N` | 聊天搜索与跳转 |
-| NORMAL | `yy` `yc` `v`+`y` | 复制消息 / 复制代码块 / 选择后复制 |
-| NORMAL | `x` `dd` `dw` | 编辑草稿 |
-| NORMAL | `Q` | 打开队列编辑（QUEUE 模式，队列非空时） |
-| NORMAL | `?` | 键位帮助弹层（j/k 滚动、gg/G 顶/底，Esc/q/`?` 关闭） |
-| NORMAL | `i` `a` `A` `I` `Enter` | 回到输入 |
-| NORMAL | `:` | 打开命令输入框（COMMAND 模式，预填 `/`） |
-| VISUAL | `j` `k` `y` `Esc` | 条目折叠为单行摘要（oil.nvim 式）；扩展选择 / 复制选中完整内容 / 取消 |
+| NORMAL | `y` `Y` | 复制菜单（消息/代码块，`1-9` 直达）/ 直接复制最新消息 |
+| NORMAL | `Space` | 折叠/展开当前条目（assistant/工具输出） |
+| NORMAL | `m` `s` `r` | 队列编辑 / 会话菜单（恢复·新建·分支树）/ 重试最近一轮 |
+| NORMAL | `e` `:` `?` `q` | 外部编辑器 / 命令输入框 / 帮助弹层 / 退出 |
+| NORMAL | `i` `a` `A` `I` `Enter` | 回到输入（光标原位 / 末尾 / 行首） |
 | COMMAND | `Enter` / `Tab` | 执行命令 / 补全命令、模板、skill |
 | COMMAND | `Esc` | 关补全弹层 / 放弃返回 NORMAL |
-| QUEUE | `j` `k` `gg` `G` | 移动条目游标 |
+| QUEUE | `j` `k` `g` `G` | 移动条目游标 / 队首 / 队尾 |
 | QUEUE | `i` `o` `O` `Enter` | 就地编辑 / 下方新增 / 上方新增（`Enter`/`Esc` 保存，空文本即删条目） |
 | QUEUE | `dd` `x` `J` `K` | 删除条目 / 下移 / 上移（换位）；打开期间冻结发送，退出恢复 |
 | picker | 输入即过滤 · `↑/↓` 选择 · `Home/End` 首尾 | 适用于 `/resume`、`/models`、`/tree` |
-| 通用 | `Ctrl+C` | 取消运行 / 退出 |
-| 通用 | `↑/↓` `PgUp/PgDn` 滚轮 | 滚动 |
+| 通用 | `PgUp/PgDn` 滚轮 | 滚动聊天区（不切态） |
 | 通用 | `Shift`+拖选 | 复制文本（TUI 捕获鼠标用于滚轮，原生选择需按住 Shift） |
 
 ### TUI slash 命令
@@ -482,7 +483,7 @@ release 0.2.0       # bump 版本 + 生成 CHANGELOG + check + 打 tag，推 tag
 - M3（部分）：AGENTS.md 加载（向上发现，注入系统提示词）、skills（ADR-0003）、prompt templates（ADR-0008）
 - M4：图片输入（`--image <路径>` 附件；TUI `/image <路径>` 暂存、`Ctrl+V` 剪贴板粘贴）
 - 其后迭代：`grep` / `find` / `todo` 工具、跨 provider 模型选择与 sqlite 配置（ADR-0009/0010）、
-  goal 模式、thinking 折叠、会话标题、vim-like 交互（ADR-0011）
+  goal 模式、thinking 折叠、会话标题、单字母动作层交互（ADR-0011 → ADR-0021）
 
 待完成：
 

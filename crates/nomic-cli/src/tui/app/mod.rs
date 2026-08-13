@@ -95,8 +95,8 @@ pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "skill",
         aliases: &[],
-        summary: "手动载入 skill 到当前对话（/skill:<name>；无参列出可用 skill）",
-        usage: "/skill:<name>（/skill 列出可用 skill）",
+        summary: "手动载入 skill 到当前对话（/skill:<name>[ args]；无参列出可用 skill）",
+        usage: "/skill:<name>[ args]（/skill 列出可用 skill）",
     },
     SlashCommand {
         name: "image",
@@ -143,6 +143,14 @@ enum SlashParse {
     Unknown(String),
 }
 
+/// `/skill:<name>[ args]` 的解析结果：名称 + 可选附加上下文。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SkillInvocation {
+    pub(super) name: String,
+    /// 名称后首个空白起的自由文本（传给 skill 的附加上下文）
+    pub(super) args: Option<String>,
+}
+
 /// 已知 slash 命令的动作。
 #[derive(Debug, PartialEq, Eq)]
 enum SlashAction {
@@ -152,8 +160,8 @@ enum SlashAction {
     /// `/tree`：浏览会话树并选择分支起点
     Tree,
     Quit,
-    /// `/skill`（None）列出可用 skill；`/skill:<name>` 载入指定 skill
-    Skill(Option<String>),
+    /// `/skill`（None）列出可用 skill；`/skill:<name>[ args]` 载入指定 skill
+    Skill(Option<SkillInvocation>),
     /// `/compact [聚焦指令]` 手动压缩上下文
     Compact(Option<String>),
     /// `/retry` 重试最近一轮失败的响应
@@ -261,10 +269,24 @@ fn parse_slash(input: &str) -> SlashParse {
         if command.name == name || command.aliases.contains(&name) {
             let action = match command.name {
                 "skill" => {
-                    if junk || arg.is_some_and(|arg| arg.contains(char::is_whitespace)) {
+                    if junk {
                         return SlashParse::InvalidUsage(command.usage);
                     }
-                    SlashAction::Skill(arg.map(str::to_string))
+                    // 名称后首个空白起为附带 args（自由文本，可含空格）
+                    let invocation = arg.map(|arg| {
+                        let (name, args) = match arg.split_once(char::is_whitespace) {
+                            Some((name, rest)) => {
+                                let args = rest.trim();
+                                (name, (!args.is_empty()).then(|| args.to_string()))
+                            }
+                            None => (arg, None),
+                        };
+                        SkillInvocation {
+                            name: name.to_string(),
+                            args,
+                        }
+                    });
+                    SlashAction::Skill(invocation)
                 }
                 "help" if !junk && arg.is_none() => SlashAction::Help,
                 "new" if !junk && arg.is_none() => SlashAction::New,
@@ -418,8 +440,8 @@ pub(super) enum Effect {
     CancelModelSwitch,
     /// `/skill`：列出可用 skill 并刷新补全快照
     ListSkills,
-    /// `/skill:<name>`：手动载入 skill 到当前对话
-    LoadSkill(String),
+    /// `/skill:<name>[ args]`：手动载入 skill 到当前对话
+    LoadSkill(SkillInvocation),
     /// `/image <路径>`：为下一条消息附加图片
     AttachImage(String),
     /// `/copy`：复制最新一条消息到剪贴板
@@ -1510,7 +1532,7 @@ impl App {
             SlashAction::Models(None) => vec![Effect::ListModels],
             SlashAction::Models(Some(id)) => vec![Effect::SwitchModel(id)],
             SlashAction::Skill(None) => vec![Effect::ListSkills],
-            SlashAction::Skill(Some(name)) => vec![Effect::LoadSkill(name)],
+            SlashAction::Skill(Some(invocation)) => vec![Effect::LoadSkill(invocation)],
             SlashAction::Image(path) => vec![Effect::AttachImage(path)],
             SlashAction::Copy => self.copy_latest(),
             SlashAction::Thinking => {
@@ -2328,26 +2350,30 @@ mod tests {
 
     #[test]
     fn parse_slash_skill_uses_colon_argument() {
+        let skill = |name: &str, args: Option<&str>| {
+            SlashParse::Known(SlashAction::Skill(Some(SkillInvocation {
+                name: name.to_string(),
+                args: args.map(str::to_string),
+            })))
+        };
         assert_eq!(
             parse_slash("/skill"),
             SlashParse::Known(SlashAction::Skill(None))
         );
-        assert_eq!(
-            parse_slash("/skill:jujutsu"),
-            SlashParse::Known(SlashAction::Skill(Some("jujutsu".to_string())))
-        );
+        assert_eq!(parse_slash("/skill:jujutsu"), skill("jujutsu", None));
         // 空参数等价于无参（列出清单）
         assert_eq!(
             parse_slash("/skill:"),
             SlashParse::Known(SlashAction::Skill(None))
         );
-        // 空白分隔的参数与带空格的参数均属于非法用法
+        // 名称后首个空白起为附带 args（可为含空格的自由文本）
+        assert_eq!(
+            parse_slash("/skill:review 只看 unsafe 块"),
+            skill("review", Some("只看 unsafe 块"))
+        );
+        // `/skill name` 空白形式仍属于非法用法（避免与 prompt template 调用混淆）
         assert!(matches!(
             parse_slash("/skill jujutsu"),
-            SlashParse::InvalidUsage(_)
-        ));
-        assert!(matches!(
-            parse_slash("/skill:a b"),
             SlashParse::InvalidUsage(_)
         ));
         // 无参命令带参数同样报用法错误
@@ -2557,7 +2583,7 @@ mod tests {
             root: PathBuf::from("/repo/.agents/skills/jujutsu"),
             instructions: "do jj things".to_string(),
         };
-        let message = skill_load_message(&skill);
+        let message = skill_load_message(&skill, None);
         assert!(
             message.starts_with(
                 "<active_skill name=\"jujutsu\" scope=\"project\" \
@@ -2567,6 +2593,11 @@ mod tests {
         );
         assert!(message.contains("do jj things"));
         assert!(message.contains("manually loaded"));
+        assert!(!message.contains("\n\nUser: "));
+
+        // 附带 args：注入消息尾部追加 User: <args>
+        let message = skill_load_message(&skill, Some("只看 unsafe 块"));
+        assert!(message.ends_with("\n\nUser: 只看 unsafe 块"));
 
         // 运行中注入：聊天区压缩为一行系统样式提示
         let mut injected = app();

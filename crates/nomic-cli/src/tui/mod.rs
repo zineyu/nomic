@@ -761,15 +761,20 @@ async fn execute_effect(
                     .collect(),
             );
         }
-        Effect::LoadSkill(name) => match driver.skill_resolver.activate(&name) {
-            Ok(skill) => {
-                // 注入消息经事件管线回流：聊天区压缩展示 + session 落库自动生效
-                let _ = driver
-                    .job_tx
-                    .send(DriverJob::Inject(app::skill_load_message(&skill)));
+        Effect::LoadSkill(invocation) => {
+            match driver.skill_resolver.activate(&invocation.name) {
+                Ok(skill) => {
+                    // 注入消息经事件管线回流：聊天区压缩展示 + session 落库自动生效
+                    let _ = driver
+                        .job_tx
+                        .send(DriverJob::Inject(app::skill_load_message(
+                            &skill,
+                            invocation.args.as_deref(),
+                        )));
+                }
+                Err(error) => app.warn(format!("载入 skill {:?} 失败：{error}", invocation.name)),
             }
-            Err(error) => app.warn(format!("载入 skill {name:?} 失败：{error}")),
-        },
+        }
         Effect::AttachImage(path) => effects::attach_image(app, &std::path::PathBuf::from(path)),
         Effect::CopyText(text) => effects::copy_to_clipboard(app, text).await,
         Effect::NewSession => effects::new_session(app, driver).await,

@@ -2554,6 +2554,7 @@ mod tests {
             name: "jujutsu".to_string(),
             scope: SkillScope::Project,
             path: PathBuf::from("/repo/.agents/skills/jujutsu/SKILL.md"),
+            root: PathBuf::from("/repo/.agents/skills/jujutsu"),
             instructions: "do jj things".to_string(),
         };
         let message = skill_load_message(&skill);

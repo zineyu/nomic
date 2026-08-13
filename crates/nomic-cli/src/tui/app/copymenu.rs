@@ -3,10 +3,7 @@
 //! [`CopyMenu`] 打开时从聊天条目快照构建行（消息与代码块，新条目在前）；
 //! 确认产出 [`super::Effect::CopyText`]，提示语由模式路由层落到状态栏。
 
-use super::chat::{ChatItem, code_blocks, item_text};
-
-/// 菜单行数上限（最近的条目优先）。
-const MAX_ROWS: usize = 20;
+use super::chat::{ChatItem, item_text};
 
 /// 复制菜单的一行：展示标签 + 复制文本（打开时快照，渲染零计算）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +23,6 @@ pub(in crate::tui) struct CopyMenu {
 }
 
 impl CopyMenu {
-    /// 从聊天条目构建菜单（新条目在前，上限 [`MAX_ROWS`] 行）；
     /// `cursor` 是消息游标（items 下标），选中预定位到该条目的首行。
     /// 没有任何可复制内容时返回 `None`。
     pub(super) fn build(items: &[ChatItem], cursor: Option<usize>) -> Option<Self> {
@@ -34,26 +30,14 @@ impl CopyMenu {
         // 消息游标所在条目在 rows 中的首行下标（预选中用）
         let mut cursor_row = None;
         for (index, item) in items.iter().enumerate().rev() {
-            let remaining = MAX_ROWS.saturating_sub(rows.len());
-            if remaining == 0 {
-                break;
-            }
             let Some(text) = item_text(item) else {
                 continue;
             };
-            let blocks = code_blocks(&text);
             let label = format!("{} · {}", role_label(item), first_line(&text));
             if cursor == Some(index) {
                 cursor_row = Some(rows.len());
             }
             rows.push(CopyRow { label, text });
-            // 代码块单独成行（消息之后，同属一个条目相邻排列）
-            for (block_index, block) in blocks.iter().enumerate().take(remaining - 1) {
-                rows.push(CopyRow {
-                    label: format!("代码块 {}/{}", block_index + 1, blocks.len()),
-                    text: block.clone(),
-                });
-            }
         }
         if rows.is_empty() {
             return None;
@@ -149,7 +133,7 @@ mod tests {
         })
     }
 
-    /// 菜单构建：新条目在前、代码块单独成行、上限截断、游标行预选。
+    /// 菜单构建：新条目在前、代码块单独成行、游标行预选。
     #[test]
     fn build_orders_newest_first_and_presets_cursor_row() {
         let items = vec![
@@ -165,22 +149,20 @@ mod tests {
             labels,
             [
                 "助手 · 看这里：",
-                "代码块 1/2",
-                "代码块 2/2",
                 "用户 · 第二个问题",
                 "助手 · 回答一",
                 "用户 · 第一个问题",
             ],
             "{labels:?}"
         );
-        assert_eq!(menu.selected(), 5);
+        assert_eq!(menu.selected(), 3);
         // 数字键直达与 Enter 确认
         let mut menu = CopyMenu::build(&items, None).expect("有内容");
         assert_eq!(
             menu.selected_text(),
             "看这里：\n```rust\nfn main() {}\n```\n还有：\n```\n第二块\n```"
         );
-        assert_eq!(menu.select_index(1).as_deref(), Some("fn main() {}\n"));
+        assert_eq!(menu.select_index(1).as_deref(), Some("第二个问题"));
         assert_eq!(menu.selected(), 1);
         assert!(menu.select_index(9).is_none(), "越界返回 None");
 

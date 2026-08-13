@@ -422,27 +422,6 @@ pub(super) fn item_text(item: &ChatItem) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// 提取文本中的 ``` 围栏代码块内容（依次返回；未闭合的块丢弃）。
-pub(super) fn code_blocks(text: &str) -> Vec<String> {
-    let mut blocks = Vec::new();
-    let mut in_block = false;
-    let mut current = String::new();
-    for line in text.lines() {
-        if line.trim_start().starts_with("```") {
-            if in_block {
-                blocks.push(std::mem::take(&mut current));
-            }
-            in_block = !in_block;
-            continue;
-        }
-        if in_block {
-            current.push_str(line);
-            current.push('\n');
-        }
-    }
-    blocks
-}
-
 pub(super) fn user_text(content: &UserMessageContent) -> String {
     match content {
         UserMessageContent::Text(text) => text.clone(),

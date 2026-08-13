@@ -865,7 +865,7 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Mode::Search => "输入即搜 · Enter 完成 · Esc 取消 ",
         Mode::CopyMenu => "j/k 选择 · 1-9 直达 · Enter 复制 · Esc 关闭 ",
         Mode::Picker => "输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ",
-        Mode::Help => "j/k 滚动 · gg/G 顶/底 · Esc 关闭 ",
+        Mode::Help => "j/k 滚动 · g/G 顶/底 · Esc 关闭 ",
         Mode::Insert => "Enter 发送 · ^G 编辑器 · Esc 浏览 ",
         Mode::Queue => {
             if app.queue().is_editing() {

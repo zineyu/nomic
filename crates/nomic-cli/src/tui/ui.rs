@@ -11,8 +11,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::{
     app::{
-        App, Block, ChatItem, Completion, CompletionCandidate, Mode, Picker, PickerKind, ToolItem,
-        ToolStatus,
+        App, AssistantItem, Block, ChatItem, Completion, CompletionCandidate, Mode, Picker,
+        PickerKind, ToolItem, ToolStatus,
     },
     markdown, theme,
 };
@@ -56,27 +56,78 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         draw_welcome(frame, app, area);
         return;
     }
-    let spinner = app.spinner();
-    // 每个 MessageBlock 渲染为一组物理行，组间统一空行分隔：用户消息、
-    // assistant 的 Text/Thinking、错误、System、工具调用都是
-    // 独立消息块，块间空行由拼接处保证，而非各分支自行追加。
-    // 运行中状态由输入框标题（spinner + 「运行中 · Ctrl+C 取消」）统一表达，
-    // 聊天区不再叠加流式指示，避免思考时出现两处"生成中"标记。
     let cursor = app.chat_cursor();
     let visual = app.visual_range();
+    let (lines, starts) = chat_lines(app, area.width, cursor, visual);
+    // 自行折行（硬换行，CJK 友好），使行数精确可知、滚动偏移精确
+    let lines = wrap_lines(&lines, area.width);
+    // 搜索命中高亮：Enter 后保留（Esc 清空搜索串即消除）
+    let lines = if let Some(query) = app.search().highlight() {
+        lines
+            .iter()
+            .map(|line| highlight_line(line, query, theme::search_hit()))
+            .collect()
+    } else {
+        lines
+    };
+    let total = lines.len();
+    let max_scroll =
+        u16::try_from(total.saturating_sub(usize::from(area.height))).unwrap_or(u16::MAX);
+    // 钳制滚动偏移并同步上限（状态栏滚动位置显示），取生效偏移渲染
+    let scroll = app.chat_mut().clamp_scroll(max_scroll);
+    // VISUAL 进入帧：布局从全文切换为摘要行后游标条目可能落在视野外，
+    // 把滚动调到「游标可见」的最近位置（后续 j/k 仍由游标定位滚动）
+    let scroll = if visual.is_some()
+        && let Some(index) = cursor
+        && let Some(&line) = starts.get(index)
+        && line != u16::MAX
+    {
+        let offset = max_scroll.saturating_sub(scroll);
+        if line < offset {
+            app.chat_mut().scroll_up(offset - line);
+        } else if line >= offset.saturating_add(area.height) {
+            let down = line
+                .saturating_sub(offset)
+                .saturating_sub(area.height.saturating_sub(1));
+            app.chat_mut().scroll_down(down);
+        }
+        app.chat().scroll()
+    } else {
+        scroll
+    };
+    app.chat_mut().sync_item_lines(starts);
+    let offset = max_scroll.saturating_sub(scroll);
+    let paragraph = Paragraph::new(lines).scroll((offset, 0));
+    frame.render_widget(paragraph, area);
+}
+
+/// 组装聊天区逻辑行：VISUAL 下每条目折叠为一行摘要密排（oil.nvim 式），
+/// 否则完整消息块 + 块间空行；游标/选择区条目整行高亮（gutter 换符号与
+/// 样式、行铺背景并补齐行宽，NORMAL 游标与 VISUAL 选择同族，仅以 gutter
+/// 色相区分；VISUAL 选择区游标端点首行用 `❯` 标出端点）。
+/// 返回（逻辑行，各条目起始行——消息游标滚动定位用，回写状态层）。
+fn chat_lines(
+    app: &App,
+    width: u16,
+    cursor: Option<usize>,
+    visual: Option<(usize, usize)>,
+) -> (Vec<Line<'static>>, Vec<u16>) {
+    let spinner = app.spinner();
     // 每个块标注所属条目下标：游标/选择区 gutter 高亮与条目起始行回写用
     let mut blocks: Vec<(usize, Vec<Line<'static>>)> = Vec::new();
     for (index, item) in app.chat().items().iter().enumerate() {
-        for block in item_blocks(item, area.width, app.thinking_collapsed(), spinner) {
-            blocks.push((index, block));
+        if visual.is_some() {
+            // VISUAL 仿 oil.nvim：每条目折叠为一行摘要，密排列表便于扫读
+            // 选择范围；复制（y）不受影响，仍取条目完整内容
+            blocks.push((index, item_summary(item, width, spinner)));
+        } else {
+            for block in item_blocks(item, width, app.thinking_collapsed(), spinner) {
+                blocks.push((index, block));
+            }
         }
     }
     // 拼接：每个消息块后空一行，块间分隔与末尾留白（与输入框拉开距离）统一处理；
-    // 同时记录各条目起始行（消息游标滚动定位用，回写状态层）。
-    // 游标/选择区条目整行高亮：gutter 换符号与样式、行铺背景并补齐行宽，
-    // 块间隔空行同样延续，形成连续的高亮区（NORMAL 游标与 VISUAL 选择同族，
-    // 仅以 gutter 色相区分；VISUAL 选择区游标端点首行用 `❯` 标出端点，
-    // NORMAL 游标无箭头符号）
+    // 同时记录各条目起始行。块间隔空行同样延续高亮，形成连续的高亮区。
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut starts = vec![u16::MAX; app.chat().items().len()];
     for (index, block) in blocks {
@@ -105,48 +156,25 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                     } else {
                         GUTTER_CURSOR_BODY
                     };
-                    restyle_highlight(line, marker, gutter, area.width)
+                    restyle_highlight(line, marker, gutter, width)
                 })
                 .collect::<Vec<_>>()
         } else {
             block
         };
         lines.extend(block);
-        // 块间隔空行：高亮条目的空行延续 gutter 与背景，高亮区不断裂
-        let gap = if let Some(marker) = highlight {
-            restyle_highlight(Line::default(), marker, GUTTER_CURSOR_BODY, area.width)
-        } else {
-            Line::default()
-        };
-        lines.push(gap);
+        // 块间隔空行：高亮条目的空行延续 gutter 与背景，高亮区不断裂；
+        // VISUAL 摘要视图条目即一行，密排不加空行（oil.nvim 式列表）
+        if visual.is_none() {
+            let gap = if let Some(marker) = highlight {
+                restyle_highlight(Line::default(), marker, GUTTER_CURSOR_BODY, width)
+            } else {
+                Line::default()
+            };
+            lines.push(gap);
+        }
     }
-    if app.chat().items().is_empty() {
-        lines.push(Line::from(Span::styled(
-            "输入 prompt 开始对话。Enter 发送，Ctrl+C 退出。",
-            theme::dim(),
-        )));
-    }
-
-    // 自行折行（硬换行，CJK 友好），使行数精确可知、滚动偏移精确
-    let lines = wrap_lines(&lines, area.width);
-    // 搜索命中高亮：Enter 后保留（Esc 清空搜索串即消除）
-    let lines = if let Some(query) = app.search().highlight() {
-        lines
-            .iter()
-            .map(|line| highlight_line(line, query, theme::search_hit()))
-            .collect()
-    } else {
-        lines
-    };
-    let total = lines.len();
-    let max_scroll =
-        u16::try_from(total.saturating_sub(usize::from(area.height))).unwrap_or(u16::MAX);
-    // 钳制滚动偏移并同步上限（状态栏滚动位置显示），取生效偏移渲染
-    let scroll = app.chat_mut().clamp_scroll(max_scroll);
-    app.chat_mut().sync_item_lines(starts);
-    let offset = max_scroll.saturating_sub(scroll);
-    let paragraph = Paragraph::new(lines).scroll((offset, 0));
-    frame.render_widget(paragraph, area);
+    (lines, starts)
 }
 
 /// 单个聊天条目渲染为消息块列表（每块是一组带 gutter 的物理行）；
@@ -227,6 +255,92 @@ fn item_blocks(
         }
     }
     blocks
+}
+
+/// VISUAL 摘要行（仿 oil.nvim）：每个条目折叠为单行——类型 gutter +
+/// 首行摘要，超长截断为 `…`；选择区整行高亮照常，`y` 复制仍取完整内容。
+fn item_summary(item: &ChatItem, width: u16, spinner: &str) -> Vec<Line<'static>> {
+    let (marker, content) = match item {
+        ChatItem::User(text) => (
+            theme::user_marker(),
+            Line::from(Span::styled(first_line(text), theme::user_text())),
+        ),
+        ChatItem::Assistant(assistant) => (theme::assistant_marker(), assistant_summary(assistant)),
+        ChatItem::System(text) => (
+            theme::dim(),
+            Line::from(Span::styled(first_line(text), theme::dim())),
+        ),
+        ChatItem::Tool(tool) => {
+            let (marker, head) = tool_head(tool, spinner);
+            (marker, Line::from(head))
+        }
+    };
+    let mut block = MessageBlock::new(marker);
+    block.push(truncate_line(
+        content,
+        usize::from(MessageBlock::content_width(width)),
+    ));
+    block.render(width)
+}
+
+/// 文本首行（空文本为空串，gutter 占位仍由 MessageBlock 渲染）。
+fn first_line(text: &str) -> String {
+    text.lines().next().unwrap_or("").to_string()
+}
+
+/// assistant 摘要行：正文首个非空行 > 错误 > 思考占位 > 空消息占位。
+fn assistant_summary(assistant: &AssistantItem) -> Line<'static> {
+    for block in &assistant.blocks {
+        if let Block::Text(text) = block
+            && let Some(line) = text.lines().find(|line| !line.trim().is_empty())
+        {
+            return Line::from(Span::styled(line.to_string(), Style::default()));
+        }
+    }
+    if let Some(error) = &assistant.error {
+        return Line::from(Span::styled(format!("✗ {error}"), theme::err()));
+    }
+    for block in &assistant.blocks {
+        if let Block::Thinking(thinking) = block {
+            return Line::from(Span::styled(
+                format!("思考过程（{} 行）", thinking.lines().count()),
+                theme::thinking(),
+            ));
+        }
+    }
+    Line::from(Span::styled("…", theme::dim()))
+}
+
+/// 把行截断到 `max` 显示宽度：超长时只留前 `max - 1` 列并以 `…` 收尾
+///（VISUAL 摘要行用；CJK 宽字符按显示宽度计）。
+fn truncate_line(line: Line<'static>, max: usize) -> Line<'static> {
+    if line.width() <= max {
+        return line;
+    }
+    let limit = max.saturating_sub(1);
+    let mut spans = Vec::new();
+    let mut used = 0_usize;
+    let mut full = false;
+    for span in line.spans {
+        let mut buf = String::new();
+        for c in span.content.chars() {
+            let width = UnicodeWidthChar::width(c).unwrap_or(0);
+            if used + width > limit {
+                full = true;
+                break;
+            }
+            used += width;
+            buf.push(c);
+        }
+        if !buf.is_empty() {
+            spans.push(Span::styled(buf, span.style));
+        }
+        if full {
+            break;
+        }
+    }
+    spans.push(Span::styled("…", theme::dim()));
+    Line::from(spans)
 }
 
 /// 消息块组件：聊天区每条消息的视觉单元，gutter 竖条是组件的一部分。
@@ -402,9 +516,9 @@ fn match_positions(text: &str, query: &str) -> Vec<bool> {
     hits
 }
 
-/// 工具条目组件：gutter 竖条取状态色，加粗工具名 + 暗色 (参数)，
-/// 结果摘要首行 `⎿` 引导、后续行对齐缩进，保持树形层次。
-fn tool_block(tool: &ToolItem, spinner: &str) -> MessageBlock {
+/// 工具条目标题行（gutter 状态色 + 标题 spans）：完整块与 VISUAL
+/// 摘要行共用。运行中带 spinner 帧。
+fn tool_head(tool: &ToolItem, spinner: &str) -> (Style, Vec<Span<'static>>) {
     let (mark_style, name_style) = match tool.status {
         ToolStatus::Running => (theme::busy(), theme::bold()),
         ToolStatus::Ok => (theme::ok(), theme::bold()),
@@ -418,8 +532,15 @@ fn tool_block(tool: &ToolItem, spinner: &str) -> MessageBlock {
     if !tool.args.is_empty() {
         spans.push(Span::styled(format!("({})", tool.args), theme::dim()));
     }
+    (mark_style, spans)
+}
+
+/// 工具条目组件：gutter 竖条取状态色，加粗工具名 + 暗色 (参数)，
+/// 结果摘要首行 `⎿` 引导、后续行对齐缩进，保持树形层次。
+fn tool_block(tool: &ToolItem, spinner: &str) -> MessageBlock {
+    let (mark_style, head) = tool_head(tool, spinner);
     let mut block = MessageBlock::new(mark_style);
-    block.push(Line::from(spans));
+    block.push(Line::from(head));
     if !tool.detail.is_empty() {
         let detail_style = if tool.status == ToolStatus::Failed {
             theme::err()
@@ -790,7 +911,7 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Mode::Normal => "i 输入 · : 命令 · / 搜索 · ? 帮助 ",
         Mode::Command => "Tab 补全 · Enter 执行 · Esc 返回 ",
         Mode::Search => "输入即搜 · Enter 完成 · Esc 取消 ",
-        Mode::Visual => "j/k 扩展 · y 复制 · Esc 取消 ",
+        Mode::Visual => "j/k 扩展 · y 复制全文 · Esc 取消 ",
         Mode::Picker => "输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ",
         Mode::Help => "j/k 滚动 · gg/G 顶/底 · Esc 关闭 ",
         Mode::Insert => "Enter 发送 · ^G 编辑器 · Esc 浏览 ",
@@ -1059,7 +1180,7 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
         "SEARCH · VISUAL · PICKER",
         &[
             ("SEARCH", "输入即搜 · Enter 完成 · Esc 取消"),
-            ("VISUAL", "j/k 扩展选择 · y 复制 · Esc 取消"),
+            ("VISUAL", "单行摘要 · j/k 扩展 · y 复制全文 · Esc 取消"),
             ("PICKER", "输入过滤 · ↑/↓ 选择 · Home/End 首尾 · Enter/Esc"),
         ],
     ),
@@ -1601,7 +1722,8 @@ mod tests {
     }
 
     /// VISUAL 选择区：与游标同族的整行高亮，gutter 为 magenta；
-    /// 游标端点条目首行仍为 `❯`（magenta），范围其余行 `▐`。
+    /// 条目在 VISUAL 下折叠为单行摘要（oil.nvim 式），游标端点条目
+    /// 为 `❯`，范围其余条目行为 `▐`。
     #[test]
     fn visual_selection_highlight_uses_magenta_gutter() {
         use super::super::app::Key;
@@ -1632,19 +1754,77 @@ mod tests {
             .expect("游标端点 gutter 为 ❯");
         assert_eq!(cells[head].fg, theme::VISUAL);
         assert_eq!(cells[head].bg, theme::ROW_BG);
-        // 选择区续行与空行为 magenta `▐`，且整行铺背景
+        // 选择区其余条目行为 magenta `▐`，且整行铺背景
         let bodies: Vec<usize> = cells
             .iter()
             .enumerate()
             .filter(|(_, cell)| cell.symbol() == "▐")
             .map(|(index, _)| index)
             .collect();
-        assert!(bodies.len() >= 2, "选择区应有多行 ▐：{bodies:?}");
+        assert_eq!(
+            bodies.len(),
+            1,
+            "密排摘要视图：另一条目仅占一行：{bodies:?}"
+        );
         for index in &bodies {
             assert_eq!(cells[*index].fg, theme::VISUAL);
             let row = index / width;
             assert_eq!(cells[row * width + width - 2].bg, theme::ROW_BG);
         }
+    }
+
+    /// VISUAL 摘要视图（仿 oil.nvim）：每条目只渲染一行（首行摘要，
+    /// 超长截断为 `…`），条目密排相邻；复制完整内容由 app 层
+    /// `visual_selects_message_range_and_yanks` 覆盖。
+    #[test]
+    fn visual_collapses_items_to_summary_lines() {
+        use super::super::app::Key;
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        for text in ["第一行\n第二行\n第三行".to_string(), "冗".repeat(100)] {
+            app.handle_event(&AgentEvent::MessageStart(Box::new(Message::User(
+                nomic_ai::UserMessage {
+                    content: nomic_ai::UserMessageContent::Text(text),
+                    timestamp: 0,
+                },
+            ))));
+        }
+        app.press(Key::Esc);
+        app.press(Key::Char('v'));
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let width = usize::from(buffer.area.width);
+        // CJK 宽字符占两列（续列为空白），比照 compact_text 过滤空白再断言
+        let rows: Vec<String> = buffer
+            .content()
+            .chunks(width)
+            .map(|row| {
+                row.iter()
+                    .flat_map(|cell| cell.symbol().chars())
+                    .filter(|c| !c.is_whitespace())
+                    .collect()
+            })
+            .collect();
+        let find_rows = |needle: &str| -> Vec<usize> {
+            rows.iter()
+                .enumerate()
+                .filter(|(_, row)| row.contains(needle))
+                .map(|(index, _)| index)
+                .collect()
+        };
+        // 多行消息折叠为一行：首行摘要上屏，后续行不上屏
+        let first = find_rows("第一行");
+        assert_eq!(first.len(), 1, "首行摘要只占一行：{first:?}");
+        assert!(find_rows("第二行").is_empty(), "后续行折叠不上屏");
+        assert!(find_rows("第三行").is_empty(), "后续行折叠不上屏");
+        // 超长单行截断为 `…` 收尾，同样只占一行
+        let long = find_rows("冗");
+        assert_eq!(long.len(), 1, "超长消息只占一行：{long:?}");
+        assert!(rows[long[0]].contains('…'), "截断行以 … 收尾");
+        // 条目密排相邻（oil.nvim 式列表，无块间空行）
+        assert_eq!(first[0] + 1, long[0], "条目密排相邻");
     }
 
     /// `/resume` 选择器弹层：session 行、标题与选中标记均可见。

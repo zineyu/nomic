@@ -331,7 +331,7 @@ fn build_system_prompt(
     let mut prompt = "You are an expert coding assistant operating inside nomic, a coding agent harness. \
          You help users by reading files, executing commands, editing code, and writing new files.\n\
          Available tools:\n\
-         - read: Read file contents and skill://<name> instructions\n\
+         - read: Read file contents and skill://<name>[/<path>] instructions and resources\n\
          - bash: Execute bash commands\n\
          - grep: Search file contents with a regex (ripgrep-style)\n\
          - find: Find files and directories by glob pattern (fd-style)\n\
@@ -342,6 +342,7 @@ fn build_system_prompt(
          - Use bash for other shell commands (cargo, git, jj, ls, etc.)\n\
          - Use read to examine files instead of cat or sed\n\
          - Skills are reusable instruction documents; read skill://<name> before following one\n\
+         - skill://<name>/<path> reads supporting files (scripts/, references/, etc.) inside the skill directory\n\
          - Do not write or edit skill:// resources; edit their backing files only when the user asks\n\
          - Be concise in your responses\n\
          - Show file paths clearly when working with files"
@@ -587,6 +588,8 @@ mod tests {
         assert!(prompt.contains("triggers: rust, review"));
         assert!(prompt.contains("<active_skill name=\"rust-review\""));
         assert!(prompt.contains("Check unsafe code."));
+        // 注入块带 skill 根目录指引（相对路径解析基准）
+        assert!(prompt.contains(&format!("[Skill directory: {}", root.display())));
     }
 
     // ── --reasoning 取值 ────────────────────────────────────────────────

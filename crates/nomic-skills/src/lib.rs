@@ -217,6 +217,7 @@ impl SkillResolver {
             name: skill.name,
             scope: skill.scope,
             path: skill.path,
+            root: skill.root,
             instructions: skill.document.body,
         })
     }
@@ -264,7 +265,9 @@ impl SkillResolver {
             return None;
         }
         let mut prompt = format!(
-            "Available skills (use read with {SKILL_SCHEME}<name> before following a skill; skill content is read-only):"
+            "Available skills (use read with {SKILL_SCHEME}<name> before following a skill; \
+             skill content is read-only; {SKILL_SCHEME}<name>/<path> reads files inside the \
+             skill directory, such as scripts/ or references/):"
         );
         for skill in skills {
             prompt.push('\n');
@@ -287,6 +290,8 @@ pub struct ActivatedSkill {
     pub scope: SkillScope,
     /// `SKILL.md` 路径
     pub path: PathBuf,
+    /// skill 根目录（附属资源的相对路径解析基准）
+    pub root: PathBuf,
     /// Markdown 正文
     pub instructions: String,
 }
@@ -295,14 +300,20 @@ impl ActivatedSkill {
     /// 渲染 `<active_skill>` 注入标签。
     ///
     /// system prompt（`--skill`）与会话内注入（`/skill:<name>`）共用同一格式，
-    /// 解析侧见 [`parse_active_skill_tag`]。
+    /// 解析侧见 [`parse_active_skill_tag`]。块尾附加 skill 根目录指引，让模型
+    /// 能解析正文中引用的相对路径并按需读取附属资源（对齐 omp 的 baseDir 注入）。
     pub fn prompt_tag(&self) -> String {
         format!(
-            "<active_skill name=\"{}\" scope=\"{}\" path=\"{}\">\n{}\n</active_skill>",
+            "<active_skill name=\"{}\" scope=\"{}\" path=\"{}\">\n{}\n\n\
+             [Skill directory: {} — relative paths referenced by this skill resolve against \
+             this directory; read its files via {SKILL_SCHEME}{}/<path> or the filesystem, \
+             and run its scripts with bash, as needed.]\n</active_skill>",
             self.name,
             self.scope,
             self.path.display(),
-            self.instructions
+            self.instructions,
+            self.root.display(),
+            self.name,
         )
     }
 }
@@ -977,6 +988,7 @@ mod tests {
             name: "rust-review".to_string(),
             scope: SkillScope::Project,
             path: PathBuf::from("/repo/.nomic/skills/rust-review/SKILL.md"),
+            root: PathBuf::from("/repo/.nomic/skills/rust-review"),
             instructions: "# Review\nCheck unsafe code.".to_string(),
         };
         let tag = skill.prompt_tag();
@@ -984,7 +996,14 @@ mod tests {
             "<active_skill name=\"rust-review\" scope=\"project\" \
              path=\"/repo/.nomic/skills/rust-review/SKILL.md\">"
         ));
-        assert!(tag.ends_with("# Review\nCheck unsafe code.\n</active_skill>"));
+        // 注入块尾部带 skill 根目录指引：相对路径的解析基准 + 子资源读取方式
+        assert!(tag.ends_with(
+            "# Review\nCheck unsafe code.\n\n\
+             [Skill directory: /repo/.nomic/skills/rust-review — relative paths referenced \
+             by this skill resolve against this directory; read its files via \
+             skill://rust-review/<path> or the filesystem, and run its scripts with bash, \
+             as needed.]\n</active_skill>"
+        ));
 
         // 标签后允许拼接其他文本（如会话内注入的说明）。
         let parsed = parse_active_skill_tag(&format!("{tag}\n\nmanual note")).expect("parse");
@@ -1045,5 +1064,7 @@ mod tests {
         let prompt = resolver.prompt_catalog().expect("non-empty");
         assert!(prompt.contains("skill://good"));
         assert!(!prompt.contains("broken"));
+        // 清单头部说明子资源读取方式
+        assert!(prompt.contains("skill://<name>/<path>"));
     }
 }

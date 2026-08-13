@@ -29,6 +29,8 @@ pub(in crate::tui) enum PickerKind {
     Models,
     /// 模型切换流程第二步：设置思考级别
     Reasoning,
+    /// NORMAL `s`：会话菜单（恢复 / 新建 / 分支树合一入口）
+    Session,
 }
 
 /// 选择器状态：候选行 + 当前选中项 + 过滤串（fzf 风格：可打印字符即过滤，
@@ -88,6 +90,27 @@ impl Picker {
             kind: PickerKind::Tree,
             rows,
             selected,
+            filter: String::new(),
+        }
+    }
+
+    /// 打开会话菜单（NORMAL `s`）：固定三项，从头选中。
+    pub(super) fn session() -> Self {
+        let rows = [
+            ("resume", "恢复历史 session"),
+            ("new", "新建对话（清空上下文）"),
+            ("tree", "会话树（创建分支）"),
+        ]
+        .map(|(id, text)| PickerRow {
+            id: id.to_string(),
+            text: text.to_string(),
+            selectable: true,
+        })
+        .to_vec();
+        Self {
+            kind: PickerKind::Session,
+            rows,
+            selected: 0,
             filter: String::new(),
         }
     }

@@ -233,11 +233,11 @@ pub async fn run(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// 光标是否用实心块：NORMAL/VISUAL 与 QUEUE 导航子状态为实心块
+/// 光标是否用实心块：NORMAL/VISUAL/HELP 与 QUEUE 导航子状态为实心块
 ///（不可键入文本的浏览态）。
 const fn block_cursor(app: &App) -> bool {
     match app.mode() {
-        Mode::Normal | Mode::Visual => true,
+        Mode::Normal | Mode::Visual | Mode::Help => true,
         Mode::Queue => !app.queue_editing(),
         Mode::Insert | Mode::Search | Mode::Picker => false,
     }

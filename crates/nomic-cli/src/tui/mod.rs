@@ -57,7 +57,7 @@ use tokio_util::sync::CancellationToken;
 
 use app::{App, Effect, Key, Mode, SkillEntry};
 
-use crate::bootstrap::ModelResolver;
+use crate::model::ModelResolver;
 use crate::{Cli, bootstrap};
 
 /// 事件循环持有的终端类型（draw 与外部编辑器后的全量重绘共用）。

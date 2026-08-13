@@ -117,8 +117,8 @@ nomic -p "..." --reasoning low
 
 | 模式 | 键位 | 说明 |
 | ---- | ---- | ---- |
-| INSERT | `Enter` / `Tab` | 发送消息（运行中排入队列，当前步骤完成后注入本轮）/ 补全 |
-| INSERT | `Esc` | 关弹层 / 进入 NORMAL（取消运行用 `Ctrl+C`） |
+| INSERT | `Enter` | 发送消息（运行中排入队列，当前步骤完成后注入本轮）；`/` 开头按普通文本发送，不触发命令 |
+| INSERT | `Esc` | 进入 NORMAL（取消运行用 `Ctrl+C`） |
 | INSERT | `Ctrl+W` `Ctrl+U` `Ctrl+A/E` `Alt+B/F` | 删词 / 清行 / 行首行尾 / 词移动 |
 | INSERT | `Ctrl+G` | 外部编辑器（`$VISUAL`/`$EDITOR`，缺省 `vi`）编辑当前草稿；保存退出后写回，异常退出或内容为空时原草稿保留 |
 | NORMAL | `j` `k` `Ctrl+D/U` `gg` `G` | 滚动 / 半页 / 顶部 / 底部 |
@@ -129,7 +129,9 @@ nomic -p "..." --reasoning low
 | NORMAL | `Q` | 打开队列编辑（QUEUE 模式，队列非空时） |
 | NORMAL | `?` | 键位帮助弹层（j/k 滚动、gg/G 顶/底，Esc/q/`?` 关闭） |
 | NORMAL | `i` `a` `A` `I` `Enter` | 回到输入 |
-| NORMAL | `:` | 命令输入（预填 `/`） |
+| NORMAL | `:` | 打开命令输入框（COMMAND 模式，预填 `/`） |
+| COMMAND | `Enter` / `Tab` | 执行命令 / 补全命令、模板、skill |
+| COMMAND | `Esc` | 关补全弹层 / 放弃返回 NORMAL |
 | QUEUE | `j` `k` `gg` `G` | 移动条目游标 |
 | QUEUE | `i` `o` `O` `Enter` | 就地编辑 / 下方新增 / 上方新增（`Enter`/`Esc` 保存，空文本即删条目） |
 | QUEUE | `dd` `x` `J` `K` | 删除条目 / 下移 / 上移（换位）；打开期间冻结发送，退出恢复 |
@@ -140,7 +142,7 @@ nomic -p "..." --reasoning low
 
 ### TUI slash 命令
 
-输入 `/` 自动补全；`/help` 查看全部：
+命令只在命令输入框执行（ADR-0020）：NORMAL 下按 `:` 打开，预填 `/` 并自动补全；`/help` 查看全部。聊天输入框（INSERT）不触发命令，`/` 开头的输入按普通文本发送。
 
 | 命令 | 说明 |
 | ---- | ---- |
@@ -159,8 +161,8 @@ nomic -p "..." --reasoning low
 | `/quit`（`/exit`） | 退出 TUI |
 
 运行中本地 slash 命令（`/help`、`/copy` 等）照常可用，不被工具调用阻塞。
-运行中输入的普通消息与模板调用按 `Enter` 排入统一消息队列（见上「排队输入」）；
-会话命令（`/compact`、`/retry`、`/models` 等）仍须等本轮结束。
+运行中输入的普通消息按 `Enter` 排入统一消息队列（见上「排队输入」）；
+命令行提交的模板调用同样入队；会话命令（`/compact`、`/retry`、`/models` 等）仍须等本轮结束。
 
 ### 会话恢复与分支
 
@@ -380,7 +382,8 @@ session 落库，resume 后仍然有效）：
 ### Prompt Templates
 
 prompt template 是一个 `.md` 文件，文件名（去掉 `.md`）即 `/name` 命令名，
-正文是模板。输入 `/name 参数...`，模板展开为完整 prompt 后提交。
+正文是模板。在命令输入框（NORMAL `:`）输入 `/name 参数...`，模板展开为
+完整 prompt 后提交。
 
 ```text
 # 项目级（从 cwd 向上发现，越近优先级越高）

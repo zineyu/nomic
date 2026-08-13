@@ -6,7 +6,11 @@ Accepted
 
 （2026-08-13 部分修订：[ADR-0018](0018-browse-default-and-edtui-input.md)
 反转默认模式为 BROWSE-first，草稿编辑收编进 INPUT 的 edtui 子态；
-本 ADR 与之冲突的部分以 ADR-0018 为准。）
+本 ADR 与之冲突的部分以 ADR-0018 为准。2026-08-13 再度修订：
+[ADR-0020](0020-dedicated-command-input.md) 把 COMMAND 升格为一等模式
+（专门的命令输入框），slash 命令从聊天输入框迁出；本 ADR 中
+「COMMAND = INSERT + 预填 `/`」与「slash 命令只在 INSERT 触发」的
+表述以 ADR-0020 为准。）
 
 ## Date
 

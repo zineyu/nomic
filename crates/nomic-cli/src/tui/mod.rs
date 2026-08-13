@@ -150,7 +150,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
     // `--image` 附件在 TUI 模式同样生效：作为首轮消息的暂存附件
     effects::stage_cli_images(&mut app, &cli.image);
     let skill_resolver = boot.skill_resolver.clone();
-    app.input_mut().set_available_skills(
+    app.command_mut().set_available_skills(
         skill_resolver
             .catalog()
             .into_iter()
@@ -161,7 +161,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
             })
             .collect(),
     );
-    app.input_mut()
+    app.command_mut()
         .set_available_templates(boot.prompt_templates.clone());
     // 启动解析的思考级别（CLI 参数 / 配置文件）在进入 builder 前取出，
     // driver 据此维护 `/models` 级别选择器的当前值
@@ -241,12 +241,12 @@ pub async fn run(cli: &Cli) -> Result<()> {
 }
 
 /// 光标是否用实心块：NORMAL/VISUAL/HELP 与 QUEUE 导航子状态为实心块
-///（不可键入文本的浏览态）。
+///（不可键入文本的浏览态）；COMMAND 是键入态，用竖条。
 const fn block_cursor(app: &App) -> bool {
     match app.mode() {
         Mode::Normal | Mode::Visual | Mode::Help => true,
         Mode::Queue => !app.queue().is_editing(),
-        Mode::Insert | Mode::Search | Mode::Picker => false,
+        Mode::Insert | Mode::Command | Mode::Search | Mode::Picker => false,
     }
 }
 

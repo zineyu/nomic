@@ -149,7 +149,7 @@ nomic -p "..." --reasoning low
 | `/resume` | 交互选择并恢复历史 session（切换上下文与落库目标） |
 | `/tree` | 浏览会话树，选择非工具调用条目作为新分支起点（原分支保留） |
 | `/models` | 跨 provider 切换模型（`/models:<provider>/<模型id>` 亦可）；推理模型联动选择思考级别 |
-| `/skill` `/skill:<name>` | 列出可用 skill / 手动载入指定 skill |
+| `/skill` `/skill:<name>[ args]` | 列出可用 skill / 手动载入指定 skill（可附加上下文） |
 | `/image:<路径>` | 为下一条消息附加图片（可多次附加） |
 | `/compact [聚焦指令]` | 手动压缩上下文 |
 | `/retry` | 重试最近一轮失败的响应 |
@@ -334,6 +334,22 @@ triggers: [rust, review]
 ...
 ```
 
+另有三个控制可见性的可选字段：
+
+- `enabled: false`：整个 skill 不可用（catalog 与 `skill://` 均跳过）；
+- `hide: true`：不出现在系统提示词清单，仍可 `--skill` / `/skill:<name>`
+  显式调用（适合只供显式触发的 skill）。
+
+skill 目录可携带附属文件（`scripts/`、`references/` 等），通过子路径读取：
+
+```text
+read({"path": "skill://rust-review/references/checklist.md"})  # 读文件
+read({"path": "skill://rust-review/scripts"})                   # 列目录
+```
+
+子路径被限制在 skill 目录内（拒绝 `..` 穿越与绝对路径）；显式激活时注入块会
+附带 `[Skill directory: ...]` 指引，正文中引用的相对路径以该目录为基准解析。
+
 启动时 nomic 将 skill 的名称、描述与 triggers 注入系统提示词；模型可通过
 `read` 工具按需读取完整指令：
 
@@ -353,8 +369,9 @@ nomic -p "按 skill 审查" --skill rust-review
 session 落库，resume 后仍然有效）：
 
 ```text
-/skill              # 列出可用 skill
-/skill:rust-review  # 载入指定 skill（输入 /skill: 后可 Tab 补全名称）
+/skill                        # 列出可用 skill
+/skill:rust-review            # 载入指定 skill（输入 /skill: 后可 Tab 补全名称）
+/skill:rust-review 只看 unsafe  # 名称后空白起为附加上下文，以 User: <args> 追加
 ```
 
 `skill://` 是只读资源；如需修改 skill，请显式编辑其 backing file。设计见

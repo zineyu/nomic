@@ -530,13 +530,20 @@ pub(super) fn user_text(content: &UserMessageContent) -> String {
 ///
 /// 标签使用 [`ActivatedSkill::prompt_tag`] 的统一格式，与 bootstrap 中 `--skill`
 /// 注入 system prompt 的 `<active_skill>` 一致，模型侧无需区分来源。
-pub(in crate::tui) fn skill_load_message(skill: &ActivatedSkill) -> String {
-    format!(
+/// `/skill:<name> args` 的附加上下文在消息尾部以 `User: <args>` 追加
+///（参考 omp 的 user-invocation 模板），让 skill 能接收调用方意图。
+pub(in crate::tui) fn skill_load_message(skill: &ActivatedSkill, args: Option<&str>) -> String {
+    let mut message = format!(
         "{}\n\n\
          The user manually loaded this skill into the conversation. \
          Follow its instructions for the subsequent work.",
         skill.prompt_tag()
-    )
+    );
+    if let Some(args) = args {
+        use std::fmt::Write as _;
+        let _ = write!(message, "\n\nUser: {args}");
+    }
+    message
 }
 
 /// 聊天区压缩展示注入的 skill 消息：返回 `Some` 表示该 user 文本是 skill 注入。

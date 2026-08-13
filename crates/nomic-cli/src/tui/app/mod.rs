@@ -30,7 +30,7 @@ use picker::PICKER_PAGE_SCROLL;
 use queue::Queue;
 use search::Search;
 
-pub(super) use chat::{Block, ChatItem, ToolItem, ToolStatus, skill_load_message};
+pub(super) use chat::{AssistantItem, Block, ChatItem, ToolItem, ToolStatus, skill_load_message};
 pub(super) use input::{Completion, CompletionCandidate, SkillEntry};
 pub(super) use picker::{Picker, PickerKind, PickerRow};
 

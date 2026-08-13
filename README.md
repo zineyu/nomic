@@ -130,6 +130,7 @@ nomic -p "..." --reasoning low
 | NORMAL | `?` | 键位帮助弹层（j/k 滚动、gg/G 顶/底，Esc/q/`?` 关闭） |
 | NORMAL | `i` `a` `A` `I` `Enter` | 回到输入 |
 | NORMAL | `:` | 打开命令输入框（COMMAND 模式，预填 `/`） |
+| VISUAL | `j` `k` `y` `Esc` | 条目折叠为单行摘要（oil.nvim 式）；扩展选择 / 复制选中完整内容 / 取消 |
 | COMMAND | `Enter` / `Tab` | 执行命令 / 补全命令、模板、skill |
 | COMMAND | `Esc` | 关补全弹层 / 放弃返回 NORMAL |
 | QUEUE | `j` `k` `gg` `G` | 移动条目游标 |

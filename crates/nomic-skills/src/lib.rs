@@ -221,6 +221,42 @@ impl SkillResolver {
         })
     }
 
+    /// 解析 `skill://<name>[/<path>]` 资源。
+    ///
+    /// `rel` 为空（或只有 `.`）时返回 [`SkillResource::Instructions`]（SKILL.md 正文）；
+    /// 否则按词法规范化相对路径并要求落在 skill 根目录内，存在时按实际类型返回
+    /// 文件或目录资源。不做符号链接解析：穿越防护只保证词法前缀，skill 目录内
+    /// 指向外部的符号链接不在此拦截（skill 对用户是可信资产）。
+    pub fn resolve_resource(
+        &self,
+        name: &str,
+        rel: Option<&str>,
+    ) -> Result<SkillResource, SkillsError> {
+        let skill = self.resolve(name)?;
+        let Some(rel) = rel else {
+            return Ok(SkillResource::Instructions(skill));
+        };
+        let Some(path) = resolve_resource_path(&skill.root, rel).map_err(|()| {
+            SkillsError::InvalidResourcePath {
+                name: name.to_string(),
+                path: rel.to_string(),
+            }
+        })?
+        else {
+            return Ok(SkillResource::Instructions(skill));
+        };
+        if path.is_file() {
+            Ok(SkillResource::File { skill, path })
+        } else if path.is_dir() {
+            Ok(SkillResource::Directory { skill, path })
+        } else {
+            Err(SkillsError::ResourceNotFound {
+                name: name.to_string(),
+                path: rel.to_string(),
+            })
+        }
+    }
+
     /// 渲染 system prompt 中的可用 skill 清单；无 skill 时返回 `None`。
     pub fn prompt_catalog(&self) -> Option<String> {
         let skills = self.catalog();
@@ -303,6 +339,56 @@ fn tag_attr(header: &str, key: &str) -> Option<String> {
     Some(header[start..end].to_string())
 }
 
+/// `skill://<name>[/<path>]` 解析出的资源。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillResource {
+    /// 无子路径：`SKILL.md` 正文（不含 frontmatter）
+    Instructions(Skill),
+    /// skill 根目录内的文件（词法规范化后的绝对路径）
+    File {
+        /// 所属 skill
+        skill: Skill,
+        /// 资源绝对路径
+        path: PathBuf,
+    },
+    /// skill 根目录内的目录
+    Directory {
+        /// 所属 skill
+        skill: Skill,
+        /// 资源绝对路径
+        path: PathBuf,
+    },
+}
+
+/// 词法规范化 `root.join(rel)`，越出 `root` 返回 `Err(())`，
+/// 空路径（或只有 `.`）返回 `Ok(None)`。
+///
+/// 只处理 `Normal` / `CurDir` / `ParentDir` 组件：拒绝绝对路径与 Windows
+/// 前缀；`..` 弹出深度，弹到 0 以下即越界。不触碰文件系统，因此结果稳定、
+/// 与路径是否存在无关。
+fn resolve_resource_path(root: &Path, rel: &str) -> Result<Option<PathBuf>, ()> {
+    let mut path = root.to_path_buf();
+    let mut depth = 0usize;
+    for component in Path::new(rel).components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                path.push(part);
+                depth += 1;
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if depth == 0 {
+                    return Err(());
+                }
+                path.pop();
+                depth -= 1;
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => return Err(()),
+        }
+    }
+    Ok((depth > 0).then_some(path))
+}
+
 /// [`SkillResolver::catalog_with_diagnostics`] 的结果。
 #[derive(Debug)]
 pub struct SkillCatalog {
@@ -364,6 +450,24 @@ pub enum SkillsError {
         path: PathBuf,
         /// 错误说明
         message: String,
+    },
+    /// skill 子资源路径非法（绝对路径或穿越出 skill 根目录）
+    #[error(
+        "invalid resource path {path:?} for skill {name:?}; path must stay inside the skill directory"
+    )]
+    InvalidResourcePath {
+        /// skill 名称
+        name: String,
+        /// 非法的相对路径
+        path: String,
+    },
+    /// skill 子资源不存在
+    #[error("resource {path:?} not found in skill {name:?}")]
+    ResourceNotFound {
+        /// skill 名称
+        name: String,
+        /// 相对路径
+        path: String,
     },
     /// 目录扫描失败
     #[error("failed to scan skills directory {}: {message}", .path.display())]
@@ -717,6 +821,54 @@ mod tests {
         let resolver = resolver(tmp.path(), vec![(tmp.path(), SkillScope::Project)]);
         let error = resolver.resolve("../secret").expect_err("invalid");
         assert!(matches!(error, SkillsError::InvalidName { .. }));
+    }
+
+    #[test]
+    fn resolves_skill_sub_resources_with_traversal_guard() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path().join("demo");
+        std::fs::create_dir_all(root.join("scripts")).expect("mkdir");
+        std::fs::write(root.join("SKILL.md"), "demo body").expect("write");
+        std::fs::write(root.join("scripts/run.sh"), "#!/bin/sh\n").expect("write");
+        std::fs::write(tmp.path().join("secret.txt"), "secret").expect("write");
+        let resolver = resolver(tmp.path(), vec![(tmp.path(), SkillScope::Project)]);
+
+        // 无子路径 / 空子路径：返回 skill 正文指令
+        for rel in [None, Some(""), Some(".")] {
+            let resource = resolver
+                .resolve_resource("demo", rel)
+                .expect("instructions");
+            assert!(matches!(resource, SkillResource::Instructions(_)));
+        }
+
+        // 文件子资源：返回规范化后的绝对路径
+        let resource = resolver
+            .resolve_resource("demo", Some("scripts//run.sh"))
+            .expect("file");
+        let SkillResource::File { path, .. } = resource else {
+            panic!("expected file resource");
+        };
+        assert_eq!(path, root.join("scripts/run.sh"));
+
+        // 目录子资源
+        let resource = resolver
+            .resolve_resource("demo", Some("scripts"))
+            .expect("dir");
+        assert!(matches!(resource, SkillResource::Directory { .. }));
+
+        // 穿越到 skill 根之外：拒绝（含经中间目录折返的情形）
+        for rel in ["../secret.txt", "scripts/../../secret.txt", "/etc/passwd"] {
+            let error = resolver
+                .resolve_resource("demo", Some(rel))
+                .expect_err("traversal");
+            assert!(matches!(error, SkillsError::InvalidResourcePath { .. }));
+        }
+
+        // 根内不存在的路径
+        let error = resolver
+            .resolve_resource("demo", Some("scripts/missing.sh"))
+            .expect_err("missing");
+        assert!(matches!(error, SkillsError::ResourceNotFound { .. }));
     }
 
     #[test]

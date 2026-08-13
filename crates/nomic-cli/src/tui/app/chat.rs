@@ -83,7 +83,7 @@ pub(in crate::tui) struct Chat {
     pub(super) items: Vec<ChatItem>,
     /// NORMAL 的消息游标（items 下标）；进入 NORMAL 时定位到最新一条消息
     pub(super) cursor_item: Option<usize>,
-    /// 渲染回写的各条目起始行（draw_chat 折行后同步；未经渲染时为空）
+    /// 渲染回写的各条目起始行（聊天 widget 折行后同步；未经渲染时为空）
     item_lines: Vec<u16>,
     /// 从底部向上滚动的行数（0 = 跟随最新内容）
     pub(super) scroll: u16,
@@ -312,7 +312,7 @@ impl Chat {
 
     // ── 消息游标 ────────────────────────────────────────────────────────────
 
-    /// 渲染回写各条目起始行（draw_chat 折行后同步；测试未经渲染时为空）。
+    /// 渲染回写各条目起始行（聊天 widget 折行后同步；测试未经渲染时为空）。
     pub(in crate::tui) fn sync_item_lines(&mut self, starts: Vec<u16>) {
         self.item_lines = starts;
     }

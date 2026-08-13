@@ -10,7 +10,8 @@
 //! - [`effects`]：Effect 执行逻辑，按族分组为子模块——`model`
 //!   （模型 + 思考级别两步流）、`session`（resume / tree / branch /
 //!   new 与落库）、`clipboard`（粘贴 / 复制 / 图片暂存）
-//! - [`ui`]：纯渲染（聊天区 + 输入框 + 状态栏）
+//! - [`widgets`]：纯渲染——组合根 [`widgets::draw`] 布局后由各区域自定义
+//!   widget（聊天区 / 输入框 / 状态栏 / 弹层 / 覆盖层）渲染
 //! - 本文件：终端生命周期、事件循环（`KeyEvent` → `Key` 映射、`Effect` 转发执行）、
 //!   agent driver 任务
 //!
@@ -26,7 +27,7 @@ mod app;
 mod effects;
 mod markdown;
 mod theme;
-mod ui;
+mod widgets;
 
 use std::io;
 
@@ -216,7 +217,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
     set_cursor_style(last_block_cursor);
     loop {
         terminal
-            .draw(|frame| ui::draw(frame, &mut app))
+            .draw(|frame| widgets::draw(frame, &mut app))
             .context("绘制失败")?;
         let wake = next_wake(
             &app,

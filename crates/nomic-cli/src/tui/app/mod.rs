@@ -3,83 +3,40 @@
 //! 对外只暴露语义级操作——按键（[`App::press`] → [`Effect`]）、应用 agent 事件、
 //! 滚动、会话与附件管理；编辑器/补全/picker/slash 分发均为模块内部实现。
 //! 本模块不碰终端，全部逻辑可脱离 ratatui/crossterm 单测。
+//!
+//! 结构：[`App`] 是「组合 + 模式路由」的薄壳，状态按关注点拆到子模块——
+//! - [`chat`]：聊天区条目 + delta 累积 + 滚动（[`Chat`]）
+//! - [`input`]：草稿缓冲 + 编辑 + 补全（[`Input`]）
+//! - [`queue`]：统一消息队列与 QUEUE 模式状态（[`Queue`]）
+//! - [`picker`] / [`search`]：选择器与搜索状态（[`Picker`] / [`Search`]）
+//!
+//! 子模块各自自持状态与方法集；跨模块协调（模式切换、提示语、
+//! [`Effect`] 分发）由本壳完成。
 
-use nomic_ai::{
-    AssistantContent, AssistantEvent, Message, StopReason, UserContent, UserMessageContent,
-};
-use nomic_core::{
-    AgentEvent, SteeringMessage, SteeringQueue, estimate_context_tokens, usage_context_tokens,
-};
-use nomic_prompts::{PromptTemplate, PromptsError};
-use nomic_skills::{ActivatedSkill, SkillScope, parse_active_skill_tag};
-use unicode_width::UnicodeWidthStr;
+mod chat;
+mod input;
+mod picker;
+mod queue;
+mod search;
+
+use nomic_ai::{Message, StopReason};
+use nomic_core::{AgentEvent, SteeringMessage, estimate_context_tokens, usage_context_tokens};
+use nomic_prompts::PromptsError;
+
+use chat::{Chat, assistant_error, user_text};
+use input::{Input, skill_list_text};
+use picker::PICKER_PAGE_SCROLL;
+use queue::Queue;
+use search::Search;
+
+pub(super) use chat::{Block, ChatItem, ToolItem, ToolStatus, skill_load_message};
+pub(super) use input::{Completion, CompletionCandidate, SkillEntry};
+pub(super) use picker::{Picker, PickerKind, PickerRow};
 
 use crate::print::brief_args;
 
 /// braille spinner 帧序列（运行中工具与流式指示共用）。
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-/// 聊天区条目。
-#[derive(Debug)]
-pub(super) enum ChatItem {
-    /// 用户消息
-    User(String),
-    /// assistant 消息（流式中逐步累积）
-    Assistant(AssistantItem),
-    /// 一次工具执行
-    Tool(ToolItem),
-    /// 本地系统提示（slash 命令输出等，不进上下文）
-    System(String),
-}
-
-impl ChatItem {
-    /// 是否为对话消息（user/assistant）：NORMAL `]m`/`[m` 的跳转目标。
-    const fn is_message(&self) -> bool {
-        matches!(self, Self::User(_) | Self::Assistant(_))
-    }
-
-    /// 是否为工具调用条目：NORMAL `]t`/`[t` 的跳转目标。
-    const fn is_tool(&self) -> bool {
-        matches!(self, Self::Tool(_))
-    }
-}
-
-/// assistant 消息条目：有序内容块 + 定稿状态。
-#[derive(Debug, Default)]
-pub(super) struct AssistantItem {
-    pub(super) blocks: Vec<Block>,
-    pub(super) done: bool,
-    /// `stop_reason` 为 Error/Aborted 时的错误信息
-    pub(super) error: Option<String>,
-}
-
-/// assistant 内容块（工具调用块不进聊天区，由 `ToolExecution*` 事件承载）。
-#[derive(Debug)]
-pub(super) enum Block {
-    Text(String),
-    Thinking(String),
-}
-
-/// 工具执行状态。
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum ToolStatus {
-    Running,
-    Ok,
-    Failed,
-}
-
-/// 工具执行条目。
-#[derive(Debug)]
-pub(super) struct ToolItem {
-    /// 工具调用 id（并行执行时按 id 匹配 update/end）
-    pub(super) id: String,
-    pub(super) name: String,
-    /// 参数摘要（截断）
-    pub(super) args: String,
-    pub(super) status: ToolStatus,
-    /// 进度/结果的尾部摘要（最多 `DETAIL_LINES` 行）
-    pub(super) detail: Vec<String>,
-}
 
 /// 一条 slash 命令的静态描述。
 #[derive(Debug)]
@@ -363,122 +320,11 @@ fn help_text() -> String {
     text
 }
 
-/// 补全候选：slash 命令、prompt template 或 `/skill:` 后的 skill 名。
-#[derive(Debug)]
-pub(super) enum CompletionCandidate {
-    Command(&'static SlashCommand),
-    /// prompt template（`/name` 调用展开）
-    Template(PromptTemplate),
-    Skill(SkillEntry),
-}
-
-impl CompletionCandidate {
-    /// 候选对应的输入片段（不含 `/` 前缀），用于精确匹配、排序与填入。
-    fn fragment(&self) -> String {
-        match self {
-            Self::Command(command) => command.name.to_string(),
-            Self::Template(template) => template.name.clone(),
-            Self::Skill(entry) => format!("skill:{}", entry.name),
-        }
-    }
-
-    /// 输入片段是否精确对应该候选（Enter 是否可直接提交）。
-    fn matches_fragment(&self, fragment: &str) -> bool {
-        match self {
-            Self::Command(command) => {
-                command.name == fragment || command.aliases.contains(&fragment)
-            }
-            Self::Template(_) | Self::Skill(_) => self.fragment() == fragment,
-        }
-    }
-}
-
-/// 可用于 `/skill:` 补全的 skill 元数据（从 resolver catalog 快照）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SkillEntry {
-    pub(super) name: String,
-    pub(super) description: String,
-    pub(super) scope: SkillScope,
-}
-
-/// 补全弹层状态：候选列表 + 当前选中项。
-#[derive(Debug)]
-pub(super) struct Completion {
-    pub(super) candidates: Vec<CompletionCandidate>,
-    pub(super) selected: usize,
-}
-
-/// 选择器的一行：内部 id + 预生成的展示文本（渲染零计算）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct PickerRow {
-    pub(super) id: String,
-    pub(super) text: String,
-    /// 是否可选中确认（`/tree` 的工具调用条目只展示不可选）；
-    /// 其余选择器恒为 `true`
-    pub(super) selectable: bool,
-}
-
-/// 选择器种类：决定确认动作（[`Effect`]）与渲染标题。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PickerKind {
-    /// `/resume`：恢复历史 session
-    Resume,
-    /// `/tree`：选择分支起点
-    Tree,
-    /// `/models`：切换模型
-    Models,
-    /// 模型切换流程第二步：设置思考级别
-    Reasoning,
-}
-
-/// 选择器状态：候选行 + 当前选中项 + 过滤串（fzf 风格：可打印字符即过滤，
-/// ↑/↓ 导航）。`selected` 是**过滤后可见行**的下标。
-#[derive(Debug)]
-pub(super) struct Picker {
-    pub(super) kind: PickerKind,
-    pub(super) rows: Vec<PickerRow>,
-    pub(super) selected: usize,
-    /// 过滤串（空 = 全部可见；大小写不敏感的子串匹配）
-    pub(super) filter: String,
-}
-
-impl Picker {
-    /// 过滤后的可见行（`rows` 下标列表，保持原顺序）。
-    pub(super) fn visible(&self) -> Vec<usize> {
-        if self.filter.is_empty() {
-            return (0..self.rows.len()).collect();
-        }
-        let needle = self.filter.to_lowercase();
-        (0..self.rows.len())
-            .filter(|&index| self.rows[index].text.to_lowercase().contains(&needle))
-            .collect()
-    }
-}
-
-/// 暂存的图片附件（`/image <路径>` 载入，随下一条 prompt 一起发送）。
-#[derive(Debug)]
-struct PendingImage {
-    /// 展示名（文件名）
-    name: String,
-    /// 图片内容块（base64 内联）
-    image: nomic_ai::ImageContent,
-}
-
-/// 队列区渲染条目（统一队列视图，与 QUEUE 模式游标的条目空间一致）。
-#[derive(Debug)]
-pub(super) struct QueueEntry {
-    pub(super) text: String,
-    pub(super) images: usize,
-}
-
 /// PgUp/PgDn 的滚动步长。
 const PAGE_SCROLL: u16 = 10;
 
 /// NORMAL 模式 Ctrl+D/Ctrl+U 的半页滚动步长。
 const HALF_PAGE_SCROLL: u16 = 5;
-
-/// picker Ctrl+D/Ctrl+U 的半页翻步长（可见行下标计）。
-const PICKER_PAGE_SCROLL: isize = 10;
 
 /// TUI 交互模式（ADR-0011）：模式是一等状态，每个按键在当前模式只有一个语义。
 ///
@@ -587,47 +433,31 @@ pub(super) enum Effect {
     BranchTo(String),
 }
 
-/// TUI 应用状态。
+/// TUI 应用状态：各关注点状态的组合 + 模式路由。
 // 布尔字段均为相互独立的 UI 开关（运行态/退出/thinking 折叠/goal 模式），
 // 两态语义清晰，无需状态机
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub(super) struct App {
-    items: Vec<ChatItem>,
-    /// 交互模式（ADR-0011）：只取 Insert/Normal；Picker 是派生态
-    ///（`picker.is_some()` 时 [`Self::mode`] 返回 Picker），不入此字段
-    mode: Mode,
-    /// NORMAL 的消息游标（items 下标）；进入 NORMAL 时定位到最新一条消息
-    cursor_item: Option<usize>,
-    /// 渲染回写的各条目起始行（draw_chat 折行后同步；未经渲染时为空）
-    item_lines: Vec<u16>,
-    /// `yc` 代码块循环序号（同一游标消息内重复 yc 依次取下一个块）
-    yc_block: usize,
-    /// VISUAL 的选择锚点（items 下标；进入 VISUAL 时取消息游标）
-    visual_anchor: Option<usize>,
-    /// 搜索串（NORMAL `/` 进入 SEARCH；Esc 清空，Enter 保留供 n/N）
-    search_query: String,
-    /// 搜索命中条目（items 下标，升序）
-    search_matches: Vec<usize>,
-    /// 序列键首键（NORMAL 的 `g`/`[`/`]`/`y`），等待第二键
-    pending_key: Option<char>,
-    /// 输入缓冲（可多行，`\n` 为 Shift+Enter 插入的手动换行）
-    input: String,
-    /// 光标位置（字节索引，始终落在 char 边界）
-    cursor: usize,
-    /// slash 命令补全弹层（输入以 `/` 开头时出现）
-    completion: Option<Completion>,
+    /// 聊天区：条目、消息游标与滚动
+    chat: Chat,
+    /// 输入区：草稿缓冲、编辑与补全
+    input: Input,
+    /// 统一消息队列与 QUEUE 模式状态
+    queue: Queue,
+    /// 搜索状态（NORMAL `/` 进入 SEARCH）
+    search: Search,
     /// 选择器（`/resume` / `/models` / `/tree`，打开时接管键位）
     picker: Option<Picker>,
+    /// 交互模式（ADR-0011）：只取 Insert/Normal/Search/Visual/Queue；
+    /// Picker/Help 是派生态（`picker.is_some()` / `help_scroll.is_some()`
+    /// 时 [`Self::mode`] 返回 Picker/Help），不入此字段
+    mode: Mode,
+    /// 序列键首键（NORMAL/QUEUE/HELP 的 `g`/`[`/`]`/`y`/`d`），等待第二键
+    pending_key: Option<char>,
     /// 键位帮助弹层的滚动偏移（NORMAL `?` 打开；`Some` 即打开，
     /// 0 为顶部）。派生模式 Help 的判定字段
     help_scroll: Option<u16>,
-    /// 暂存的图片附件（随下一条 prompt 发送）
-    attachments: Vec<PendingImage>,
-    /// 从底部向上滚动的行数（0 = 跟随最新内容）
-    scroll: u16,
-    /// 聊天区最大可上滚行数（渲染时更新，状态栏滚动位置显示用）
-    scroll_max: u16,
     running: bool,
     should_quit: bool,
     /// 模型展示名
@@ -642,48 +472,24 @@ pub(super) struct App {
     notice: Option<String>,
     /// spinner 帧序号（仅运行中由事件循环周期推进）
     spinner: usize,
-    /// `/skill:` 补全用的可用 skill 快照
-    skills: Vec<SkillEntry>,
-    /// 可用的 prompt templates（`/name` 调用展开与补全用）
-    templates: Vec<PromptTemplate>,
     /// thinking 内容是否折叠显示（默认折叠，`/thinking` 切换）
     thinking_collapsed: bool,
     /// goal 模式（默认关闭，`/goal` 开关）：开启后 react loop 停止且
     /// todo 未全部完成时，由事件循环自动以 user 消息追问
     goal_mode: bool,
-    /// 统一消息队列（ADR-0014）：运行中 Enter 入队，当前 turn 的工具
-    /// 调用执行完后由 core 在 turn 边界注入本轮运行；run 异常结束时
-    /// 保留，恢复后弹出队首作为下一轮 prompt。与 agent 共享同一份
-    /// 队列（启动时经 [`Self::steering_handle`] 传给 builder），QUEUE
-    /// 模式打开期间冻结注入
-    steering: SteeringQueue,
-    /// QUEUE 模式的条目游标（队列下标）
-    queue_cursor: usize,
-    /// QUEUE 模式的编辑子状态：正在就地编辑的队列槽位
-    ///（草稿缓冲即该槽位内容，Enter/Esc 保存回队列）
-    queue_editing: Option<usize>,
 }
 
 impl App {
     pub(super) fn new(model_name: String, session_id: Option<String>, context_window: u64) -> Self {
         Self {
-            items: Vec::new(),
-            mode: Mode::Insert,
-            cursor_item: None,
-            item_lines: Vec::new(),
-            yc_block: 0,
-            visual_anchor: None,
-            search_query: String::new(),
-            search_matches: Vec::new(),
-            pending_key: None,
-            input: String::new(),
-            cursor: 0,
-            completion: None,
+            chat: Chat::default(),
+            input: Input::new(),
+            queue: Queue::default(),
+            search: Search::default(),
             picker: None,
+            mode: Mode::Insert,
+            pending_key: None,
             help_scroll: None,
-            attachments: Vec::new(),
-            scroll: 0,
-            scroll_max: 0,
             running: false,
             should_quit: false,
             model_name,
@@ -692,74 +498,49 @@ impl App {
             context_window,
             notice: None,
             spinner: 0,
-            skills: Vec::new(),
-            templates: Vec::new(),
             thinking_collapsed: true,
             goal_mode: false,
-            steering: SteeringQueue::new(),
-            queue_cursor: 0,
-            queue_editing: None,
         }
     }
 
-    /// 统一消息队列句柄：启动时传给 agent builder，与 core 共享同一份
-    /// 队列（运行中入队直推，不经 driver 串行 job 通道）。
-    pub(super) fn steering_handle(&self) -> SteeringQueue {
-        self.steering.clone()
+    // ── 子模块访问（渲染与事件循环的读/回写通道） ────────────────────────────
+
+    /// 聊天区状态（条目、滚动、渲染回写）。
+    pub(super) const fn chat(&self) -> &Chat {
+        &self.chat
     }
 
-    /// 设置 `/skill:` 补全用的可用 skill 快照（启动时从 resolver catalog 取）。
-    pub(super) fn set_available_skills(&mut self, skills: Vec<SkillEntry>) {
-        self.skills = skills;
+    /// 聊天区状态（可变）：渲染回写滚动边界/条目行号、滚动与系统提示用。
+    pub(super) const fn chat_mut(&mut self) -> &mut Chat {
+        &mut self.chat
     }
 
-    /// 设置可用的 prompt templates（启动时从 resolver catalog 取）。
-    pub(super) fn set_available_templates(&mut self, templates: Vec<PromptTemplate>) {
-        self.templates = templates;
+    /// 输入区状态（草稿、补全、附件）。
+    pub(super) const fn input(&self) -> &Input {
+        &self.input
     }
+
+    /// 输入区状态（可变）：补全快照与附件暂存用。
+    pub(super) const fn input_mut(&mut self) -> &mut Input {
+        &mut self.input
+    }
+
+    /// 队列状态（条数、条目视图、QUEUE 模式游标）。
+    pub(super) const fn queue(&self) -> &Queue {
+        &self.queue
+    }
+
+    /// 搜索状态（查询串、命中数、高亮词）。
+    pub(super) const fn search(&self) -> &Search {
+        &self.search
+    }
+
+    // ── 事件与历史 ──────────────────────────────────────────────────────────
 
     /// 把 resume 恢复的历史消息渲染为聊天条目。
     pub(super) fn load_history(&mut self, messages: &[Message]) {
         self.context_tokens = estimate_context_tokens(messages);
-        for message in messages {
-            match message {
-                Message::User(user) => self.push_user_text(user_text(&user.content)),
-                Message::Assistant(assistant) => {
-                    let error =
-                        assistant_error(assistant.stop_reason, assistant.error_message.as_deref());
-                    self.items.push(ChatItem::Assistant(AssistantItem {
-                        blocks: assistant
-                            .content
-                            .iter()
-                            .filter_map(|content| match content {
-                                AssistantContent::Text(text) => {
-                                    Some(Block::Text(text.text.clone()))
-                                }
-                                AssistantContent::Thinking(thinking) => {
-                                    Some(Block::Thinking(thinking.thinking.clone()))
-                                }
-                                AssistantContent::ToolCall(_) => None,
-                            })
-                            .collect(),
-                        done: true,
-                        error,
-                    }));
-                }
-                Message::ToolResult(result) => {
-                    self.items.push(ChatItem::Tool(ToolItem {
-                        id: result.tool_call_id.clone(),
-                        name: result.tool_name.clone(),
-                        args: String::new(),
-                        status: if result.is_error {
-                            ToolStatus::Failed
-                        } else {
-                            ToolStatus::Ok
-                        },
-                        detail: result_summary(&result.content),
-                    }));
-                }
-            }
-        }
+        self.chat.load_history(messages);
     }
 
     /// 消费一个 agent 事件，更新状态。
@@ -768,15 +549,12 @@ impl App {
             AgentEvent::AgentStart => self.running = true,
             AgentEvent::MessageStart(message) => match message.as_ref() {
                 Message::User(user) => {
-                    self.push_user_text(user_text(&user.content));
+                    self.chat.push_user_text(user_text(&user.content));
                 }
-                Message::Assistant(_) => {
-                    self.items
-                        .push(ChatItem::Assistant(AssistantItem::default()));
-                }
+                Message::Assistant(_) => self.chat.start_assistant(),
                 Message::ToolResult(_) => {}
             },
-            AgentEvent::MessageUpdate(delta) => self.apply_delta(delta),
+            AgentEvent::MessageUpdate(delta) => self.chat.apply_delta(delta),
             AgentEvent::MessageEnd(message) => {
                 if let Message::Assistant(assistant) = message.as_ref() {
                     // 与 estimate_context_tokens 同一锚点规则：有效响应的实际
@@ -790,13 +568,10 @@ impl App {
                             self.context_tokens = tokens;
                         }
                     }
-                    if let Some(ChatItem::Assistant(item)) = self.items.last_mut() {
-                        item.done = true;
-                        item.error = assistant_error(
-                            assistant.stop_reason,
-                            assistant.error_message.as_deref(),
-                        );
-                    }
+                    self.chat.finalize_assistant(assistant_error(
+                        assistant.stop_reason,
+                        assistant.error_message.as_deref(),
+                    ));
                 }
             }
             AgentEvent::ToolExecutionStart {
@@ -804,23 +579,20 @@ impl App {
                 tool_name,
                 args,
             } => {
-                self.items.push(ChatItem::Tool(ToolItem {
+                self.chat.push_tool(ToolItem {
                     id: tool_call_id.clone(),
                     name: tool_name.clone(),
                     args: brief_args(tool_name, args),
                     status: ToolStatus::Running,
                     detail: Vec::new(),
-                }));
-                self.scroll_to_bottom();
+                });
             }
             AgentEvent::ToolExecutionUpdate {
                 tool_call_id,
                 partial,
                 ..
             } => {
-                if let Some(tool) = self.find_tool_mut(tool_call_id) {
-                    tool.detail = result_summary(&partial.content);
-                }
+                self.chat.update_tool_detail(tool_call_id, &partial.content);
             }
             AgentEvent::ToolExecutionEnd {
                 tool_call_id,
@@ -828,14 +600,8 @@ impl App {
                 is_error,
                 ..
             } => {
-                if let Some(tool) = self.find_tool_mut(tool_call_id) {
-                    tool.status = if *is_error {
-                        ToolStatus::Failed
-                    } else {
-                        ToolStatus::Ok
-                    };
-                    tool.detail = result_summary(&result.content);
-                }
+                self.chat
+                    .finish_tool(tool_call_id, *is_error, &result.content);
             }
             AgentEvent::CompactionStart { tokens_before } => {
                 // 用一次性提示而非聊天条目：压缩失败时提示自然消失，不残留
@@ -847,51 +613,12 @@ impl App {
                 ..
             } => {
                 self.notice = None;
-                self.push_system(format!(
+                self.chat.push_system(format!(
                     "上下文已压缩：约 {tokens_before} tokens → 摘要 + {kept_count} 条近期消息。"
                 ));
             }
             AgentEvent::AgentEnd { .. } | AgentEvent::TurnStart | AgentEvent::TurnEnd { .. } => {}
         }
-    }
-
-    /// 按 `(index, delta)` 累积流式 assistant 内容（ADR-0001 消费方义务）。
-    fn apply_delta(&mut self, delta: &AssistantEvent) {
-        let Some(ChatItem::Assistant(item)) = self.items.last_mut() else {
-            return;
-        };
-        match delta {
-            AssistantEvent::TextStart { index } => {
-                insert_block(&mut item.blocks, *index, Block::Text(String::new()));
-            }
-            AssistantEvent::TextDelta { index, delta } => {
-                if let Some(Block::Text(text)) = item.blocks.get_mut(*index) {
-                    text.push_str(delta);
-                }
-            }
-            AssistantEvent::ThinkingStart { index } => {
-                insert_block(&mut item.blocks, *index, Block::Thinking(String::new()));
-            }
-            AssistantEvent::ThinkingDelta { index, delta } => {
-                if let Some(Block::Thinking(thinking)) = item.blocks.get_mut(*index) {
-                    thinking.push_str(delta);
-                }
-            }
-            // End/Done/Error 不携带增量；Done/Error 由 core 转为 MessageEnd，不会到这里
-            _ => {}
-        }
-    }
-
-    fn find_tool_mut(&mut self, tool_call_id: &str) -> Option<&mut ToolItem> {
-        self.items.iter_mut().rev().find_map(|item| {
-            if let ChatItem::Tool(tool) = item
-                && tool.id == tool_call_id
-            {
-                Some(tool)
-            } else {
-                None
-            }
-        })
     }
 
     // ── 按键（语义分发） ────────────────────────────────────────────────────
@@ -938,7 +665,7 @@ impl App {
             // Ctrl+G：外部编辑器编辑当前草稿（长文/多行场景；编辑器持有
             // 草稿副本，保存退出后整体写回，放弃则原样保留）
             Key::Ctrl('g') => return vec![Effect::OpenEditor],
-            Key::Tab => self.tab_complete(),
+            Key::Tab => self.input.tab_complete(),
             Key::Enter => return self.press_enter(),
             other => self.apply_edit_key(other),
         }
@@ -949,24 +676,24 @@ impl App {
     /// 光标移动、换行与聊天区滚动；提交、补全与模式切换由调用方各自处理。
     fn apply_edit_key(&mut self, key: Key) {
         match key {
-            Key::Ctrl('w') => self.delete_word_back(),
-            Key::Ctrl('u') => self.delete_to_line_start(),
-            Key::Ctrl('a') => self.cursor_line_home(),
-            Key::Ctrl('e') => self.cursor_line_end(),
-            Key::Alt('b') => self.cursor_word_left(),
-            Key::Alt('f') => self.cursor_word_right(),
-            Key::Newline => self.insert_newline(),
-            Key::Backspace => self.backspace(),
-            Key::Left => self.cursor_left(),
-            Key::Right => self.cursor_right(),
-            Key::Home => self.cursor_home(),
-            Key::End => self.cursor_end(),
+            Key::Ctrl('w') => self.input.delete_word_back(),
+            Key::Ctrl('u') => self.input.delete_to_line_start(),
+            Key::Ctrl('a') => self.input.cursor_line_home(),
+            Key::Ctrl('e') => self.input.cursor_line_end(),
+            Key::Alt('b') => self.input.cursor_word_left(),
+            Key::Alt('f') => self.input.cursor_word_right(),
+            Key::Newline => self.input.insert_newline(),
+            Key::Backspace => self.input.backspace(),
+            Key::Left => self.input.cursor_left(),
+            Key::Right => self.input.cursor_right(),
+            Key::Home => self.input.cursor_home(),
+            Key::End => self.input.cursor_end(),
             // 补全弹层可见时 ↑/↓ 移动选中项，否则滚动聊天区
             Key::Up => self.insert_vertical(-1),
             Key::Down => self.insert_vertical(1),
-            Key::PageUp => self.scroll_up(PAGE_SCROLL),
-            Key::PageDown => self.scroll_down(PAGE_SCROLL),
-            Key::Char(c) => self.insert_char(c),
+            Key::PageUp => self.chat.scroll_up(PAGE_SCROLL),
+            Key::PageDown => self.chat.scroll_down(PAGE_SCROLL),
+            Key::Char(c) => self.input.insert_char(c),
             _ => {}
         }
     }
@@ -974,7 +701,7 @@ impl App {
     /// INSERT 的 Esc 退回栈（ADR-0011）：关补全弹层 → 回 NORMAL。
     /// Esc 一律是模式切换，不再取消运行；取消运行由 Ctrl+C 承担。
     fn insert_esc(&mut self) -> Vec<Effect> {
-        if !self.dismiss_completion() {
+        if !self.input.dismiss_completion() {
             self.enter_normal();
         }
         Vec::new()
@@ -982,12 +709,12 @@ impl App {
 
     /// INSERT 的 ↑/↓：补全弹层可见时移动选中项，否则滚动聊天区。
     const fn insert_vertical(&mut self, delta: isize) {
-        if self.completion.is_some() {
-            self.completion_select(delta);
+        if self.input.completion().is_some() {
+            self.input.completion_select(delta);
         } else if delta < 0 {
-            self.scroll_up(1);
+            self.chat.scroll_up(1);
         } else {
-            self.scroll_down(1);
+            self.chat.scroll_down(1);
         }
     }
 
@@ -1027,19 +754,17 @@ impl App {
             }
             // x：删除草稿光标处字符（草稿编辑，不动消息游标）
             Key::Char('x') => {
-                self.delete_char_at_cursor();
+                self.input.delete_char_at_cursor();
                 Vec::new()
             }
             Key::Char('G') => {
-                self.scroll_to_bottom();
-                self.cursor_item = self.items.iter().rposition(ChatItem::is_message);
-                self.yc_block = 0;
+                self.chat.scroll_to_bottom();
+                self.chat.move_cursor_to_last_message();
                 Vec::new()
             }
             // V 进入可视选择：锚点取消息游标（无可选消息时提示）
             Key::Char('V') => {
-                if self.cursor_item.is_some() {
-                    self.visual_anchor = self.cursor_item;
+                if self.chat.begin_visual() {
                     self.mode = Mode::Visual;
                 } else {
                     self.notice = Some("没有可选择的消息".to_string());
@@ -1068,29 +793,29 @@ impl App {
                 Vec::new()
             }
             Key::Char('k') | Key::Up => {
-                self.scroll_up(1);
+                self.chat.scroll_up(1);
                 Vec::new()
             }
             Key::Char('j') | Key::Down => {
-                self.scroll_down(1);
+                self.chat.scroll_down(1);
                 Vec::new()
             }
             // Ctrl+D 在 NORMAL 让位 vim 语义（半页滚动）；取消/退出
             // 统一由 Ctrl+C 承担（与 INSERT 的 Ctrl+C 同口径）
             Key::Ctrl('u') => {
-                self.scroll_up(HALF_PAGE_SCROLL);
+                self.chat.scroll_up(HALF_PAGE_SCROLL);
                 Vec::new()
             }
             Key::Ctrl('d') => {
-                self.scroll_down(HALF_PAGE_SCROLL);
+                self.chat.scroll_down(HALF_PAGE_SCROLL);
                 Vec::new()
             }
             Key::PageUp => {
-                self.scroll_up(PAGE_SCROLL);
+                self.chat.scroll_up(PAGE_SCROLL);
                 Vec::new()
             }
             Key::PageDown => {
-                self.scroll_down(PAGE_SCROLL);
+                self.chat.scroll_down(PAGE_SCROLL);
                 Vec::new()
             }
             // 复制最新一条消息（等价 `/copy`）
@@ -1119,19 +844,19 @@ impl App {
             // I 回 INSERT 到当前逻辑行首
             Key::Enter | Key::Char('A') => {
                 self.leave_normal();
-                self.cursor_end();
+                self.input.cursor_end();
             }
             Key::Char('I') => {
                 self.leave_normal();
-                self.cursor_line_home();
+                self.input.cursor_line_home();
             }
             // `:` 进入命令输入：回 INSERT 并预填 `/`（补全弹层随之出现）。
             // 草稿非空时不覆盖用户文本，提示先处理草稿
             Key::Char(':') => {
-                let empty = self.input.is_empty();
+                let empty = self.input.text().is_empty();
                 self.leave_normal();
                 if empty {
-                    self.insert_char('/');
+                    self.input.insert_char('/');
                 } else {
                     self.notice = Some("草稿非空：i 返回编辑，清空后再用 : 命令".to_string());
                 }
@@ -1148,22 +873,21 @@ impl App {
         match (pending, key) {
             // gg：到顶（渲染时经 clamp_scroll 钳到实际上限）
             ('g', Key::Char('g')) => {
-                self.scroll_up(u16::MAX);
-                self.cursor_item = self.items.iter().position(ChatItem::is_message);
-                self.yc_block = 0;
+                self.chat.scroll_up(u16::MAX);
+                self.chat.move_cursor_to_first_message();
             }
             // [m / ]m：上一条/下一条对话消息
-            ('[', Key::Char('m')) => self.step_cursor(-1, ChatItem::is_message),
-            (']', Key::Char('m')) => self.step_cursor(1, ChatItem::is_message),
+            ('[', Key::Char('m')) => self.chat.step_cursor(-1, ChatItem::is_message),
+            (']', Key::Char('m')) => self.chat.step_cursor(1, ChatItem::is_message),
             // [t / ]t：上一个/下一个工具调用
-            ('[', Key::Char('t')) => self.step_cursor(-1, ChatItem::is_tool),
-            (']', Key::Char('t')) => self.step_cursor(1, ChatItem::is_tool),
+            ('[', Key::Char('t')) => self.chat.step_cursor(-1, ChatItem::is_tool),
+            (']', Key::Char('t')) => self.chat.step_cursor(1, ChatItem::is_tool),
             // yy：复制游标条目；yc：复制游标消息中的代码块
             ('y', Key::Char('y')) => return Some(self.copy_cursor_item()),
             ('y', Key::Char('c')) => return Some(self.copy_cursor_code_block()),
             // dd：删除草稿当前逻辑行；dw：删除到后一词开头
-            ('d', Key::Char('d')) => self.delete_draft_line(),
-            ('d', Key::Char('w')) => self.delete_word_forward(),
+            ('d', Key::Char('d')) => self.input.delete_draft_line(),
+            ('d', Key::Char('w')) => self.input.delete_word_forward(),
             _ => return None,
         }
         Some(Vec::new())
@@ -1173,17 +897,17 @@ impl App {
     /// NORMAL，Esc 放弃选择回 NORMAL。
     fn press_visual(&mut self, key: Key) -> Vec<Effect> {
         match key {
-            Key::Char('j') | Key::Down => self.step_cursor(1, ChatItem::is_message),
-            Key::Char('k') | Key::Up => self.step_cursor(-1, ChatItem::is_message),
+            Key::Char('j') | Key::Down => self.chat.step_cursor(1, ChatItem::is_message),
+            Key::Char('k') | Key::Up => self.chat.step_cursor(-1, ChatItem::is_message),
             Key::Char('y') => {
                 let effects = self.yank_visual_selection();
                 self.mode = Mode::Normal;
-                self.visual_anchor = None;
+                self.chat.end_visual();
                 return effects;
             }
             Key::Esc => {
                 self.mode = Mode::Normal;
-                self.visual_anchor = None;
+                self.chat.end_visual();
             }
             Key::Ctrl('c') => self.should_quit = true,
             _ => {}
@@ -1193,34 +917,19 @@ impl App {
 
     /// VISUAL `y`：复制锚点到游标的消息范围（各条目纯文本以空行拼接）。
     fn yank_visual_selection(&mut self) -> Vec<Effect> {
-        let Some((start, end)) = self.visual_range_inner() else {
-            self.notice = Some("没有选择范围".to_string());
-            return Vec::new();
-        };
-        let text = self.items[start..=end]
-            .iter()
-            .filter_map(item_text)
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        if text.is_empty() {
-            self.notice = Some("选中范围没有可复制的文本".to_string());
-            Vec::new()
-        } else {
-            vec![Effect::CopyText(text)]
+        match self.chat.yank_visual_range() {
+            Ok(text) => vec![Effect::CopyText(text)],
+            Err(notice) => {
+                self.notice = Some(notice.to_string());
+                Vec::new()
+            }
         }
-    }
-
-    /// 选择范围（锚点与游标的闭区间，小端在前）。
-    fn visual_range_inner(&self) -> Option<(usize, usize)> {
-        let anchor = self.visual_anchor?;
-        let cursor = self.cursor_item?;
-        Some((anchor.min(cursor), anchor.max(cursor)))
     }
 
     /// 渲染用：VISUAL 的选择范围（仅 VISUAL 下返回）。
     pub(super) fn visual_range(&self) -> Option<(usize, usize)> {
         (self.mode() == Mode::Visual)
-            .then_some(self.visual_range_inner())
+            .then_some(self.chat.visual_range())
             .flatten()
     }
 
@@ -1229,16 +938,16 @@ impl App {
     fn press_search(&mut self, key: Key) -> Vec<Effect> {
         match key {
             Key::Char(c) => {
-                self.search_query.push(c);
+                self.search.push_char(c);
                 self.refresh_search();
             }
             Key::Backspace => {
-                self.search_query.pop();
+                self.search.pop_char();
                 self.refresh_search();
             }
             Key::Enter => {
                 self.mode = Mode::Normal;
-                let count = self.search_matches.len();
+                let count = self.search.match_count();
                 self.notice = Some(if count == 0 {
                     "没有搜索命中".to_string()
                 } else {
@@ -1247,8 +956,7 @@ impl App {
             }
             Key::Esc => {
                 self.mode = Mode::Normal;
-                self.search_query.clear();
-                self.search_matches.clear();
+                self.search.clear();
             }
             Key::Ctrl('c') => self.should_quit = true,
             _ => {}
@@ -1259,177 +967,77 @@ impl App {
     /// 重算搜索命中（输入即搜）：游标跳到当前位置之后（含）的第一个
     /// 命中（循环），无命中保持游标。
     fn refresh_search(&mut self) {
-        let query = self.search_query.to_lowercase();
-        self.search_matches = if query.is_empty() {
-            Vec::new()
-        } else {
-            self.items
-                .iter()
-                .enumerate()
-                .filter_map(|(index, item)| {
-                    item_text(item)
-                        .filter(|text| text.to_lowercase().contains(&query))
-                        .map(|_| index)
-                })
-                .collect()
-        };
-        if self.search_matches.is_empty() {
-            return;
+        if let Some(target) = self.search.refresh(self.chat.items(), self.chat.cursor()) {
+            self.chat.focus_item(target);
         }
-        let current = self.cursor_item.unwrap_or(0);
-        let next = self.search_matches.partition_point(|&m| m < current);
-        let next = if next >= self.search_matches.len() {
-            0
-        } else {
-            next
-        };
-        self.cursor_item = Some(self.search_matches[next]);
-        self.yc_block = 0;
-        self.scroll_to_cursor_item();
     }
 
     /// NORMAL `n`/`N`：在搜索命中条目间循环跳转。
     fn search_jump(&mut self, direction: isize) {
-        if self.search_matches.is_empty() {
+        let Some((index, pos)) = self.search.jump(direction, self.chat.cursor().unwrap_or(0))
+        else {
             self.notice = Some("没有搜索命中（NORMAL 下 / 开始搜索）".to_string());
             return;
-        }
-        let current = self.cursor_item.unwrap_or(0);
-        let len = self.search_matches.len();
-        let next = if direction > 0 {
-            let p = self.search_matches.partition_point(|&m| m <= current);
-            if p >= len { 0 } else { p }
-        } else {
-            let p = self.search_matches.partition_point(|&m| m < current);
-            if p == 0 { len - 1 } else { p - 1 }
         };
-        self.cursor_item = Some(self.search_matches[next]);
-        self.yc_block = 0;
-        self.scroll_to_cursor_item();
-        self.notice = Some(format!("命中 {}/{len}", next + 1));
-    }
-
-    /// 当前搜索串（SEARCH 输入框与命中高亮用）。
-    pub(super) fn search_query(&self) -> &str {
-        &self.search_query
-    }
-
-    /// 搜索命中数（SEARCH 输入框标题用）。
-    pub(super) const fn search_match_count(&self) -> usize {
-        self.search_matches.len()
-    }
-
-    /// 命中高亮词：搜索串非空时返回（Enter 后保留高亮，Esc 清空）。
-    pub(super) fn search_highlight(&self) -> Option<&str> {
-        (!self.search_query.is_empty()).then_some(self.search_query.as_str())
+        self.chat.focus_item(index);
+        self.notice = Some(format!("命中 {}/{}", pos + 1, self.search.match_count()));
     }
 
     /// 进入 NORMAL：草稿保留；消息游标定位到最新一条对话消息。
     fn enter_normal(&mut self) {
         self.mode = Mode::Normal;
         self.pending_key = None;
-        self.cursor_item = self.items.iter().rposition(ChatItem::is_message);
-        self.yc_block = 0;
-        // 防御：退回栈保证进 NORMAL 时弹层已关，这里兜底
-        self.completion = None;
+        self.chat.move_cursor_to_last_message();
+        self.input.set_completion_enabled(false);
     }
 
     /// 离开 NORMAL 回 INSERT：清掉序列键 pending，避免残留的首键
     /// 在下次进入 NORMAL 时被误当第二键。
-    const fn leave_normal(&mut self) {
+    fn leave_normal(&mut self) {
         self.mode = Mode::Insert;
         self.pending_key = None;
+        self.input.set_completion_enabled(true);
     }
 
     /// 消息游标（渲染 gutter 高亮用）；浏览类模式（NORMAL/SEARCH/VISUAL）
     /// 下返回。
     pub(super) fn chat_cursor(&self) -> Option<usize> {
         matches!(self.mode(), Mode::Normal | Mode::Search | Mode::Visual)
-            .then_some(self.cursor_item)
+            .then_some(self.chat.cursor())
             .flatten()
-    }
-
-    /// 渲染回写各条目起始行（draw_chat 折行后同步；测试未经渲染时为空）。
-    pub(super) fn sync_item_lines(&mut self, starts: Vec<u16>) {
-        self.item_lines = starts;
-    }
-
-    /// 移动消息游标到方向上下一个匹配谓词的条目（钳制不循环），并滚动到位。
-    fn step_cursor(&mut self, direction: isize, matches: fn(&ChatItem) -> bool) {
-        let Some(current) = self.cursor_item else {
-            return;
-        };
-        let mut index = current;
-        while let Some(next) = step_row(index, direction, self.items.len()) {
-            index = next;
-            if matches(&self.items[index]) {
-                self.cursor_item = Some(index);
-                self.yc_block = 0;
-                self.scroll_to_cursor_item();
-                return;
-            }
-        }
-    }
-
-    /// 把消息游标条目滚到视野顶部（渲染同步过行号才生效；未经渲染不动）。
-    fn scroll_to_cursor_item(&mut self) {
-        let Some(index) = self.cursor_item else {
-            return;
-        };
-        let Some(&line) = self.item_lines.get(index) else {
-            return;
-        };
-        // u16::MAX：条目无可见块（空 assistant），没有可定位的行
-        if line != u16::MAX {
-            self.scroll = self.scroll_max.saturating_sub(line);
-        }
     }
 
     /// NORMAL `yy`：复制消息游标所在条目的纯文本。
     fn copy_cursor_item(&mut self) -> Vec<Effect> {
-        let Some(index) = self.cursor_item else {
-            self.notice = Some("没有可复制的消息".to_string());
-            return Vec::new();
-        };
-        if let Some(text) = self.items.get(index).and_then(item_text) {
-            vec![Effect::CopyText(text)]
-        } else {
-            self.notice = Some("该条目没有可复制的文本".to_string());
-            Vec::new()
+        match self.chat.copy_cursor_item() {
+            Ok(text) => vec![Effect::CopyText(text)],
+            Err(notice) => {
+                self.notice = Some(notice.to_string());
+                Vec::new()
+            }
         }
     }
 
     /// NORMAL `yc`：复制游标消息中的 ``` 围栏代码块；多个时按 yc 循环
     /// 依次取下一个。
     fn copy_cursor_code_block(&mut self) -> Vec<Effect> {
-        let Some(index) = self.cursor_item else {
-            self.notice = Some("没有可复制的消息".to_string());
-            return Vec::new();
-        };
-        let Some(text) = self.items.get(index).and_then(item_text) else {
-            self.notice = Some("该条目没有可复制的文本".to_string());
-            return Vec::new();
-        };
-        let blocks = code_blocks(&text);
-        if blocks.is_empty() {
-            self.notice = Some("该消息中没有代码块".to_string());
-            return Vec::new();
+        match self.chat.copy_cursor_code_block() {
+            Ok((text, progress)) => {
+                if let Some(progress) = progress {
+                    self.notice = Some(progress);
+                }
+                vec![Effect::CopyText(text)]
+            }
+            Err(notice) => {
+                self.notice = Some(notice.to_string());
+                Vec::new()
+            }
         }
-        let block_index = self.yc_block % blocks.len();
-        self.yc_block += 1;
-        if blocks.len() > 1 {
-            self.notice = Some(format!(
-                "已选第 {}/{} 个代码块（重复 yc 循环）",
-                block_index + 1,
-                blocks.len()
-            ));
-        }
-        vec![Effect::CopyText(blocks[block_index].clone())]
     }
 
     /// 复制最新一条消息到剪贴板（`/copy` 与 NORMAL `Y` 共用）。
     fn copy_latest(&mut self) -> Vec<Effect> {
-        if let Some(text) = self.latest_message_text() {
+        if let Some(text) = self.chat.latest_message_text() {
             vec![Effect::CopyText(text)]
         } else {
             self.notice = Some("没有可复制的消息".to_string());
@@ -1456,7 +1064,7 @@ impl App {
             }
             Key::Esc => {
                 // 有过滤串先清过滤（留在 picker），否则关闭
-                if self.picker_clear_filter() {
+                if self.picker.as_mut().is_some_and(Picker::clear_filter) {
                     return Vec::new();
                 }
                 // 思考级别选择器是模型切换流程的第二步：Esc 还需放弃
@@ -1468,12 +1076,16 @@ impl App {
                         ..
                     })
                 );
-                self.close_picker();
+                self.picker = None;
                 if abort_switch {
                     return vec![Effect::CancelModelSwitch];
                 }
             }
-            Key::Backspace => self.picker_pop_filter(),
+            Key::Backspace => {
+                if let Some(picker) = &mut self.picker {
+                    picker.pop_filter();
+                }
+            }
             Key::Ctrl('c') => self.should_quit = true,
             Key::Enter => {
                 if let Some((kind, id)) = self.take_picker_selection() {
@@ -1488,76 +1100,26 @@ impl App {
             // 可打印字符即过滤（含 j/k/q——导航全部走箭头/Ctrl 键，一键一义）
             Key::Char(c) => {
                 if let Some(picker) = &mut self.picker {
-                    picker.filter.push(c);
-                    picker.selected = 0;
+                    picker.push_filter_char(c);
                 }
-                self.picker_snap_selection();
             }
             _ => {}
         }
         Vec::new()
     }
 
-    /// 清空 picker 过滤串；返回是否确有过滤串被清空
-    ///（Esc 据此决定清过滤还是关 picker）。
-    fn picker_clear_filter(&mut self) -> bool {
-        let Some(picker) = &mut self.picker else {
-            return false;
-        };
-        if picker.filter.is_empty() {
-            return false;
-        }
-        picker.filter.clear();
-        picker.selected = 0;
-        self.picker_snap_selection();
-        true
-    }
-
-    /// 删除 picker 过滤串末字符（Backspace）。
-    fn picker_pop_filter(&mut self) {
-        let Some(picker) = &mut self.picker else {
-            return;
-        };
-        if picker.filter.pop().is_some() {
-            picker.selected = 0;
-            self.picker_snap_selection();
+    /// 移动 picker 选中项（picker 打开时）。
+    fn picker_select(&mut self, delta: isize) {
+        if let Some(picker) = &mut self.picker {
+            picker.select(delta);
         }
     }
 
-    /// 选中项对齐到最近的可选行（过滤变化后调用）：从当前位置向下找，
-    /// 找不到再向上。
-    fn picker_snap_selection(&mut self) {
-        let Some(picker) = &mut self.picker else {
-            return;
-        };
-        let visible = picker.visible();
-        if visible.is_empty() {
-            return;
-        }
-        let pos = picker.selected.min(visible.len() - 1);
-        let snapped = (pos..visible.len())
-            .chain((0..pos).rev())
-            .find(|&p| picker.rows[visible[p]].selectable);
-        picker.selected = snapped.unwrap_or(pos);
-    }
-
-    /// 跳转选中到可见行的 `pos`，不可选时沿 `direction` 找可选行。
+    /// 跳转 picker 选中到可见行的 `pos`（picker 打开时）。
     fn picker_jump(&mut self, pos: usize, direction: isize) {
-        let Some(picker) = &mut self.picker else {
-            return;
-        };
-        let visible = picker.visible();
-        if visible.is_empty() {
-            return;
+        if let Some(picker) = &mut self.picker {
+            picker.jump(pos, direction);
         }
-        let mut pos = pos.min(visible.len() - 1);
-        while !picker.rows[visible[pos]].selectable {
-            let Some(next) = step_row(pos, direction, visible.len()) else {
-                return;
-            };
-            pos = next;
-        }
-        picker.selected = pos;
     }
 
     /// Enter：补全弹层未精确匹配时先填入候选；否则取出输入，
@@ -1565,15 +1127,15 @@ impl App {
     /// [`Self::press_enter_running`]）。运行中 Enter = 排入统一消息
     /// 队列（ADR-0014）。
     fn press_enter(&mut self) -> Vec<Effect> {
-        if self.accept_completion_on_enter() {
+        if self.input.accept_completion_on_enter() {
             // 已填入补全候选；再次 Enter 提交
             return Vec::new();
         }
         if self.running {
             return self.press_enter_running();
         }
-        let Some(text) = self.take_input() else {
-            if self.has_attachments() {
+        let Some(text) = self.input.take_input() else {
+            if self.input.has_attachments() {
                 self.notice = Some("已附加图片，输入文本后 Enter 一起发送".to_string());
             } else if let Some(effect) = self.drain_queue() {
                 // 空闲 + 空草稿 + 队列有暂停的排队消息：Enter 直接发送下一条
@@ -1583,7 +1145,7 @@ impl App {
         };
         match parse_slash(&text) {
             SlashParse::NotCommand => {
-                let images = self.take_attachments();
+                let images = self.input.take_attachments();
                 // AgentStart 事件也会置位；先置避免提交空窗期重复提交
                 self.running = true;
                 self.notice = None;
@@ -1605,20 +1167,20 @@ impl App {
     /// 完后注入本轮运行）；Esc→NORMAL→Q 进 QUEUE 模式编辑队列。
     /// 会话命令仍须等本轮结束（输入保留，结束后可再提交）。
     fn press_enter_running(&mut self) -> Vec<Effect> {
-        let text = self.input.trim().to_string();
+        let text = self.input.text().trim().to_string();
         if text.is_empty() {
-            if self.has_attachments() {
+            if self.input.has_attachments() {
                 self.notice = Some("已附加图片，输入文本后 Enter 一起排队".to_string());
             }
             return Vec::new();
         }
         match parse_slash(&text) {
             SlashParse::NotCommand => {
-                self.take_input();
+                self.input.take_input();
                 self.enqueue(text)
             }
             SlashParse::Known(action) if action.is_local() => {
-                self.take_input();
+                self.input.take_input();
                 self.notice = None;
                 self.execute_slash(action)
             }
@@ -1635,9 +1197,9 @@ impl App {
                 Vec::new()
             }
             SlashParse::Unknown(name) => {
-                match nomic_prompts::expand_invocation(&self.templates, &text) {
+                match nomic_prompts::expand_invocation(self.input.templates(), &text) {
                     Ok(Some(expanded)) => {
-                        self.take_input();
+                        self.input.take_input();
                         self.enqueue(expanded)
                     }
                     Err(PromptsError::UnterminatedQuote { .. }) => {
@@ -1660,11 +1222,11 @@ impl App {
     /// 结束时保留，恢复后作为下一轮 prompt）；Esc→NORMAL→Q 进 QUEUE
     /// 模式可编辑（编辑期间冻结注入）。
     fn enqueue(&mut self, text: String) -> Vec<Effect> {
-        let images = self.take_attachments();
-        self.steering.push(SteeringMessage { text, images });
+        let images = self.input.take_attachments();
+        self.queue.push(SteeringMessage { text, images });
         self.notice = Some(format!(
             "已排队（第 {} 条），当前步骤完成后注入本轮 · Esc→Q 编辑队列",
-            self.steering.len()
+            self.queue.len()
         ));
         Vec::new()
     }
@@ -1677,7 +1239,7 @@ impl App {
         if self.mode == Mode::Queue {
             return None;
         }
-        let queued = self.steering.pop_front()?;
+        let queued = self.queue.pop_front()?;
         self.running = true;
         self.notice = None;
         Some(Effect::Prompt {
@@ -1689,7 +1251,7 @@ impl App {
     /// QUEUE 模式键位：导航子状态移动/删除/换位/新增，`i`/`Enter` 就地
     /// 编辑；编辑子状态复用缓冲编辑键，Enter/Esc 保存回队列。
     fn press_queue(&mut self, key: Key) -> Vec<Effect> {
-        if self.queue_editing.is_some() {
+        if self.queue.is_editing() {
             return self.press_queue_edit(key);
         }
         // 序列键第二键（gg 到队首、dd 删除）；不匹配照常分发
@@ -1701,12 +1263,12 @@ impl App {
         match key {
             Key::Char('g') => self.pending_key = Some('g'),
             Key::Char('d') => self.pending_key = Some('d'),
-            Key::Char('j') | Key::Down => self.queue_move(1),
-            Key::Char('k') | Key::Up => self.queue_move(-1),
-            Key::Char('G') => self.queue_cursor = self.queue_len().saturating_sub(1),
+            Key::Char('j') | Key::Down => self.queue.move_cursor(1),
+            Key::Char('k') | Key::Up => self.queue.move_cursor(-1),
+            Key::Char('G') => self.queue.jump_to_last(),
             Key::Char('x') => self.queue_delete(),
-            Key::Char('J') => self.queue_swap(1),
-            Key::Char('K') => self.queue_swap(-1),
+            Key::Char('J') => self.queue.swap(1),
+            Key::Char('K') => self.queue.swap(-1),
             Key::Char('i' | 'a') | Key::Enter => self.queue_begin_edit(),
             Key::Char('o') => self.queue_insert_slot(1),
             Key::Char('O') => self.queue_insert_slot(0),
@@ -1717,8 +1279,8 @@ impl App {
                 }
                 self.should_quit = true;
             }
-            Key::PageUp => self.scroll_up(PAGE_SCROLL),
-            Key::PageDown => self.scroll_down(PAGE_SCROLL),
+            Key::PageUp => self.chat.scroll_up(PAGE_SCROLL),
+            Key::PageDown => self.chat.scroll_down(PAGE_SCROLL),
             _ => {}
         }
         Vec::new()
@@ -1728,7 +1290,7 @@ impl App {
     /// 返回 `Some` 表示已处理。
     fn queue_sequence(&mut self, pending: char, key: Key) -> Option<Vec<Effect>> {
         match (pending, key) {
-            ('g', Key::Char('g')) => self.queue_cursor = 0,
+            ('g', Key::Char('g')) => self.queue.jump_to_first(),
             ('d', Key::Char('d')) => self.queue_delete(),
             _ => return None,
         }
@@ -1800,90 +1362,43 @@ impl App {
         });
     }
 
-    /// QUEUE `j`/`k`：移动条目游标（钳制不循环）。
-    fn queue_move(&mut self, delta: isize) {
-        if let Some(next) = step_row(self.queue_cursor, delta, self.queue_len()) {
-            self.queue_cursor = next;
-        }
-    }
-
-    /// QUEUE `dd`/`x`：删除游标条目（oil.nvim 删行语义）；队列清空时
-    /// 退出 QUEUE 回 NORMAL。
+    /// QUEUE `dd`/`x`：删除游标条目；队列清空时退出 QUEUE 回 NORMAL。
     fn queue_delete(&mut self) {
-        if self.queue_len() == 0 {
-            return;
-        }
-        self.steering.remove(self.queue_cursor);
-        if self.queue_len() == 0 {
+        if self.queue.delete() {
             self.mode = Mode::Normal;
             self.notice = Some("队列已清空".to_string());
-            return;
         }
-        self.queue_cursor = self.queue_cursor.min(self.queue_len() - 1);
-    }
-
-    /// QUEUE `J`/`K`：游标条目与下/上一条换位（vim `:move` 语义，
-    /// 到底/顶不动）。
-    fn queue_swap(&mut self, delta: isize) {
-        let Some(next) = step_row(self.queue_cursor, delta, self.queue_len()) else {
-            return;
-        };
-        self.steering.swap(self.queue_cursor, next);
-        self.queue_cursor = next;
     }
 
     /// QUEUE `i`/`a`/Enter：开始就地编辑游标槽位（草稿缓冲即槽位内容，
     /// 光标置于末尾；附件保留在槽位上，不随文本进缓冲）。
     fn queue_begin_edit(&mut self) {
-        let Some(text) = self
-            .steering
-            .snapshot()
-            .get(self.queue_cursor)
-            .map(|m| m.text.clone())
-        else {
+        let Some(text) = self.queue.current_slot_text() else {
             return;
         };
-        self.input = text;
-        self.cursor = self.input.len();
-        self.completion = None;
-        self.queue_editing = Some(self.queue_cursor);
+        self.input.set_text(text);
+        self.queue.begin_edit();
     }
 
     /// QUEUE `o`/`O`：在游标下/上方插入空槽位并就地编辑（保存空文本
     /// 即撤销该槽位，与保存语义一致）。
     fn queue_insert_slot(&mut self, offset: usize) {
-        let index = self.queue_cursor + offset;
-        self.steering.insert(
-            index,
-            SteeringMessage {
-                text: String::new(),
-                images: Vec::new(),
-            },
-        );
-        self.queue_cursor = index;
+        self.queue.insert_slot(offset);
         self.queue_begin_edit();
     }
 
     /// 保存就地编辑：写回槽位；空文本删除槽位（oil.nvim 空行忽略
     /// 语义）。队列清空时退出 QUEUE 回 NORMAL。
     fn queue_save_edit(&mut self) {
-        let Some(slot) = self.queue_editing.take() else {
+        let Some(slot) = self.queue.take_editing() else {
             return;
         };
-        let text = self.input.trim().to_string();
-        self.input.clear();
-        self.cursor = 0;
-        if text.is_empty() {
-            self.steering.remove(slot);
-        } else {
-            self.steering.update_text(slot, text);
-        }
-        if self.queue_len() == 0 {
+        let text = self.input.text().trim().to_string();
+        self.input.clear_buffer();
+        if self.queue.save_edit(slot, text) {
             self.mode = Mode::Normal;
             self.notice = Some("队列已清空".to_string());
-            return;
         }
-        self.queue_cursor = slot.min(self.queue_len() - 1);
     }
 
     /// NORMAL `Q`：进入 QUEUE 模式（oil.nvim 式队列编辑）。队列为空
@@ -1891,19 +1406,19 @@ impl App {
     /// 编辑时 run 仍在推进，不冻结会让 core 在 turn 边界弹走条目
     /// 导致游标下标漂移。
     fn enter_queue(&mut self) {
-        if self.queue_len() == 0 {
+        if self.queue.is_empty() {
             self.notice = Some("队列为空：运行中 Enter 排队".to_string());
             return;
         }
-        if !self.input.is_empty() {
+        if !self.input.text().is_empty() {
             self.notice = Some("草稿非空：i 继续编辑，或清空后再进队列".to_string());
             return;
         }
         self.mode = Mode::Queue;
-        self.steering.freeze();
+        self.queue.freeze();
         self.pending_key = None;
-        self.queue_cursor = 0;
-        self.queue_editing = None;
+        self.queue.reset();
+        self.input.set_completion_enabled(false);
     }
 
     /// QUEUE 导航子状态的 Esc：退出回 NORMAL，解冻队列注入；
@@ -1911,8 +1426,8 @@ impl App {
     /// 队首提交，运行中则由本轮结束后的自动 drain 继续。
     fn leave_queue(&mut self) -> Vec<Effect> {
         self.mode = Mode::Normal;
-        self.steering.unfreeze();
-        self.queue_editing = None;
+        self.queue.unfreeze();
+        self.queue.end_edit();
         self.pending_key = None;
         if self.running {
             return Vec::new();
@@ -1920,51 +1435,18 @@ impl App {
         self.drain_queue().into_iter().collect()
     }
 
-    /// 排队消息总条数（运行中标题与暂停提示用）。
-    pub(super) fn queue_len(&self) -> usize {
-        self.steering.len()
-    }
-
     /// QUEUE 模式是否打开（drain 冻结与渲染布局用）。
     pub(super) fn queue_mode_active(&self) -> bool {
         self.mode == Mode::Queue
-    }
-
-    /// QUEUE 是否处于编辑子状态（光标形状与状态栏提示用）。
-    pub(super) const fn queue_editing(&self) -> bool {
-        self.queue_editing.is_some()
-    }
-
-    /// QUEUE 条目游标（渲染高亮用；仅 QUEUE 模式下有意义）。
-    pub(super) const fn queue_cursor(&self) -> usize {
-        self.queue_cursor
-    }
-
-    /// 队列条目视图（输入框队列区渲染用），与 QUEUE 模式游标的
-    /// 条目空间一致。
-    pub(super) fn queue_entries(&self) -> Vec<QueueEntry> {
-        self.steering
-            .snapshot()
-            .into_iter()
-            .map(|m| QueueEntry {
-                text: m.text,
-                images: m.images.len(),
-            })
-            .collect()
-    }
-
-    /// 就地编辑的槽位下标（渲染时用草稿行替换该槽位内容）。
-    pub(super) const fn queue_editing_slot(&self) -> Option<usize> {
-        self.queue_editing
     }
 
     /// 输入框队列区展示行数：各条目逻辑行数之和
     ///（就地编辑的槽位按草稿缓冲行数计）。
     pub(super) fn queue_display_lines(&self) -> u16 {
         let mut total = 0_u16;
-        for (index, entry) in self.queue_entries().iter().enumerate() {
-            let lines = if self.queue_editing == Some(index) {
-                self.line_count()
+        for (index, entry) in self.queue.entries().iter().enumerate() {
+            let lines = if self.queue.editing_slot() == Some(index) {
+                self.input.line_count()
             } else {
                 line_count_of(&entry.text)
             };
@@ -1973,25 +1455,12 @@ impl App {
         total
     }
 
-    /// QUEUE 游标条目的起始展示行（队列区内，不含附件行）：
-    /// 渲染光标定位用；就地编辑时另加草稿缓冲内的光标行。
-    pub(super) fn queue_cursor_row(&self) -> u16 {
-        let mut row = 0_u16;
-        for (index, entry) in self.queue_entries().iter().enumerate() {
-            if index == self.queue_cursor {
-                break;
-            }
-            row = row.saturating_add(line_count_of(&entry.text));
-        }
-        row
-    }
-
     /// 未知 slash 命令：按 prompt template 调用尝试展开提交；未命中模板时
     /// 维持未知命令提示。内建命令优先（已在 `parse_slash` 中匹配）。
     fn submit_template(&mut self, text: &str, name: &str) -> Vec<Effect> {
-        match nomic_prompts::expand_invocation(&self.templates, text) {
+        match nomic_prompts::expand_invocation(self.input.templates(), text) {
             Ok(Some(expanded)) => {
-                let images = self.take_attachments();
+                let images = self.input.take_attachments();
                 // 与普通 prompt 同一口径：先置 running 避免提交空窗期重复提交
                 self.running = true;
                 self.notice = None;
@@ -2015,7 +1484,7 @@ impl App {
     fn execute_slash(&mut self, action: SlashAction) -> Vec<Effect> {
         match action {
             SlashAction::Help => {
-                self.push_system(help_text());
+                self.chat.push_system(help_text());
                 Vec::new()
             }
             SlashAction::Quit => {
@@ -2032,12 +1501,7 @@ impl App {
                 // 与 Agent::retry 同一口径：聊天区尾部失败/未定稿的 assistant
                 // 条目随历史中的失败消息一并移除；是否实际重跑由 driver 回执
                 // 告知（agent 历史是唯一权威，这里不做预判定）
-                while matches!(
-                    self.items.last(),
-                    Some(ChatItem::Assistant(item)) if item.error.is_some() || !item.done
-                ) {
-                    self.items.pop();
-                }
+                self.chat.pop_trailing_failed_assistant();
                 self.running = true;
                 self.notice = None;
                 vec![Effect::Retry]
@@ -2056,7 +1520,8 @@ impl App {
                 } else {
                     "已展开"
                 };
-                self.push_system(format!("thinking 显示：{state}（/thinking 切换）"));
+                self.chat
+                    .push_system(format!("thinking 显示：{state}（/thinking 切换）"));
                 Vec::new()
             }
             SlashAction::Goal => {
@@ -2066,7 +1531,8 @@ impl App {
                 } else {
                     "已关闭"
                 };
-                self.push_system(format!("goal 模式{state}（/goal 切换）"));
+                self.chat
+                    .push_system(format!("goal 模式{state}（/goal 切换）"));
                 Vec::new()
             }
             SlashAction::New => vec![Effect::NewSession],
@@ -2098,18 +1564,18 @@ impl App {
 
     /// `/skill`：刷新补全快照并列出可用 skill（本地展示，不进上下文）。
     pub(super) fn show_skills(&mut self, skills: Vec<SkillEntry>) {
-        self.push_system(skill_list_text(&skills));
-        self.skills = skills;
+        self.chat.push_system(skill_list_text(&skills));
+        self.input.set_available_skills(skills);
     }
 
     /// `/new`：清空聊天区开启新对话；session 切换由调用方随后经
     /// [`Self::set_session`] / [`Self::warn`] 回报。
     /// 排队消息属于旧对话的后续意图，随上下文一起清空。
     pub(super) fn start_new_conversation(&mut self) {
-        self.clear_items();
-        self.steering.clear();
+        self.chat.clear_items();
+        self.queue.clear();
         self.context_tokens = 0;
-        self.push_system("已开启新对话，上下文已清空。");
+        self.chat.push_system("已开启新对话，上下文已清空。");
     }
 
     /// 切换当前 session 标识（`/new` 新建或 `/resume` 恢复后）。
@@ -2120,8 +1586,8 @@ impl App {
     /// `/resume`：以恢复的历史消息替换聊天区并切换 session。
     /// 排队消息属于切换前对话的后续意图，随上下文一起清空。
     pub(super) fn restore_conversation(&mut self, messages: &[Message], session_id: String) {
-        self.clear_items();
-        self.steering.clear();
+        self.chat.clear_items();
+        self.queue.clear();
         self.load_history(messages);
         self.session_id = Some(session_id);
     }
@@ -2130,482 +1596,59 @@ impl App {
     /// 落库父指针切换由调用方随后完成）。
     /// 排队消息属于切换前分支的后续意图，随上下文一起清空。
     pub(super) fn restore_branch(&mut self, messages: &[Message]) {
-        self.clear_items();
-        self.steering.clear();
+        self.chat.clear_items();
+        self.queue.clear();
         self.load_history(messages);
     }
 
-    // ── 输入编辑 ────────────────────────────────────────────────────────────
-
-    pub(super) fn input(&self) -> &str {
-        &self.input
-    }
-
-    /// 光标位置（逻辑行号, 行内显示宽度）：多行输入框渲染光标用。
-    pub(super) fn cursor_position(&self) -> (u16, u16) {
-        let before = &self.input[..self.cursor];
-        let row = before.bytes().filter(|b| *b == b'\n').count();
-        let col = before.rsplit('\n').next().map_or(0, UnicodeWidthStr::width);
-        (
-            u16::try_from(row).unwrap_or(u16::MAX),
-            u16::try_from(col).unwrap_or(u16::MAX),
-        )
-    }
-
-    /// 输入的逻辑行数（空输入为 1），输入框高度据此伸缩。
-    pub(super) fn line_count(&self) -> u16 {
-        line_count_of(&self.input)
-    }
-
-    fn insert_char(&mut self, c: char) {
-        self.input.insert(self.cursor, c);
-        self.cursor += c.len_utf8();
-        self.refresh_completion();
-    }
+    // ── 粘贴与外部编辑器 ────────────────────────────────────────────────────
 
     /// 粘贴一段文本到光标处（可含换行；`\r\n` 统一为 `\n`），随后重算补全。
     pub(super) fn paste_text(&mut self, text: &str) {
         // 粘贴的意图是编辑：NORMAL 下先回到 INSERT（草稿保留）；
         // QUEUE 导航下先进入就地编辑（粘贴即修改游标槽位）
         match self.mode {
-            Mode::Queue if self.queue_editing.is_none() => self.queue_begin_edit(),
+            Mode::Queue if !self.queue.is_editing() => self.queue_begin_edit(),
             Mode::Queue => {}
-            _ => self.mode = Mode::Insert,
+            _ => {
+                self.mode = Mode::Insert;
+                self.input.set_completion_enabled(true);
+            }
         }
-        let text = text.replace("\r\n", "\n").replace('\r', "\n");
-        if text.is_empty() {
-            return;
-        }
-        self.input.insert_str(self.cursor, &text);
-        self.cursor += text.len();
-        self.refresh_completion();
+        self.input.paste(text);
     }
 
     /// 编辑器写回（INSERT `Ctrl+G` 外部编辑器退出，见 [`Effect::OpenEditor`]）：
-    /// 编辑器内容整体替换输入缓冲（编辑器是权威副本），`\r\n` 归一为
-    /// `\n`、去掉文件尾空白，光标移到末尾并重算补全；空白内容保留
+    /// 编辑器内容整体替换输入缓冲（编辑器是权威副本）；空白内容保留
     /// 原草稿（保存空文件是常见误操作，不应清掉已有输入）。
     pub(super) fn apply_editor_result(&mut self, text: &str) {
-        let text = text.replace("\r\n", "\n").replace('\r', "\n");
-        let text = text.trim_end();
-        if text.is_empty() {
+        if !self.input.apply_editor_result(text) {
             self.notice = Some("编辑器内容为空，输入保留未变".to_string());
-            return;
         }
-        self.input = text.to_string();
-        self.cursor = self.input.len();
-        self.refresh_completion();
-    }
-
-    /// Shift+Enter 手动换行：换行是空白字符，补全弹层随之关闭。
-    fn insert_newline(&mut self) {
-        self.insert_char('\n');
-    }
-
-    fn backspace(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let prev = self.input[..self.cursor]
-            .char_indices()
-            .last()
-            .map_or(0, |(index, _)| index);
-        self.input.replace_range(prev..self.cursor, "");
-        self.cursor = prev;
-        self.refresh_completion();
-    }
-
-    fn cursor_left(&mut self) {
-        if self.cursor > 0 {
-            self.cursor = self.input[..self.cursor]
-                .char_indices()
-                .last()
-                .map_or(0, |(index, _)| index);
-            self.refresh_completion();
-        }
-    }
-
-    fn cursor_right(&mut self) {
-        if let Some(c) = self.input[self.cursor..].chars().next() {
-            self.cursor += c.len_utf8();
-            self.refresh_completion();
-        }
-    }
-
-    fn cursor_home(&mut self) {
-        self.cursor = 0;
-        self.refresh_completion();
-    }
-
-    fn cursor_end(&mut self) {
-        self.cursor = self.input.len();
-        self.refresh_completion();
-    }
-
-    /// Ctrl+A：光标移到当前逻辑行开头（多行输入只作用当前行）。
-    fn cursor_line_home(&mut self) {
-        let start = self.input[..self.cursor]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        if start != self.cursor {
-            self.cursor = start;
-            self.refresh_completion();
-        }
-    }
-
-    /// Ctrl+E：光标移到当前逻辑行末尾（多行输入只作用当前行）。
-    fn cursor_line_end(&mut self) {
-        let end = self.input[self.cursor..]
-            .find('\n')
-            .map_or(self.input.len(), |offset| self.cursor + offset);
-        if end != self.cursor {
-            self.cursor = end;
-            self.refresh_completion();
-        }
-    }
-
-    /// Ctrl+U：删除到当前逻辑行开头（多行输入只清当前行）。
-    fn delete_to_line_start(&mut self) {
-        let start = self.input[..self.cursor]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        if start < self.cursor {
-            self.input.replace_range(start..self.cursor, "");
-            self.cursor = start;
-            self.refresh_completion();
-        }
-    }
-
-    /// Ctrl+W：删除光标前的一个词（连同词前的空白间隔）。
-    fn delete_word_back(&mut self) {
-        let target = self.word_left_pos();
-        if target < self.cursor {
-            self.input.replace_range(target..self.cursor, "");
-            self.cursor = target;
-            self.refresh_completion();
-        }
-    }
-
-    /// Alt+B：光标移到前一个词的开头。
-    fn cursor_word_left(&mut self) {
-        let target = self.word_left_pos();
-        if target != self.cursor {
-            self.cursor = target;
-            self.refresh_completion();
-        }
-    }
-
-    /// 光标前一词开头的字节索引：先跳过非词字符（空白/标点间隔），
-    /// 再跳过词字符。
-    fn word_left_pos(&self) -> usize {
-        let mut target = self.cursor;
-        let mut in_word = false;
-        for (index, c) in self.input[..self.cursor].char_indices().rev() {
-            if is_word_char(c) {
-                in_word = true;
-            } else if in_word {
-                break;
-            }
-            target = index;
-        }
-        target
-    }
-
-    /// Alt+F：光标移到后一个词的开头（先跳过当前所在的词，再跳过词间隔）。
-    fn cursor_word_right(&mut self) {
-        let target = self.word_right_pos();
-        if target != self.cursor {
-            self.cursor = target;
-            self.refresh_completion();
-        }
-    }
-
-    /// 光标后一词开头的字节索引（Alt+F 与 NORMAL `dw` 共用）。
-    fn word_right_pos(&self) -> usize {
-        let after = &self.input[self.cursor..];
-        // 光标在词中时先跳过该词剩余部分
-        let rest = if after.chars().next().is_some_and(is_word_char) {
-            let word_len: usize = after
-                .chars()
-                .take_while(|&c| is_word_char(c))
-                .map(char::len_utf8)
-                .sum();
-            &after[word_len..]
-        } else {
-            after
-        };
-        let gap_len: usize = rest
-            .chars()
-            .take_while(|&c| !is_word_char(c))
-            .map(char::len_utf8)
-            .sum();
-        self.input.len() - rest.len() + gap_len
-    }
-
-    /// NORMAL `x`：删除草稿光标处字符（光标不动）。
-    fn delete_char_at_cursor(&mut self) {
-        if let Some(c) = self.input[self.cursor..].chars().next() {
-            self.input
-                .replace_range(self.cursor..self.cursor + c.len_utf8(), "");
-            self.refresh_completion();
-        }
-    }
-
-    /// NORMAL `dw`：删除到后一词开头（光标不动）。
-    fn delete_word_forward(&mut self) {
-        let target = self.word_right_pos();
-        if target > self.cursor {
-            self.input.replace_range(self.cursor..target, "");
-            self.refresh_completion();
-        }
-    }
-
-    /// NORMAL `dd`：删除草稿当前逻辑行（连同其换行；单行即清空草稿）。
-    fn delete_draft_line(&mut self) {
-        if self.input.is_empty() {
-            return;
-        }
-        let mut start = self.input[..self.cursor]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        let end = self.input[self.cursor..]
-            .find('\n')
-            .map_or(self.input.len(), |offset| self.cursor + offset + 1)
-            .min(self.input.len());
-        // 末行没有后随换行：连同前置换行，避免留下空尾行
-        if end == self.input.len() && start > 0 {
-            start -= 1;
-        }
-        self.input.replace_range(start..end, "");
-        self.cursor = start.min(self.input.len());
-        self.refresh_completion();
-    }
-
-    /// 取出待提交的输入并清空缓冲；空输入返回 `None`。
-    fn take_input(&mut self) -> Option<String> {
-        let text = self.input.trim().to_string();
-        if text.is_empty() {
-            return None;
-        }
-        self.input.clear();
-        self.cursor = 0;
-        self.completion = None;
-        Some(text)
-    }
-
-    /// 暂存一张图片附件，返回当前附件总数。
-    pub(super) fn stage_image(&mut self, name: String, image: nomic_ai::ImageContent) -> usize {
-        self.attachments.push(PendingImage { name, image });
-        self.attachments.len()
-    }
-
-    /// 是否有暂存的图片附件。
-    pub(super) const fn has_attachments(&self) -> bool {
-        !self.attachments.is_empty()
-    }
-
-    /// 取出全部暂存附件（prompt 提交时随文本一起带走）。
-    fn take_attachments(&mut self) -> Vec<nomic_ai::ImageContent> {
-        self.attachments
-            .drain(..)
-            .map(|pending| pending.image)
-            .collect()
-    }
-
-    // ── slash 命令补全 ──────────────────────────────────────────────────────
-
-    /// 当前补全弹层（渲染用）。
-    pub(super) const fn completion(&self) -> Option<&Completion> {
-        self.completion.as_ref()
-    }
-
-    /// 按当前输入重算补全候选：仅在「以 `/` 开头、光标在末尾、命令名
-    /// 未输入完整参数（无空白）」时弹出；`/skill:` 后切换为 skill 名候选。
-    /// QUEUE 就地编辑的是排队消息文本而非命令，补全不启用。
-    fn refresh_completion(&mut self) {
-        if self.mode != Mode::Insert {
-            self.completion = None;
-            return;
-        }
-        let Some(fragment) = self.slash_fragment().map(str::to_string) else {
-            self.completion = None;
-            return;
-        };
-        self.completion = if let Some(name_fragment) = fragment.strip_prefix("skill:") {
-            self.skill_candidates(name_fragment)
-        } else {
-            self.command_candidates(&fragment)
-        };
-    }
-
-    /// slash 命令与 prompt template 候选（按名称/别名前缀匹配，按名称排序；
-    /// 同名时内建命令在前）。
-    fn command_candidates(&self, fragment: &str) -> Option<Completion> {
-        let mut candidates: Vec<CompletionCandidate> = SLASH_COMMANDS
-            .iter()
-            .filter(|command| {
-                command.name.starts_with(fragment)
-                    || command.aliases.iter().any(|a| a.starts_with(fragment))
-            })
-            .map(CompletionCandidate::Command)
-            .collect();
-        candidates.extend(
-            self.templates
-                .iter()
-                .filter(|template| template.name.starts_with(fragment))
-                .cloned()
-                .map(CompletionCandidate::Template),
-        );
-        if candidates.is_empty() {
-            return None;
-        }
-        candidates.sort_by_key(CompletionCandidate::fragment);
-        // 输入已精确匹配某命令时选中它，Tab 从它开始循环
-        let selected = candidates
-            .iter()
-            .position(|candidate| candidate.fragment() == fragment)
-            .unwrap_or(0);
-        Some(Completion {
-            candidates,
-            selected,
-        })
-    }
-
-    /// `/skill:` 后的 skill 名候选（按名称前缀匹配）。
-    fn skill_candidates(&self, name_fragment: &str) -> Option<Completion> {
-        let mut candidates: Vec<CompletionCandidate> = self
-            .skills
-            .iter()
-            .filter(|entry| entry.name.starts_with(name_fragment))
-            .map(|entry| CompletionCandidate::Skill(entry.clone()))
-            .collect();
-        if candidates.is_empty() {
-            return None;
-        }
-        candidates.sort_by_key(CompletionCandidate::fragment);
-        let selected = candidates
-            .iter()
-            .position(|candidate| candidate.fragment() == format!("skill:{name_fragment}"))
-            .unwrap_or(0);
-        Some(Completion {
-            candidates,
-            selected,
-        })
-    }
-
-    /// 光标位于末尾且输入是「无参数的 slash 前缀」时，返回命令名片段。
-    fn slash_fragment(&self) -> Option<&str> {
-        let rest = self.input.strip_prefix('/')?;
-        if self.cursor != self.input.len() || rest.contains(char::is_whitespace) {
-            return None;
-        }
-        Some(rest)
-    }
-
-    /// Tab：接受当前选中候选；输入已等于选中项时循环到下一个。
-    fn tab_complete(&mut self) {
-        let Some(completion) = &self.completion else {
-            return;
-        };
-        let current = completion.candidates[completion.selected].fragment();
-        let selected = if self.input == format!("/{current}") {
-            (completion.selected + 1) % completion.candidates.len()
-        } else {
-            completion.selected
-        };
-        let fragment = completion.candidates[selected].fragment();
-        self.input = format!("/{fragment}");
-        self.cursor = self.input.len();
-        self.refresh_completion();
-    }
-
-    /// 补全弹层中选择下一个/上一个候选（环形）。
-    const fn completion_select(&mut self, delta: isize) {
-        if let Some(completion) = &mut self.completion {
-            let len = completion.candidates.len();
-            let step = delta.unsigned_abs() % len;
-            completion.selected = if delta < 0 {
-                (completion.selected + len - step) % len
-            } else {
-                (completion.selected + step) % len
-            };
-        }
-    }
-
-    /// Esc：关闭补全弹层；返回是否确有弹层被关闭（否则调用方走取消语义）。
-    fn dismiss_completion(&mut self) -> bool {
-        self.completion.take().is_some()
-    }
-
-    /// Enter 且补全弹层可见时的智能接受：输入未精确匹配任何候选时
-    /// 填入选中候选（返回 `true`，不提交）；已精确匹配则返回 `false` 正常提交。
-    fn accept_completion_on_enter(&mut self) -> bool {
-        let Some(fragment) = self.slash_fragment() else {
-            return false;
-        };
-        let Some(completion) = &self.completion else {
-            return false;
-        };
-        let exact = completion
-            .candidates
-            .iter()
-            .any(|candidate| candidate.matches_fragment(fragment));
-        if exact {
-            return false;
-        }
-        self.tab_complete();
-        true
     }
 
     // ── 选择器（/resume、/models、/tree 共用） ──────────────────────────────
 
     /// 打开 `/resume` 选择器（从头选中）；调用方保证候选非空。
     pub(super) fn open_resume_picker(&mut self, rows: Vec<PickerRow>) {
-        debug_assert!(!rows.is_empty());
-        self.picker = Some(Picker {
-            kind: PickerKind::Resume,
-            rows,
-            selected: 0,
-            filter: String::new(),
-        });
+        self.picker = Some(Picker::resume(rows));
     }
 
     /// 打开 `/models` 选择器，预选中当前模型；调用方保证候选非空。
     pub(super) fn open_model_picker(&mut self, rows: Vec<PickerRow>, selected: usize) {
-        debug_assert!(!rows.is_empty());
-        debug_assert!(selected < rows.len());
-        self.picker = Some(Picker {
-            kind: PickerKind::Models,
-            rows,
-            selected,
-            filter: String::new(),
-        });
+        self.picker = Some(Picker::models(rows, selected));
     }
 
     /// 打开思考级别选择器（模型切换流程第二步，预选中当前级别）；
     /// 调用方保证候选非空。
     pub(super) fn open_reasoning_picker(&mut self, rows: Vec<PickerRow>, selected: usize) {
-        debug_assert!(!rows.is_empty());
-        debug_assert!(selected < rows.len());
-        self.picker = Some(Picker {
-            kind: PickerKind::Reasoning,
-            rows,
-            selected,
-            filter: String::new(),
-        });
+        self.picker = Some(Picker::reasoning(rows, selected));
     }
 
     /// 打开 `/tree` 选择器（预选中 `selected`，通常是当前分支末端）；
     /// 调用方保证候选非空且 `selected` 落在可选行上。
     pub(super) fn open_tree_picker(&mut self, rows: Vec<PickerRow>, selected: usize) {
-        debug_assert!(!rows.is_empty());
-        debug_assert!(rows[selected].selectable);
-        self.picker = Some(Picker {
-            kind: PickerKind::Tree,
-            rows,
-            selected,
-            filter: String::new(),
-        });
+        self.picker = Some(Picker::tree(rows, selected));
     }
 
     /// 当前选择器（渲染与键位路由用）。
@@ -2613,88 +1656,13 @@ impl App {
         self.picker.as_ref()
     }
 
-    /// 关闭选择器（Esc 取消）。
-    fn close_picker(&mut self) {
-        self.picker = None;
-    }
-
-    /// 移动选中项（在过滤后的可见行上到底/顶钳制，不循环；跳过不可选行）。
-    fn picker_select(&mut self, delta: isize) {
-        let Some(picker) = &mut self.picker else {
-            return;
-        };
-        let visible = picker.visible();
-        if visible.is_empty() {
-            return;
-        }
-        let direction: isize = delta.signum();
-        let mut pos = picker.selected.min(visible.len() - 1);
-        for _ in 0..delta.unsigned_abs() {
-            let Some(next) = step_row(pos, direction, visible.len()) else {
-                break;
-            };
-            pos = next;
-        }
-        // 落点不可选时沿移动方向继续；该方向上没有更多可选行则保持原位
-        while !picker.rows[visible[pos]].selectable {
-            let Some(next) = step_row(pos, direction, visible.len()) else {
-                return;
-            };
-            pos = next;
-        }
-        picker.selected = pos;
-    }
-
     /// Enter 确认：取出选中行的（种类, id）并关闭选择器。
     /// 过滤后无可见行或选中不可选行（`/tree` 的工具调用条目）时不确认、
     /// 保持打开。
     fn take_picker_selection(&mut self) -> Option<(PickerKind, String)> {
-        let picker = self.picker.as_ref()?;
-        let visible = picker.visible();
-        let &row = visible.get(picker.selected)?;
-        if !picker.rows[row].selectable {
-            return None;
-        }
-        let picker = self.picker.take()?;
-        Some((picker.kind, picker.rows[row].id.clone()))
-    }
-
-    // ── slash 命令反馈 ──────────────────────────────────────────────────────
-
-    /// 追加一条 user 聊天条目；skill 注入消息与压缩摘要消息压缩为系统提示样式的一行。
-    fn push_user_text(&mut self, text: String) {
-        if let Some(notice) = skill_load_notice(&text) {
-            self.items.push(ChatItem::System(notice));
-        } else if text.starts_with(nomic_ai::SUMMARY_PREFIX) {
-            self.items.push(ChatItem::System(
-                "更早的对话已压缩为摘要注入上下文。".to_string(),
-            ));
-        } else {
-            self.items.push(ChatItem::User(text));
-        }
-        self.scroll_to_bottom();
-    }
-
-    /// `/copy` 的复制源：聊天区最新一条用户/assistant 消息的纯文本
-    ///（[`item_text`] 口径）；全部为空返回 `None`。
-    fn latest_message_text(&self) -> Option<String> {
-        self.items
-            .iter()
-            .rev()
-            .filter(|item| item.is_message())
-            .find_map(item_text)
-    }
-
-    /// 追加一条本地系统提示（不进上下文、不落库）。
-    pub(super) fn push_system(&mut self, text: impl Into<String>) {
-        self.items.push(ChatItem::System(text.into()));
-        self.scroll_to_bottom();
-    }
-
-    /// 清空聊天区（`/new` 开启新对话、`/resume` 恢复前）。
-    fn clear_items(&mut self) {
-        self.items.clear();
-        self.scroll_to_bottom();
+        let entry = self.picker.as_ref()?.selected_entry()?;
+        self.picker = None;
+        Some(entry)
     }
 
     // ── spinner ─────────────────────────────────────────────────────────────
@@ -2709,35 +1677,15 @@ impl App {
         SPINNER_FRAMES[self.spinner % SPINNER_FRAMES.len()]
     }
 
-    // ── 滚动 ────────────────────────────────────────────────────────────────
-
-    pub(super) const fn scroll_up(&mut self, lines: u16) {
-        self.scroll = self.scroll.saturating_add(lines);
-    }
-
-    pub(super) const fn scroll_down(&mut self, lines: u16) {
-        self.scroll = self.scroll.saturating_sub(lines);
-    }
-
-    const fn scroll_to_bottom(&mut self) {
-        self.scroll = 0;
-    }
-
-    /// 渲染同步滚动边界：钳制滚动偏移、记录上限，返回生效的滚动偏移。
-    /// 聊天区唯一的状态回写通道（状态栏滚动位置显示依赖 `scroll_max`）。
-    pub(super) fn clamp_scroll(&mut self, max_scroll: u16) -> u16 {
-        self.scroll_max = max_scroll;
-        self.scroll = self.scroll.min(max_scroll);
-        self.scroll
-    }
+    // ── 键位帮助弹层 ────────────────────────────────────────────────────────
 
     /// 键位帮助弹层是否打开（渲染用）。
     pub(super) const fn help_open(&self) -> bool {
         self.help_scroll.is_some()
     }
 
-    /// 渲染同步帮助弹层滚动边界：钳制并返回生效偏移（同 [`Self::clamp_scroll`]
-    /// 口径；未打开时返回 0）。
+    /// 渲染同步帮助弹层滚动边界：钳制并返回生效偏移（同聊天区的
+    /// clamp 口径；未打开时返回 0）。
     pub(super) fn clamp_help_scroll(&mut self, max_scroll: u16) -> u16 {
         let Some(scroll) = self.help_scroll else {
             return 0;
@@ -2748,11 +1696,6 @@ impl App {
     }
 
     // ── 渲染读接口 ──────────────────────────────────────────────────────────
-
-    /// 聊天区条目（渲染用）。
-    pub(super) fn items(&self) -> &[ChatItem] {
-        &self.items
-    }
 
     /// 是否有 agent 运行在途（spinner 动画与运行态渲染用）。
     pub(super) const fn is_running(&self) -> bool {
@@ -2810,95 +1753,6 @@ impl App {
     pub(super) fn notice(&self) -> Option<&str> {
         self.notice.as_deref()
     }
-
-    /// 当前滚动偏移（从底部向上计）。
-    pub(super) const fn scroll(&self) -> u16 {
-        self.scroll
-    }
-
-    /// 聊天区最大可上滚行数（渲染同步后有效）。
-    pub(super) const fn scroll_max(&self) -> u16 {
-        self.scroll_max
-    }
-
-    /// 附件展示名列表（输入框附件行渲染用）。
-    pub(super) fn attachment_names(&self) -> impl Iterator<Item = &str> {
-        self.attachments.iter().map(|pending| pending.name.as_str())
-    }
-}
-
-/// 在 `index` 处放置块（provider 按序发出，但容错乱序）。
-fn insert_block(blocks: &mut Vec<Block>, index: usize, block: Block) {
-    if index <= blocks.len() {
-        blocks.insert(index, block);
-    }
-}
-
-/// 选择器逐行步进：越过边界返回 `None`（钳制语义由调用方决定）。
-fn step_row(index: usize, direction: isize, len: usize) -> Option<usize> {
-    let next = index.checked_add_signed(direction)?;
-    (next < len).then_some(next)
-}
-
-/// 文本的逻辑行数（空文本为 1）：草稿与队列条目共用的行数口径。
-fn line_count_of(text: &str) -> u16 {
-    let count = text.bytes().filter(|b| *b == b'\n').count() + 1;
-    u16::try_from(count).unwrap_or(u16::MAX)
-}
-
-/// 词字符判定（INSERT 词级移动/删除共用）：字母数字与下划线。
-/// CJK 字符的 `is_alphanumeric` 为真，连续中文视为一个长词。
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-/// 条目的可复制纯文本：User/System 取原文；Assistant 取正文块拼接
-///（thinking 属模型内部推理，不复制）；Tool 取名称+详情摘要；
-/// 空文本返回 `None`。
-fn item_text(item: &ChatItem) -> Option<String> {
-    let text = match item {
-        ChatItem::User(text) | ChatItem::System(text) => text.trim().to_string(),
-        ChatItem::Assistant(assistant) => assistant
-            .blocks
-            .iter()
-            .filter_map(|block| match block {
-                Block::Text(text) => Some(text.trim()),
-                Block::Thinking(_) => None,
-            })
-            .filter(|text| !text.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-        ChatItem::Tool(tool) => {
-            let mut text = format!("{}({})", tool.name, tool.args);
-            if !tool.detail.is_empty() {
-                text.push('\n');
-                text.push_str(&tool.detail.join("\n"));
-            }
-            text
-        }
-    };
-    (!text.is_empty()).then_some(text)
-}
-
-/// 提取文本中的 ``` 围栏代码块内容（依次返回；未闭合的块丢弃）。
-fn code_blocks(text: &str) -> Vec<String> {
-    let mut blocks = Vec::new();
-    let mut in_block = false;
-    let mut current = String::new();
-    for line in text.lines() {
-        if line.trim_start().starts_with("```") {
-            if in_block {
-                blocks.push(std::mem::take(&mut current));
-            }
-            in_block = !in_block;
-            continue;
-        }
-        if in_block {
-            current.push_str(line);
-            current.push('\n');
-        }
-    }
-    blocks
 }
 
 /// `/image` 的用法提示（以 SLASH_COMMANDS 为唯一来源）。
@@ -2916,111 +1770,18 @@ fn models_usage() -> &'static str {
         .map_or("/models:<provider>/<模型id>", |command| command.usage)
 }
 
-fn user_text(content: &UserMessageContent) -> String {
-    match content {
-        UserMessageContent::Text(text) => text.clone(),
-        UserMessageContent::Blocks(blocks) => {
-            let text = blocks_text(blocks);
-            let images = blocks
-                .iter()
-                .filter(|block| matches!(block, UserContent::Image(_)))
-                .count();
-            if images == 0 {
-                text
-            } else {
-                // 图片块无法内联渲染，以占位行标示（与块序一致：图片在前）
-                format!("🖼 图片 ×{images}\n{text}")
-            }
-        }
-    }
+/// 逐行步进：越过边界返回 `None`（钳制语义由调用方决定）。
+/// 聊天区消息游标、队列游标与 picker 选中共用。
+fn step_row(index: usize, direction: isize, len: usize) -> Option<usize> {
+    let next = index.checked_add_signed(direction)?;
+    (next < len).then_some(next)
 }
 
-// ── skill 手动载入（`/skill:<name>`）────────────────────────────────────────
-
-/// 构造手动载入 skill 的注入文本（作为 user 消息进入上下文，随 session 落库）。
-///
-/// 标签使用 [`ActivatedSkill::prompt_tag`] 的统一格式，与 bootstrap 中 `--skill`
-/// 注入 system prompt 的 `<active_skill>` 一致，模型侧无需区分来源。
-pub(super) fn skill_load_message(skill: &ActivatedSkill) -> String {
-    format!(
-        "{}\n\n\
-         The user manually loaded this skill into the conversation. \
-         Follow its instructions for the subsequent work.",
-        skill.prompt_tag()
-    )
+/// 文本的逻辑行数（空文本为 1）：草稿与队列条目共用的行数口径。
+fn line_count_of(text: &str) -> u16 {
+    let count = text.bytes().filter(|b| *b == b'\n').count() + 1;
+    u16::try_from(count).unwrap_or(u16::MAX)
 }
-
-/// `/skill` 无参时展示的可用 skill 清单（本地展示，不进上下文）。
-fn skill_list_text(skills: &[SkillEntry]) -> String {
-    use std::fmt::Write as _;
-    if skills.is_empty() {
-        return "没有可用的 skill（查找 .nomic/skills、.agents/skills 与用户配置目录）。"
-            .to_string();
-    }
-    let mut text = "可用 skill（/skill:<name> 载入）：".to_string();
-    for skill in skills {
-        let _ = write!(
-            text,
-            "\n  {} — {}（{}）",
-            skill.name, skill.description, skill.scope
-        );
-    }
-    text
-}
-
-/// 聊天区压缩展示注入的 skill 消息：返回 `Some` 表示该 user 文本是 skill 注入。
-fn skill_load_notice(text: &str) -> Option<String> {
-    let tag = parse_active_skill_tag(text)?;
-    Some(match tag.path {
-        Some(path) => format!("已载入 skill `{}`（{}）", tag.name, path.display()),
-        None => format!("已载入 skill `{}`", tag.name),
-    })
-}
-
-fn blocks_text(blocks: &[UserContent]) -> String {
-    blocks
-        .iter()
-        .filter_map(|content| match content {
-            UserContent::Text(text) => Some(text.text.as_str()),
-            UserContent::Image(_) => None,
-        })
-        .collect::<String>()
-}
-
-/// 工具结果摘要的最大行数（聊天区保持紧凑，只留尾部上下文）。
-const DETAIL_LINES: usize = 3;
-
-/// 提取工具输出的尾部摘要：非空行 trim 后取最后 `DETAIL_LINES` 行，
-/// 每行截断到 120 字符（超长由渲染层折行兜底，这里先压住极端长行）。
-fn result_summary(blocks: &[UserContent]) -> Vec<String> {
-    const MAX_LINE: usize = 120;
-    let text = blocks_text(blocks);
-    let mut tail: Vec<&str> = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    tail = tail.split_off(tail.len().saturating_sub(DETAIL_LINES));
-    tail.into_iter()
-        .map(|line| {
-            if line.chars().count() <= MAX_LINE {
-                line.to_string()
-            } else {
-                let truncated: String = line.chars().take(MAX_LINE).collect();
-                format!("{truncated}…")
-            }
-        })
-        .collect()
-}
-
-fn assistant_error(stop_reason: StopReason, error_message: Option<&str>) -> Option<String> {
-    if matches!(stop_reason, StopReason::Error | StopReason::Aborted) {
-        Some(error_message.unwrap_or("未知错误").to_string())
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 // 测试数据包含模板占位符字面量（${2:-nomic} 等），并非格式化参数
 #[allow(clippy::literal_string_with_formatting_args)]
@@ -3031,6 +1792,12 @@ mod tests {
     use nomic_core::{ToolResult, ToolUpdate};
     use nomic_skills::SkillScope;
 
+    use nomic_ai::{AssistantContent, AssistantEvent, UserContent, UserMessageContent};
+    use nomic_prompts::PromptTemplate;
+    use nomic_skills::ActivatedSkill;
+
+    use super::chat::{AssistantItem, result_summary, user_text};
+    use super::input::skill_list_text;
     use super::*;
 
     fn user_message(text: &str) -> Box<Message> {
@@ -3102,7 +1869,7 @@ mod tests {
             None,
         )));
 
-        let Some(ChatItem::Assistant(item)) = app.items.first() else {
+        let Some(ChatItem::Assistant(item)) = app.chat.items.first() else {
             panic!("expected assistant item");
         };
         assert!(item.done);
@@ -3128,7 +1895,7 @@ mod tests {
             StopReason::Error,
             Some("rate limited".to_string()),
         )));
-        let Some(ChatItem::Assistant(item)) = app.items.first() else {
+        let Some(ChatItem::Assistant(item)) = app.chat.items.first() else {
             panic!("expected assistant item");
         };
         assert_eq!(item.error.as_deref(), Some("rate limited"));
@@ -3208,7 +1975,7 @@ mod tests {
             is_error: false,
         });
 
-        let Some(ChatItem::Tool(tool)) = app.items.first() else {
+        let Some(ChatItem::Tool(tool)) = app.chat.items.first() else {
             panic!("expected tool item");
         };
         assert_eq!(tool.status, ToolStatus::Ok);
@@ -3248,7 +2015,7 @@ mod tests {
             is_error: true,
         });
 
-        let [ChatItem::Tool(first), ChatItem::Tool(second)] = &app.items[..] else {
+        let [ChatItem::Tool(first), ChatItem::Tool(second)] = &app.chat.items[..] else {
             panic!("unexpected items");
         };
         assert_eq!(first.status, ToolStatus::Failed);
@@ -3258,79 +2025,79 @@ mod tests {
     #[test]
     fn multiline_input_tracks_lines_and_cursor() {
         let mut app = app();
-        assert_eq!(app.line_count(), 1);
-        assert_eq!(app.cursor_position(), (0, 0));
+        assert_eq!(app.input.line_count(), 1);
+        assert_eq!(app.input.cursor_position(), (0, 0));
 
         for c in "你好".chars() {
-            app.insert_char(c);
+            app.input.insert_char(c);
         }
-        app.insert_newline();
+        app.input.insert_newline();
         for c in "ab".chars() {
-            app.insert_char(c);
+            app.input.insert_char(c);
         }
-        assert_eq!(app.input(), "你好\nab");
-        assert_eq!(app.line_count(), 2);
+        assert_eq!(app.input.text(), "你好\nab");
+        assert_eq!(app.input.line_count(), 2);
         // 光标在第二行末尾：行号 1，行内宽度 2
-        assert_eq!(app.cursor_position(), (1, 2));
+        assert_eq!(app.input.cursor_position(), (1, 2));
 
         // 光标移回第一行行尾（CJK 宽度 4）
-        app.cursor_left();
-        app.cursor_left();
-        app.cursor_left();
-        assert_eq!(app.cursor_position(), (0, 4));
+        app.input.cursor_left();
+        app.input.cursor_left();
+        app.input.cursor_left();
+        assert_eq!(app.input.cursor_position(), (0, 4));
 
         // 多行输入可整体提交
-        assert_eq!(app.take_input().as_deref(), Some("你好\nab"));
-        assert_eq!(app.line_count(), 1);
+        assert_eq!(app.input.take_input().as_deref(), Some("你好\nab"));
+        assert_eq!(app.input.line_count(), 1);
     }
 
     #[test]
     fn newline_dismisses_completion() {
         let mut app = app();
-        app.insert_char('/');
-        assert!(app.completion().is_some());
+        app.input.insert_char('/');
+        assert!(app.input.completion().is_some());
         // 换行是空白字符，slash 补全随之关闭
-        app.insert_newline();
-        assert!(app.completion().is_none());
+        app.input.insert_newline();
+        assert!(app.input.completion().is_none());
     }
 
     #[test]
     fn input_editing_respects_char_boundaries() {
         let mut app = app();
-        app.insert_char('你');
-        app.insert_char('好');
-        app.cursor_left();
-        app.insert_char('a');
-        assert_eq!(app.input(), "你a好");
-        app.backspace();
-        assert_eq!(app.input(), "你好");
-        app.backspace();
-        assert_eq!(app.input(), "好");
-        assert_eq!(app.take_input().as_deref(), Some("好"));
-        assert!(app.take_input().is_none());
+        app.input.insert_char('你');
+        app.input.insert_char('好');
+        app.input.cursor_left();
+        app.input.insert_char('a');
+        assert_eq!(app.input.text(), "你a好");
+        app.input.backspace();
+        assert_eq!(app.input.text(), "你好");
+        app.input.backspace();
+        assert_eq!(app.input.text(), "好");
+        assert_eq!(app.input.take_input().as_deref(), Some("好"));
+        assert!(app.input.take_input().is_none());
     }
 
     #[test]
     fn slash_completion_filters_by_prefix_and_tab_cycles() {
         let mut app = app();
-        app.insert_char('/');
-        let completion = app.completion().expect("/ 即弹出全部候选");
+        app.input.insert_char('/');
+        let completion = app.input.completion().expect("/ 即弹出全部候选");
         assert_eq!(completion.candidates.len(), SLASH_COMMANDS.len());
 
-        app.insert_char('n');
-        let completion = app.completion().expect("/n 匹配 new");
+        app.input.insert_char('n');
+        let completion = app.input.completion().expect("/n 匹配 new");
         assert_eq!(candidate_fragments(completion), vec!["new"]);
 
         // Tab 接受候选
-        app.tab_complete();
-        assert_eq!(app.input(), "/new");
+        app.input.tab_complete();
+        assert_eq!(app.input.text(), "/new");
         // 精确匹配后仍显示（展示描述），且选中该项
-        let completion = app.completion().expect("精确匹配仍显示候选");
+        let completion = app.input.completion().expect("精确匹配仍显示候选");
         assert_eq!(completion.candidates[completion.selected].fragment(), "new");
 
         // 输入空格（进入参数区）后弹层消失
-        app.insert_char(' ');
-        assert!(app.completion().is_none());
+        app.input.insert_char(' ');
+        assert!(app.input.completion().is_none());
     }
 
     /// 候选的输入片段列表（不含 `/` 前缀），测试断言用。
@@ -3346,19 +2113,19 @@ mod tests {
     fn slash_completion_matches_alias_and_enter_accepts() {
         let mut app = app();
         for c in "/ex".chars() {
-            app.insert_char(c);
+            app.input.insert_char(c);
         }
-        let completion = app.completion().expect("/ex 匹配别名 exit");
+        let completion = app.input.completion().expect("/ex 匹配别名 exit");
         assert_eq!(
             completion.candidates[completion.selected].fragment(),
             "quit"
         );
 
         // 未精确匹配时 Enter 先填入候选，不提交
-        assert!(app.accept_completion_on_enter());
-        assert_eq!(app.input(), "/quit");
+        assert!(app.input.accept_completion_on_enter());
+        assert_eq!(app.input.text(), "/quit");
         // 精确匹配后 Enter 放行提交
-        assert!(!app.accept_completion_on_enter());
+        assert!(!app.input.accept_completion_on_enter());
     }
 
     #[test]
@@ -3374,15 +2141,15 @@ mod tests {
         app.open_resume_picker(rows);
 
         // 到底/顶钳制，不循环
-        app.picker_select(1);
-        app.picker_select(1);
-        app.picker_select(1);
+        app.picker.as_mut().expect("picker").select(1);
+        app.picker.as_mut().expect("picker").select(1);
+        app.picker.as_mut().expect("picker").select(1);
         assert_eq!(app.picker().expect("picker").selected, 2);
-        app.picker_select(-5);
+        app.picker.as_mut().expect("picker").select(-5);
         assert_eq!(app.picker().expect("picker").selected, 0);
 
         // Enter 确认：返回选中 id 并关闭；关闭后再次确认为 None
-        app.picker_select(1);
+        app.picker.as_mut().expect("picker").select(1);
         assert_eq!(
             app.take_picker_selection(),
             Some((PickerKind::Resume, "id-1".to_string()))
@@ -3424,8 +2191,10 @@ mod tests {
         assert!(app.execute_slash(SlashAction::Copy).is_empty());
         assert_eq!(app.notice.as_deref(), Some("没有可复制的消息"));
 
-        app.items.push(ChatItem::User("第一条问题".to_string()));
-        app.items.push(ChatItem::Assistant(AssistantItem {
+        app.chat
+            .items
+            .push(ChatItem::User("第一条问题".to_string()));
+        app.chat.items.push(ChatItem::Assistant(AssistantItem {
             blocks: vec![
                 Block::Thinking("内部推理".to_string()),
                 Block::Text("第一段正文".to_string()),
@@ -3441,9 +2210,10 @@ mod tests {
         assert_eq!(text, "第一段正文\n\n第二段正文");
 
         // 最新一条是只有工具调用的 assistant 消息：向前找有正文的消息
-        app.items
+        app.chat
+            .items
             .push(ChatItem::Assistant(AssistantItem::default()));
-        app.items.push(ChatItem::User("最新问题".to_string()));
+        app.chat.items.push(ChatItem::User("最新问题".to_string()));
         let [Effect::CopyText(text)] = &app.execute_slash(SlashAction::Copy)[..] else {
             panic!("expected CopyText effect");
         };
@@ -3461,6 +2231,7 @@ mod tests {
         assert!(app.thinking_collapsed());
         // 每次切换在聊天区留下系统提示
         let systems = app
+            .chat
             .items
             .iter()
             .filter(|item| matches!(item, ChatItem::System(_)))
@@ -3481,6 +2252,7 @@ mod tests {
         assert!(!app.goal_mode());
         // 每次切换在聊天区留下系统提示
         let systems = app
+            .chat
             .items
             .iter()
             .filter(|item| matches!(item, ChatItem::System(_)))
@@ -3510,8 +2282,8 @@ mod tests {
         // 失败条目随历史中的失败消息一并移除；提交重试请求并进入运行态
         assert!(matches!(&effects[..], [Effect::Retry]));
         assert!(app.running);
-        assert_eq!(app.items.len(), 1);
-        assert!(matches!(app.items[0], ChatItem::User(_)));
+        assert_eq!(app.chat.items.len(), 1);
+        assert!(matches!(app.chat.items[0], ChatItem::User(_)));
     }
 
     #[test]
@@ -3528,8 +2300,8 @@ mod tests {
         let effects = app.execute_slash(SlashAction::Retry);
 
         assert!(matches!(&effects[..], [Effect::Retry]));
-        assert_eq!(app.items.len(), 1);
-        assert!(matches!(app.items[0], ChatItem::User(_)));
+        assert_eq!(app.chat.items.len(), 1);
+        assert!(matches!(app.chat.items[0], ChatItem::User(_)));
     }
 
     #[test]
@@ -3551,7 +2323,7 @@ mod tests {
         let effects = app.execute_slash(SlashAction::Retry);
 
         assert!(matches!(&effects[..], [Effect::Retry]));
-        assert_eq!(app.items.len(), 2);
+        assert_eq!(app.chat.items.len(), 2);
     }
 
     #[test]
@@ -3658,15 +2430,15 @@ mod tests {
             data: "aA==".to_string(),
             mime_type: "image/png".to_string(),
         };
-        assert!(!app.has_attachments());
-        assert_eq!(app.stage_image("a.png".to_string(), image()), 1);
-        assert_eq!(app.stage_image("b.png".to_string(), image()), 2);
-        assert!(app.has_attachments());
-        let taken = app.take_attachments();
+        assert!(!app.input.has_attachments());
+        assert_eq!(app.input.stage_image("a.png".to_string(), image()), 1);
+        assert_eq!(app.input.stage_image("b.png".to_string(), image()), 2);
+        assert!(app.input.has_attachments());
+        let taken = app.input.take_attachments();
         assert_eq!(taken.len(), 2);
-        assert!(!app.has_attachments());
+        assert!(!app.input.has_attachments());
         // 取空后再次取出为空
-        assert!(app.take_attachments().is_empty());
+        assert!(app.input.take_attachments().is_empty());
     }
 
     #[test]
@@ -3697,7 +2469,7 @@ mod tests {
             tokens_before: 150_000,
         });
         // 压缩中只置状态栏提示，不进聊天区（失败时不残留）
-        assert!(app.items.is_empty());
+        assert!(app.chat.items.is_empty());
         assert!(app.notice.as_deref().is_some_and(|n| n.contains("压缩")));
         app.handle_event(&AgentEvent::CompactionEnd {
             summary: "## Goal\nwork".to_string(),
@@ -3707,6 +2479,7 @@ mod tests {
         });
         assert!(app.notice.is_none());
         let system_lines: Vec<&str> = app
+            .chat
             .items
             .iter()
             .filter_map(|item| match item {
@@ -3729,14 +2502,14 @@ mod tests {
                 timestamp: 2_000,
             }),
         ]);
-        assert!(matches!(&app.items[0], ChatItem::System(text) if text.contains("已压缩")));
-        assert!(matches!(&app.items[1], ChatItem::User(text) if text == "recent question"));
+        assert!(matches!(&app.chat.items[0], ChatItem::System(text) if text.contains("已压缩")));
+        assert!(matches!(&app.chat.items[1], ChatItem::User(text) if text == "recent question"));
     }
 
     #[test]
     fn skill_completion_after_colon_prefix() {
         let mut app = app();
-        app.set_available_skills(vec![
+        app.input.set_available_skills(vec![
             SkillEntry {
                 name: "jujutsu".to_string(),
                 description: "jj vcs".to_string(),
@@ -3749,30 +2522,30 @@ mod tests {
             },
         ]);
         for c in "/skill:".chars() {
-            app.insert_char(c);
+            app.input.insert_char(c);
         }
-        let completion = app.completion().expect("/skill: 弹出全部 skill");
+        let completion = app.input.completion().expect("/skill: 弹出全部 skill");
         assert_eq!(
             candidate_fragments(completion),
             vec!["skill:jujutsu", "skill:rust-review"]
         );
 
         // Tab 接受选中项；接受后候选收敛到精确匹配项，再次 Tab 保持不变
-        app.tab_complete();
-        assert_eq!(app.input(), "/skill:jujutsu");
-        app.tab_complete();
-        assert_eq!(app.input(), "/skill:jujutsu");
+        app.input.tab_complete();
+        assert_eq!(app.input.text(), "/skill:jujutsu");
+        app.input.tab_complete();
+        assert_eq!(app.input.text(), "/skill:jujutsu");
 
         // 前缀过滤后 Enter 填入唯一候选，再次 Enter 精确匹配放行提交
-        app.take_input();
+        app.input.take_input();
         for c in "/skill:juj".chars() {
-            app.insert_char(c);
+            app.input.insert_char(c);
         }
-        let completion = app.completion().expect("前缀过滤");
+        let completion = app.input.completion().expect("前缀过滤");
         assert_eq!(candidate_fragments(completion), vec!["skill:jujutsu"]);
-        assert!(app.accept_completion_on_enter());
-        assert_eq!(app.input(), "/skill:jujutsu");
-        assert!(!app.accept_completion_on_enter());
+        assert!(app.input.accept_completion_on_enter());
+        assert_eq!(app.input.text(), "/skill:jujutsu");
+        assert!(!app.input.accept_completion_on_enter());
     }
 
     #[test]
@@ -3795,10 +2568,10 @@ mod tests {
         assert!(message.contains("manually loaded"));
 
         // 运行中注入：聊天区压缩为一行系统样式提示
-        let mut chat = app();
-        chat.handle_event(&AgentEvent::MessageStart(user_message(&message)));
-        assert_eq!(chat.items.len(), 1);
-        let ChatItem::System(text) = &chat.items[0] else {
+        let mut injected = app();
+        injected.handle_event(&AgentEvent::MessageStart(user_message(&message)));
+        assert_eq!(injected.chat.items.len(), 1);
+        let ChatItem::System(text) = &injected.chat.items[0] else {
             panic!("expected compact system item");
         };
         assert!(text.contains("jujutsu"), "{text}");
@@ -3810,12 +2583,12 @@ mod tests {
             content: UserMessageContent::Text(message),
             timestamp: 0,
         })]);
-        assert!(matches!(resumed.items[0], ChatItem::System(_)));
+        assert!(matches!(resumed.chat.items[0], ChatItem::System(_)));
 
         // 普通 user 消息不受影响
         let mut plain = app();
         plain.handle_event(&AgentEvent::MessageStart(user_message("普通问题")));
-        assert!(matches!(plain.items[0], ChatItem::User(_)));
+        assert!(matches!(plain.chat.items[0], ChatItem::User(_)));
     }
 
     #[test]
@@ -3834,9 +2607,9 @@ mod tests {
     #[test]
     fn system_item_and_clear_items() {
         let mut app = app();
-        app.push_system(help_text());
-        assert_eq!(app.items.len(), 1);
-        let ChatItem::System(text) = &app.items[0] else {
+        app.chat.push_system(help_text());
+        assert_eq!(app.chat.items.len(), 1);
+        let ChatItem::System(text) = &app.chat.items[0] else {
             panic!("expected system item");
         };
         assert!(text.contains("/help"));
@@ -3844,20 +2617,20 @@ mod tests {
         assert!(text.contains("/skill"));
         assert!(text.contains("/quit"));
         assert!(text.contains("/exit"));
-        app.clear_items();
-        assert!(app.items.is_empty());
+        app.chat.clear_items();
+        assert!(app.chat.items.is_empty());
     }
 
     #[test]
     fn dismiss_completion_reports_whether_popup_was_open() {
         let mut app = app();
-        assert!(!app.dismiss_completion());
-        app.insert_char('/');
-        assert!(app.dismiss_completion());
-        assert!(app.completion().is_none());
+        assert!(!app.input.dismiss_completion());
+        app.input.insert_char('/');
+        assert!(app.input.dismiss_completion());
+        assert!(app.input.completion().is_none());
         // 关闭后下次编辑会重新计算
-        app.insert_char('n');
-        assert!(app.completion().is_some());
+        app.input.insert_char('n');
+        assert!(app.input.completion().is_some());
     }
 
     #[test]
@@ -3871,14 +2644,14 @@ mod tests {
     #[test]
     fn scroll_is_saturating() {
         let mut app = app();
-        app.scroll_up(3);
-        app.scroll_up(5);
-        assert_eq!(app.scroll, 8);
-        app.scroll_down(10);
-        assert_eq!(app.scroll, 0);
-        app.scroll_up(u16::MAX);
-        app.scroll_up(1);
-        assert_eq!(app.scroll, u16::MAX);
+        app.chat.scroll_up(3);
+        app.chat.scroll_up(5);
+        assert_eq!(app.chat.scroll, 8);
+        app.chat.scroll_down(10);
+        assert_eq!(app.chat.scroll, 0);
+        app.chat.scroll_up(u16::MAX);
+        app.chat.scroll_up(1);
+        assert_eq!(app.chat.scroll, u16::MAX);
     }
 
     #[test]
@@ -3900,12 +2673,12 @@ mod tests {
         ];
         let mut app = app();
         app.load_history(&messages);
-        assert_eq!(app.items.len(), 2);
-        let ChatItem::User(text) = &app.items[0] else {
+        assert_eq!(app.chat.items.len(), 2);
+        let ChatItem::User(text) = &app.chat.items[0] else {
             panic!("expected user item");
         };
         assert_eq!(text, "问题");
-        let ChatItem::Assistant(item) = &app.items[1] else {
+        let ChatItem::Assistant(item) = &app.chat.items[1] else {
             panic!("expected assistant item");
         };
         assert!(item.done);
@@ -3935,7 +2708,7 @@ mod tests {
     #[test]
     fn enter_submits_prompt_with_attachments_and_marks_running() {
         let mut app = app();
-        app.stage_image("a.png".to_string(), image());
+        app.input.stage_image("a.png".to_string(), image());
         app.paste_text("描述这张图");
         let effects = app.press(Key::Enter);
         // running 在效果返回前已置位，避免提交空窗期重复提交
@@ -3946,57 +2719,65 @@ mod tests {
         assert_eq!(text, "描述这张图");
         assert_eq!(images.len(), 1);
         // 附件随提交带走，输入缓冲已清空
-        assert!(!app.has_attachments());
-        assert_eq!(app.input(), "");
+        assert!(!app.input.has_attachments());
+        assert_eq!(app.input.text(), "");
     }
 
     #[test]
     fn template_completion_lists_templates_with_commands() {
         let mut prefixed = app();
-        prefixed.set_available_templates(vec![
+        prefixed.input.set_available_templates(vec![
             template("review", "Review $@", Some("<path>")),
             template("component", "Create $1", None),
         ]);
         for c in "/re".chars() {
-            prefixed.insert_char(c);
+            prefixed.input.insert_char(c);
         }
-        let completion = prefixed.completion().expect("前缀弹出候选");
+        let completion = prefixed.input.completion().expect("前缀弹出候选");
         assert_eq!(
             candidate_fragments(completion),
             vec!["resume", "retry", "review"]
         );
 
         // Tab 填入首个候选（接受后候选收敛到精确匹配，再次 Tab 不变）
-        prefixed.tab_complete();
-        assert_eq!(prefixed.input(), "/resume");
-        prefixed.tab_complete();
-        assert_eq!(prefixed.input(), "/resume");
+        prefixed.input.tab_complete();
+        assert_eq!(prefixed.input.text(), "/resume");
+        prefixed.input.tab_complete();
+        assert_eq!(prefixed.input.text(), "/resume");
 
         // 唯一前缀时 Tab 直接填入模板候选
         let mut unique = app();
-        unique.set_available_templates(vec![template("review", "Review $@", Some("<path>"))]);
+        unique
+            .input
+            .set_available_templates(vec![template("review", "Review $@", Some("<path>"))]);
         for c in "/rev".chars() {
-            unique.insert_char(c);
+            unique.input.insert_char(c);
         }
         assert_eq!(
-            candidate_fragments(unique.completion().expect("唯一候选")),
+            candidate_fragments(unique.input.completion().expect("唯一候选")),
             vec!["review"]
         );
-        unique.tab_complete();
-        assert_eq!(unique.input(), "/review");
+        unique.input.tab_complete();
+        assert_eq!(unique.input.text(), "/review");
 
         // 空片段时模板与内建命令一起出现
         let mut empty = app();
-        empty.set_available_templates(vec![template("zz-top", "body", None)]);
-        empty.insert_char('/');
-        let completion = empty.completion().expect("全部候选");
+        empty
+            .input
+            .set_available_templates(vec![template("zz-top", "body", None)]);
+        empty.input.insert_char('/');
+        let completion = empty.input.completion().expect("全部候选");
         assert!(candidate_fragments(completion).contains(&"zz-top".to_string()));
     }
 
     #[test]
     fn enter_expands_template_invocation_into_prompt() {
         let mut spaced = app();
-        spaced.set_available_templates(vec![template("greet", "Hello $1, from ${2:-nomic}", None)]);
+        spaced.input.set_available_templates(vec![template(
+            "greet",
+            "Hello $1, from ${2:-nomic}",
+            None,
+        )]);
         spaced.paste_text("/greet world \"a b\"");
         let effects = spaced.press(Key::Enter);
         assert!(spaced.is_running());
@@ -4008,7 +2789,9 @@ mod tests {
 
         // 冒号形式同样展开
         let mut colon = app();
-        colon.set_available_templates(vec![template("greet", "Hello $1", None)]);
+        colon
+            .input
+            .set_available_templates(vec![template("greet", "Hello $1", None)]);
         colon.paste_text("/greet:world");
         let [Effect::Prompt { text, .. }] = &colon.press(Key::Enter)[..] else {
             panic!("expected single Prompt effect");
@@ -4019,7 +2802,7 @@ mod tests {
     #[test]
     fn template_invocation_errors_and_builtin_precedence() {
         let mut quoted = app();
-        quoted.set_available_templates(vec![
+        quoted.input.set_available_templates(vec![
             template("greet", "Hello $1", None),
             // 与内建命令同名的模板不抢占 /help
             template("help", "template help", None),
@@ -4043,12 +2826,14 @@ mod tests {
 
         // 内建命令优先于同名模板
         let mut builtin = app();
-        builtin.set_available_templates(vec![template("help", "template help", None)]);
+        builtin
+            .input
+            .set_available_templates(vec![template("help", "template help", None)]);
         builtin.paste_text("/help");
         assert!(builtin.press(Key::Enter).is_empty());
         assert!(!builtin.is_running());
         assert!(
-            matches!(&builtin.items.last(), Some(ChatItem::System(text)) if text.contains("可用命令"))
+            matches!(&builtin.chat.items.last(), Some(ChatItem::System(text)) if text.contains("可用命令"))
         );
     }
 
@@ -4058,18 +2843,18 @@ mod tests {
     fn enter_while_running_queues_prompt_with_attachments() {
         let mut app = app();
         app.handle_event(&AgentEvent::AgentStart);
-        app.stage_image("a.png".to_string(), image());
+        app.input.stage_image("a.png".to_string(), image());
         app.paste_text("hi");
         assert!(app.press(Key::Enter).is_empty());
-        assert_eq!(app.input(), "");
-        assert_eq!(app.queue_len(), 1);
-        assert!(!app.has_attachments());
+        assert_eq!(app.input.text(), "");
+        assert_eq!(app.queue.len(), 1);
+        assert!(!app.input.has_attachments());
         assert!(app.notice().is_some_and(|n| n.contains("已排队")));
 
         // 再排一条，附件只随各自的消息走
         app.paste_text("second");
         assert!(app.press(Key::Enter).is_empty());
-        assert_eq!(app.queue_len(), 2);
+        assert_eq!(app.queue.len(), 2);
 
         // drain 按 FIFO 取出并置 running（与用户提交同一口径）
         let Some(Effect::Prompt { text, images }) = app.drain_queue() else {
@@ -4085,7 +2870,7 @@ mod tests {
         };
         assert_eq!(text, "second");
         assert!(images.is_empty());
-        assert_eq!(app.queue_len(), 0);
+        assert_eq!(app.queue.len(), 0);
         assert!(app.drain_queue().is_none());
     }
 
@@ -4102,7 +2887,7 @@ mod tests {
         );
         assert_eq!(app.mode(), Mode::Insert);
         assert_eq!(
-            app.input(),
+            app.input.text(),
             "草稿",
             "外部编辑器持有草稿副本，状态层不动输入"
         );
@@ -4115,8 +2900,8 @@ mod tests {
         app.paste_text("草稿");
         app.apply_editor_result("第一行\r\n第二行\n\n");
         assert_eq!(app.mode(), Mode::Insert);
-        assert_eq!(app.input(), "第一行\n第二行");
-        assert_eq!(app.cursor, app.input().len());
+        assert_eq!(app.input.text(), "第一行\n第二行");
+        assert_eq!(app.input.cursor, app.input.text().len());
     }
 
     /// 编辑器写回空白内容：保留原草稿并提示（保存空文件是常见误操作）。
@@ -4125,7 +2910,7 @@ mod tests {
         let mut app = app();
         app.paste_text("未发草稿");
         app.apply_editor_result("  \n\n");
-        assert_eq!(app.input(), "未发草稿");
+        assert_eq!(app.input.text(), "未发草稿");
         assert!(app.notice().is_some_and(|n| n.contains("为空")));
     }
 
@@ -4133,12 +2918,13 @@ mod tests {
     #[test]
     fn enter_while_running_queues_expanded_template() {
         let mut app = app();
-        app.set_available_templates(vec![template("greet", "Hello $1", None)]);
+        app.input
+            .set_available_templates(vec![template("greet", "Hello $1", None)]);
         app.handle_event(&AgentEvent::AgentStart);
         app.paste_text("/greet world");
         assert!(app.press(Key::Enter).is_empty());
         assert!(app.is_running(), "排队不改变运行态");
-        assert_eq!(app.queue_len(), 1);
+        assert_eq!(app.queue.len(), 1);
         app.finish_run(None);
         let Some(Effect::Prompt { text, .. }) = app.drain_queue() else {
             panic!("expected Prompt effect from drain");
@@ -4155,7 +2941,7 @@ mod tests {
         app.press(Key::Enter);
         app.finish_run(Some("已取消".to_string()));
         // 异常结束后队列保留（drain 由事件循环按结束方式裁决，这里手动模拟）
-        assert_eq!(app.queue_len(), 1);
+        assert_eq!(app.queue.len(), 1);
         let effects = app.press(Key::Enter);
         assert!(matches!(&effects[..], [Effect::Prompt { text, .. }] if text == "queued"));
         assert!(app.is_running());
@@ -4167,13 +2953,13 @@ mod tests {
     fn queued_app() -> App {
         let mut app = app();
         app.handle_event(&AgentEvent::AgentStart);
-        app.stage_image("a.png".to_string(), image());
+        app.input.stage_image("a.png".to_string(), image());
         app.paste_text("first");
         app.press(Key::Enter);
         app.paste_text("second\n两行");
         app.press(Key::Enter);
         app.finish_run(None);
-        assert_eq!(app.queue_len(), 2);
+        assert_eq!(app.queue.len(), 2);
         app
     }
 
@@ -4199,7 +2985,7 @@ mod tests {
         drafting.press(Key::Esc);
         drafting.press(Key::Char('Q'));
         assert!(drafting.queue_mode_active());
-        assert_eq!(drafting.queue_cursor(), 0);
+        assert_eq!(drafting.queue.cursor(), 0);
     }
 
     /// QUEUE 导航：j/k 钳制移动、G/gg 跳队尾/队首、dd 删除游标条目，
@@ -4212,23 +2998,23 @@ mod tests {
         assert!(app.queue_mode_active());
 
         app.press(Key::Char('j'));
-        assert_eq!(app.queue_cursor(), 1);
+        assert_eq!(app.queue.cursor(), 1);
         app.press(Key::Char('j'));
-        assert_eq!(app.queue_cursor(), 1, "到底钳制");
+        assert_eq!(app.queue.cursor(), 1, "到底钳制");
         app.press(Key::Char('g'));
         app.press(Key::Char('g'));
-        assert_eq!(app.queue_cursor(), 0);
+        assert_eq!(app.queue.cursor(), 0);
         app.press(Key::Char('G'));
-        assert_eq!(app.queue_cursor(), 1);
+        assert_eq!(app.queue.cursor(), 1);
 
         // dd 删除队尾条目，游标收钳到新的末尾
         app.press(Key::Char('d'));
         app.press(Key::Char('d'));
-        assert_eq!(app.queue_len(), 1);
-        assert_eq!(app.queue_cursor(), 0);
+        assert_eq!(app.queue.len(), 1);
+        assert_eq!(app.queue.cursor(), 0);
         // 再删即空：退出 QUEUE 回 NORMAL 并提示
         app.press(Key::Char('x'));
-        assert_eq!(app.queue_len(), 0);
+        assert_eq!(app.queue.len(), 0);
         assert!(!app.queue_mode_active());
         assert_eq!(app.mode(), Mode::Normal);
         assert!(app.notice().is_some_and(|n| n.contains("队列已清空")));
@@ -4241,9 +3027,9 @@ mod tests {
         app.press(Key::Esc);
         app.press(Key::Char('Q'));
         app.press(Key::Char('J'));
-        assert_eq!(app.queue_cursor(), 1);
+        assert_eq!(app.queue.cursor(), 1);
         app.press(Key::Char('J'));
-        assert_eq!(app.queue_cursor(), 1, "到底不再移动");
+        assert_eq!(app.queue.cursor(), 1, "到底不再移动");
         // 退出 QUEUE（空闲）：drain 恢复，换位后的队首立即提交
         let effects = app.press(Key::Esc);
         assert!(matches!(&effects[..], [Effect::Prompt { text, .. }] if text == "second\n两行"));
@@ -4265,13 +3051,13 @@ mod tests {
         app.press(Key::Esc);
         app.press(Key::Char('Q'));
         app.press(Key::Char('i'));
-        assert!(app.queue_editing());
-        assert_eq!(app.input(), "first");
+        assert!(app.queue.is_editing());
+        assert_eq!(app.input.text(), "first");
         app.paste_text(" edited");
         app.press(Key::Enter);
-        assert!(!app.queue_editing(), "保存后回到导航子状态");
+        assert!(!app.queue.is_editing(), "保存后回到导航子状态");
         assert!(app.queue_mode_active());
-        assert_eq!(app.input(), "");
+        assert_eq!(app.input.text(), "");
 
         // 退出 QUEUE（空闲）：编辑后的队首提交，附件保留
         let effects = app.press(Key::Esc);
@@ -4290,7 +3076,7 @@ mod tests {
         app.press(Key::Char('i'));
         app.press(Key::Ctrl('u'));
         app.paste_text("/he");
-        assert!(app.completion().is_none());
+        assert!(app.input.completion().is_none());
         app.press(Key::Enter);
         let effects = app.press(Key::Esc);
         assert!(matches!(&effects[..], [Effect::Prompt { text, .. }] if text == "/he"));
@@ -4303,17 +3089,17 @@ mod tests {
         app.press(Key::Esc);
         app.press(Key::Char('Q'));
         app.press(Key::Char('o'));
-        assert!(app.queue_editing());
-        assert_eq!(app.queue_len(), 3);
+        assert!(app.queue.is_editing());
+        assert_eq!(app.queue.len(), 3);
         app.paste_text("inserted");
         app.press(Key::Esc); // Esc 同样保存
-        assert_eq!(app.queue_len(), 3);
-        assert!(!app.queue_editing());
+        assert_eq!(app.queue.len(), 3);
+        assert!(!app.queue.is_editing());
 
         // 保存空文本：槽位被删除（oil.nvim 空行忽略语义）
         app.press(Key::Char('o'));
         app.press(Key::Esc);
-        assert_eq!(app.queue_len(), 3);
+        assert_eq!(app.queue.len(), 3);
 
         // 退出 QUEUE 恢复发送，顺序验证：first, inserted, second
         let mut texts = Vec::new();
@@ -4349,7 +3135,7 @@ mod tests {
         let effects = idle.press(Key::Esc);
         assert!(matches!(&effects[..], [Effect::Prompt { text, .. }] if text == "first"));
         assert!(idle.is_running());
-        assert_eq!(idle.queue_len(), 1);
+        assert_eq!(idle.queue.len(), 1);
     }
 
     /// 统一队列 QUEUE 模式（ADR-0014）：进入 QUEUE 冻结注入、退出
@@ -4369,29 +3155,29 @@ mod tests {
         app.press(Key::Esc);
         app.press(Key::Char('Q'));
         assert!(app.queue_mode_active());
-        assert_eq!(app.queue_len(), 3);
+        assert_eq!(app.queue.len(), 3);
         // 进入 QUEUE 即冻结注入（core 在 turn 边界不再弹出）
-        assert!(app.steering_handle().is_frozen());
+        assert!(app.queue.handle().is_frozen());
 
         // 导航与换位：msg-1/msg-2 交换
         app.press(Key::Char('j'));
         app.press(Key::Char('j'));
-        assert_eq!(app.queue_cursor(), 2);
+        assert_eq!(app.queue.cursor(), 2);
         app.press(Key::Char('k'));
         app.press(Key::Char('k'));
         app.press(Key::Char('J'));
-        assert_eq!(app.queue_cursor(), 1);
+        assert_eq!(app.queue.cursor(), 1);
 
         // 就地编辑第三条
         app.press(Key::Char('G'));
         app.press(Key::Char('i'));
-        assert_eq!(app.input(), "msg-3");
+        assert_eq!(app.input.text(), "msg-3");
         app.paste_text("-edited");
         app.press(Key::Enter);
 
         // 退出 QUEUE：解冻；恢复发送按 FIFO（换位后 msg-2 在首）
         let effects = app.press(Key::Esc);
-        assert!(!app.steering_handle().is_frozen());
+        assert!(!app.queue.handle().is_frozen());
         assert!(matches!(&effects[..], [Effect::Prompt { text, .. }] if text == "msg-2"));
         app.finish_run(None);
         let Some(Effect::Prompt { text, .. }) = app.drain_queue() else {
@@ -4403,7 +3189,7 @@ mod tests {
             panic!("expected Prompt effect from drain");
         };
         assert_eq!(text, "msg-3-edited");
-        assert_eq!(app.queue_len(), 0);
+        assert_eq!(app.queue.len(), 0);
     }
 
     /// 运行中（含工具执行中）：本地 slash 命令照常执行，不被工具调用阻塞。
@@ -4416,12 +3202,14 @@ mod tests {
         app.paste_text("/help");
         assert!(app.press(Key::Enter).is_empty());
         assert!(
-            matches!(app.items.last(), Some(ChatItem::System(text)) if text.contains("可用命令"))
+            matches!(app.chat.items.last(), Some(ChatItem::System(text)) if text.contains("可用命令"))
         );
-        assert_eq!(app.input(), "");
+        assert_eq!(app.input.text(), "");
 
         // /copy 返回 CopyText 效果（复制源为聊天区最新消息）
-        app.items.push(ChatItem::User("已发的消息".to_string()));
+        app.chat
+            .items
+            .push(ChatItem::User("已发的消息".to_string()));
         app.paste_text("/copy");
         let effects = app.press(Key::Enter);
         assert!(matches!(&effects[..], [Effect::CopyText(text)] if text == "已发的消息"));
@@ -4456,8 +3244,8 @@ mod tests {
                 app.notice().is_some_and(|n| n.contains("运行中")),
                 "{input} 应提示运行中"
             );
-            assert_eq!(app.input(), input, "{input} 输入应保留");
-            app.take_input();
+            assert_eq!(app.input.text(), input, "{input} 输入应保留");
+            app.input.take_input();
         }
     }
 
@@ -4467,21 +3255,21 @@ mod tests {
         let mut app = app();
         app.handle_event(&AgentEvent::AgentStart);
         app.paste_text("/he");
-        assert!(app.completion().is_some());
+        assert!(app.input.completion().is_some());
         // 第一次 Enter：填入补全候选，不提交
         assert!(app.press(Key::Enter).is_empty());
-        assert_eq!(app.input(), "/help");
+        assert_eq!(app.input.text(), "/help");
         // 第二次 Enter：精确匹配，执行本地命令
         assert!(app.press(Key::Enter).is_empty());
         assert!(
-            matches!(app.items.last(), Some(ChatItem::System(text)) if text.contains("可用命令"))
+            matches!(app.chat.items.last(), Some(ChatItem::System(text)) if text.contains("可用命令"))
         );
     }
 
     #[test]
     fn slash_new_returns_effect_and_start_new_conversation_resets() {
         let mut app = app();
-        app.push_system("旧内容");
+        app.chat.push_system("旧内容");
         app.paste_text("/new");
         let effects = app.press(Key::Enter);
         assert!(matches!(&effects[..], [Effect::NewSession]));
@@ -4489,8 +3277,8 @@ mod tests {
         // 事件循环执行效果：重置聊天区并切换 session
         app.start_new_conversation();
         app.set_session("new-id".to_string());
-        assert_eq!(app.items().len(), 1);
-        assert!(matches!(&app.items()[0], ChatItem::System(t) if t.contains("新对话")));
+        assert_eq!(app.chat.items().len(), 1);
+        assert!(matches!(&app.chat.items()[0], ChatItem::System(t) if t.contains("新对话")));
         assert_eq!(app.session_id(), Some("new-id"));
     }
 
@@ -4534,11 +3322,11 @@ mod tests {
         // 1. 弹层开着：关弹层，留在 INSERT
         let mut app = app();
         app.paste_text("/h");
-        assert!(app.completion().is_some());
+        assert!(app.input.completion().is_some());
         assert!(app.press(Key::Esc).is_empty());
-        assert!(app.completion().is_none());
+        assert!(app.input.completion().is_none());
         assert_eq!(app.mode(), Mode::Insert);
-        assert_eq!(app.input(), "/h", "输入不受 Esc 影响");
+        assert_eq!(app.input.text(), "/h", "输入不受 Esc 影响");
 
         // 2. 空闲：进 NORMAL，无模式切换提示，且不覆盖既有提示
         assert!(app.press(Key::Esc).is_empty());
@@ -4556,31 +3344,31 @@ mod tests {
     fn normal_mode_navigates_and_preserves_draft() {
         let mut app = app();
         app.paste_text("草稿内容");
-        let draft_len = app.input().len();
+        let draft_len = app.input.text().len();
         app.press(Key::Esc);
         assert_eq!(app.mode(), Mode::Normal);
 
         // 字符不进入缓冲；j/k 滚动
         assert!(app.press(Key::Char('x')).is_empty());
-        assert_eq!(app.input(), "草稿内容");
+        assert_eq!(app.input.text(), "草稿内容");
         app.press(Key::Char('k'));
-        assert_eq!(app.scroll(), 1);
+        assert_eq!(app.chat.scroll(), 1);
         app.press(Key::Char('j'));
-        assert_eq!(app.scroll(), 0);
+        assert_eq!(app.chat.scroll(), 0);
 
         // i 回 INSERT，草稿与光标位置保留
         assert!(app.press(Key::Char('i')).is_empty());
         assert_eq!(app.mode(), Mode::Insert);
-        assert_eq!(app.input(), "草稿内容");
+        assert_eq!(app.input.text(), "草稿内容");
 
         // Enter 回 INSERT：光标到输入末尾（「草稿内容」4 个 CJK 字符，宽 8 列）
         app.press(Key::Home);
         app.press(Key::Esc);
         app.press(Key::Enter);
         assert_eq!(app.mode(), Mode::Insert);
-        let (row, col) = app.cursor_position();
+        let (row, col) = app.input.cursor_position();
         assert_eq!((row, col), (0, 8), "光标在末尾：{row},{col}");
-        assert_eq!(app.input().len(), draft_len);
+        assert_eq!(app.input.text().len(), draft_len);
     }
 
     /// NORMAL：gg 到顶、G 回底（跟随模式）、Ctrl+D/U 半页滚动；
@@ -4592,23 +3380,23 @@ mod tests {
 
         app.press(Key::Char('g'));
         app.press(Key::Char('g'));
-        assert_eq!(app.scroll(), u16::MAX, "gg 滚到顶（渲染时钳到上限）");
+        assert_eq!(app.chat.scroll(), u16::MAX, "gg 滚到顶（渲染时钳到上限）");
 
         app.press(Key::Char('G'));
-        assert_eq!(app.scroll(), 0, "G 回底");
+        assert_eq!(app.chat.scroll(), 0, "G 回底");
 
         app.press(Key::Ctrl('u'));
-        assert_eq!(app.scroll(), 5);
+        assert_eq!(app.chat.scroll(), 5);
         app.press(Key::Ctrl('d'));
-        assert_eq!(app.scroll(), 0);
+        assert_eq!(app.chat.scroll(), 0);
 
         // g + j：pending 清除，j 照常滚动
         app.press(Key::Char('g'));
         app.press(Key::Char('j'));
-        assert_eq!(app.scroll(), 0, "j 向下滚动钳在 0");
+        assert_eq!(app.chat.scroll(), 0, "j 向下滚动钳在 0");
         app.press(Key::Char('g'));
         app.press(Key::Char('k'));
-        assert_eq!(app.scroll(), 1, "k 正常上滚，未被 gg 吞掉");
+        assert_eq!(app.chat.scroll(), 1, "k 正常上滚，未被 gg 吞掉");
     }
 
     /// NORMAL：Y 复制最新一条消息（与 /copy 同效果）；无消息时提示。
@@ -4660,16 +3448,16 @@ mod tests {
     /// Alt+B/F 词级移动；多行输入只作用当前逻辑行。
     #[test]
     fn insert_word_level_editing() {
-        let cursor_col = |app: &App| app.cursor_position().1;
+        let cursor_col = |app: &App| app.input.cursor_position().1;
 
         // Ctrl+W：删前一个词连同词前空白
         {
             let mut app = app();
             app.paste_text("hello world  foo");
             app.press(Key::Ctrl('w'));
-            assert_eq!(app.input(), "hello world  ");
+            assert_eq!(app.input.text(), "hello world  ");
             app.press(Key::Ctrl('w'));
-            assert_eq!(app.input(), "hello ", "连空白间隔一起删");
+            assert_eq!(app.input.text(), "hello ", "连空白间隔一起删");
         }
 
         // Alt+B/F：词级移动
@@ -4692,12 +3480,12 @@ mod tests {
         let mut app = app();
         app.paste_text("first line\nsecond line");
         app.press(Key::Ctrl('a'));
-        assert_eq!(app.cursor_position(), (1, 0), "Ctrl+A 到当前行首");
+        assert_eq!(app.input.cursor_position(), (1, 0), "Ctrl+A 到当前行首");
         app.press(Key::Ctrl('e'));
-        assert_eq!(app.cursor_position(), (1, 11), "Ctrl+E 到当前行尾");
+        assert_eq!(app.input.cursor_position(), (1, 11), "Ctrl+E 到当前行尾");
         app.press(Key::Ctrl('u'));
-        assert_eq!(app.input(), "first line\n", "Ctrl+U 只清当前行");
-        assert_eq!(app.cursor_position(), (1, 0));
+        assert_eq!(app.input.text(), "first line\n", "Ctrl+U 只清当前行");
+        assert_eq!(app.input.cursor_position(), (1, 0));
     }
 
     /// 粘贴的意图是编辑：NORMAL 下粘贴先回到 INSERT（草稿保留）。
@@ -4709,7 +3497,7 @@ mod tests {
         assert_eq!(app.mode(), Mode::Normal);
         app.paste_text("追加");
         assert_eq!(app.mode(), Mode::Insert);
-        assert_eq!(app.input(), "草稿追加");
+        assert_eq!(app.input.text(), "草稿追加");
     }
 
     #[test]
@@ -4729,7 +3517,7 @@ mod tests {
         ]);
         // picker 接管键位：↓ 移动选中项，普通字符进入过滤而非输入缓冲
         assert!(app.press(Key::Down).is_empty());
-        assert_eq!(app.input(), "");
+        assert_eq!(app.input.text(), "");
         let effects = app.press(Key::Enter);
         assert!(matches!(&effects[..], [Effect::Resume(id)] if id == "s2"));
         assert!(app.picker().is_none());
@@ -4752,15 +3540,15 @@ mod tests {
         drafting.press(Key::Esc);
         assert!(drafting.press(Key::Char(':')).is_empty());
         assert_eq!(drafting.mode(), Mode::Insert);
-        assert_eq!(drafting.input(), "未发送的草稿", "不覆盖草稿");
+        assert_eq!(drafting.input.text(), "未发送的草稿", "不覆盖草稿");
         assert!(drafting.notice().is_some());
 
         let mut app = app();
         app.press(Key::Esc);
         assert!(app.press(Key::Char(':')).is_empty());
         assert_eq!(app.mode(), Mode::Insert);
-        assert_eq!(app.input(), "/");
-        assert!(app.completion().is_some(), "命令补全弹层自动出现");
+        assert_eq!(app.input.text(), "/");
+        assert!(app.input.completion().is_some(), "命令补全弹层自动出现");
     }
 
     /// 构造含工具调用的历史：user → assistant → tool → assistant。
@@ -4801,34 +3589,38 @@ mod tests {
         let mut app = app_with_history();
         app.press(Key::Esc);
         // 条目布局：0 user, 1 assistant, 2 tool, 3 user, 4 assistant
-        assert_eq!(app.cursor_item, Some(4), "进入 NORMAL 定位最新一条消息");
+        assert_eq!(
+            app.chat.cursor_item,
+            Some(4),
+            "进入 NORMAL 定位最新一条消息"
+        );
 
         // [m 逐条向前：assistant → user（跳过 tool）
         app.press(Key::Char('['));
         app.press(Key::Char('m'));
-        assert_eq!(app.cursor_item, Some(3));
+        assert_eq!(app.chat.cursor_item, Some(3));
         app.press(Key::Char('['));
         app.press(Key::Char('m'));
-        assert_eq!(app.cursor_item, Some(1), "跳过 tool 条目");
+        assert_eq!(app.chat.cursor_item, Some(1), "跳过 tool 条目");
         // ]m 回到尾部
         app.press(Key::Char(']'));
         app.press(Key::Char('m'));
-        assert_eq!(app.cursor_item, Some(3));
+        assert_eq!(app.chat.cursor_item, Some(3));
 
         // [t 定位工具条目；继续 [t 越界钳制在原位
         app.press(Key::Char('['));
         app.press(Key::Char('t'));
-        assert_eq!(app.cursor_item, Some(2));
+        assert_eq!(app.chat.cursor_item, Some(2));
         app.press(Key::Char('['));
         app.press(Key::Char('t'));
-        assert_eq!(app.cursor_item, Some(2), "没有更早的工具条目，钳制");
+        assert_eq!(app.chat.cursor_item, Some(2), "没有更早的工具条目，钳制");
 
         // gg/G：游标随滚动到首/尾消息
         app.press(Key::Char('g'));
         app.press(Key::Char('g'));
-        assert_eq!(app.cursor_item, Some(0));
+        assert_eq!(app.chat.cursor_item, Some(0));
         app.press(Key::Char('G'));
-        assert_eq!(app.cursor_item, Some(4));
+        assert_eq!(app.chat.cursor_item, Some(4));
     }
 
     /// NORMAL `yy`：复制游标条目纯文本（assistant 取正文块拼接，不含 thinking）。
@@ -4898,30 +3690,34 @@ mod tests {
         for c in "问题".chars() {
             app.press(Key::Char(c));
         }
-        assert_eq!(app.search_matches, vec![0, 3]);
-        assert_eq!(app.cursor_item, Some(0), "游标在尾部，增量回绕到首个命中");
+        assert_eq!(app.search.matches, vec![0, 3]);
+        assert_eq!(
+            app.chat.cursor_item,
+            Some(0),
+            "游标在尾部，增量回绕到首个命中"
+        );
 
         // Enter 保留命中；n 循环跳转
         app.press(Key::Enter);
         assert_eq!(app.mode(), Mode::Normal);
         assert_eq!(app.notice(), Some("2 处命中 · n/N 跳转"));
         app.press(Key::Char('n'));
-        assert_eq!(app.cursor_item, Some(3), "n 循环到下一处");
+        assert_eq!(app.chat.cursor_item, Some(3), "n 循环到下一处");
         app.press(Key::Char('n'));
-        assert_eq!(app.cursor_item, Some(0));
+        assert_eq!(app.chat.cursor_item, Some(0));
         // N 反向
         app.press(Key::Char('N'));
-        assert_eq!(app.cursor_item, Some(3));
+        assert_eq!(app.chat.cursor_item, Some(3));
 
         // 再次 / 保留上次查询可编辑；Esc 清空
         app.press(Key::Char('/'));
-        assert_eq!(app.search_query(), "问题");
+        assert_eq!(app.search.query(), "问题");
         app.press(Key::Backspace);
-        assert_eq!(app.search_query(), "问");
+        assert_eq!(app.search.query(), "问");
         app.press(Key::Esc);
         assert_eq!(app.mode(), Mode::Normal);
-        assert_eq!(app.search_query(), "");
-        assert!(app.search_highlight().is_none(), "Esc 清空高亮");
+        assert_eq!(app.search.query(), "");
+        assert!(app.search.highlight().is_none(), "Esc 清空高亮");
         // 无命中时 n 给提示
         assert!(app.press(Key::Char('n')).is_empty());
         assert_eq!(app.notice(), Some("没有搜索命中（NORMAL 下 / 开始搜索）"));
@@ -4948,7 +3744,7 @@ mod tests {
         assert_eq!(app.visual_range(), Some((4, 4)));
         app.press(Key::Char('k'));
         app.press(Key::Char('k'));
-        assert_eq!(app.cursor_item, Some(1), "k 逐消息上移，跳过 tool");
+        assert_eq!(app.chat.cursor_item, Some(1), "k 逐消息上移，跳过 tool");
         assert_eq!(app.visual_range(), Some((1, 4)));
 
         // y 复制范围：assistant/user/tool/user/assistant 各条目文本拼接
@@ -4981,19 +3777,19 @@ mod tests {
         // 光标在末尾（third 行）：删末行连同前置换行
         multiline.press(Key::Char('d'));
         multiline.press(Key::Char('d'));
-        assert_eq!(multiline.input(), "first\nsecond");
+        assert_eq!(multiline.input.text(), "first\nsecond");
         // 光标回行首，再 dd 两次：逐行删清
         multiline.press(Key::Char('d'));
         multiline.press(Key::Char('d'));
-        assert_eq!(multiline.input(), "first");
+        assert_eq!(multiline.input.text(), "first");
         multiline.press(Key::Char('d'));
         multiline.press(Key::Char('d'));
-        assert_eq!(multiline.input(), "");
+        assert_eq!(multiline.input.text(), "");
         // 空草稿上 dd/x 安全无操作
         multiline.press(Key::Char('d'));
         multiline.press(Key::Char('d'));
         multiline.press(Key::Char('x'));
-        assert_eq!(multiline.input(), "");
+        assert_eq!(multiline.input.text(), "");
 
         let mut app = app();
         app.paste_text("hello world foo");
@@ -5003,22 +3799,22 @@ mod tests {
 
         // x：删除光标处字符（光标在行首，删 'h'）
         app.press(Key::Char('x'));
-        assert_eq!(app.input(), "ello world foo");
-        assert_eq!(app.cursor_position().1, 0);
+        assert_eq!(app.input.text(), "ello world foo");
+        assert_eq!(app.input.cursor_position().1, 0);
 
         // dw：删到后一词开头（"ello "）
         app.press(Key::Char('d'));
         app.press(Key::Char('w'));
-        assert_eq!(app.input(), "world foo");
+        assert_eq!(app.input.text(), "world foo");
 
         // A：回 INSERT 到末尾；I：回 INSERT 到行首
         app.press(Key::Char('A'));
         assert_eq!(app.mode(), Mode::Insert);
-        assert_eq!(app.cursor_position().1, 9);
+        assert_eq!(app.input.cursor_position().1, 9);
         app.press(Key::Esc);
         app.press(Key::Char('I'));
         assert_eq!(app.mode(), Mode::Insert);
-        assert_eq!(app.cursor_position().1, 0);
+        assert_eq!(app.input.cursor_position().1, 0);
     }
 
     /// 消息游标滚动定位：渲染回写条目行号后，移动游标滚动到该条目。
@@ -5026,17 +3822,17 @@ mod tests {
     fn cursor_movement_scrolls_to_item() {
         let mut app = app_with_history();
         // 模拟渲染回写：条目 0..=4 起始行 0,10,20,30,40；scroll_max 50
-        app.sync_item_lines(vec![0, 10, 20, 30, 40]);
-        app.clamp_scroll(50);
+        app.chat.sync_item_lines(vec![0, 10, 20, 30, 40]);
+        app.chat.clamp_scroll(50);
         app.press(Key::Esc);
-        assert_eq!(app.cursor_item, Some(4));
+        assert_eq!(app.chat.cursor_item, Some(4));
         app.press(Key::Char('['));
         app.press(Key::Char('m'));
         // 条目 3 起始行 30：scroll = 50 - 30
-        assert_eq!(app.scroll(), 20);
+        assert_eq!(app.chat.scroll(), 20);
         app.press(Key::Char('g'));
         app.press(Key::Char('g'));
-        assert_eq!(app.scroll(), u16::MAX, "gg 仍然直接滚到顶");
+        assert_eq!(app.chat.scroll(), u16::MAX, "gg 仍然直接滚到顶");
     }
 
     /// picker 过滤（fzf 风格）：可打印字符即过滤，选中随过滤对齐可选行；
@@ -5263,10 +4059,10 @@ mod tests {
     #[test]
     fn restore_conversation_replaces_items_and_session() {
         let mut app = app();
-        app.push_system("旧内容");
+        app.chat.push_system("旧内容");
         app.restore_conversation(&[*user_message("恢复的")], "sid-1".to_string());
-        assert_eq!(app.items().len(), 1);
-        assert!(matches!(&app.items()[0], ChatItem::User(t) if t == "恢复的"));
+        assert_eq!(app.chat.items().len(), 1);
+        assert!(matches!(&app.chat.items()[0], ChatItem::User(t) if t == "恢复的"));
         assert_eq!(app.session_id(), Some("sid-1"));
     }
 
@@ -5360,10 +4156,10 @@ mod tests {
     fn restore_branch_replaces_items_keeps_session() {
         let mut app = app();
         app.set_session("sid-1".to_string());
-        app.push_system("旧内容");
+        app.chat.push_system("旧内容");
         app.restore_branch(&[*user_message("分支起点")]);
-        assert_eq!(app.items().len(), 1);
-        assert!(matches!(&app.items()[0], ChatItem::User(t) if t == "分支起点"));
+        assert_eq!(app.chat.items().len(), 1);
+        assert!(matches!(&app.chat.items()[0], ChatItem::User(t) if t == "分支起点"));
         assert_eq!(app.session_id(), Some("sid-1"));
     }
 
@@ -5375,7 +4171,7 @@ mod tests {
         let mut app = app();
         // INSERT 下 `?` 是普通字符（输入语义不被抢占）
         app.press(Key::Char('?'));
-        assert_eq!(app.input(), "?");
+        assert_eq!(app.input.text(), "?");
         assert_eq!(app.mode(), Mode::Insert);
 
         app.press(Key::Esc);
@@ -5402,7 +4198,7 @@ mod tests {
 
         // 其余按键不污染输入缓冲（打开前的草稿 `?` 原样保留）
         assert!(app.press(Key::Char('x')).is_empty());
-        assert_eq!(app.input(), "?");
+        assert_eq!(app.input.text(), "?");
 
         // Esc 关闭，回到 NORMAL
         assert!(app.press(Key::Esc).is_empty());

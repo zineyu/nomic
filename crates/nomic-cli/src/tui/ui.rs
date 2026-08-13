@@ -33,7 +33,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     draw_chat(frame, app, chunks[0].inner(Margin::new(CHAT_H_MARGIN, 0)));
     draw_input(frame, app, chunks[1]);
     draw_status(frame, app, chunks[2]);
-    if let Some(completion) = app.completion() {
+    if let Some(completion) = app.input().completion() {
         draw_completion(frame, completion, chunks[1]);
     }
     if let Some(picker) = app.picker() {
@@ -51,8 +51,8 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
 
 /// 聊天区：历史条目 + 流式累积，软换行，`scroll` 从底部向上计。
 fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
-    if app.items().is_empty() {
-        app.clamp_scroll(0);
+    if app.chat().items().is_empty() {
+        app.chat_mut().clamp_scroll(0);
         draw_welcome(frame, app, area);
         return;
     }
@@ -66,7 +66,7 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let visual = app.visual_range();
     // 每个块标注所属条目下标：游标/选择区 gutter 高亮与条目起始行回写用
     let mut blocks: Vec<(usize, Vec<Line<'static>>)> = Vec::new();
-    for (index, item) in app.items().iter().enumerate() {
+    for (index, item) in app.chat().items().iter().enumerate() {
         for block in item_blocks(item, area.width, app.thinking_collapsed(), spinner) {
             blocks.push((index, block));
         }
@@ -74,7 +74,7 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     // 拼接：每个消息块后空一行，块间分隔与末尾留白（与输入框拉开距离）统一处理；
     // 同时记录各条目起始行（消息游标滚动定位用，回写状态层）与游标 gutter 高亮
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut starts = vec![u16::MAX; app.items().len()];
+    let mut starts = vec![u16::MAX; app.chat().items().len()];
     for (index, block) in blocks {
         if starts[index] == u16::MAX {
             starts[index] = u16::try_from(lines.len()).unwrap_or(u16::MAX);
@@ -98,7 +98,7 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         lines.extend(block);
         lines.push(Line::default());
     }
-    if app.items().is_empty() {
+    if app.chat().items().is_empty() {
         lines.push(Line::from(Span::styled(
             "输入 prompt 开始对话。Enter 发送，Ctrl+C 退出。",
             theme::dim(),
@@ -108,7 +108,7 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     // 自行折行（硬换行，CJK 友好），使行数精确可知、滚动偏移精确
     let lines = wrap_lines(&lines, area.width);
     // 搜索命中高亮：Enter 后保留（Esc 清空搜索串即消除）
-    let lines = if let Some(query) = app.search_highlight() {
+    let lines = if let Some(query) = app.search().highlight() {
         lines
             .iter()
             .map(|line| highlight_line(line, query, theme::search_hit()))
@@ -120,8 +120,8 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let max_scroll =
         u16::try_from(total.saturating_sub(usize::from(area.height))).unwrap_or(u16::MAX);
     // 钳制滚动偏移并同步上限（状态栏滚动位置显示），取生效偏移渲染
-    let scroll = app.clamp_scroll(max_scroll);
-    app.sync_item_lines(starts);
+    let scroll = app.chat_mut().clamp_scroll(max_scroll);
+    app.chat_mut().sync_item_lines(starts);
     let offset = max_scroll.saturating_sub(scroll);
     let paragraph = Paragraph::new(lines).scroll((offset, 0));
     frame.render_widget(paragraph, area);
@@ -476,9 +476,9 @@ fn input_height(app: &App) -> u16 {
     let draft = if app.queue_mode_active() {
         0
     } else {
-        app.line_count().min(MAX_DRAFT_LINES)
+        app.input().line_count().min(MAX_DRAFT_LINES)
     };
-    let content = u16::from(app.has_attachments()) + app.queue_display_lines() + draft;
+    let content = u16::from(app.input().has_attachments()) + app.queue_display_lines() + draft;
     content.clamp(1, MAX_INPUT_LINES) + 2
 }
 
@@ -495,8 +495,12 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let inner = border.inner(area);
     // 附件行（可选）在输入文本上方：🖼 文件名列表
     let mut lines: Vec<Line<'static>> = Vec::new();
-    if app.has_attachments() {
-        let names = app.attachment_names().collect::<Vec<_>>().join(" · ");
+    if app.input().has_attachments() {
+        let names = app
+            .input()
+            .attachment_names()
+            .collect::<Vec<_>>()
+            .join(" · ");
         lines.push(Line::from(Span::styled(
             format!("🖼 {names}"),
             theme::accent(),
@@ -508,11 +512,11 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // 步骤完成后注入本轮）；QUEUE 导航下 gutter 标出游标条目，就地
     // 编辑槽位的内容即草稿缓冲
     let queue_cursor =
-        (app.queue_mode_active() && !app.queue_editing()).then(|| app.queue_cursor());
-    let editing_slot = app.queue_editing_slot();
-    for (index, entry) in app.queue_entries().iter().enumerate() {
+        (app.queue_mode_active() && !app.queue().is_editing()).then(|| app.queue().cursor());
+    let editing_slot = app.queue().editing_slot();
+    for (index, entry) in app.queue().entries().iter().enumerate() {
         if editing_slot == Some(index) {
-            for (row, text) in app.input().split('\n').enumerate() {
+            for (row, text) in app.input().text().split('\n').enumerate() {
                 let gutter = if row == 0 { "❯ " } else { "  " };
                 lines.push(Line::from(vec![
                     Span::styled(gutter, theme::accent()),
@@ -546,9 +550,9 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // 草稿行（QUEUE 模式下不单独渲染；SEARCH 显示搜索串）
     if !app.queue_mode_active() {
         let text = if searching {
-            app.search_query()
+            app.search().query()
         } else {
-            app.input()
+            app.input().text()
         };
         lines.extend(
             text.split('\n')
@@ -556,24 +560,24 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
         );
     }
     // 行数超过可见高度时滚动到光标所在行
-    let attachment_offset = u16::from(app.has_attachments());
+    let attachment_offset = u16::from(app.input().has_attachments());
     let queue_offset = app.queue_display_lines();
     let (cursor_row, cursor_col) = if searching {
         (
             queue_offset,
-            u16::try_from(UnicodeWidthStr::width(app.search_query())).unwrap_or(u16::MAX),
+            u16::try_from(UnicodeWidthStr::width(app.search().query())).unwrap_or(u16::MAX),
         )
     } else if app.queue_mode_active() {
-        if app.queue_editing() {
+        if app.queue().is_editing() {
             // 就地编辑：槽位起始行 + 草稿缓冲内的光标行（gutter 宽 2 列）
-            let (row, col) = app.cursor_position();
-            (app.queue_cursor_row() + row, col.saturating_add(2))
+            let (row, col) = app.input().cursor_position();
+            (app.queue().cursor_row() + row, col.saturating_add(2))
         } else {
             // QUEUE 导航：光标停在游标条目行首（块光标即条目高亮）
-            (app.queue_cursor_row(), 0)
+            (app.queue().cursor_row(), 0)
         }
     } else {
-        let (row, col) = app.cursor_position();
+        let (row, col) = app.input().cursor_position();
         (queue_offset + row, col)
     };
     let cursor_row = cursor_row + attachment_offset;
@@ -600,12 +604,12 @@ fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
             spans.push(Span::styled(format!("{} ", app.spinner()), theme::busy()));
             spans.push(Span::styled("运行中 · ", theme::busy()));
         }
-        let text = if app.queue_editing() {
+        let text = if app.queue().is_editing() {
             "队列编辑 · Enter/Esc 保存 · Shift+Enter 换行".to_string()
         } else {
             format!(
                 "消息队列 {} 条 · i 编辑 · dd 删除 · J/K 换位 · o 新增 · Esc 返回",
-                app.queue_len()
+                app.queue().len()
             )
         };
         spans.push(Span::styled(text, theme::accent()));
@@ -617,9 +621,9 @@ fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
             Span::styled("运行中 · Ctrl+C 取消", theme::busy()),
         ];
         // 排队消息数（ADR-0014）：运行中 Enter 排队的可见反馈
-        if app.queue_len() > 0 {
+        if !app.queue().is_empty() {
             spans.push(Span::styled(
-                format!(" · {} 条排队（Esc→Q 编辑）", app.queue_len()),
+                format!(" · {} 条排队（Esc→Q 编辑）", app.queue().len()),
                 theme::busy(),
             ));
         }
@@ -641,22 +645,22 @@ fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
             Some(Line::from(Span::styled(
                 format!(
                     "搜索 · Enter 完成 · Esc 取消（{} 处命中）",
-                    app.search_match_count()
+                    app.search().match_count()
                 ),
                 theme::accent(),
             ))),
             theme::accent(),
         )
-    } else if app.completion().is_some() {
+    } else if app.input().completion().is_some() {
         // 补全弹层自带标题；输入框只以 accent 边框表示补全中
         (None, theme::accent())
-    } else if app.queue_len() > 0 {
+    } else if !app.queue().is_empty() {
         // 空闲 + 队列非空 = 异常结束后暂停的排队消息（ADR-0012）
         (
             Some(Line::from(Span::styled(
                 format!(
                     "队列暂停 {} 条 · Enter 发送下一条 · Esc→Q 编辑",
-                    app.queue_len()
+                    app.queue().len()
                 ),
                 theme::warn(),
             ))),
@@ -699,9 +703,9 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         left.push(Span::styled(format!("⚠ {notice} "), theme::warn()));
     }
     let mut right = Vec::new();
-    if app.scroll() > 0 {
+    if app.chat().scroll() > 0 {
         right.push(Span::styled(
-            format!("↑ {}/{} ", app.scroll(), app.scroll_max()),
+            format!("↑ {}/{} ", app.chat().scroll(), app.chat().scroll_max()),
             theme::warn(),
         ));
     }
@@ -714,7 +718,7 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Mode::Help => "j/k 滚动 · gg/G 顶/底 · Esc 关闭 ",
         Mode::Insert => "/ 命令 · Tab 补全 · ^G 编辑器 · Esc 浏览 ",
         Mode::Queue => {
-            if app.queue_editing() {
+            if app.queue().is_editing() {
                 "Enter/Esc 保存 · Shift+Enter 换行 "
             } else {
                 "j/k 移动 · i 编辑 · dd 删除 · J/K 换位 · o 新增 "
@@ -1284,7 +1288,7 @@ mod tests {
     #[test]
     fn system_and_error_lines_use_gutter() {
         let mut app = App::new("test-model".to_string(), None, 200_000);
-        app.push_system("本地系统提示");
+        app.chat_mut().push_system("本地系统提示");
         app.handle_event(&AgentEvent::MessageStart(Box::new(Message::Assistant(
             nomic_ai::AssistantMessage {
                 content: Vec::new(),
@@ -1647,9 +1651,9 @@ mod tests {
     #[test]
     fn renders_completion_popup_and_system_item() {
         let mut app = App::new("test-model".to_string(), None, 200_000);
-        app.push_system("本地系统提示");
+        app.chat_mut().push_system("本地系统提示");
         app.paste_text("/n");
-        assert!(app.completion().is_some());
+        assert!(app.input().completion().is_some());
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -1708,8 +1712,8 @@ mod tests {
     #[test]
     fn chat_blocks_are_separated_by_blank_lines() {
         let mut app = App::new("test-model".to_string(), None, 200_000);
-        app.push_system("第一条");
-        app.push_system("第二条");
+        app.chat_mut().push_system("第一条");
+        app.chat_mut().push_system("第二条");
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");

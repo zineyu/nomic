@@ -25,13 +25,15 @@ use nomic_ai::{Message, StopReason};
 use nomic_core::{AgentEvent, SteeringMessage, estimate_context_tokens, usage_context_tokens};
 use nomic_prompts::PromptsError;
 
-use chat::{Chat, assistant_error, user_text};
+use chat::{assistant_error, user_text};
 use input::{Input, skill_list_text};
 use picker::PICKER_PAGE_SCROLL;
 use queue::Queue;
 use search::Search;
 
-pub(super) use chat::{AssistantItem, Block, ChatItem, ToolItem, ToolStatus, skill_load_message};
+pub(super) use chat::{
+    AssistantItem, Block, Chat, ChatItem, ToolItem, ToolStatus, skill_load_message,
+};
 pub(super) use copymenu::CopyMenu;
 pub(super) use input::{Completion, CompletionCandidate, SkillEntry};
 pub(super) use picker::{Picker, PickerKind, PickerRow};
@@ -1446,7 +1448,7 @@ impl App {
     fn press_help(&mut self, key: Key) -> Vec<Effect> {
         match key {
             Key::Esc | Key::Char('q' | '?') => self.help_scroll = None,
-            // g 到顶：渲染时经 clamp_help_scroll 钳到实际上限
+            // g 到顶：渲染时由帮助 widget 钳到实际上限
             Key::Char('g') => self.help_scroll = Some(0),
             Key::Char('G') => self.help_scroll = Some(u16::MAX),
             Key::Char('j') | Key::Down => self.help_scroll_by(1),
@@ -1799,15 +1801,9 @@ impl App {
         self.help_scroll.is_some()
     }
 
-    /// 渲染同步帮助弹层滚动边界：钳制并返回生效偏移（同聊天区的
-    /// clamp 口径；未打开时返回 0）。
-    pub(super) fn clamp_help_scroll(&mut self, max_scroll: u16) -> u16 {
-        let Some(scroll) = self.help_scroll else {
-            return 0;
-        };
-        let effective = scroll.min(max_scroll);
-        self.help_scroll = Some(effective);
-        effective
+    /// 帮助弹层滚动状态（渲染时由帮助 widget 钳制回写；打开期间为 `Some`）。
+    pub(super) const fn help_scroll_mut(&mut self) -> Option<&mut u16> {
+        self.help_scroll.as_mut()
     }
 
     // ── 复制菜单 ────────────────────────────────────────────────────────────
@@ -4446,17 +4442,15 @@ mod tests {
         assert_eq!(app.mode(), Mode::Help);
         assert!(app.help_open());
 
-        // 滚动：k 在顶部不动，j 下移，渲染钳制上限
+        // 滚动：k 在顶部不动，j 下移（上限由渲染时 widget 钳制，见 ui 渲染测试）
         app.press(Key::Char('k'));
         assert_eq!(app.help_scroll, Some(0));
         app.press(Key::Char('j'));
         app.press(Key::Char('j'));
         assert_eq!(app.help_scroll, Some(2));
-        assert_eq!(app.clamp_help_scroll(1), 1, "渲染钳制到上限");
-        assert_eq!(app.help_scroll, Some(1));
-        // G 到底（经钳制生效）、g 回顶
+        // G 设为上界（渲染时钳到实际上限）、g 回顶
         app.press(Key::Char('G'));
-        assert_eq!(app.clamp_help_scroll(5), 5);
+        assert_eq!(app.help_scroll, Some(u16::MAX));
         app.press(Key::Char('g'));
         assert_eq!(app.help_scroll, Some(0));
 

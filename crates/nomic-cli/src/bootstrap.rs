@@ -112,6 +112,7 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
     let cwd = std::env::current_dir().context("get cwd")?;
     let context_files = discover_agents_files(&cwd);
     let skill_resolver = SkillResolver::for_cwd(&cwd).context("初始化 skills 目录失败")?;
+    warn_skill_diagnostics(&skill_resolver);
     let active_skills = cli
         .skill
         .iter()
@@ -147,6 +148,16 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
         skill_resolver,
         prompt_templates,
     })
+}
+
+/// 启动时把 skill 加载诊断对用户可见：坏 skill 被静默跳过会让人无从排查。
+/// stderr 黄色告警 + tracing 日志（与 session 库告警同一口径）。
+fn warn_skill_diagnostics(skill_resolver: &SkillResolver) {
+    let catalog = skill_resolver.catalog_with_diagnostics();
+    for error in &catalog.errors {
+        tracing::warn!(error = %error, "跳过加载失败的 skill");
+        eprintln!("\x1b[33m⚠ 跳过加载失败的 skill：{error}\x1b[0m");
+    }
 }
 
 /// 加载 prompt templates：目录发现（`--no-prompt-templates` 关闭）+ 配置文件

@@ -39,6 +39,14 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if let Some(picker) = app.picker() {
         draw_picker(frame, picker, chunks[1]);
     }
+    if app.help_open() {
+        // 帮助弹层是模态覆盖层：内容区（状态栏以上）整体作为其画布
+        let content = Rect {
+            height: frame.area().height.saturating_sub(1),
+            ..frame.area()
+        };
+        draw_help(frame, app, content);
+    }
 }
 
 /// 聊天区：历史条目 + 流式累积，软换行，`scroll` 从底部向上计。
@@ -400,7 +408,7 @@ fn draw_welcome(frame: &mut Frame<'_>, app: &App, area: Rect) {
             theme::dim(),
         )),
         Line::from(Span::styled(
-            "Esc 浏览：j/k 滚动 · ]m 跳消息 · / 搜索 · V 选择 · yy 复制 · Q 队列 · i 返回",
+            "Esc 浏览：j/k 滚动 · ]m 跳消息 · / 搜索 · yy 复制 · Q 队列 · ? 帮助 · i 返回",
             theme::dim(),
         )),
         Line::from(Span::styled(
@@ -676,6 +684,7 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Mode::Queue => Span::styled(" QUEUE ", theme::queue_badge()),
         Mode::Insert => Span::styled(" INSERT ", theme::accent()),
         Mode::Picker => Span::styled(" PICKER ", theme::accent()),
+        Mode::Help => Span::styled(" HELP ", theme::accent()),
     };
     let mut left = vec![
         mode_badge,
@@ -698,10 +707,11 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     // 键位提示保持精简：完整键位见欢迎页与 /help，此处只留模式核心键
     let hint = match app.mode() {
-        Mode::Normal => "i 输入 · ]m 消息 · / 搜索 · yy 复制 ",
+        Mode::Normal => "i 输入 · ]m 消息 · / 搜索 · ? 帮助 ",
         Mode::Search => "输入即搜 · Enter 完成 · Esc 取消 ",
         Mode::Visual => "j/k 扩展 · y 复制 · Esc 取消 ",
         Mode::Picker => "输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ",
+        Mode::Help => "j/k 滚动 · gg/G 顶/底 · Esc 关闭 ",
         Mode::Insert => "/ 命令 · Tab 补全 · ^G 编辑器 · Esc 浏览 ",
         Mode::Queue => {
             if app.queue_editing() {
@@ -904,6 +914,126 @@ fn draw_picker(frame: &mut Frame<'_>, picker: &Picker, input_area: Rect) {
     };
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// 帮助弹层内容（NORMAL `?`）：分组键位表，与 README「TUI 键位」一致。
+const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "通用",
+        &[
+            ("Ctrl+C", "取消运行 / 退出"),
+            ("↑/↓ · PgUp/PgDn · 滚轮", "滚动聊天区"),
+            ("Shift+拖选", "复制文本（TUI 捕获鼠标）"),
+        ],
+    ),
+    (
+        "INSERT（输入）",
+        &[
+            ("Enter", "发送（运行中排入队列）"),
+            ("Shift+Enter", "手动换行"),
+            ("Tab", "补全 slash 命令 / 模板 / skill"),
+            ("Esc", "关补全弹层 / 进入 NORMAL"),
+            ("Ctrl+W · Ctrl+U", "删词 / 清行"),
+            ("Ctrl+A/E · Alt+B/F", "行首行尾 / 词级移动"),
+            ("Ctrl+G", "外部编辑器（$VISUAL/$EDITOR）编辑草稿"),
+        ],
+    ),
+    (
+        "NORMAL（浏览）",
+        &[
+            ("i a A I · Enter", "回到输入"),
+            (":", "命令输入（预填 /）"),
+            ("?", "本帮助"),
+            ("j/k · Ctrl+D/U · gg · G", "滚动 / 半页 / 顶部 / 底部"),
+            ("[m ]m · [t ]t", "跳上/下一条消息 / 工具调用"),
+            ("/ · n · N", "聊天搜索与跳转"),
+            ("yy · yc · Y", "复制消息 / 代码块 / 最新消息"),
+            ("V 后 y", "复制选择区"),
+            ("x · dd · dw", "编辑草稿"),
+            ("Q", "队列编辑（QUEUE 模式）"),
+        ],
+    ),
+    (
+        "QUEUE（队列编辑）",
+        &[
+            ("j/k · gg · G", "移动条目游标"),
+            (
+                "i · o · O · Enter",
+                "就地编辑 / 下方 / 上方新增（Enter/Esc 保存）",
+            ),
+            ("dd · x", "删除条目"),
+            ("J · K", "下移 / 上移（换位）"),
+            ("Esc", "返回（恢复发送）"),
+        ],
+    ),
+    (
+        "SEARCH · VISUAL · PICKER",
+        &[
+            ("SEARCH", "输入即搜 · Enter 完成 · Esc 取消"),
+            ("VISUAL", "j/k 扩展选择 · y 复制 · Esc 取消"),
+            ("PICKER", "输入过滤 · ↑/↓ 选择 · Home/End 首尾 · Enter/Esc"),
+        ],
+    ),
+];
+
+/// 键位列的目标显示宽度（键名左对齐，描述另起一栏）。
+const HELP_KEY_COL: usize = 26;
+
+/// 帮助弹层的全部内容行（键名列按显示宽度对齐，CJK 友好）。
+fn help_lines() -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for (index, (title, rows)) in HELP_GROUPS.iter().enumerate() {
+        if index > 0 {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(Span::styled(format!(" {title}"), theme::bold())));
+        for (keys, desc) in *rows {
+            let pad = HELP_KEY_COL.saturating_sub(UnicodeWidthStr::width(*keys));
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {keys}{:pad$}", ""), theme::accent()),
+                Span::styled((*desc).to_string(), theme::dim()),
+            ]));
+        }
+    }
+    lines
+}
+
+/// 键位帮助弹层（NORMAL `?`）：模态覆盖层，先清空内容区再在
+/// 其中居中面板（避免被覆盖的输入框等留下边框残片）；内容超长时
+/// j/k 等滚动。
+fn draw_help(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
+    frame.render_widget(Clear, area);
+    let lines = help_lines();
+    let max_line_width = lines
+        .iter()
+        .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
+        .max()
+        .unwrap_or(0);
+    // 宽高取内容与可用区域的较小值，居中；边框 + 左右留白各一列
+    let width = max_line_width
+        .saturating_add(3)
+        .min(area.width.saturating_sub(2));
+    let height = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(2)
+        .min(area.height.saturating_sub(2));
+    let panel = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let block = Border::bordered()
+        .border_type(BorderType::Plain)
+        .border_style(theme::accent())
+        .title(Span::styled("键位帮助 · Esc/q/? 关闭", theme::accent()));
+    frame.render_widget(Clear, panel);
+    let inner = block.inner(panel);
+    frame.render_widget(block, panel);
+    let max_scroll =
+        u16::try_from(lines.len().saturating_sub(usize::from(inner.height))).unwrap_or(u16::MAX);
+    let scroll = app.clamp_help_scroll(max_scroll);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 }
 
 #[cfg(test)]
@@ -1671,5 +1801,47 @@ mod tests {
         let compact = render_compact(&mut app);
         assert!(compact.contains("NORMAL"), "{compact}");
         assert!(!compact.contains("INSERT"), "{compact}");
+    }
+
+    /// 帮助弹层（NORMAL `?`）：渲染分组键位表与 HELP 徽标，Esc 关闭；
+    /// 终端高度不足时 G 滚动到底可见末尾分组。
+    #[test]
+    fn renders_help_overlay() {
+        use super::super::app::Key;
+
+        let render_sized = |app: &mut App, width: u16, height: u16| {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            terminal.draw(|frame| draw(frame, app)).expect("draw");
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .flat_map(|cell| cell.symbol().chars())
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+        };
+
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        app.press(Key::Esc);
+        app.press(Key::Char('?'));
+        // 足够高：全部分组可见
+        let compact = render_sized(&mut app, 100, 60);
+        assert!(compact.contains("HELP"), "{compact}");
+        assert!(compact.contains("键位帮助"), "{compact}");
+        assert!(compact.contains("Ctrl+G"), "{compact}");
+        assert!(compact.contains("队列编辑"), "{compact}");
+
+        // 高度不足：末尾分组先不可见，G 滚动到底后可见
+        let compact = render_sized(&mut app, 100, 20);
+        assert!(!compact.contains("队列编辑"), "{compact}");
+        app.press(Key::Char('G'));
+        let compact = render_sized(&mut app, 100, 20);
+        assert!(compact.contains("队列编辑"), "{compact}");
+
+        app.press(Key::Esc);
+        let compact = render_sized(&mut app, 100, 20);
+        assert!(!compact.contains("HELP"), "{compact}");
     }
 }

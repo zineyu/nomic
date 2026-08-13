@@ -359,6 +359,7 @@ fn help_text() -> String {
          缺省 vi）编辑当前草稿，保存退出后写回输入框；编辑器异常退出或内容为空时\n\
          保留原草稿。",
     );
+    text.push_str("\n\n键位速查：NORMAL 下按 ? 打开快捷键帮助弹层（j/k 滚动，Esc/q/? 关闭）。");
     text
 }
 
@@ -496,6 +497,10 @@ pub(super) enum Mode {
     /// 队列编辑（ADR-0012，oil.nvim 式）：排队消息作为可编辑缓冲，
     /// 导航/删除/换位/就地编辑；打开期间冻结队列发送
     Queue,
+    /// 键位帮助弹层（NORMAL `?` 打开）：只读浏览，j/k 滚动，
+    /// Esc/q/`?` 关闭。派生态：由 `help_scroll.is_some()` 决定，
+    /// 不入 `App::mode` 字段（与 Picker 同构）
+    Help,
     /// 选择器打开（`/resume`、`/models`、`/tree`），接管键位。
     /// 派生态：由 `picker.is_some()` 决定，不入 `App::mode` 字段
     Picker,
@@ -614,6 +619,9 @@ pub(super) struct App {
     completion: Option<Completion>,
     /// 选择器（`/resume` / `/models` / `/tree`，打开时接管键位）
     picker: Option<Picker>,
+    /// 键位帮助弹层的滚动偏移（NORMAL `?` 打开；`Some` 即打开，
+    /// 0 为顶部）。派生模式 Help 的判定字段
+    help_scroll: Option<u16>,
     /// 暂存的图片附件（随下一条 prompt 发送）
     attachments: Vec<PendingImage>,
     /// 从底部向上滚动的行数（0 = 跟随最新内容）
@@ -672,6 +680,7 @@ impl App {
             cursor: 0,
             completion: None,
             picker: None,
+            help_scroll: None,
             attachments: Vec::new(),
             scroll: 0,
             scroll_max: 0,
@@ -887,11 +896,13 @@ impl App {
 
     // ── 按键（语义分发） ────────────────────────────────────────────────────
 
-    /// 当前交互模式（渲染光标/徽标与外部查询用）：picker 打开时
-    /// 派生为 Picker，否则为字段值（Insert/Normal）。
+    /// 当前交互模式（渲染光标/徽标与外部查询用）：picker/帮助弹层
+    /// 打开时派生为 Picker/Help，否则为字段值（Insert/Normal）。
     pub(super) const fn mode(&self) -> Mode {
         if self.picker.is_some() {
             Mode::Picker
+        } else if self.help_scroll.is_some() {
+            Mode::Help
         } else {
             self.mode
         }
@@ -905,6 +916,7 @@ impl App {
             // 选择器打开时接管键位（slash 命令仅在空闲时可提交，
             // 此时 agent 必空闲，无运行可取消）
             Mode::Picker => self.press_picker(key),
+            Mode::Help => self.press_help(key),
             Mode::Search => self.press_search(key),
             Mode::Visual => self.press_visual(key),
             Mode::Normal => self.press_normal(key),
@@ -1044,6 +1056,8 @@ impl App {
                 self.mode = Mode::Search;
                 Vec::new()
             }
+            // `?` 打开键位帮助弹层（只读；Esc/q/`?` 关闭）
+            Key::Char('?') => self.open_help(),
             // n/N：在搜索命中条目间循环跳转
             Key::Char('n') => {
                 self.search_jump(1);
@@ -1735,6 +1749,55 @@ impl App {
             other => self.apply_edit_key(other),
         }
         Vec::new()
+    }
+
+    /// NORMAL `?`：打开键位帮助弹层（滚动置顶；Esc/q/`?` 关闭）。
+    const fn open_help(&mut self) -> Vec<Effect> {
+        self.help_scroll = Some(0);
+        Vec::new()
+    }
+
+    /// HELP 弹层键位（NORMAL `?` 打开）：只读浏览，j/k 等滚动、
+    /// gg/G 到顶/底；Esc/q/`?` 关闭回到底层模式（mode 字段未动，
+    /// 天然回到打开前的 NORMAL）。其余按键忽略，不污染输入缓冲。
+    fn press_help(&mut self, key: Key) -> Vec<Effect> {
+        // 序列键第二键（gg 到顶）；不匹配照常分发
+        if self.pending_key.take() == Some('g') && key == Key::Char('g') {
+            self.help_scroll = Some(0);
+            return Vec::new();
+        }
+        match key {
+            Key::Esc | Key::Char('q' | '?') => self.help_scroll = None,
+            Key::Char('g') => self.pending_key = Some('g'),
+            // G 到底：渲染时经 clamp_help_scroll 钳到实际上限
+            Key::Char('G') => self.help_scroll = Some(u16::MAX),
+            Key::Char('j') | Key::Down => self.help_scroll_by(1),
+            Key::Char('k') | Key::Up => self.help_scroll_by(-1),
+            Key::Ctrl('d') => self.help_scroll_by(i32::from(HALF_PAGE_SCROLL)),
+            Key::Ctrl('u') => self.help_scroll_by(-i32::from(HALF_PAGE_SCROLL)),
+            Key::PageDown => self.help_scroll_by(i32::from(PAGE_SCROLL)),
+            Key::PageUp => self.help_scroll_by(-i32::from(PAGE_SCROLL)),
+            Key::Ctrl('c') => {
+                if self.running {
+                    return vec![Effect::Cancel];
+                }
+                self.should_quit = true;
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// HELP 弹层滚动（下正上负，钳制不循环；上限由渲染回写钳制）。
+    fn help_scroll_by(&mut self, delta: i32) {
+        let Some(scroll) = self.help_scroll else {
+            return;
+        };
+        self.help_scroll = Some(if delta < 0 {
+            scroll.saturating_sub(u16::try_from(delta.unsigned_abs()).unwrap_or(u16::MAX))
+        } else {
+            scroll.saturating_add(u16::try_from(delta).unwrap_or(u16::MAX))
+        });
     }
 
     /// QUEUE `j`/`k`：移动条目游标（钳制不循环）。
@@ -2666,6 +2729,22 @@ impl App {
         self.scroll_max = max_scroll;
         self.scroll = self.scroll.min(max_scroll);
         self.scroll
+    }
+
+    /// 键位帮助弹层是否打开（渲染用）。
+    pub(super) const fn help_open(&self) -> bool {
+        self.help_scroll.is_some()
+    }
+
+    /// 渲染同步帮助弹层滚动边界：钳制并返回生效偏移（同 [`Self::clamp_scroll`]
+    /// 口径；未打开时返回 0）。
+    pub(super) fn clamp_help_scroll(&mut self, max_scroll: u16) -> u16 {
+        let Some(scroll) = self.help_scroll else {
+            return 0;
+        };
+        let effective = scroll.min(max_scroll);
+        self.help_scroll = Some(effective);
+        effective
     }
 
     // ── 渲染读接口 ──────────────────────────────────────────────────────────
@@ -5286,5 +5365,68 @@ mod tests {
         assert_eq!(app.items().len(), 1);
         assert!(matches!(&app.items()[0], ChatItem::User(t) if t == "分支起点"));
         assert_eq!(app.session_id(), Some("sid-1"));
+    }
+
+    /// HELP 弹层（NORMAL `?`）：打开派生 Help 模式，Esc/q/`?` 关闭后
+    /// 回到 NORMAL（底层 mode 字段未动）；j/k 滚动、gg/G 顶/底，
+    /// 上限由渲染回写钳制。
+    #[test]
+    fn help_overlay_opens_scrolls_and_closes() {
+        let mut app = app();
+        // INSERT 下 `?` 是普通字符（输入语义不被抢占）
+        app.press(Key::Char('?'));
+        assert_eq!(app.input(), "?");
+        assert_eq!(app.mode(), Mode::Insert);
+
+        app.press(Key::Esc);
+        assert_eq!(app.mode(), Mode::Normal);
+        // 打开：派生 Help 模式
+        assert!(app.press(Key::Char('?')).is_empty());
+        assert_eq!(app.mode(), Mode::Help);
+        assert!(app.help_open());
+
+        // 滚动：k 在顶部不动，j 下移，渲染钳制上限
+        app.press(Key::Char('k'));
+        assert_eq!(app.help_scroll, Some(0));
+        app.press(Key::Char('j'));
+        app.press(Key::Char('j'));
+        assert_eq!(app.help_scroll, Some(2));
+        assert_eq!(app.clamp_help_scroll(1), 1, "渲染钳制到上限");
+        assert_eq!(app.help_scroll, Some(1));
+        // G 到底（经钳制生效）、gg 回顶
+        app.press(Key::Char('G'));
+        assert_eq!(app.clamp_help_scroll(5), 5);
+        app.press(Key::Char('g'));
+        app.press(Key::Char('g'));
+        assert_eq!(app.help_scroll, Some(0));
+
+        // 其余按键不污染输入缓冲（打开前的草稿 `?` 原样保留）
+        assert!(app.press(Key::Char('x')).is_empty());
+        assert_eq!(app.input(), "?");
+
+        // Esc 关闭，回到 NORMAL
+        assert!(app.press(Key::Esc).is_empty());
+        assert_eq!(app.mode(), Mode::Normal);
+        assert!(!app.help_open());
+
+        // q / ? 同样关闭
+        app.press(Key::Char('?'));
+        app.press(Key::Char('q'));
+        assert_eq!(app.mode(), Mode::Normal);
+        app.press(Key::Char('?'));
+        app.press(Key::Char('?'));
+        assert_eq!(app.mode(), Mode::Normal);
+    }
+
+    /// NORMAL 序列键首键后按 `?`：pending 被清掉，`?` 照常打开帮助。
+    #[test]
+    fn help_opens_after_pending_sequence_key() {
+        let mut app = app();
+        app.press(Key::Esc);
+        app.press(Key::Char('g'));
+        assert_eq!(app.pending_key, Some('g'));
+        assert!(app.press(Key::Char('?')).is_empty());
+        assert_eq!(app.mode(), Mode::Help);
+        assert_eq!(app.pending_key, None);
     }
 }

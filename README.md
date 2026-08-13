@@ -127,6 +127,7 @@ nomic -p "..." --reasoning low
 | NORMAL | `yy` `yc` `V`+`y` | 复制消息 / 复制代码块 / 选择后复制 |
 | NORMAL | `x` `dd` `dw` | 编辑草稿 |
 | NORMAL | `Q` | 打开队列编辑（QUEUE 模式，队列非空时） |
+| NORMAL | `?` | 键位帮助弹层（j/k 滚动、gg/G 顶/底，Esc/q/`?` 关闭） |
 | NORMAL | `i` `a` `A` `I` `Enter` | 回到输入 |
 | NORMAL | `:` | 命令输入（预填 `/`） |
 | QUEUE | `j` `k` `gg` `G` | 移动条目游标 |

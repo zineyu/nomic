@@ -121,8 +121,13 @@ impl Chat {
     }
 
     /// 清空聊天区（`/new` 开启新对话、`/resume` 恢复前）。
+    /// 游标/选择锚点一并重置，保持「游标指向有效条目或 None」的不变量，
+    /// 避免残留旧下标越界。
     pub(super) fn clear_items(&mut self) {
         self.items.clear();
+        self.cursor_item = None;
+        self.visual_anchor = None;
+        self.yc_block = 0;
         self.scroll_to_bottom();
     }
 

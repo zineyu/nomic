@@ -1,0 +1,20 @@
+//! Effect 执行逻辑：按 Effect 族分组，`tui::execute_effect` 只做转发。
+//!
+//! - [`model`]：模型 + 思考级别两步流（`/models` 候选与选择器、待切换模型
+//!   暂存、级别应用与选择落库）
+//! - [`session`]：会话管理（`/resume` 恢复、`/tree` 浏览与分支、`/new` 新建、
+//!   MessageEnd / CompactionEnd 落库）
+//! - [`clipboard`]：剪贴板与图片暂存（bracketed paste、Ctrl+V 粘贴、`/copy`、
+//!   `/image` 与 `--image` 附件）
+
+mod clipboard;
+mod model;
+mod session;
+
+pub(super) use clipboard::{
+    attach_image, copy_to_clipboard, handle_paste, paste_clipboard, stage_cli_images,
+};
+pub(super) use model::{cancel_model_switch, list_models, select_model, set_reasoning};
+pub(super) use session::{
+    branch_to, list_sessions, list_tree, new_session, persist, persist_compaction, resume_session,
+};

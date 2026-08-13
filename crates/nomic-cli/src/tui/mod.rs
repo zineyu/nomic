@@ -7,8 +7,11 @@
 //!   queue（统一消息队列与 QUEUE 模式）、picker/search 子模块，`App`
 //!   只做组合与模式路由；INSERT `Ctrl+G` 外部编辑器（ADR-0017）由本文件
 //!   [`edit_input_in_editor`] 接线，状态层只消费写回结果
+//! - [`effects`]：Effect 执行逻辑，按族分组为子模块——`model`
+//!   （模型 + 思考级别两步流）、`session`（resume / tree / branch /
+//!   new 与落库）、`clipboard`（粘贴 / 复制 / 图片暂存）
 //! - [`ui`]：纯渲染（聊天区 + 输入框 + 状态栏）
-//! - 本文件：终端生命周期、事件循环（`KeyEvent` → `Key` 映射、`Effect` 接线执行）、
+//! - 本文件：终端生命周期、事件循环（`KeyEvent` → `Key` 映射、`Effect` 转发执行）、
 //!   agent driver 任务
 //!
 //! agent 由专属 tokio 任务持有（`Agent::prompt` 需要 `&mut self` 且跨轮复用），
@@ -20,6 +23,7 @@
 //! 聊天区提示，TUI 保持存活供查看记录，而非静默退出。
 
 mod app;
+mod effects;
 mod markdown;
 mod theme;
 mod ui;
@@ -44,16 +48,16 @@ use crossterm::{
 use futures::StreamExt as _;
 use nomic_ai::{Message, Model, StopReason, ThinkingLevel};
 use nomic_core::{Agent, AgentEvent, Compaction, estimate_context_tokens};
-use nomic_session::{CompactionRecord, SessionStore, TreeEntry};
+use nomic_session::SessionStore;
 use nomic_skills::SkillResolver;
 use nomic_tools::TodoStore;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use app::{App, Effect, Key, Mode, PickerRow, SkillEntry};
+use app::{App, Effect, Key, Mode, SkillEntry};
 
-use crate::bootstrap::{ModelChoice, ModelResolver, ModelSelection};
+use crate::bootstrap::ModelResolver;
 use crate::{Cli, bootstrap};
 
 /// 事件循环持有的终端类型（draw 与外部编辑器后的全量重绘共用）。
@@ -144,7 +148,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
     );
     app.load_history(&boot.history);
     // `--image` 附件在 TUI 模式同样生效：作为首轮消息的暂存附件
-    stage_cli_images(&mut app, &cli.image);
+    effects::stage_cli_images(&mut app, &cli.image);
     let skill_resolver = boot.skill_resolver.clone();
     app.input_mut().set_available_skills(
         skill_resolver
@@ -426,7 +430,7 @@ async fn handle_wake(
                 (key.code, key.modifiers),
                 (KeyCode::Char('v'), KeyModifiers::CONTROL)
             ) {
-                paste_clipboard(app).await;
+                effects::paste_clipboard(app).await;
             } else if let Some(key) = map_key(key) {
                 for effect in app.press(key) {
                     execute_effect(app, driver, terminal, effect).await;
@@ -435,11 +439,11 @@ async fn handle_wake(
         }
         Wake::ScrollUp => app.chat_mut().scroll_up(3),
         Wake::ScrollDown => app.chat_mut().scroll_down(3),
-        Wake::Paste(text) => handle_paste(app, &text),
+        Wake::Paste(text) => effects::handle_paste(app, &text),
         Wake::AgentEvent(event) => {
             match &event {
                 AgentEvent::MessageEnd(message) => {
-                    persist(driver, message, app).await;
+                    effects::persist(driver, message, app).await;
                 }
                 AgentEvent::CompactionEnd {
                     summary,
@@ -447,7 +451,8 @@ async fn handle_wake(
                     kept_count,
                     ..
                 } => {
-                    persist_compaction(driver, summary, *tokens_before, *kept_count, app).await;
+                    effects::persist_compaction(driver, summary, *tokens_before, *kept_count, app)
+                        .await;
                 }
                 _ => {}
             }
@@ -732,21 +737,16 @@ async fn execute_effect(
         }
         // INSERT `Ctrl+G`：挂起 TUI 运行外部编辑器（ADR-0017），退出后写回
         Effect::OpenEditor => edit_input_in_editor(app, terminal).await,
-        Effect::ListSessions => list_sessions(app, driver).await,
+        Effect::ListSessions => effects::list_sessions(app, driver).await,
         Effect::Resume(id) => {
-            resume_session(app, driver, id).await;
+            effects::resume_session(app, driver, id).await;
         }
-        Effect::ListTree => list_tree(app, driver).await,
-        Effect::BranchTo(entry_id) => branch_to(app, driver, entry_id).await,
-        Effect::ListModels => list_models(app, driver),
-        Effect::SwitchModel(id) => select_model(app, driver, &id),
-        Effect::SetReasoning(level) => set_reasoning(app, driver, &level),
-        Effect::CancelModelSwitch => {
-            // 模型切换流程第二步被取消：放弃待切换模型，模型与级别均不变
-            if driver.pending_model.take().is_some() {
-                app.chat_mut().push_system("已取消模型切换。".to_string());
-            }
-        }
+        Effect::ListTree => effects::list_tree(app, driver).await,
+        Effect::BranchTo(entry_id) => effects::branch_to(app, driver, entry_id).await,
+        Effect::ListModels => effects::list_models(app, driver),
+        Effect::SwitchModel(id) => effects::select_model(app, driver, &id),
+        Effect::SetReasoning(level) => effects::set_reasoning(app, driver, &level),
+        Effect::CancelModelSwitch => effects::cancel_model_switch(app, driver),
         Effect::ListSkills => {
             // 列出时顺带刷新补全快照：会话期间新增的 skill 也能被 Tab 补全
             let catalog = driver.skill_resolver.catalog();
@@ -770,697 +770,9 @@ async fn execute_effect(
             }
             Err(error) => app.warn(format!("载入 skill {name:?} 失败：{error}")),
         },
-        Effect::AttachImage(path) => attach_image(app, &std::path::PathBuf::from(path)),
-        Effect::CopyText(text) => copy_to_clipboard(app, text).await,
-        Effect::NewSession => new_session(app, driver).await,
-    }
-}
-
-/// `/models`：跨 provider 列出候选模型并打开选择器（预选中当前模型）。
-fn list_models(app: &mut App, driver: &Driver) {
-    let current = current_selection(&driver.model);
-    let choices = driver.models.candidates(&current);
-    if choices.is_empty() {
-        // 理论不可达（候选至少含内置 provider 的默认模型），防御配置在运行期失效
-        app.warn("没有可用的模型候选");
-        return;
-    }
-    let selected = choices
-        .iter()
-        .position(|choice| is_current(choice, &current))
-        .unwrap_or(0);
-    let rows = choices
-        .iter()
-        .map(|choice| PickerRow {
-            id: choice.spec(),
-            text: model_row_text(choice, &current),
-            selectable: true,
-        })
-        .collect();
-    app.open_model_picker(rows, selected);
-}
-
-/// 候选行是否为当前模型（provider 与模型 id 均相同）。
-fn is_current(choice: &ModelChoice, current: &ModelSelection) -> bool {
-    (choice.provider.as_str(), choice.id.as_str())
-        == (current.provider.as_str(), current.model.as_str())
-}
-
-/// 当前模型的选择项（`<provider>/<模型id>`）。
-fn current_selection(model: &Model) -> ModelSelection {
-    ModelSelection {
-        provider: model.provider.clone(),
-        model: model.id.clone(),
-    }
-}
-
-/// 选择器行文本：`<provider>/<模型id> — 展示名 · ctx 200k · 支持思考`，
-/// 当前模型带标记；窗口未知省略 ctx。
-fn model_row_text(choice: &ModelChoice, current: &ModelSelection) -> String {
-    use std::fmt::Write as _;
-    let mut text = format!("{} — {}", choice.spec(), choice.name);
-    if choice.context_window > 0 {
-        let _ = write!(text, " · ctx {}", ui::format_tokens(choice.context_window));
-    }
-    if choice.reasoning {
-        text.push_str(" · 支持思考");
-    }
-    if is_current(choice, current) {
-        text.push_str("（当前）");
-    }
-    text
-}
-
-/// 思考级别选择器确认时的解析结果：关闭（`off`）或具体级别。
-///
-/// 独立于 `Option<ThinkingLevel>`：让「行 id 非法」（None，拒绝）与
-/// 「off 关闭」（合法设置）在类型层面可区分。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReasoningSetting {
-    /// 关闭思考
-    Off,
-    /// 具体思考级别
-    Level(ThinkingLevel),
-}
-
-impl ReasoningSetting {
-    /// 转为请求参数（`Off` → `None` 关闭）。
-    const fn level(self) -> Option<ThinkingLevel> {
-        match self {
-            Self::Off => None,
-            Self::Level(level) => Some(level),
-        }
-    }
-}
-
-/// 思考级别词表：选择器行 id 与展示说明共用同一来源。
-const REASONING_LEVELS: [(&str, ReasoningSetting); 5] = [
-    ("off", ReasoningSetting::Off),
-    ("minimal", ReasoningSetting::Level(ThinkingLevel::Minimal)),
-    ("low", ReasoningSetting::Level(ThinkingLevel::Low)),
-    ("medium", ReasoningSetting::Level(ThinkingLevel::Medium)),
-    ("high", ReasoningSetting::Level(ThinkingLevel::High)),
-];
-
-/// 级别词 → 设置；未知词返回 `None`（调用方告警）。
-fn reasoning_setting(word: &str) -> Option<ReasoningSetting> {
-    REASONING_LEVELS
-        .iter()
-        .find(|(name, _)| *name == word)
-        .map(|(_, setting)| *setting)
-}
-
-/// 当前级别 → 词表中的级别词（提示文本用；词表外取值回退 `off`）。
-fn reasoning_label(level: Option<ThinkingLevel>) -> &'static str {
-    REASONING_LEVELS
-        .iter()
-        .find(|(_, setting)| setting.level() == level)
-        .map_or("off", |(name, _)| *name)
-}
-
-/// 思考级别选择器（模型切换流程第二步）：列出级别并打开选择器
-///（预选中当前级别）。
-fn open_reasoning_picker(app: &mut App, driver: &Driver) {
-    let current = driver.reasoning;
-    let rows = REASONING_LEVELS
-        .iter()
-        .map(|(name, setting)| PickerRow {
-            id: (*name).to_string(),
-            text: reasoning_row_text(name, *setting, current),
-            selectable: true,
-        })
-        .collect();
-    let selected = REASONING_LEVELS
-        .iter()
-        .position(|(_, setting)| setting.level() == current)
-        .unwrap_or(0);
-    app.open_reasoning_picker(rows, selected);
-}
-
-/// 思考级别选择器行文本：`级别 — 说明`，当前级别带标记。
-fn reasoning_row_text(
-    name: &str,
-    setting: ReasoningSetting,
-    current: Option<ThinkingLevel>,
-) -> String {
-    let description = match setting {
-        ReasoningSetting::Off => "不开启思考",
-        ReasoningSetting::Level(ThinkingLevel::Minimal) => "最小推理预算",
-        ReasoningSetting::Level(ThinkingLevel::Low) => "低推理预算",
-        ReasoningSetting::Level(ThinkingLevel::Medium) => "中等推理预算",
-        ReasoningSetting::Level(ThinkingLevel::High) => "高推理预算",
-        // xhigh/max 不在 TUI 词表内（配置文件与 CLI 同样不开放）
-        ReasoningSetting::Level(ThinkingLevel::Xhigh | ThinkingLevel::Max) => "推理预算",
-    };
-    let mut text = format!("{name} — {description}");
-    if setting.level() == current {
-        text.push_str("（当前）");
-    }
-    text
-}
-
-/// 思考级别选择器确认（模型切换流程第二步）：先应用待切换模型，
-/// 再设置思考级别；两者均未变化时提示。
-///
-/// 级别是请求参数，选择器只在目标模型支持推理时出现，因此设置必然
-/// 随请求生效（重选当前模型进入时当前模型即推理模型）。driver 串行
-/// 处理任务：级别设置一定排在模型切换之后。
-fn set_reasoning(app: &mut App, driver: &mut Driver, word: &str) {
-    let Some(setting) = reasoning_setting(word) else {
-        // 理论不可达（选择器行 id 出自 REASONING_LEVELS 词表）
-        app.warn(format!("未知思考级别 {word:?}"));
-        return;
-    };
-    let level = setting.level();
-    let switched = match driver.pending_model.take() {
-        Some(model) => apply_model_switch(app, driver, model),
-        None => false,
-    };
-    let level_changed = level != driver.reasoning;
-    if level_changed {
-        if driver.job_tx.send(DriverJob::SetReasoning(level)).is_err() {
-            app.warn("内部错误：agent 任务已退出，无法设置思考级别");
-            return;
-        }
-        driver.reasoning = level;
-    }
-    let mut parts: Vec<String> = Vec::new();
-    if switched {
-        parts.push(switched_part(&driver.model));
-    }
-    if level_changed {
-        parts.push(format!("思考级别设为 {}", reasoning_label(level)));
-    }
-    let text = if parts.is_empty() {
-        format!(
-            "模型与思考级别均未变化（{}，级别 {}）。",
-            driver.model.name,
-            reasoning_label(driver.reasoning)
-        )
-    } else if switched {
-        format!("{}，对话上下文保留。", parts.join("，"))
-    } else {
-        format!("{}。", parts.join("，"))
-    };
-    app.chat_mut().push_system(text);
-}
-
-/// `/models:<p>/<id>` 或模型选择器确认：先选模型后选 effort——
-///
-/// - 目标模型支持推理：暂存为待切换模型并打开思考级别选择器（流程第二步）；
-///   确认级别时一并应用切换，Esc 放弃整个切换。重选当前模型时不暂存，
-///   级别选择器变为单纯的级别调整入口
-/// - 目标模型不支持推理：直接切换（级别设置保留但随请求被忽略，
-///   与配置文件 `reasoning` 同一口径）
-///
-/// 选择项为 `<provider>/<模型id>` 全形式；裸模型 id 在当前 provider 内解析。
-fn select_model(app: &mut App, driver: &mut Driver, id: &str) {
-    let selection = match ModelSelection::parse(id, Some(&driver.model.provider)) {
-        Ok(selection) => selection,
-        Err(error) => {
-            app.warn(format!("切换模型失败：{error:#}"));
-            return;
-        }
-    };
-    match driver.models.resolve(&selection.provider, &selection.model) {
-        Err(error) => app.warn(format!("切换模型失败：{error:#}")),
-        Ok(model) if model.reasoning => {
-            driver.pending_model = (!same_model(&model, &driver.model)).then_some(model);
-            open_reasoning_picker(app, driver);
-        }
-        Ok(model) if same_model(&model, &driver.model) => {
-            app.chat_mut()
-                .push_system(format!("当前模型已是 {}（不支持思考）。", model.name));
-        }
-        Ok(model) => {
-            if apply_model_switch(app, driver, model) {
-                app.chat_mut().push_system(switch_notice(&driver.model));
-            }
-        }
-    }
-}
-
-/// 同一模型判断：provider 与模型 id 均相同。
-fn same_model(a: &Model, b: &Model) -> bool {
-    a.provider == b.provider && a.id == b.id
-}
-
-/// 发送 SwitchModel job 并同步 driver/app 状态（状态栏徽标、上下文窗口）；
-/// 成功返回 `true`，driver 已退出时告警并返回 `false`。
-///
-/// 跨 provider 时一并构造新连接实现（api_key 分层：环境变量 >
-/// `providers.<名字>.api_key` > 平铺配置）；切换成功后把选择追加到
-/// sqlite 配置表（下次启动的回退链顶端）。driver 串行处理任务，紧随的
-/// 级别设置与 prompt 一定跑在新模型上。
-fn apply_model_switch(app: &mut App, driver: &mut Driver, model: Model) -> bool {
-    let provider = (model.provider != driver.model.provider).then(|| {
-        let api_key = bootstrap::resolve_api_key(
-            None,
-            std::env::var(bootstrap::api_key_env(model.api))
-                .ok()
-                .as_deref(),
-            driver
-                .models
-                .provider_config(&model.provider)
-                .and_then(|p| p.api_key.as_deref()),
-            driver.models.config().and_then(|c| c.api_key.as_deref()),
-        );
-        ProviderSwitch {
-            provider: bootstrap::build_provider(model.api, api_key.clone()),
-            api_key,
-        }
-    });
-    if driver
-        .job_tx
-        .send(DriverJob::SwitchModel(ModelSwitch {
-            model: model.clone(),
-            provider,
-        }))
-        .is_err()
-    {
-        app.warn("内部错误：agent 任务已退出，无法切换模型");
-        return false;
-    }
-    persist_model_selection(driver, &model);
-    let name = model.name.clone();
-    let window = model.context_window;
-    driver.model = model;
-    app.set_model(name, window);
-    true
-}
-
-/// 模型选择落库（config 表 append-only，最新行即下次启动的首选）。
-///
-/// 库不可用（启动已告警）时跳过；写失败只记日志不打断切换——
-/// 下次启动的回退链只是少了这一条。
-fn persist_model_selection(driver: &Driver, model: &Model) {
-    let Some((store, _)) = &driver.session else {
-        return;
-    };
-    let store = store.clone();
-    let spec = current_selection(model).spec();
-    tokio::spawn(async move {
-        if let Err(error) = store
-            .set_config(
-                bootstrap::CONFIG_KEY_MODEL,
-                &serde_json::Value::String(spec),
-            )
-            .await
-        {
-            tracing::warn!(error = %error, "模型选择落库失败");
-        }
-    });
-}
-
-/// 切换成功的提示文本：`已切换模型为 <provider>/<模型id>（名称 · ctx 400k），
-/// 对话上下文保留。`
-fn switch_notice(model: &Model) -> String {
-    format!("{}，对话上下文保留。", switched_part(model))
-}
-
-/// 提示文本的模型切换段：`已切换模型为 <provider>/<模型id>（名称 · ctx 400k）`；
-/// 名称与模型 id 相同、窗口未知时省略对应段。
-fn switched_part(model: &Model) -> String {
-    use std::fmt::Write as _;
-    let mut text = format!("已切换模型为 {}", current_selection(model).spec());
-    let mut detail = String::new();
-    if model.name != model.id {
-        detail.push_str(&model.name);
-    }
-    if model.context_window > 0 {
-        if !detail.is_empty() {
-            detail.push_str(" · ");
-        }
-        let _ = write!(detail, "ctx {}", ui::format_tokens(model.context_window));
-    }
-    if !detail.is_empty() {
-        let _ = write!(text, "（{detail}）");
-    }
-    text
-}
-/// `/resume`：列出历史 session 并打开选择器。
-async fn list_sessions(app: &mut App, driver: &Driver) {
-    match session_store(driver.session.as_ref()).await {
-        Err(error) => app.warn(format!("{error:#}")),
-        Ok(store) => match store.list_sessions().await {
-            Err(error) => app.warn(format!("列出 session 失败：{error}")),
-            Ok(sessions) if sessions.is_empty() => {
-                app.chat_mut().push_system("没有历史 session。");
-            }
-            Ok(sessions) => {
-                let rows = sessions
-                    .iter()
-                    .map(|summary| PickerRow {
-                        id: summary.id.clone(),
-                        text: crate::sessions::row_text(summary),
-                        selectable: true,
-                    })
-                    .collect();
-                app.open_resume_picker(rows);
-            }
-        },
-    }
-}
-
-/// `/new`：driver 串行清空上下文；本地重置聊天区并新建 session。
-async fn new_session(app: &mut App, driver: &mut Driver) {
-    // driver 串行处理任务；slash 命令仅在空闲时可提交，无需排队等待
-    let _ = driver.job_tx.send(DriverJob::Clear);
-    app.start_new_conversation();
-    // 新 session 没有任何 entry：落库父指针重置（自动链最新）
-    driver.tip = None;
-    if let Some((store, id)) = &mut driver.session {
-        match store.create_session(&driver.cwd).await {
-            Ok(new_id) => {
-                id.clone_from(&new_id);
-                app.set_session(new_id);
-            }
-            Err(error) => {
-                app.warn(format!("创建新 session 失败，续写当前 session：{error}"));
-            }
-        }
-    }
-}
-
-/// `/tree`：列出当前 session 的会话树并打开选择器（预选中当前分支末端）。
-async fn list_tree(app: &mut App, driver: &Driver) {
-    let Some((store, session_id)) = &driver.session else {
-        app.warn("当前对话未持久化，没有会话树可浏览");
-        return;
-    };
-    match store.list_tree(session_id).await {
-        Err(error) => app.warn(format!("加载会话树失败：{error}")),
-        Ok(entries) if entries.is_empty() => {
-            app.chat_mut()
-                .push_system("当前 session 还没有消息，发送一条后再来浏览会话树。");
-        }
-        Ok(entries) => {
-            let rows = tree_rows(&entries, driver.tip.as_deref());
-            // 预选中当前分支末端；末端不可选（工具结果，或已被折叠进摘要行）
-            // 时退到首个可选行
-            let selected = driver
-                .tip
-                .as_deref()
-                .and_then(|tip| rows.iter().position(|row| row.id == tip))
-                .filter(|&index| rows[index].selectable)
-                .or_else(|| rows.iter().position(|row| row.selectable))
-                .expect("空树已在上面挡掉");
-            app.open_tree_picker(rows, selected);
-        }
-    }
-}
-
-/// `/tree` 选择器确认：以所选条目为起点创建分支——重放该分支上下文、
-/// 切换落库父指针；原分支 entries 不动，仍可在 `/tree` 中回访。
-async fn branch_to(app: &mut App, driver: &mut Driver, entry_id: String) {
-    let Some((store, session_id)) = &driver.session else {
-        return; // ListTree 已挡住未持久化场景
-    };
-    if driver.tip.as_deref() == Some(entry_id.as_str()) {
-        app.chat_mut()
-            .push_system("所选条目就是当前分支末端，无需切换。");
-        return;
-    }
-    match store.load_branch(session_id, &entry_id).await {
-        Err(error) => app.warn(format!("切换分支失败：{error}")),
-        Ok(messages) => {
-            // driver 串行处理任务：紧随其后的 prompt 一定排在 Restore 之后
-            if driver
-                .job_tx
-                .send(DriverJob::Restore(messages.clone()))
-                .is_err()
-            {
-                app.warn("内部错误：agent 任务已退出，无法切换分支");
-                return;
-            }
-            let count = messages.len();
-            app.restore_branch(&messages);
-            driver.tip = Some(entry_id);
-            app.chat_mut().push_system(format!(
-                "已从所选条目创建分支（{count} 条消息），后续对话写入新分支；\
-                 原分支保留，仍可在 /tree 中回访。"
-            ));
-        }
-    }
-}
-
-/// 会话树条目 → 选择器行。
-///
-/// 缩进语义：**只在真实分叉处缩进**——用树形前缀（`├─`/`└─`/`│`）画出
-/// 分支结构，线性链（含工具调用轮次）平铺。工具调用循环是父子链而非
-/// 分支，若按祖先链长度缩进会把单线对话画成向右无限延伸的阶梯。
-///
-/// 不可选条目（含工具调用的 assistant 响应、工具结果）只是浏览上下文
-/// 而非分支起点：连续的一段折叠为一行摘要（`↳ 工具调用 ×N（…）`），
-/// 避免工具噪音淹没可选条目。折叠只取链上条目（子节点 ≤ 1），不会吞掉
-/// 分叉点。
-fn tree_rows(entries: &[TreeEntry], tip: Option<&str>) -> Vec<PickerRow> {
-    let index: std::collections::HashMap<&str, usize> = entries
-        .iter()
-        .enumerate()
-        .map(|(i, entry)| (entry.id.as_str(), i))
-        .collect();
-    // 每个 entry 的子节点（按插入序）：判定分叉与折叠用
-    let mut children: std::collections::HashMap<&str, Vec<usize>> =
-        std::collections::HashMap::new();
-    for (i, entry) in entries.iter().enumerate() {
-        if let Some(parent) = entry.parent_id.as_deref() {
-            children.entry(parent).or_default().push(i);
-        }
-    }
-    // 树形前缀：沿父链收集「分叉边」（父节点有多个孩子的边）。entry 自己
-    // 的分叉边渲染为 `├─ `/`└─ `；祖先的分叉边自外向内渲染为 `│  `/`   `
-    // 层级。线性边不产生前缀。
-    let prefix = |entry: &TreeEntry| {
-        let mut ancestors: Vec<bool> = Vec::new(); // 祖先分叉边：该侧是否最末孩子
-        let mut own: Option<bool> = None; // 自身边是否分叉
-        let mut child = entry.id.as_str();
-        let mut cursor = entry.parent_id.as_deref();
-        let mut first = true;
-        // 父指针在写入时校验存在，父链必然终止于根；缺失数据按根处理
-        while let Some(parent) = cursor {
-            let siblings = children.get(parent).map_or(&[][..], Vec::as_slice);
-            if siblings.len() > 1 {
-                let last = siblings.last().copied() == Some(index[child]);
-                if first {
-                    own = Some(last);
-                } else {
-                    ancestors.push(last);
-                }
-            }
-            first = false;
-            child = parent;
-            cursor = index
-                .get(parent)
-                .and_then(|&i| entries[i].parent_id.as_deref());
-        }
-        let mut text = String::new();
-        for &last in ancestors.iter().rev() {
-            text.push_str(if last { "   " } else { "│  " });
-        }
-        if let Some(last) = own {
-            text.push_str(if last { "└─ " } else { "├─ " });
-        }
-        text
-    };
-    // 可折叠：不可选且位于链上（子节点 ≤ 1）；有多子节点的条目是分叉点，
-    // 必须保留原行以呈现树形结构
-    let foldable = |entry: &TreeEntry| {
-        !entry.is_branchable() && children.get(entry.id.as_str()).map_or(0, Vec::len) <= 1
-    };
-    let mut rows = Vec::with_capacity(entries.len());
-    let mut i = 0;
-    while i < entries.len() {
-        if !foldable(&entries[i]) {
-            rows.push(entry_row(&entries[i], tip, &prefix(&entries[i])));
-            i += 1;
-            continue;
-        }
-        let start = i;
-        while i + 1 < entries.len() && foldable(&entries[i + 1]) {
-            i += 1;
-        }
-        rows.push(fold_row(&entries[start..=i], tip, &prefix(&entries[start])));
-        i += 1;
-    }
-    rows
-}
-
-/// 单条目的选择器行：树形前缀 + 角色/时间/预览，当前分支末端带标记。
-fn entry_row(entry: &TreeEntry, tip: Option<&str>, prefix: &str) -> PickerRow {
-    let role = match entry.role.as_str() {
-        "user" => "用户",
-        "assistant" => "助手",
-        "tool_result" => "工具",
-        _ => "压缩",
-    };
-    let current = if Some(entry.id.as_str()) == tip {
-        "（当前）"
-    } else {
-        ""
-    };
-    PickerRow {
-        id: entry.id.clone(),
-        text: format!(
-            "{prefix}{role} · {} · {}{current}",
-            crate::sessions::format_time(Some(entry.timestamp)),
-            entry.preview,
-        ),
-        selectable: entry.is_branchable(),
-    }
-}
-
-/// 一段连续工具条目的折叠摘要行（不可选，仅浏览上下文）。
-///
-/// 工具名与失败数从工具结果 preview（`工具结果：{name}` / `工具失败：{name}`，
-/// 见 nomic-session 的 `message_preview`）统计；preview 无法解析（如 payload
-/// 损坏的占位文本）只计入总数。run 内含当前分支末端（运行中打开 `/tree`）
-/// 时带标记。
-fn fold_row(run: &[TreeEntry], tip: Option<&str>, prefix: &str) -> PickerRow {
-    let mut calls = 0_usize;
-    let mut failures = 0_usize;
-    let mut tools: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
-    for entry in run.iter().filter(|entry| entry.role == "tool_result") {
-        calls += 1;
-        if let Some(name) = entry.preview.strip_prefix("工具结果：") {
-            *tools.entry(name).or_default() += 1;
-        } else if let Some(name) = entry.preview.strip_prefix("工具失败：") {
-            failures += 1;
-            *tools.entry(name).or_default() += 1;
-        }
-    }
-    let mut parts: Vec<String> = tools
-        .iter()
-        .map(|(name, count)| format!("{name} ×{count}"))
-        .collect();
-    if failures > 0 {
-        parts.push(format!("失败 ×{failures}"));
-    }
-    let stats = if parts.is_empty() {
-        String::new()
-    } else {
-        format!("（{}）", parts.join(" · "))
-    };
-    // 无工具结果（如运行被打断）：退化为条目计数
-    let summary = if calls > 0 {
-        format!("工具调用 ×{calls}{stats}")
-    } else {
-        format!("工具调用 ×{}（无结果）", run.len())
-    };
-    let current = if run.iter().any(|entry| Some(entry.id.as_str()) == tip) {
-        "（当前）"
-    } else {
-        ""
-    };
-    PickerRow {
-        id: run[0].id.clone(),
-        text: format!(
-            "{prefix}↳ {summary} · {}{current}",
-            crate::sessions::format_time(Some(run[0].timestamp)),
-        ),
-        selectable: false,
-    }
-}
-
-/// 加载图片并暂存为附件（`/image` 与粘贴图片路径共用）。
-fn attach_image(app: &mut App, path: &std::path::Path) {
-    match crate::images::load_image(path) {
-        Ok(image) => {
-            let name = attachment_name(path);
-            let count = app.input_mut().stage_image(name.clone(), image);
-            app.chat_mut().push_system(format!(
-                "已附加图片 {name}（共 {count} 张，随下一条消息发送）。"
-            ));
-        }
-        Err(error) => app.warn(format!("附加图片失败：{error:#}")),
-    }
-}
-
-/// 粘贴整段文本（bracketed paste）：形似图片路径的转为附件，其余原样插入输入框。
-///
-/// 「形似」只按扩展名初判（裸路径 / `file://` URI / 引号包裹均可），
-/// 能否加载由 [`crate::images::load_image`] 复核；多行或普通文本走插入。
-fn handle_paste(app: &mut App, text: &str) {
-    if let Some(path) = paste_image_path(text) {
-        attach_image(app, &path);
-    } else {
-        app.paste_text(text);
-    }
-}
-
-/// 从粘贴文本中识别图片路径：单行、支持 file:// URI（含百分号解码）与引号包裹。
-fn paste_image_path(text: &str) -> Option<std::path::PathBuf> {
-    let text = text.trim();
-    if text.is_empty() || text.contains(['\n', '\t']) {
-        return None;
-    }
-    let candidate = if let Some(uri) = text.strip_prefix("file://") {
-        // file:///abs/path 与 file://localhost/abs/path
-        let uri = uri.strip_prefix("localhost").unwrap_or(uri);
-        percent_decode(uri)?
-    } else {
-        text.trim_matches(['\'', '"']).to_string()
-    };
-    let path = std::path::PathBuf::from(candidate);
-    if crate::images::is_supported_image_path(&path) {
-        Some(path)
-    } else {
-        None
-    }
-}
-
-/// 百分号解码（file:// URI 中的 %20 等）；非法序列或结果非 UTF-8 返回 None。
-fn percent_decode(input: &str) -> Option<String> {
-    if !input.contains('%') {
-        return Some(input.to_string());
-    }
-    let bytes = input.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let hex = input.get(index + 1..index + 3)?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
-            index += 3;
-        } else {
-            out.push(bytes[index]);
-            index += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
-/// Ctrl+V 粘贴剪贴板：图片暂存为附件，文本插入输入框。
-///
-/// 剪贴板读取可能阻塞在 X11/Wayland 往返上，放 `spawn_blocking` 中执行；
-/// 期间事件循环不阻塞，结果返回前界面照常重绘。
-async fn paste_clipboard(app: &mut App) {
-    match tokio::task::spawn_blocking(crate::clipboard::read).await {
-        Ok(Ok(Some(crate::clipboard::ClipboardContent::Image(image)))) => {
-            let name = format!("clipboard-{}.png", nomic_ai::now_millis());
-            let count = app.input_mut().stage_image(name.clone(), image);
-            app.chat_mut().push_system(format!(
-                "已粘贴图片 {name}（共 {count} 张，随下一条消息发送）。"
-            ));
-        }
-        Ok(Ok(Some(crate::clipboard::ClipboardContent::Text(text)))) => app.paste_text(&text),
-        Ok(Ok(None)) => app.warn("剪贴板中没有图片或文本"),
-        Ok(Err(error)) => app.warn(format!("粘贴失败：{error:#}")),
-        Err(join) => app.warn(format!("粘贴失败：{join}")),
-    }
-}
-
-/// `/copy`：把文本写入系统剪贴板。
-///
-/// 与粘贴同理，写入可能阻塞在 X11/Wayland 往返上，放 `spawn_blocking` 中执行。
-async fn copy_to_clipboard(app: &mut App, text: String) {
-    let chars = text.chars().count();
-    match tokio::task::spawn_blocking(move || crate::clipboard::write_text(&text)).await {
-        Ok(Ok(())) => app
-            .chat_mut()
-            .push_system(format!("已复制到剪贴板（{chars} 字）。")),
-        Ok(Err(error)) => app.warn(format!("复制失败：{error:#}")),
-        Err(join) => app.warn(format!("复制失败：{join}")),
+        Effect::AttachImage(path) => effects::attach_image(app, &std::path::PathBuf::from(path)),
+        Effect::CopyText(text) => effects::copy_to_clipboard(app, text).await,
+        Effect::NewSession => effects::new_session(app, driver).await,
     }
 }
 
@@ -1532,121 +844,6 @@ fn run_external_editor(initial: &str) -> Result<String> {
     );
 
     std::fs::read_to_string(&path).context("读取编辑结果失败")
-}
-
-/// 附件展示名：取文件名，缺失时回退完整路径。
-fn attachment_name(path: &std::path::Path) -> String {
-    path.file_name()
-        .unwrap_or(path.as_os_str())
-        .to_string_lossy()
-        .into_owned()
-}
-
-/// 把启动参数 `--image` 载入为暂存附件（失败以系统条目提示，不中止启动）。
-fn stage_cli_images(app: &mut App, paths: &[std::path::PathBuf]) {
-    for path in paths {
-        match crate::images::load_image(path) {
-            Ok(image) => {
-                let name = attachment_name(path);
-                let count = app.input_mut().stage_image(name.clone(), image);
-                app.chat_mut().push_system(format!(
-                    "已附加图片 {name}（共 {count} 张，随下一条消息发送）。"
-                ));
-            }
-            Err(error) => app
-                .chat_mut()
-                .push_system(format!("加载图片附件失败：{error:#}")),
-        }
-    }
-}
-
-/// 取可用 session store：优先复用当前 session 的；未持久化（启动时打开失败）
-/// 时按需重开——`/resume` 成功后该 store 会随恢复的 session 一同被采用。
-async fn session_store(session: Option<&(SessionStore, String)>) -> Result<SessionStore> {
-    match session {
-        Some((store, _)) => Ok(store.clone()),
-        None => SessionStore::open_default()
-            .await
-            .context("打开 session 库失败"),
-    }
-}
-
-/// 恢复选中 session：加载历史 → 替换 agent 上下文与聊天区 → 切换落库目标
-/// 与落库父指针（默认分支末端）。
-async fn resume_session(app: &mut App, driver: &mut Driver, id: String) {
-    let loaded = async {
-        let store = session_store(driver.session.as_ref()).await?;
-        let messages = store
-            .load_messages(&id)
-            .await
-            .with_context(|| "加载 session 历史失败".to_string())?;
-        let tip = store
-            .latest_entry_id(&id)
-            .await
-            .context("读取分支末端失败")?;
-        Ok::<_, anyhow::Error>((store, messages, tip))
-    }
-    .await;
-    match loaded {
-        Err(error) => app.warn(format!("恢复 session 失败：{error:#}")),
-        Ok((store, messages, tip)) => {
-            // driver 串行处理任务：紧随其后的 prompt 一定排在 Restore 之后，
-            // 不会出现「新 prompt 跑在旧上下文」的交错
-            let _ = driver.job_tx.send(DriverJob::Restore(messages.clone()));
-            app.restore_conversation(&messages, id.clone());
-            driver.tip = tip;
-            match &mut driver.session {
-                Some((_, current)) => current.clone_from(&id),
-                None => driver.session = Some((store, id.clone())),
-            }
-            let label = nomic_session::session_title(&messages)
-                .map_or_else(String::new, |title| format!("「{title}」"));
-            app.chat_mut().push_system(format!(
-                "已恢复 session {label}（{} 条消息），后续对话续写该 session。",
-                messages.len()
-            ));
-        }
-    }
-}
-
-/// `MessageEnd` 定稿点落库：以当前分支末端为父 entry，成功后推进父指针；
-/// 失败仅提示不中断（store 非权威源）。
-async fn persist(driver: &mut Driver, message: &Message, app: &mut App) {
-    let Some((store, session_id)) = &driver.session else {
-        return;
-    };
-    match store
-        .append_message(session_id, driver.tip.as_deref(), message)
-        .await
-    {
-        Ok(entry_id) => driver.tip = Some(entry_id),
-        Err(error) => app.warn(format!("session 落库失败：{error}")),
-    }
-}
-
-/// `CompactionEnd` 落库压缩条目（父指针语义与 [`persist`] 一致）。
-async fn persist_compaction(
-    driver: &mut Driver,
-    summary: &str,
-    tokens_before: u64,
-    kept_count: usize,
-    app: &mut App,
-) {
-    let Some((store, session_id)) = &driver.session else {
-        return;
-    };
-    let record = CompactionRecord {
-        summary: summary.to_string(),
-        kept_count: kept_count as u64,
-        tokens_before,
-    };
-    match store
-        .append_compaction(session_id, driver.tip.as_deref(), &record)
-        .await
-    {
-        Ok(entry_id) => driver.tip = Some(entry_id),
-        Err(error) => app.warn(format!("compaction 落库失败：{error}")),
-    }
 }
 
 /// 终端状态守卫：进入 TUI 终端态；Drop（含 panic 路径经 hook）时恢复。
@@ -1732,16 +929,9 @@ fn install_panic_hook() {
 #[cfg(test)]
 mod tests {
     use std::any::Any;
-    use std::path::PathBuf;
 
-    use super::{
-        ModelChoice, ModelSelection, ReasoningSetting, goal_reminder_prompt, model_row_text,
-        panic_payload_text, paste_image_path, percent_decode, reasoning_label, reasoning_row_text,
-        reasoning_setting, tree_rows,
-    };
-    use nomic_ai::ThinkingLevel;
+    use super::{goal_reminder_prompt, panic_payload_text};
     use nomic_core::AgentTool;
-    use nomic_session::TreeEntry;
     use nomic_tools::{TodoItemInput, TodoStatus, TodoStore, TodoWriteTool};
 
     /// goal 模式追问提示词：列出未完成 todo；空清单或全部完成时不追问。
@@ -1796,209 +986,6 @@ mod tests {
         assert_eq!(goal_reminder_prompt(&store), None);
     }
 
-    /// 会话树选择器行：线性链（含工具调用轮次）平铺不缩进，连续工具条目
-    /// 折叠为一行摘要（不可选），当前分支末端带标记。
-    #[test]
-    fn tree_rows_flatten_linear_chain_and_fold_tools() {
-        let entry = |id: &str, parent: Option<&str>, role: &str, tool_calls: bool| TreeEntry {
-            id: id.to_string(),
-            parent_id: parent.map(str::to_string),
-            role: role.to_string(),
-            timestamp: 1_785_000_000_000,
-            preview: format!("preview of {id}"),
-            has_tool_calls: tool_calls,
-        };
-        let tool_result = |id: &str, parent: &str, name: &str, failed: bool| {
-            let mut entry = entry(id, Some(parent), "tool_result", false);
-            entry.preview = if failed {
-                format!("工具失败：{name}")
-            } else {
-                format!("工具结果：{name}")
-            };
-            entry
-        };
-        let entries = vec![
-            entry("root", None, "user", false),
-            entry("a1", Some("root"), "assistant", true),
-            tool_result("t1", "a1", "bash", false),
-            tool_result("t2", "t1", "bash", true),
-            entry("a2", Some("t2"), "assistant", false),
-        ];
-
-        let rows = tree_rows(&entries, Some("t2"));
-        assert_eq!(rows.len(), 3, "工具条目折叠为一行：{rows:?}");
-        assert!(rows[0].text.starts_with("用户 · "), "{}", rows[0].text);
-        assert!(
-            rows[1]
-                .text
-                .starts_with("↳ 工具调用 ×2（bash ×2 · 失败 ×1）"),
-            "{}",
-            rows[1].text
-        );
-        assert!(rows[1].text.ends_with("（当前）"), "{}", rows[1].text);
-        assert!(
-            rows[2].text.starts_with("助手 · "),
-            "线性链不缩进：{}",
-            rows[2].text
-        );
-
-        assert!(rows[0].selectable);
-        assert!(!rows[1].selectable, "折叠摘要行不可选");
-        assert!(rows[2].selectable);
-    }
-
-    /// 会话树选择器行：真实分叉用树形前缀（`├─`/`└─`/`│`）画分支结构，
-    /// 分叉下的线性后代继承层级前缀。
-    #[test]
-    fn tree_rows_draw_branch_prefixes_at_forks() {
-        let entry = |id: &str, parent: Option<&str>| TreeEntry {
-            id: id.to_string(),
-            parent_id: parent.map(str::to_string),
-            role: "user".to_string(),
-            timestamp: 1_785_000_000_000,
-            preview: format!("preview of {id}"),
-            has_tool_calls: false,
-        };
-        let entries = vec![
-            entry("root", None),
-            entry("b1", Some("root")),
-            entry("c1", Some("b1")),
-            entry("b2", Some("root")),
-            entry("c2", Some("b2")),
-        ];
-
-        let rows = tree_rows(&entries, Some("c2"));
-        assert_eq!(rows.len(), 5);
-        assert!(rows[0].text.starts_with("用户 · "), "{}", rows[0].text);
-        assert!(rows[1].text.starts_with("├─ "), "{}", rows[1].text);
-        assert!(
-            rows[2].text.starts_with("│  "),
-            "非最末分支的后代画竖线：{}",
-            rows[2].text
-        );
-        assert!(rows[3].text.starts_with("└─ "), "{}", rows[3].text);
-        assert!(
-            rows[4].text.starts_with("   "),
-            "最末分支的后代留白：{}",
-            rows[4].text
-        );
-        assert!(rows[4].text.ends_with("（当前）"), "{}", rows[4].text);
-        assert!(rows.iter().all(|row| row.selectable));
-    }
-
-    /// 折叠不吞分叉点：不可选条目若有多个子节点（历史数据防御），保留原行。
-    #[test]
-    fn tree_rows_keep_unselectable_fork_point() {
-        let entry = |id: &str, parent: Option<&str>, role: &str, tool_calls: bool| TreeEntry {
-            id: id.to_string(),
-            parent_id: parent.map(str::to_string),
-            role: role.to_string(),
-            timestamp: 1_785_000_000_000,
-            preview: format!("preview of {id}"),
-            has_tool_calls: tool_calls,
-        };
-        let entries = vec![
-            entry("root", None, "user", false),
-            entry("a1", Some("root"), "assistant", true),
-            entry("b1", Some("a1"), "user", false),
-            entry("b2", Some("a1"), "user", false),
-        ];
-
-        let rows = tree_rows(&entries, None);
-        assert_eq!(rows.len(), 4, "分叉点不折叠：{rows:?}");
-        assert!(!rows[1].selectable, "含工具调用的 assistant 条目不可选");
-        assert!(rows[2].text.starts_with("├─ "), "{}", rows[2].text);
-        assert!(rows[3].text.starts_with("└─ "), "{}", rows[3].text);
-    }
-
-    /// `/models` 选择器行：id + 展示名 + 窗口，推理模型带标注，当前模型带标记，
-    /// 窗口未知省略 ctx。
-    #[test]
-    fn model_row_text_formats_window_and_marks_current() {
-        let choice = ModelChoice {
-            provider: "openai".to_string(),
-            id: "gpt-5.2".to_string(),
-            name: "GPT-5.2".to_string(),
-            context_window: 400_000,
-            reasoning: true,
-        };
-        let current = ModelSelection::parse("openai/gpt-5.2", None).unwrap();
-        assert_eq!(
-            model_row_text(&choice, &current),
-            "openai/gpt-5.2 — GPT-5.2 · ctx 400k · 支持思考（当前）"
-        );
-        let other = ModelSelection::parse("openai/other", None).unwrap();
-        assert_eq!(
-            model_row_text(&choice, &other),
-            "openai/gpt-5.2 — GPT-5.2 · ctx 400k · 支持思考"
-        );
-        // 同名模型 id 但 provider 不同：不是当前模型
-        let other_provider = ModelSelection::parse("deepseek/gpt-5.2", None).unwrap();
-        assert!(!model_row_text(&choice, &other_provider).contains("（当前）"));
-        let no_thinking = ModelChoice {
-            reasoning: false,
-            ..choice
-        };
-        assert_eq!(
-            model_row_text(&no_thinking, &other),
-            "openai/gpt-5.2 — GPT-5.2 · ctx 400k"
-        );
-        let unknown = ModelChoice {
-            provider: "openai".to_string(),
-            id: "m".to_string(),
-            name: "m".to_string(),
-            context_window: 0,
-            reasoning: false,
-        };
-        assert_eq!(model_row_text(&unknown, &other), "openai/m — m");
-    }
-
-    /// 思考级别词表：off 映射为关闭，词表内级别往返一致，未知词拒绝。
-    #[test]
-    fn reasoning_setting_roundtrip_and_rejects_unknown() {
-        assert_eq!(reasoning_setting("off"), Some(ReasoningSetting::Off));
-        assert_eq!(
-            reasoning_setting("minimal"),
-            Some(ReasoningSetting::Level(ThinkingLevel::Minimal))
-        );
-        assert_eq!(
-            reasoning_setting("high"),
-            Some(ReasoningSetting::Level(ThinkingLevel::High))
-        );
-        assert_eq!(
-            reasoning_setting("off").map(ReasoningSetting::level),
-            Some(None)
-        );
-        assert_eq!(reasoning_setting("extreme"), None);
-        // 词表内取值与 label 往返一致；词表外取值（xhigh/max）回退 off
-        for (name, level) in [
-            ("off", None),
-            ("low", Some(ThinkingLevel::Low)),
-            ("medium", Some(ThinkingLevel::Medium)),
-            ("high", Some(ThinkingLevel::High)),
-        ] {
-            assert_eq!(reasoning_label(level), name);
-        }
-        assert_eq!(reasoning_label(Some(ThinkingLevel::Xhigh)), "off");
-    }
-
-    /// 思考级别选择器行：级别 + 说明，当前级别带标记。
-    #[test]
-    fn reasoning_row_text_marks_current() {
-        assert_eq!(
-            reasoning_row_text(
-                "low",
-                ReasoningSetting::Level(ThinkingLevel::Low),
-                Some(ThinkingLevel::Low)
-            ),
-            "low — 低推理预算（当前）"
-        );
-        assert_eq!(
-            reasoning_row_text("off", ReasoningSetting::Off, Some(ThinkingLevel::Low)),
-            "off — 不开启思考"
-        );
-    }
-
     #[test]
     fn panic_payload_extracts_message() {
         let payload: Box<dyn Any + Send> = Box::new("boom");
@@ -2009,63 +996,5 @@ mod tests {
 
         let payload: Box<dyn Any + Send> = Box::new(42_i32);
         assert_eq!(panic_payload_text(&*payload), "未知负载");
-    }
-
-    #[test]
-    fn paste_recognizes_plain_image_path() {
-        assert_eq!(
-            paste_image_path("/tmp/pic.png"),
-            Some(PathBuf::from("/tmp/pic.png"))
-        );
-        // 相对路径与大写扩展名
-        assert_eq!(
-            paste_image_path("shots/UPPER.PNG"),
-            Some(PathBuf::from("shots/UPPER.PNG"))
-        );
-    }
-
-    #[test]
-    fn paste_recognizes_file_uri_and_decodes() {
-        assert_eq!(
-            paste_image_path("file:///tmp/my%20pics/a%20b.png"),
-            Some(PathBuf::from("/tmp/my pics/a b.png"))
-        );
-        assert_eq!(
-            paste_image_path("file://localhost/tmp/pic.webp"),
-            Some(PathBuf::from("/tmp/pic.webp"))
-        );
-    }
-
-    #[test]
-    fn paste_recognizes_quoted_path() {
-        assert_eq!(
-            paste_image_path("'/tmp/with space/pic.jpg'"),
-            Some(PathBuf::from("/tmp/with space/pic.jpg"))
-        );
-        assert_eq!(
-            paste_image_path("\"/tmp/pic.gif\""),
-            Some(PathBuf::from("/tmp/pic.gif"))
-        );
-    }
-
-    #[test]
-    fn paste_ignores_non_image_text() {
-        assert_eq!(paste_image_path("hello world"), None);
-        assert_eq!(paste_image_path("/tmp/notes.txt"), None);
-        assert_eq!(paste_image_path("multi\nline /tmp/pic.png"), None);
-        assert_eq!(paste_image_path(""), None);
-        // 非法百分号序列不视为路径
-        assert_eq!(paste_image_path("file:///tmp/%zz.png"), None);
-    }
-
-    #[test]
-    fn percent_decode_roundtrip() {
-        assert_eq!(
-            percent_decode("/a%20b/%E4%B8%AD.png"),
-            Some("/a b/中.png".to_string())
-        );
-        assert_eq!(percent_decode("no-escape"), Some("no-escape".to_string()));
-        assert_eq!(percent_decode("%4"), None);
-        assert_eq!(percent_decode("%xy"), None);
     }
 }

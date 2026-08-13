@@ -4,3 +4,6 @@ msrv = "1.97"
 avoid-breaking-exported-api = false
 # 圈复杂度阈值（默认 25，略放宽避免过度拆函数）
 cognitive-complexity-threshold = 30
+# 单函数最大行数（含注释与空行，默认即 100；显式声明以固化约束）
+# lint 本身由 workspace lints 的 clippy::pedantic deny 启用
+too-many-lines-threshold = 100

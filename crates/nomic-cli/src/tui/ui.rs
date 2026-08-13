@@ -72,11 +72,15 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         }
     }
     // 拼接：每个消息块后空一行，块间分隔与末尾留白（与输入框拉开距离）统一处理；
-    // 同时记录各条目起始行（消息游标滚动定位用，回写状态层）与游标 gutter 高亮
+    // 同时记录各条目起始行（消息游标滚动定位用，回写状态层）。
+    // 游标/选择区条目整行高亮：gutter 换符号与样式、行铺背景并补齐行宽，
+    // 块间隔空行同样延续，形成连续的高亮区（NORMAL 游标与 VISUAL 选择同族，
+    // 仅以 gutter 色相区分；游标条目首行用 `❯` 标出游标端点）
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut starts = vec![u16::MAX; app.chat().items().len()];
     for (index, block) in blocks {
-        if starts[index] == u16::MAX {
+        let first_block_of_item = starts[index] == u16::MAX;
+        if first_block_of_item {
             starts[index] = u16::try_from(lines.len()).unwrap_or(u16::MAX);
         }
         // 选择区高亮优先于游标（游标总在选择范围内）
@@ -87,16 +91,31 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         } else {
             None
         };
-        let block = if let Some(style) = highlight {
+        let block = if let Some(marker) = highlight {
+            let mut at_cursor_head = first_block_of_item && cursor == Some(index);
             block
                 .into_iter()
-                .map(|line| restyle_gutter(line, style))
+                .map(|line| {
+                    let gutter = if at_cursor_head {
+                        at_cursor_head = false;
+                        GUTTER_CURSOR_HEAD
+                    } else {
+                        GUTTER_CURSOR_BODY
+                    };
+                    restyle_highlight(line, marker, gutter, area.width)
+                })
                 .collect::<Vec<_>>()
         } else {
             block
         };
         lines.extend(block);
-        lines.push(Line::default());
+        // 块间隔空行：高亮条目的空行延续 gutter 与背景，高亮区不断裂
+        let gap = if let Some(marker) = highlight {
+            restyle_highlight(Line::default(), marker, GUTTER_CURSOR_BODY, area.width)
+        } else {
+            Line::default()
+        };
+        lines.push(gap);
     }
     if app.chat().items().is_empty() {
         lines.push(Line::from(Span::styled(
@@ -228,6 +247,10 @@ struct MessageBlock {
 const GUTTER_PREFIX: &str = "▌ ";
 /// gutter 占用列数：`▌` + 空格。
 const GUTTER_WIDTH: u16 = 2;
+/// 高亮 gutter：游标条目首行用箭头标出游标端点。
+const GUTTER_CURSOR_HEAD: &str = "❯ ";
+/// 高亮 gutter：续行与高亮空行用加粗竖条，保持区域连续。
+const GUTTER_CURSOR_BODY: &str = "▐ ";
 
 impl MessageBlock {
     const fn new(marker: Style) -> Self {
@@ -273,14 +296,34 @@ impl MessageBlock {
     }
 }
 
-/// 把消息块每行的 gutter span（首个 span）换为指定样式
-///（消息游标/选择区高亮）。
-fn restyle_gutter(line: Line<'static>, style: Style) -> Line<'static> {
+/// 整行高亮（消息游标 / VISUAL 选择区）：gutter span 换为指定符号与样式，
+/// 行铺暗色背景并补齐到行宽，呈现为整行色带而非参差的 gutter 色点。
+/// 空行（块间隔）补 gutter span，保持高亮区竖条连续。
+fn restyle_highlight(
+    line: Line<'static>,
+    marker: Style,
+    gutter: &str,
+    width: u16,
+) -> Line<'static> {
+    let bg = theme::highlight_bg();
     let mut spans = line.spans;
     if let Some(first) = spans.first_mut() {
-        first.style = style;
+        first.content = gutter.to_string().into();
+        first.style = marker;
+    } else {
+        spans.push(Span::styled(gutter.to_string(), marker));
     }
-    Line::from(spans)
+    // 背景 patch 到每个 span 而非 Line.style：wrap_line / 搜索高亮重建行时
+    // 会丢弃行级样式，span 级背景才能存活
+    for span in &mut spans {
+        span.style = span.style.patch(bg);
+    }
+    let mut line = Line::from(spans);
+    let pad = usize::from(width).saturating_sub(line.width());
+    if pad > 0 {
+        line.spans.push(Span::styled(" ".repeat(pad), bg));
+    }
+    line
 }
 
 /// 把行内所有大小写不敏感的 `query` 命中片段覆盖为 `hit` 样式
@@ -1409,8 +1452,9 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
         let compact = compact_text(&terminal);
         assert!(!compact.contains("Thinking"), "{compact}");
-        assert!(compact.contains("▌推理第一行"), "{compact}");
-        assert!(compact.contains("▌推理第二行"), "{compact}");
+        // 命令受理后回 NORMAL，游标落在该消息上：gutter 变为游标高亮符号
+        assert!(compact.contains("❯推理第一行"), "{compact}");
+        assert!(compact.contains("▐推理第二行"), "{compact}");
     }
 
     /// 构造一条含两行 thinking 的 assistant 消息。
@@ -1494,6 +1538,104 @@ mod tests {
         assert!(compact.contains("NORMAL"), "{compact}");
         // 渲染后条目起始行已回写（游标滚动定位依赖）
         assert_eq!(app.chat_cursor(), Some(0));
+    }
+
+    /// NORMAL 消息游标：整行铺暗色背景，首行 gutter 为 `❯`、续行为 `▐`，
+    /// 块间隔空行延续高亮，形成连续的整行色带。
+    #[test]
+    fn normal_cursor_row_highlight_spans_full_width() {
+        use super::super::app::Key;
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        app.handle_event(&AgentEvent::MessageStart(Box::new(Message::User(
+            nomic_ai::UserMessage {
+                content: nomic_ai::UserMessageContent::Text("第一行\n第二行".to_string()),
+                timestamp: 0,
+            },
+        ))));
+        app.press(Key::Esc);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let width = usize::from(buffer.area.width);
+        let cells = buffer.content();
+        let position_of = |symbol: &str| -> Option<usize> {
+            cells.iter().position(|cell| cell.symbol() == symbol)
+        };
+        // 首行 gutter 为 `❯`：accent 前景 + 行背景（非反色块）
+        let head = position_of("❯").expect("游标条目首行 gutter 为 ❯");
+        assert_eq!(cells[head].fg, theme::ACCENT);
+        assert_eq!(cells[head].bg, theme::ROW_BG);
+        // 整行铺背景：聊天区宽度内（不含左右留白列）每个单元格都是行背景；
+        // 宽字符的续列被 ratatui 重置为 Reset（渲染随首列样式），跳过
+        let head_row = head / width;
+        let mut continuation = false;
+        for x in 1..(width - 1) {
+            if continuation {
+                continuation = false;
+                continue;
+            }
+            let cell = &cells[head_row * width + x];
+            assert_eq!(cell.bg, theme::ROW_BG, "❯ 行第 {x} 列应为行高亮背景");
+            continuation = UnicodeWidthStr::width(cell.symbol()) > 1;
+        }
+        // 续行 gutter 为 `▐`：accent 前景，同行背景
+        let body = position_of("▐").expect("续行 gutter 为 ▐");
+        assert_eq!(cells[body].fg, theme::ACCENT);
+        assert_eq!(cells[body].bg, theme::ROW_BG);
+        // 块间隔空行延续高亮：`▐` 不止一个（续行 + 空行）
+        assert!(
+            cells.iter().filter(|cell| cell.symbol() == "▐").count() >= 2,
+            "空行应延续高亮 gutter"
+        );
+    }
+
+    /// VISUAL 选择区：与游标同族的整行高亮，gutter 为 magenta；
+    /// 游标端点条目首行仍为 `❯`（magenta），范围其余行 `▐`。
+    #[test]
+    fn visual_selection_highlight_uses_magenta_gutter() {
+        use super::super::app::Key;
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        for text in ["第一条", "第二条"] {
+            app.handle_event(&AgentEvent::MessageStart(Box::new(Message::User(
+                nomic_ai::UserMessage {
+                    content: nomic_ai::UserMessageContent::Text(text.to_string()),
+                    timestamp: 0,
+                },
+            ))));
+        }
+        app.press(Key::Esc);
+        app.press(Key::Char('V'));
+        app.press(Key::Char('k'));
+        assert_eq!(app.visual_range(), Some((0, 1)));
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let width = usize::from(buffer.area.width);
+        let cells = buffer.content();
+        // 游标端点（k 后的下标 0 首行）为 magenta `❯`
+        let head = cells
+            .iter()
+            .position(|cell| cell.symbol() == "❯")
+            .expect("游标端点 gutter 为 ❯");
+        assert_eq!(cells[head].fg, theme::VISUAL);
+        assert_eq!(cells[head].bg, theme::ROW_BG);
+        // 选择区续行与空行为 magenta `▐`，且整行铺背景
+        let bodies: Vec<usize> = cells
+            .iter()
+            .enumerate()
+            .filter(|(_, cell)| cell.symbol() == "▐")
+            .map(|(index, _)| index)
+            .collect();
+        assert!(bodies.len() >= 2, "选择区应有多行 ▐：{bodies:?}");
+        for index in &bodies {
+            assert_eq!(cells[*index].fg, theme::VISUAL);
+            let row = index / width;
+            assert_eq!(cells[row * width + width - 2].bg, theme::ROW_BG);
+        }
     }
 
     /// `/resume` 选择器弹层：session 行、标题与选中标记均可见。

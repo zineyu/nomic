@@ -124,7 +124,7 @@ nomic -p "..." --reasoning low
 | NORMAL | `j` `k` `Ctrl+D/U` `gg` `G` | 滚动 / 半页 / 顶部 / 底部 |
 | NORMAL | `[m` `]m` `[t` `]t` | 跳上/下一条消息、工具调用 |
 | NORMAL | `/` `n` `N` | 聊天搜索与跳转 |
-| NORMAL | `yy` `yc` `V`+`y` | 复制消息 / 复制代码块 / 选择后复制 |
+| NORMAL | `yy` `yc` `v`+`y` | 复制消息 / 复制代码块 / 选择后复制 |
 | NORMAL | `x` `dd` `dw` | 编辑草稿 |
 | NORMAL | `Q` | 打开队列编辑（QUEUE 模式，队列非空时） |
 | NORMAL | `?` | 键位帮助弹层（j/k 滚动、gg/G 顶/底，Esc/q/`?` 关闭） |

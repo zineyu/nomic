@@ -96,6 +96,11 @@ pub struct SkillDocument {
     pub description: String,
     /// 触发关键词或适用场景（frontmatter `triggers`）
     pub triggers: Vec<String>,
+    /// frontmatter `enabled: false` 时整个 skill 不可用（catalog 与 resolve 均跳过）
+    pub enabled: bool,
+    /// frontmatter `hide: true` 时可 resolve / 激活，但不出现在 prompt 清单
+    /// （用于只供显式调用的 skill，对齐 omp 的 hide / disable-model-invocation）
+    pub hide: bool,
     /// 去掉 frontmatter 后的 Markdown 正文
     pub body: String,
 }
@@ -179,13 +184,19 @@ impl SkillResolver {
                 }
                 let skill =
                     match validate_skill_name(&name).and_then(|()| load_skill_document(&path)) {
-                        Ok(document) => Skill {
-                            name: name.clone(),
-                            path,
-                            root: root_path,
-                            scope: root.scope,
-                            document,
-                        },
+                        Ok(document) => {
+                            if !document.enabled {
+                                // enabled: false —— 静默跳过（用户显式关闭，非加载错误）
+                                continue;
+                            }
+                            Skill {
+                                name: name.clone(),
+                                path,
+                                root: root_path,
+                                scope: root.scope,
+                                document,
+                            }
+                        }
                         Err(error) => {
                             errors.push(error);
                             continue;
@@ -258,9 +269,15 @@ impl SkillResolver {
         }
     }
 
-    /// 渲染 system prompt 中的可用 skill 清单；无 skill 时返回 `None`。
+    /// 渲染 system prompt 中的可用 skill 清单；无可见 skill 时返回 `None`。
+    ///
+    /// `hide: true` 的 skill 不在清单出现（仍可显式 resolve / 激活）。
     pub fn prompt_catalog(&self) -> Option<String> {
-        let skills = self.catalog();
+        let skills: Vec<Skill> = self
+            .catalog()
+            .into_iter()
+            .filter(|skill| !skill.document.hide)
+            .collect();
         if skills.is_empty() {
             return None;
         }
@@ -578,6 +595,8 @@ fn validate_skill_name(name: &str) -> Result<(), SkillsError> {
 /// 为避免为 skill 文档引入完整 YAML 依赖，当前支持：
 /// - `description: text`，或块标量形式 `description: >-` / `|` 加缩进续行
 /// - `triggers: [a, b]` 或多行 `- item` 列表
+/// - `enabled: true/false`（false 时整个 skill 不可用）与 `hide: true/false`
+///   （不出现在 prompt 清单，仍可显式调用）
 /// - 其他简单标量键被忽略；未知键的嵌套块（如 `metadata:` 下的 map）被跳过；
 ///   其余复杂 YAML 明确报错
 fn load_skill_document(path: &Path) -> Result<SkillDocument, SkillsError> {
@@ -590,23 +609,24 @@ fn load_skill_document(path: &Path) -> Result<SkillDocument, SkillsError> {
             path: path.to_path_buf(),
             message,
         })?;
-    let (description, triggers) = if let Some(frontmatter) = frontmatter {
-        let parsed =
-            parse_frontmatter(frontmatter).map_err(|message| SkillsError::InvalidFrontmatter {
-                path: path.to_path_buf(),
-                message,
-            })?;
-        (parsed.description, parsed.triggers)
+    let parsed = if let Some(frontmatter) = frontmatter {
+        parse_frontmatter(frontmatter).map_err(|message| SkillsError::InvalidFrontmatter {
+            path: path.to_path_buf(),
+            message,
+        })?
     } else {
-        (None, Vec::new())
+        Frontmatter::default()
     };
     let body = body.trim().to_string();
-    let description = description
+    let description = parsed
+        .description
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| fallback_description(&body));
     Ok(SkillDocument {
         description,
-        triggers,
+        triggers: parsed.triggers,
+        enabled: parsed.enabled.unwrap_or(true),
+        hide: parsed.hide.unwrap_or(false),
         body,
     })
 }
@@ -639,6 +659,19 @@ fn split_frontmatter(text: &str) -> Result<(Option<&str>, &str), String> {
 struct Frontmatter {
     description: Option<String>,
     triggers: Vec<String>,
+    enabled: Option<bool>,
+    hide: Option<bool>,
+}
+
+/// 解析布尔标量（`true` / `false`，可带引号）。
+fn parse_bool(key: &str, value: &str) -> Result<bool, String> {
+    match unquote(value).as_str() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(format!(
+            "frontmatter field {key:?} expects true/false, got {other:?}"
+        )),
+    }
 }
 
 /// 解析受支持的 frontmatter 子集。
@@ -662,6 +695,8 @@ fn parse_frontmatter(text: &str) -> Result<Frontmatter, String> {
         let value = block.as_deref().unwrap_or(value);
         match key {
             "description" => result.description = Some(unquote(value)),
+            "enabled" => result.enabled = Some(parse_bool(key, value)?),
+            "hide" => result.hide = Some(parse_bool(key, value)?),
             "triggers" => {
                 if value.is_empty() {
                     while let Some(next) = lines.peek() {
@@ -1024,6 +1059,44 @@ mod tests {
         assert!(parse_active_skill_tag("plain text").is_none());
         assert!(parse_active_skill_tag("<active_skill scope=\"project\">").is_none());
         assert!("garbage".parse::<SkillScope>().is_err());
+    }
+
+    #[test]
+    fn frontmatter_enabled_and_hide_control_visibility() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        temp_skill(tmp.path(), "normal", "normal body");
+        temp_skill(tmp.path(), "off", "---\nenabled: false\n---\noff body");
+        temp_skill(tmp.path(), "hidden", "---\nhide: true\n---\nhidden body");
+        let resolver = resolver(tmp.path(), vec![(tmp.path(), SkillScope::Project)]);
+
+        // enabled: false —— 彻底跳过，resolve 也找不到
+        let error = resolver.resolve("off").expect_err("disabled");
+        assert!(matches!(error, SkillsError::NotFound { .. }));
+
+        // hide: true —— 可 resolve / 激活，但不出现在 prompt 清单
+        assert_eq!(
+            resolver
+                .resolve("hidden")
+                .expect("resolve hidden")
+                .document
+                .body,
+            "hidden body"
+        );
+        let prompt = resolver.prompt_catalog().expect("non-empty");
+        assert!(prompt.contains("skill://normal"));
+        assert!(!prompt.contains("hidden"));
+        assert!(!prompt.contains("skill://off"));
+
+        // 非布尔值：frontmatter 非法，skill 被跳过并记录诊断
+        temp_skill(tmp.path(), "bad-bool", "---\nenabled: maybe\n---\nbody");
+        let catalog = resolver.catalog_with_diagnostics();
+        assert!(catalog.skills.iter().all(|skill| skill.name != "bad-bool"));
+        assert!(
+            catalog
+                .errors
+                .iter()
+                .any(|error| matches!(error, SkillsError::InvalidFrontmatter { .. }))
+        );
     }
 
     #[test]

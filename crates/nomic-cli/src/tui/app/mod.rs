@@ -930,6 +930,10 @@ impl App {
             }
             // m：队列编辑 overlay（oil.nvim 式，ADR-0014）
             Key::Char('m') => self.enter_queue(),
+            // s：会话菜单（恢复 / 新建 / 分支树合一入口，ADR-0021）
+            Key::Char('s') => {
+                self.picker = Some(Picker::session());
+            }
             // r：重试最近失败的一轮（与 /retry 同一口径；运行中拒绝）
             Key::Char('r') => return self.retry_last(),
             // e：外部编辑器编辑草稿（与 INSERT Ctrl+G 同一效果）
@@ -1171,12 +1175,13 @@ impl App {
             Key::Ctrl('c') => self.should_quit = true,
             Key::Enter => {
                 if let Some((kind, id)) = self.take_picker_selection() {
-                    return vec![match kind {
-                        PickerKind::Resume => Effect::Resume(id),
-                        PickerKind::Tree => Effect::BranchTo(id),
-                        PickerKind::Models => Effect::SwitchModel(id),
-                        PickerKind::Reasoning => Effect::SetReasoning(id),
-                    }];
+                    return match kind {
+                        PickerKind::Resume => vec![Effect::Resume(id)],
+                        PickerKind::Tree => vec![Effect::BranchTo(id)],
+                        PickerKind::Models => vec![Effect::SwitchModel(id)],
+                        PickerKind::Reasoning => vec![Effect::SetReasoning(id)],
+                        PickerKind::Session => self.session_menu_confirm(&id),
+                    };
                 }
             }
             // 可打印字符即过滤（含 j/k/q——导航全部走箭头/Ctrl 键，一键一义）
@@ -1670,6 +1675,25 @@ impl App {
         let entry = self.picker.as_ref()?.selected_entry()?;
         self.picker = None;
         Some(entry)
+    }
+
+    /// 会话菜单（NORMAL `s`）确认：恢复/新建/分支树三者都是会话命令，
+    /// 运行中拒绝并提示（与 COMMAND 下会话命令同一口径）。
+    fn session_menu_confirm(&mut self, id: &str) -> Vec<Effect> {
+        if self.running {
+            self.notice = Some("运行中：会话命令（恢复/新建/分支树）须等本轮结束".to_string());
+            return Vec::new();
+        }
+        self.notice = None;
+        match id {
+            "resume" => vec![Effect::ListSessions],
+            "new" => vec![Effect::NewSession],
+            "tree" => vec![Effect::ListTree],
+            other => {
+                self.notice = Some(format!("未知会话菜单项 {other}"));
+                Vec::new()
+            }
+        }
     }
 
     // ── spinner ─────────────────────────────────────────────────────────────
@@ -3480,6 +3504,40 @@ mod tests {
             [Effect::Cancel]
         ));
         assert!(running.should_quit(), "运行中 Ctrl+C 也退出");
+    }
+
+    /// NORMAL `s`：会话菜单 overlay，Enter 分发恢复/新建/分支树；
+    /// 运行中拒绝。
+    #[test]
+    fn normal_s_opens_session_menu() {
+        let mut app = app();
+        app.press(Key::Esc);
+        app.press(Key::Char('s'));
+        assert_eq!(app.mode(), Mode::Picker);
+        assert!(matches!(app.picker(), Some(p) if matches!(p.kind, PickerKind::Session)));
+
+        // 默认选中第一项（恢复 session）
+        let effects = app.press(Key::Enter);
+        assert!(matches!(&effects[..], [Effect::ListSessions]));
+
+        // 选中「新建对话」（picker 关闭后回 NORMAL，直接重开）
+        app.press(Key::Char('s'));
+        app.press(Key::Down);
+        let effects = app.press(Key::Enter);
+        assert!(matches!(&effects[..], [Effect::NewSession]));
+
+        // 选中「会话树」
+        app.press(Key::Char('s'));
+        app.press(Key::Down);
+        app.press(Key::Down);
+        let effects = app.press(Key::Enter);
+        assert!(matches!(&effects[..], [Effect::ListTree]));
+
+        // 运行中拒绝
+        app.handle_event(&AgentEvent::AgentStart);
+        app.press(Key::Char('s'));
+        assert!(app.press(Key::Enter).is_empty());
+        assert!(app.notice().is_some_and(|n| n.contains("运行中")));
     }
 
     /// picker 打开时模式派生为 Picker（ADR-0011）。

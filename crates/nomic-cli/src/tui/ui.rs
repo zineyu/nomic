@@ -772,6 +772,7 @@ fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
             PickerKind::Tree => "会话树 · 输入过滤 · ↑/↓ 选择 · Enter 创建分支 · Esc 取消",
             PickerKind::Models => "切换模型 · 输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
             PickerKind::Reasoning => "思考级别 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
+            PickerKind::Session => "会话菜单 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
         };
         (
             Some(Line::from(Span::styled(title, theme::accent()))),
@@ -1010,6 +1011,7 @@ fn draw_picker(frame: &mut Frame<'_>, picker: &Picker, input_area: Rect) {
         PickerKind::Tree => "会话树",
         PickerKind::Models => "切换模型",
         PickerKind::Reasoning => "思考级别",
+        PickerKind::Session => "会话菜单",
     };
     let mut title = if total > COMPLETION_MAX_VISIBLE {
         format!("{action} {}/{total}", picker.selected + 1)

@@ -3,7 +3,7 @@
 
 use nomic_ai::{Model, ThinkingLevel};
 
-use crate::bootstrap::{self, ModelChoice, ModelSelection};
+use crate::model::{self, ModelChoice, ModelSelection};
 use crate::tui::app::{App, PickerRow};
 use crate::tui::ui;
 use crate::tui::{Driver, DriverJob, ModelSwitch, ProviderSwitch};
@@ -253,11 +253,9 @@ fn same_model(a: &Model, b: &Model) -> bool {
 /// 级别设置与 prompt 一定跑在新模型上。
 fn apply_model_switch(app: &mut App, driver: &mut Driver, model: Model) -> bool {
     let provider = (model.provider != driver.model.provider).then(|| {
-        let api_key = bootstrap::resolve_api_key(
+        let api_key = model::resolve_api_key(
             None,
-            std::env::var(bootstrap::api_key_env(model.api))
-                .ok()
-                .as_deref(),
+            std::env::var(model::api_key_env(model.api)).ok().as_deref(),
             driver
                 .models
                 .provider_config(&model.provider)
@@ -265,7 +263,7 @@ fn apply_model_switch(app: &mut App, driver: &mut Driver, model: Model) -> bool 
             driver.models.config().and_then(|c| c.api_key.as_deref()),
         );
         ProviderSwitch {
-            provider: bootstrap::build_provider(model.api, api_key.clone()),
+            provider: model::build_provider(model.api, api_key.clone()),
             api_key,
         }
     });
@@ -300,10 +298,7 @@ fn persist_model_selection(driver: &Driver, model: &Model) {
     let spec = current_selection(model).spec();
     tokio::spawn(async move {
         if let Err(error) = store
-            .set_config(
-                bootstrap::CONFIG_KEY_MODEL,
-                &serde_json::Value::String(spec),
-            )
+            .set_config(model::CONFIG_KEY_MODEL, &serde_json::Value::String(spec))
             .await
         {
             tracing::warn!(error = %error, "模型选择落库失败");

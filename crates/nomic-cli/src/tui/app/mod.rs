@@ -6,7 +6,8 @@
 //!
 //! 结构：[`App`] 是「组合 + 模式路由」的薄壳，状态按关注点拆到子模块——
 //! - [`chat`]：聊天区条目 + delta 累积 + 滚动（[`Chat`]）
-//! - [`input`]：草稿缓冲 + 编辑 + 补全（[`Input`]）
+//! - [`input`]：草稿/命令行缓冲 + 编辑 + 补全（[`Input`]；草稿与命令
+//!   输入框各持一份，ADR-0020）
 //! - [`queue`]：统一消息队列与 QUEUE 模式状态（[`Queue`]）
 //! - [`picker`] / [`search`]：选择器与搜索状态（[`Picker`] / [`Search`]）
 //!
@@ -48,7 +49,9 @@ pub(super) struct SlashCommand {
     pub(super) usage: &'static str,
 }
 
-/// 全部 slash 命令（补全候选与 `/help` 输出的唯一来源）。
+/// 全部 slash 命令（命令行补全候选与 `/help` 输出的唯一来源）。
+/// 命令只在 COMMAND 模式（NORMAL `:` 打开的专门命令输入框）执行；
+/// 聊天输入框（INSERT）不再触发命令，`/` 开头的输入按普通 prompt 发送。
 pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "help",
@@ -308,7 +311,8 @@ fn parse_slash(input: &str) -> SlashParse {
 /// `/help` 的输出文本。
 fn help_text() -> String {
     use std::fmt::Write as _;
-    let mut text = "可用命令：".to_string();
+    // 命令只在 COMMAND 模式执行（ADR-0020）：NORMAL 下 `:` 打开命令输入框
+    let mut text = "可用命令（Esc 进 NORMAL 后按 : 打开命令行，Tab 补全）：".to_string();
     for command in SLASH_COMMANDS {
         let aliases = if command.aliases.is_empty() {
             String::new()
@@ -348,16 +352,19 @@ const PAGE_SCROLL: u16 = 10;
 /// NORMAL 模式 Ctrl+D/Ctrl+U 的半页滚动步长。
 const HALF_PAGE_SCROLL: u16 = 5;
 
-/// TUI 交互模式（ADR-0011）：模式是一等状态，每个按键在当前模式只有一个语义。
+/// TUI 交互模式（ADR-0011/0020）：模式是一等状态，每个按键在当前模式
+/// 只有一个语义。
 ///
-/// COMMAND 不单列变体：NORMAL 下 `:` 即 INSERT + 预填 `/`（Phase 2 实现）；
-/// SEARCH 同理留给 Phase 2。
+/// SEARCH 复用输入框显示搜索串；COMMAND 有专门的命令输入框（独立缓冲）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Mode {
-    /// 输入（默认）：编辑与提交 prompt、slash 命令、Tab 补全
+    /// 输入（默认）：编辑与提交 prompt；不触发命令，`/` 开头按普通文本发送
     Insert,
     /// 浏览：滚动聊天区、跳转、复制；输入字符不进入缓冲（草稿保留）
     Normal,
+    /// 命令（ADR-0020）：NORMAL `:` 进入的专门命令输入框（独立缓冲，预填
+    /// `/`）；Tab 补全、Enter 执行命令或展开模板、Esc 放弃回 NORMAL
+    Command,
     /// 搜索：输入框复用为搜索框（增量命中），Enter/Esc 回 NORMAL
     Search,
     /// 可视选择：以消息为粒度选择范围，`y` 复制后回 NORMAL
@@ -463,8 +470,12 @@ pub(super) enum Effect {
 pub(super) struct App {
     /// 聊天区：条目、消息游标与滚动
     chat: Chat,
-    /// 输入区：草稿缓冲、编辑与补全
+    /// 聊天输入区：草稿缓冲、编辑与附件（INSERT/QUEUE 就地编辑共用；
+    /// 不触发命令，slash 补全不启用）
     input: Input,
+    /// 命令输入框（ADR-0020）：COMMAND 模式的专用缓冲（独立于草稿），
+    /// slash 补全常驻启用；进入时清空并预填 `/`，离开即清空
+    command: Input,
     /// 统一消息队列与 QUEUE 模式状态
     queue: Queue,
     /// 搜索状态（NORMAL `/` 进入 SEARCH）
@@ -503,9 +514,13 @@ pub(super) struct App {
 
 impl App {
     pub(super) fn new(model_name: String, session_id: Option<String>, context_window: u64) -> Self {
+        let mut input = Input::new();
+        // 草稿不承载命令（ADR-0020）：slash 补全只属于命令输入框
+        input.set_completion_enabled(false);
         Self {
             chat: Chat::default(),
-            input: Input::new(),
+            input,
+            command: Input::new(),
             queue: Queue::default(),
             search: Search::default(),
             picker: None,
@@ -542,9 +557,19 @@ impl App {
         &self.input
     }
 
-    /// 输入区状态（可变）：补全快照与附件暂存用。
+    /// 输入区状态（可变）：附件暂存用。
     pub(super) const fn input_mut(&mut self) -> &mut Input {
         &mut self.input
+    }
+
+    /// 命令输入框状态（COMMAND 模式渲染用）。
+    pub(super) const fn command(&self) -> &Input {
+        &self.command
+    }
+
+    /// 命令输入框状态（可变）：skill/template 补全快照用。
+    pub(super) const fn command_mut(&mut self) -> &mut Input {
+        &mut self.command
     }
 
     /// 队列状态（条数、条目视图、QUEUE 模式游标）。
@@ -658,11 +683,11 @@ impl App {
     }
 
     /// 消费一个按键，返回需要事件循环接线执行的语义效果。
-    /// 按交互模式分发（ADR-0011）：picker/补全/slash 的路由全部
+    /// 按交互模式分发（ADR-0011）：picker/补全/命令的路由全部
     /// 在此内部完成。
     pub(super) fn press(&mut self, key: Key) -> Vec<Effect> {
         match self.mode() {
-            // 选择器打开时接管键位（slash 命令仅在空闲时可提交，
+            // 选择器打开时接管键位（命令仅在空闲时可提交，
             // 此时 agent 必空闲，无运行可取消）
             Mode::Picker => self.press_picker(key),
             Mode::Help => self.press_help(key),
@@ -670,11 +695,13 @@ impl App {
             Mode::Visual => self.press_visual(key),
             Mode::Normal => self.press_normal(key),
             Mode::Insert => self.press_insert(key),
+            Mode::Command => self.press_command(key),
             Mode::Queue => self.press_queue(key),
         }
     }
 
-    /// INSERT 模式键位：编辑与提交 prompt、slash 命令、补全。
+    /// INSERT 模式键位：编辑与提交 prompt。命令不在此触发（ADR-0020）：
+    /// `/` 开头的输入按普通 prompt 发送，命令走 COMMAND 模式。
     fn press_insert(&mut self, key: Key) -> Vec<Effect> {
         match key {
             Key::Ctrl('c' | 'd') => {
@@ -683,60 +710,170 @@ impl App {
                 }
                 self.should_quit = true;
             }
-            Key::Esc => return self.insert_esc(),
+            // Esc 一律是模式切换（ADR-0011），不再取消运行；取消由 Ctrl+C 承担
+            Key::Esc => self.enter_normal(),
             // Ctrl+G：外部编辑器编辑当前草稿（长文/多行场景；编辑器持有
             // 草稿副本，保存退出后整体写回，放弃则原样保留）
             Key::Ctrl('g') => return vec![Effect::OpenEditor],
-            Key::Tab => self.input.tab_complete(),
             Key::Enter => return self.press_enter(),
-            other => self.apply_edit_key(other),
+            other => Self::edit_key(&mut self.input, &mut self.chat, other),
         }
         Vec::new()
     }
 
-    /// 缓冲编辑键（INSERT 与 QUEUE 就地编辑共用）：字符输入、删除、
-    /// 光标移动、换行与聊天区滚动；提交、补全与模式切换由调用方各自处理。
-    fn apply_edit_key(&mut self, key: Key) {
+    /// 缓冲编辑键（INSERT、COMMAND 与 QUEUE 就地编辑共用）：字符输入、
+    /// 删除、光标移动、换行与聊天区滚动；提交、补全与模式切换由调用方
+    /// 各自处理。
+    fn edit_key(input: &mut Input, chat: &mut Chat, key: Key) {
         match key {
-            Key::Ctrl('w') => self.input.delete_word_back(),
-            Key::Ctrl('u') => self.input.delete_to_line_start(),
-            Key::Ctrl('a') => self.input.cursor_line_home(),
-            Key::Ctrl('e') => self.input.cursor_line_end(),
-            Key::Alt('b') => self.input.cursor_word_left(),
-            Key::Alt('f') => self.input.cursor_word_right(),
-            Key::Newline => self.input.insert_newline(),
-            Key::Backspace => self.input.backspace(),
-            Key::Left => self.input.cursor_left(),
-            Key::Right => self.input.cursor_right(),
-            Key::Home => self.input.cursor_home(),
-            Key::End => self.input.cursor_end(),
+            Key::Ctrl('w') => input.delete_word_back(),
+            Key::Ctrl('u') => input.delete_to_line_start(),
+            Key::Ctrl('a') => input.cursor_line_home(),
+            Key::Ctrl('e') => input.cursor_line_end(),
+            Key::Alt('b') => input.cursor_word_left(),
+            Key::Alt('f') => input.cursor_word_right(),
+            Key::Newline => input.insert_newline(),
+            Key::Backspace => input.backspace(),
+            Key::Left => input.cursor_left(),
+            Key::Right => input.cursor_right(),
+            Key::Home => input.cursor_home(),
+            Key::End => input.cursor_end(),
             // 补全弹层可见时 ↑/↓ 移动选中项，否则滚动聊天区
-            Key::Up => self.insert_vertical(-1),
-            Key::Down => self.insert_vertical(1),
-            Key::PageUp => self.chat.scroll_up(PAGE_SCROLL),
-            Key::PageDown => self.chat.scroll_down(PAGE_SCROLL),
-            Key::Char(c) => self.input.insert_char(c),
+            Key::Up => Self::edit_vertical(input, chat, -1),
+            Key::Down => Self::edit_vertical(input, chat, 1),
+            Key::PageUp => chat.scroll_up(PAGE_SCROLL),
+            Key::PageDown => chat.scroll_down(PAGE_SCROLL),
+            Key::Char(c) => input.insert_char(c),
             _ => {}
         }
     }
 
-    /// INSERT 的 Esc 退回栈（ADR-0011）：关补全弹层 → 回 NORMAL。
-    /// Esc 一律是模式切换，不再取消运行；取消运行由 Ctrl+C 承担。
-    fn insert_esc(&mut self) -> Vec<Effect> {
-        if !self.input.dismiss_completion() {
-            self.enter_normal();
+    /// 编辑态的 ↑/↓：补全弹层可见时移动选中项，否则滚动聊天区。
+    const fn edit_vertical(input: &mut Input, chat: &mut Chat, delta: isize) {
+        if input.completion().is_some() {
+            input.completion_select(delta);
+        } else if delta < 0 {
+            chat.scroll_up(1);
+        } else {
+            chat.scroll_down(1);
+        }
+    }
+
+    /// COMMAND 模式键位（ADR-0020）：专门的命令输入框（NORMAL `:` 进入，
+    /// 独立缓冲预填 `/`）。编辑键与 INSERT 一致；Tab 补全，Enter 执行
+    /// 命令（或展开模板），Esc 退回栈：关补全弹层 → 放弃回 NORMAL。
+    fn press_command(&mut self, key: Key) -> Vec<Effect> {
+        match key {
+            Key::Ctrl('c' | 'd') => {
+                if self.running {
+                    return vec![Effect::Cancel];
+                }
+                self.should_quit = true;
+            }
+            Key::Esc => {
+                if !self.command.dismiss_completion() {
+                    self.leave_command();
+                }
+            }
+            Key::Tab => self.command.tab_complete(),
+            Key::Enter => return self.command_enter(),
+            other => Self::edit_key(&mut self.command, &mut self.chat, other),
         }
         Vec::new()
     }
 
-    /// INSERT 的 ↑/↓：补全弹层可见时移动选中项，否则滚动聊天区。
-    const fn insert_vertical(&mut self, delta: isize) {
-        if self.input.completion().is_some() {
-            self.input.completion_select(delta);
-        } else if delta < 0 {
-            self.chat.scroll_up(1);
-        } else {
-            self.chat.scroll_down(1);
+    /// NORMAL `:`：进入 COMMAND（专门的命令输入框）：清空缓冲并预填
+    /// `/`（补全弹层随之列出全部命令）。草稿在独立缓冲，不受影响。
+    fn enter_command(&mut self) {
+        self.mode = Mode::Command;
+        self.pending_key = None;
+        self.command.set_text(String::new());
+        self.command.insert_char('/');
+    }
+
+    /// 离开 COMMAND 回 NORMAL：清空命令缓冲（无论已执行还是放弃）。
+    fn leave_command(&mut self) {
+        self.mode = Mode::Normal;
+        self.pending_key = None;
+        self.command.set_text(String::new());
+    }
+
+    /// COMMAND 的 Enter：空命令行（仅预填的 `/`）无声返回 NORMAL；
+    /// 补全弹层未精确匹配时先填入候选；其余按命令分发——被拒绝（参数
+    /// 非法、未知命令、运行中会话命令）时留在 COMMAND 供修正，受理后
+    /// 回 NORMAL（vim `:` 执行完回 normal 的同一口径）。
+    fn command_enter(&mut self) -> Vec<Effect> {
+        let text = self.command.text().trim().to_string();
+        if text.is_empty() || text == "/" {
+            // 空命令行：等同 Esc，无声返回 NORMAL
+            self.leave_command();
+            return Vec::new();
+        }
+        if self.command.accept_completion_on_enter() {
+            // 已填入补全候选；再次 Enter 提交
+            return Vec::new();
+        }
+        let Some(effects) = self.dispatch_command(&text) else {
+            return Vec::new();
+        };
+        self.leave_command();
+        effects
+    }
+
+    /// 命令行提交的分发：slash 命令 / prompt template 展开。返回 `None`
+    /// 表示被拒绝（notice 已置，调用方留在 COMMAND 供修正）；`Some`
+    /// 表示已受理（效果可为空，如 `/help` 就地输出）。
+    ///
+    /// 运行中的口径与 INSERT 提交一致（ADR-0014）：本地命令照常执行；
+    /// 模板展开的 prompt 排入统一消息队列；会话命令（经 driver 修改
+    /// agent 上下文）仍须等本轮结束，拒绝并保留输入。
+    fn dispatch_command(&mut self, text: &str) -> Option<Vec<Effect>> {
+        match parse_slash(text) {
+            SlashParse::NotCommand => {
+                // 缓冲预填 `/`，只有用户删掉前缀才会落到这里
+                self.notice = Some("命令以 / 开头（/help 查看可用命令）".to_string());
+                None
+            }
+            SlashParse::Known(action) => {
+                if self.running && !action.is_local() {
+                    self.notice = Some(
+                        "运行中：会话命令（/compact、/retry、/models 等）须等本轮结束".to_string(),
+                    );
+                    return None;
+                }
+                self.notice = None;
+                Some(self.execute_slash(action))
+            }
+            SlashParse::InvalidUsage(usage) => {
+                self.notice = Some(format!("参数形式不对，用法：{usage}"));
+                None
+            }
+            SlashParse::Unknown(name) => {
+                match nomic_prompts::expand_invocation(self.command.templates(), text) {
+                    Ok(Some(expanded)) => {
+                        if self.running {
+                            Some(self.enqueue(expanded))
+                        } else {
+                            let images = self.input.take_attachments();
+                            // 与普通 prompt 同一口径：先置 running 避免提交空窗期重复提交
+                            self.running = true;
+                            self.notice = None;
+                            Some(vec![Effect::Prompt {
+                                text: expanded,
+                                images,
+                            }])
+                        }
+                    }
+                    Err(PromptsError::UnterminatedQuote { .. }) => {
+                        self.notice = Some("参数形式不对：引号未闭合".to_string());
+                        None
+                    }
+                    _ => {
+                        self.notice = Some(format!("未知命令 /{name}，输入 /help 查看可用命令"));
+                        None
+                    }
+                }
+            }
         }
     }
 
@@ -856,8 +993,8 @@ impl App {
     }
 
     /// NORMAL 的「离开浏览」键位：`i`/`a`/`Esc` 回 INSERT（光标原位），
-    /// `Enter`/`A` 回 INSERT 到输入末尾，`I` 到当前行首，`:` 预填 `/`
-    /// 进入命令输入。返回 `Some` 表示已处理。
+    /// `Enter`/`A` 回 INSERT 到输入末尾，`I` 到当前行首，`:` 进入
+    /// COMMAND 命令输入框（ADR-0020）。返回 `Some` 表示已处理。
     fn normal_exit(&mut self, key: Key) -> Option<Vec<Effect>> {
         match key {
             // i/a 回到光标原处继续编辑；Esc 放弃浏览直接返回
@@ -872,17 +1009,9 @@ impl App {
                 self.leave_normal();
                 self.input.cursor_line_home();
             }
-            // `:` 进入命令输入：回 INSERT 并预填 `/`（补全弹层随之出现）。
-            // 草稿非空时不覆盖用户文本，提示先处理草稿
-            Key::Char(':') => {
-                let empty = self.input.text().is_empty();
-                self.leave_normal();
-                if empty {
-                    self.input.insert_char('/');
-                } else {
-                    self.notice = Some("草稿非空：i 返回编辑，清空后再用 : 命令".to_string());
-                }
-            }
+            // `:` 进入专门的命令输入框（ADR-0020）：独立缓冲预填 `/`，
+            // 草稿不受影响（补全弹层随之列出全部命令）
+            Key::Char(':') => self.enter_command(),
             _ => return None,
         }
         Some(Vec::new())
@@ -1010,23 +1139,24 @@ impl App {
         self.mode = Mode::Normal;
         self.pending_key = None;
         self.chat.move_cursor_to_last_message();
-        self.input.set_completion_enabled(false);
     }
 
     /// 离开 NORMAL 回 INSERT：清掉序列键 pending，避免残留的首键
     /// 在下次进入 NORMAL 时被误当第二键。
-    fn leave_normal(&mut self) {
+    const fn leave_normal(&mut self) {
         self.mode = Mode::Insert;
         self.pending_key = None;
-        self.input.set_completion_enabled(true);
     }
 
-    /// 消息游标（渲染 gutter 高亮用）；浏览类模式（NORMAL/SEARCH/VISUAL）
-    /// 下返回。
+    /// 消息游标（渲染 gutter 高亮用）；浏览类模式（NORMAL/COMMAND/SEARCH/
+    /// VISUAL）下返回。
     pub(super) fn chat_cursor(&self) -> Option<usize> {
-        matches!(self.mode(), Mode::Normal | Mode::Search | Mode::Visual)
-            .then_some(self.chat.cursor())
-            .flatten()
+        matches!(
+            self.mode(),
+            Mode::Normal | Mode::Command | Mode::Search | Mode::Visual
+        )
+        .then_some(self.chat.cursor())
+        .flatten()
     }
 
     /// NORMAL `yy`：复制消息游标所在条目的纯文本。
@@ -1144,15 +1274,11 @@ impl App {
         }
     }
 
-    /// Enter：补全弹层未精确匹配时先填入候选；否则取出输入，
-    /// 按 slash 命令或普通 prompt 分发（运行中的口径见
-    /// [`Self::press_enter_running`]）。运行中 Enter = 排入统一消息
-    /// 队列（ADR-0014）。
+    /// INSERT 的 Enter：取出草稿提交 prompt（运行中的口径见
+    /// [`Self::press_enter_running`]）。命令不在此触发（ADR-0020）：
+    /// `/` 开头的草稿同样按普通 prompt 发送，命令走 COMMAND 模式
+    ///（NORMAL `:` 打开命令输入框）。
     fn press_enter(&mut self) -> Vec<Effect> {
-        if self.input.accept_completion_on_enter() {
-            // 已填入补全候选；再次 Enter 提交
-            return Vec::new();
-        }
         if self.running {
             return self.press_enter_running();
         }
@@ -1165,76 +1291,25 @@ impl App {
             }
             return Vec::new();
         };
-        match parse_slash(&text) {
-            SlashParse::NotCommand => {
-                let images = self.input.take_attachments();
-                // AgentStart 事件也会置位；先置避免提交空窗期重复提交
-                self.running = true;
-                self.notice = None;
-                vec![Effect::Prompt { text, images }]
-            }
-            SlashParse::Known(action) => self.execute_slash(action),
-            SlashParse::InvalidUsage(usage) => {
-                self.notice = Some(format!("参数形式不对，用法：{usage}"));
-                Vec::new()
-            }
-            SlashParse::Unknown(name) => self.submit_template(&text, &name),
-        }
+        let images = self.input.take_attachments();
+        // AgentStart 事件也会置位；先置避免提交空窗期重复提交
+        self.running = true;
+        self.notice = None;
+        vec![Effect::Prompt { text, images }]
     }
 
-    /// 运行中（含工具执行中）的 Enter：本地 slash 命令照常
-    /// 执行——它们不触碰 agent/driver 状态（[`SlashAction::is_local`]），
-    /// 长时间运行的工具调用不应阻塞它们；普通输入与模板调用
-    /// **排队**——入统一消息队列（ADR-0014，当前 turn 的工具调用执行
-    /// 完后注入本轮运行）；Esc→NORMAL→Q 进 QUEUE 模式编辑队列。
-    /// 会话命令仍须等本轮结束（输入保留，结束后可再提交）。
+    /// 运行中（含工具执行中）的 INSERT Enter：普通输入**排队**——入
+    /// 统一消息队列（ADR-0014，当前 turn 的工具调用执行完后注入本轮
+    /// 运行）；Esc→NORMAL→Q 进 QUEUE 模式编辑队列。运行中执行命令走
+    /// COMMAND 模式（本地命令照常，会话命令仍须等本轮结束）。
     fn press_enter_running(&mut self) -> Vec<Effect> {
-        let text = self.input.text().trim().to_string();
-        if text.is_empty() {
+        let Some(text) = self.input.take_input() else {
             if self.input.has_attachments() {
                 self.notice = Some("已附加图片，输入文本后 Enter 一起排队".to_string());
             }
             return Vec::new();
-        }
-        match parse_slash(&text) {
-            SlashParse::NotCommand => {
-                self.input.take_input();
-                self.enqueue(text)
-            }
-            SlashParse::Known(action) if action.is_local() => {
-                self.input.take_input();
-                self.notice = None;
-                self.execute_slash(action)
-            }
-            // 会话命令要经 driver 串行修改 agent 上下文，仍须等本轮结束；
-            // 输入保留为草稿，不排队（排队只承载发给模型的 prompt）
-            SlashParse::Known(_) => {
-                self.notice = Some(
-                    "运行中：会话命令（/compact、/retry、/models 等）须等本轮结束".to_string(),
-                );
-                Vec::new()
-            }
-            SlashParse::InvalidUsage(usage) => {
-                self.notice = Some(format!("参数形式不对，用法：{usage}"));
-                Vec::new()
-            }
-            SlashParse::Unknown(name) => {
-                match nomic_prompts::expand_invocation(self.input.templates(), &text) {
-                    Ok(Some(expanded)) => {
-                        self.input.take_input();
-                        self.enqueue(expanded)
-                    }
-                    Err(PromptsError::UnterminatedQuote { .. }) => {
-                        self.notice = Some("参数形式不对：引号未闭合".to_string());
-                        Vec::new()
-                    }
-                    _ => {
-                        self.notice = Some(format!("未知命令 /{name}，输入 /help 查看可用命令"));
-                        Vec::new()
-                    }
-                }
-            }
-        }
+        };
+        self.enqueue(text)
     }
 
     // ── 排队输入与 QUEUE 模式（ADR-0014）───────────────────────────
@@ -1330,7 +1405,7 @@ impl App {
                 }
                 self.should_quit = true;
             }
-            other => self.apply_edit_key(other),
+            other => Self::edit_key(&mut self.input, &mut self.chat, other),
         }
         Vec::new()
     }
@@ -1440,7 +1515,6 @@ impl App {
         self.queue.freeze();
         self.pending_key = None;
         self.queue.reset();
-        self.input.set_completion_enabled(false);
     }
 
     /// QUEUE 导航子状态的 Esc：退出回 NORMAL，解冻队列注入；
@@ -1475,31 +1549,6 @@ impl App {
             total = total.saturating_add(lines);
         }
         total
-    }
-
-    /// 未知 slash 命令：按 prompt template 调用尝试展开提交；未命中模板时
-    /// 维持未知命令提示。内建命令优先（已在 `parse_slash` 中匹配）。
-    fn submit_template(&mut self, text: &str, name: &str) -> Vec<Effect> {
-        match nomic_prompts::expand_invocation(self.input.templates(), text) {
-            Ok(Some(expanded)) => {
-                let images = self.input.take_attachments();
-                // 与普通 prompt 同一口径：先置 running 避免提交空窗期重复提交
-                self.running = true;
-                self.notice = None;
-                vec![Effect::Prompt {
-                    text: expanded,
-                    images,
-                }]
-            }
-            Err(PromptsError::UnterminatedQuote { .. }) => {
-                self.notice = Some("参数形式不对：引号未闭合".to_string());
-                Vec::new()
-            }
-            _ => {
-                self.notice = Some(format!("未知命令 /{name}，输入 /help 查看可用命令"));
-                Vec::new()
-            }
-        }
     }
 
     /// slash 命令的内部处置：能就地完成的直接做，需要外部资源的转为效果。
@@ -1584,10 +1633,10 @@ impl App {
 
     // ── 会话操作 ────────────────────────────────────────────────────────────
 
-    /// `/skill`：刷新补全快照并列出可用 skill（本地展示，不进上下文）。
+    /// `/skill`：刷新命令行补全快照并列出可用 skill（本地展示，不进上下文）。
     pub(super) fn show_skills(&mut self, skills: Vec<SkillEntry>) {
         self.chat.push_system(skill_list_text(&skills));
-        self.input.set_available_skills(skills);
+        self.command.set_available_skills(skills);
     }
 
     /// `/new`：清空聊天区开启新对话；session 切换由调用方随后经
@@ -1625,17 +1674,19 @@ impl App {
 
     // ── 粘贴与外部编辑器 ────────────────────────────────────────────────────
 
-    /// 粘贴一段文本到光标处（可含换行；`\r\n` 统一为 `\n`），随后重算补全。
+    /// 粘贴一段文本（可含换行；`\r\n` 统一为 `\n`），随后重算补全。
     pub(super) fn paste_text(&mut self, text: &str) {
-        // 粘贴的意图是编辑：NORMAL 下先回到 INSERT（草稿保留）；
-        // QUEUE 导航下先进入就地编辑（粘贴即修改游标槽位）
+        // 粘贴的意图是编辑：命令行粘贴进命令缓冲（留在 COMMAND）；
+        // QUEUE 导航下先进入就地编辑（粘贴即修改游标槽位）；
+        // 其余（NORMAL/SEARCH 等）先回 INSERT 编辑草稿（草稿保留）
         match self.mode {
+            Mode::Command => {
+                self.command.paste(text);
+                return;
+            }
             Mode::Queue if !self.queue.is_editing() => self.queue_begin_edit(),
             Mode::Queue => {}
-            _ => {
-                self.mode = Mode::Insert;
-                self.input.set_completion_enabled(true);
-            }
+            _ => self.mode = Mode::Insert,
         }
         self.input.paste(text);
     }
@@ -1859,6 +1910,16 @@ mod tests {
         App::new("test-model".to_string(), None, 200_000)
     }
 
+    /// 打开命令输入框并键入命令文本（ADR-0020）：INSERT 下先 Esc 进
+    /// NORMAL，`:` 打开命令行（预填 `/`），粘贴不含 `/` 前缀的命令文本。
+    fn open_command(app: &mut App, text: &str) {
+        if app.mode() == Mode::Insert {
+            app.press(Key::Esc);
+        }
+        app.press(Key::Char(':'));
+        app.paste_text(text);
+    }
+
     #[test]
     fn accumulates_streaming_text_and_thinking() {
         let mut app = app();
@@ -2076,11 +2137,11 @@ mod tests {
     #[test]
     fn newline_dismisses_completion() {
         let mut app = app();
-        app.input.insert_char('/');
-        assert!(app.input.completion().is_some());
+        app.command.insert_char('/');
+        assert!(app.command.completion().is_some());
         // 换行是空白字符，slash 补全随之关闭
-        app.input.insert_newline();
-        assert!(app.input.completion().is_none());
+        app.command.insert_newline();
+        assert!(app.command.completion().is_none());
     }
 
     #[test]
@@ -2102,24 +2163,24 @@ mod tests {
     #[test]
     fn slash_completion_filters_by_prefix_and_tab_cycles() {
         let mut app = app();
-        app.input.insert_char('/');
-        let completion = app.input.completion().expect("/ 即弹出全部候选");
+        app.command.insert_char('/');
+        let completion = app.command.completion().expect("/ 即弹出全部候选");
         assert_eq!(completion.candidates.len(), SLASH_COMMANDS.len());
 
-        app.input.insert_char('n');
-        let completion = app.input.completion().expect("/n 匹配 new");
+        app.command.insert_char('n');
+        let completion = app.command.completion().expect("/n 匹配 new");
         assert_eq!(candidate_fragments(completion), vec!["new"]);
 
         // Tab 接受候选
-        app.input.tab_complete();
-        assert_eq!(app.input.text(), "/new");
+        app.command.tab_complete();
+        assert_eq!(app.command.text(), "/new");
         // 精确匹配后仍显示（展示描述），且选中该项
-        let completion = app.input.completion().expect("精确匹配仍显示候选");
+        let completion = app.command.completion().expect("精确匹配仍显示候选");
         assert_eq!(completion.candidates[completion.selected].fragment(), "new");
 
         // 输入空格（进入参数区）后弹层消失
-        app.input.insert_char(' ');
-        assert!(app.input.completion().is_none());
+        app.command.insert_char(' ');
+        assert!(app.command.completion().is_none());
     }
 
     /// 候选的输入片段列表（不含 `/` 前缀），测试断言用。
@@ -2135,19 +2196,19 @@ mod tests {
     fn slash_completion_matches_alias_and_enter_accepts() {
         let mut app = app();
         for c in "/ex".chars() {
-            app.input.insert_char(c);
+            app.command.insert_char(c);
         }
-        let completion = app.input.completion().expect("/ex 匹配别名 exit");
+        let completion = app.command.completion().expect("/ex 匹配别名 exit");
         assert_eq!(
             completion.candidates[completion.selected].fragment(),
             "quit"
         );
 
         // 未精确匹配时 Enter 先填入候选，不提交
-        assert!(app.input.accept_completion_on_enter());
-        assert_eq!(app.input.text(), "/quit");
+        assert!(app.command.accept_completion_on_enter());
+        assert_eq!(app.command.text(), "/quit");
         // 精确匹配后 Enter 放行提交
-        assert!(!app.input.accept_completion_on_enter());
+        assert!(!app.command.accept_completion_on_enter());
     }
 
     #[test]
@@ -2535,7 +2596,7 @@ mod tests {
     #[test]
     fn skill_completion_after_colon_prefix() {
         let mut app = app();
-        app.input.set_available_skills(vec![
+        app.command.set_available_skills(vec![
             SkillEntry {
                 name: "jujutsu".to_string(),
                 description: "jj vcs".to_string(),
@@ -2548,30 +2609,30 @@ mod tests {
             },
         ]);
         for c in "/skill:".chars() {
-            app.input.insert_char(c);
+            app.command.insert_char(c);
         }
-        let completion = app.input.completion().expect("/skill: 弹出全部 skill");
+        let completion = app.command.completion().expect("/skill: 弹出全部 skill");
         assert_eq!(
             candidate_fragments(completion),
             vec!["skill:jujutsu", "skill:rust-review"]
         );
 
         // Tab 接受选中项；接受后候选收敛到精确匹配项，再次 Tab 保持不变
-        app.input.tab_complete();
-        assert_eq!(app.input.text(), "/skill:jujutsu");
-        app.input.tab_complete();
-        assert_eq!(app.input.text(), "/skill:jujutsu");
+        app.command.tab_complete();
+        assert_eq!(app.command.text(), "/skill:jujutsu");
+        app.command.tab_complete();
+        assert_eq!(app.command.text(), "/skill:jujutsu");
 
         // 前缀过滤后 Enter 填入唯一候选，再次 Enter 精确匹配放行提交
-        app.input.take_input();
+        app.command.take_input();
         for c in "/skill:juj".chars() {
-            app.input.insert_char(c);
+            app.command.insert_char(c);
         }
-        let completion = app.input.completion().expect("前缀过滤");
+        let completion = app.command.completion().expect("前缀过滤");
         assert_eq!(candidate_fragments(completion), vec!["skill:jujutsu"]);
-        assert!(app.input.accept_completion_on_enter());
-        assert_eq!(app.input.text(), "/skill:jujutsu");
-        assert!(!app.input.accept_completion_on_enter());
+        assert!(app.command.accept_completion_on_enter());
+        assert_eq!(app.command.text(), "/skill:jujutsu");
+        assert!(!app.command.accept_completion_on_enter());
     }
 
     #[test]
@@ -2656,13 +2717,13 @@ mod tests {
     #[test]
     fn dismiss_completion_reports_whether_popup_was_open() {
         let mut app = app();
-        assert!(!app.input.dismiss_completion());
-        app.input.insert_char('/');
-        assert!(app.input.dismiss_completion());
-        assert!(app.input.completion().is_none());
+        assert!(!app.command.dismiss_completion());
+        app.command.insert_char('/');
+        assert!(app.command.dismiss_completion());
+        assert!(app.command.completion().is_none());
         // 关闭后下次编辑会重新计算
-        app.input.insert_char('n');
-        assert!(app.input.completion().is_some());
+        app.command.insert_char('n');
+        assert!(app.command.completion().is_some());
     }
 
     #[test]
@@ -2758,61 +2819,64 @@ mod tests {
     #[test]
     fn template_completion_lists_templates_with_commands() {
         let mut prefixed = app();
-        prefixed.input.set_available_templates(vec![
+        prefixed.command.set_available_templates(vec![
             template("review", "Review $@", Some("<path>")),
             template("component", "Create $1", None),
         ]);
         for c in "/re".chars() {
-            prefixed.input.insert_char(c);
+            prefixed.command.insert_char(c);
         }
-        let completion = prefixed.input.completion().expect("前缀弹出候选");
+        let completion = prefixed.command.completion().expect("前缀弹出候选");
         assert_eq!(
             candidate_fragments(completion),
             vec!["resume", "retry", "review"]
         );
 
         // Tab 填入首个候选（接受后候选收敛到精确匹配，再次 Tab 不变）
-        prefixed.input.tab_complete();
-        assert_eq!(prefixed.input.text(), "/resume");
-        prefixed.input.tab_complete();
-        assert_eq!(prefixed.input.text(), "/resume");
+        prefixed.command.tab_complete();
+        assert_eq!(prefixed.command.text(), "/resume");
+        prefixed.command.tab_complete();
+        assert_eq!(prefixed.command.text(), "/resume");
 
         // 唯一前缀时 Tab 直接填入模板候选
         let mut unique = app();
-        unique
-            .input
-            .set_available_templates(vec![template("review", "Review $@", Some("<path>"))]);
+        unique.command.set_available_templates(vec![template(
+            "review",
+            "Review $@",
+            Some("<path>"),
+        )]);
         for c in "/rev".chars() {
-            unique.input.insert_char(c);
+            unique.command.insert_char(c);
         }
         assert_eq!(
-            candidate_fragments(unique.input.completion().expect("唯一候选")),
+            candidate_fragments(unique.command.completion().expect("唯一候选")),
             vec!["review"]
         );
-        unique.input.tab_complete();
-        assert_eq!(unique.input.text(), "/review");
+        unique.command.tab_complete();
+        assert_eq!(unique.command.text(), "/review");
 
         // 空片段时模板与内建命令一起出现
         let mut empty = app();
         empty
-            .input
+            .command
             .set_available_templates(vec![template("zz-top", "body", None)]);
-        empty.input.insert_char('/');
-        let completion = empty.input.completion().expect("全部候选");
+        empty.command.insert_char('/');
+        let completion = empty.command.completion().expect("全部候选");
         assert!(candidate_fragments(completion).contains(&"zz-top".to_string()));
     }
 
     #[test]
     fn enter_expands_template_invocation_into_prompt() {
         let mut spaced = app();
-        spaced.input.set_available_templates(vec![template(
+        spaced.command.set_available_templates(vec![template(
             "greet",
             "Hello $1, from ${2:-nomic}",
             None,
         )]);
-        spaced.paste_text("/greet world \"a b\"");
+        open_command(&mut spaced, "greet world \"a b\"");
         let effects = spaced.press(Key::Enter);
         assert!(spaced.is_running());
+        assert_eq!(spaced.mode(), Mode::Normal, "命令受理后回 NORMAL");
         let [Effect::Prompt { text, images }] = &effects[..] else {
             panic!("expected single Prompt effect");
         };
@@ -2822,9 +2886,9 @@ mod tests {
         // 冒号形式同样展开
         let mut colon = app();
         colon
-            .input
+            .command
             .set_available_templates(vec![template("greet", "Hello $1", None)]);
-        colon.paste_text("/greet:world");
+        open_command(&mut colon, "greet:world");
         let [Effect::Prompt { text, .. }] = &colon.press(Key::Enter)[..] else {
             panic!("expected single Prompt effect");
         };
@@ -2834,20 +2898,21 @@ mod tests {
     #[test]
     fn template_invocation_errors_and_builtin_precedence() {
         let mut quoted = app();
-        quoted.input.set_available_templates(vec![
+        quoted.command.set_available_templates(vec![
             template("greet", "Hello $1", None),
             // 与内建命令同名的模板不抢占 /help
             template("help", "template help", None),
         ]);
-        // 引号未闭合：提示参数形式不对，不提交
-        quoted.paste_text("/greet \"unterminated");
+        // 引号未闭合：提示参数形式不对，不提交，留在命令行供修正
+        open_command(&mut quoted, "greet \"unterminated");
         assert!(quoted.press(Key::Enter).is_empty());
         assert!(!quoted.is_running());
+        assert_eq!(quoted.mode(), Mode::Command, "被拒绝时留在命令行");
         assert_eq!(quoted.notice.as_deref(), Some("参数形式不对：引号未闭合"));
 
         // 未知命令：维持原提示
         let mut missing = app();
-        missing.paste_text("/missing arg");
+        open_command(&mut missing, "missing arg");
         assert!(missing.press(Key::Enter).is_empty());
         assert!(
             missing
@@ -2859,9 +2924,9 @@ mod tests {
         // 内建命令优先于同名模板
         let mut builtin = app();
         builtin
-            .input
+            .command
             .set_available_templates(vec![template("help", "template help", None)]);
-        builtin.paste_text("/help");
+        open_command(&mut builtin, "help");
         assert!(builtin.press(Key::Enter).is_empty());
         assert!(!builtin.is_running());
         assert!(
@@ -2946,16 +3011,17 @@ mod tests {
         assert!(app.notice().is_some_and(|n| n.contains("为空")));
     }
 
-    /// 运行中：模板调用展开后同样入队，不直接提交。
+    /// 运行中：命令行提交的模板调用展开后入队，不直接提交。
     #[test]
     fn enter_while_running_queues_expanded_template() {
         let mut app = app();
-        app.input
+        app.command
             .set_available_templates(vec![template("greet", "Hello $1", None)]);
         app.handle_event(&AgentEvent::AgentStart);
-        app.paste_text("/greet world");
+        open_command(&mut app, "greet world");
         assert!(app.press(Key::Enter).is_empty());
         assert!(app.is_running(), "排队不改变运行态");
+        assert_eq!(app.mode(), Mode::Normal, "受理后回 NORMAL");
         assert_eq!(app.queue.len(), 1);
         app.finish_run(None);
         let Some(Effect::Prompt { text, .. }) = app.drain_queue() else {
@@ -3231,29 +3297,29 @@ mod tests {
         app.handle_event(&AgentEvent::AgentStart);
 
         // /help 就地输出可用命令，不产生效果
-        app.paste_text("/help");
+        open_command(&mut app, "help");
         assert!(app.press(Key::Enter).is_empty());
         assert!(
             matches!(app.chat.items.last(), Some(ChatItem::System(text)) if text.contains("可用命令"))
         );
-        assert_eq!(app.input.text(), "");
+        assert_eq!(app.mode(), Mode::Normal, "命令受理后回 NORMAL");
 
         // /copy 返回 CopyText 效果（复制源为聊天区最新消息）
         app.chat
             .items
             .push(ChatItem::User("已发的消息".to_string()));
-        app.paste_text("/copy");
+        open_command(&mut app, "copy");
         let effects = app.press(Key::Enter);
         assert!(matches!(&effects[..], [Effect::CopyText(text)] if text == "已发的消息"));
 
         // /quit 运行中同样生效
-        app.paste_text("/quit");
+        open_command(&mut app, "quit");
         assert!(app.press(Key::Enter).is_empty());
         assert!(app.should_quit());
     }
 
     /// 运行中：会话命令（经 driver 修改 agent 上下文）仍须等本轮结束，
-    /// 输入保留供结束后提交。
+    /// 命令行输入保留（留在 COMMAND）供结束后提交。
     #[test]
     fn enter_while_running_blocks_session_commands() {
         let mut app = app();
@@ -3267,7 +3333,7 @@ mod tests {
             "/models",
             "/skill:jujutsu",
         ] {
-            app.paste_text(input);
+            open_command(&mut app, &input[1..]);
             assert!(
                 app.press(Key::Enter).is_empty(),
                 "{input} 运行中不应产生效果"
@@ -3276,23 +3342,27 @@ mod tests {
                 app.notice().is_some_and(|n| n.contains("运行中")),
                 "{input} 应提示运行中"
             );
-            assert_eq!(app.input.text(), input, "{input} 输入应保留");
-            app.input.take_input();
+            assert_eq!(app.mode(), Mode::Command, "{input} 被拒绝时留在命令行");
+            assert_eq!(app.command.text(), input, "{input} 输入应保留");
+            app.leave_command();
         }
     }
 
-    /// 运行中补全弹层未精确匹配时 Enter 先填入候选，再次 Enter 执行本地命令。
+    /// 补全弹层未精确匹配时 Enter 先填入候选，再次 Enter 执行命令
+    ///（运行中的本地命令同一口径）。
     #[test]
     fn enter_while_running_accepts_completion_before_dispatch() {
         let mut app = app();
         app.handle_event(&AgentEvent::AgentStart);
-        app.paste_text("/he");
-        assert!(app.input.completion().is_some());
+        open_command(&mut app, "he");
+        assert!(app.command.completion().is_some());
         // 第一次 Enter：填入补全候选，不提交
         assert!(app.press(Key::Enter).is_empty());
-        assert_eq!(app.input.text(), "/help");
-        // 第二次 Enter：精确匹配，执行本地命令
+        assert_eq!(app.command.text(), "/help");
+        assert_eq!(app.mode(), Mode::Command, "填入候选后留在命令行");
+        // 第二次 Enter：精确匹配，执行本地命令后回 NORMAL
         assert!(app.press(Key::Enter).is_empty());
+        assert_eq!(app.mode(), Mode::Normal);
         assert!(
             matches!(app.chat.items.last(), Some(ChatItem::System(text)) if text.contains("可用命令"))
         );
@@ -3302,7 +3372,7 @@ mod tests {
     fn slash_new_returns_effect_and_start_new_conversation_resets() {
         let mut app = app();
         app.chat.push_system("旧内容");
-        app.paste_text("/new");
+        open_command(&mut app, "new");
         let effects = app.press(Key::Enter);
         assert!(matches!(&effects[..], [Effect::NewSession]));
         assert!(!app.is_running());
@@ -3317,7 +3387,7 @@ mod tests {
     #[test]
     fn compact_returns_effect_with_instructions_and_marks_running() {
         let mut app = app();
-        app.paste_text("/compact 专注测试");
+        open_command(&mut app, "compact 专注测试");
         let effects = app.press(Key::Enter);
         assert!(matches!(&effects[..], [Effect::Compact(Some(i))] if i == "专注测试"));
         assert!(app.is_running());
@@ -3351,19 +3421,28 @@ mod tests {
             [Effect::Cancel]
         ));
 
-        // 1. 弹层开着：关弹层，留在 INSERT
+        // 1. INSERT 空闲：进 NORMAL，无模式切换提示（草稿不受 Esc 影响）
         let mut app = app();
         app.paste_text("/h");
-        assert!(app.input.completion().is_some());
-        assert!(app.press(Key::Esc).is_empty());
-        assert!(app.input.completion().is_none());
-        assert_eq!(app.mode(), Mode::Insert);
-        assert_eq!(app.input.text(), "/h", "输入不受 Esc 影响");
-
-        // 2. 空闲：进 NORMAL，无模式切换提示，且不覆盖既有提示
         assert!(app.press(Key::Esc).is_empty());
         assert_eq!(app.mode(), Mode::Normal);
         assert!(app.notice().is_none(), "进 NORMAL 不再提示");
+        assert_eq!(app.input.text(), "/h", "草稿不受 Esc 影响");
+
+        // 2. COMMAND：先关补全弹层（留在命令行），再放弃回 NORMAL（缓冲清空）
+        assert!(app.press(Key::Char(':')).is_empty());
+        assert_eq!(app.mode(), Mode::Command);
+        assert!(app.command.completion().is_some());
+        assert!(app.press(Key::Esc).is_empty());
+        assert_eq!(app.mode(), Mode::Command, "关弹层后留在命令行");
+        assert!(app.command.completion().is_none());
+        assert_eq!(app.command.text(), "/", "命令文本不受 Esc 影响");
+        assert!(app.press(Key::Esc).is_empty());
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.command.text(), "", "命令缓冲随离开清空");
+        assert_eq!(app.input.text(), "/h", "草稿与命令缓冲各自独立");
+
+        // 3. 进 NORMAL 不覆盖既有提示
         app.press(Key::Char('i'));
         app.warn("其他提示");
         app.press(Key::Esc);
@@ -3563,24 +3642,44 @@ mod tests {
         assert!(app.picker().is_none());
     }
 
-    /// NORMAL `:`：空草稿时预填 `/` 进入命令输入（补全弹层自动出现）；
-    /// 草稿非空时不覆盖用户文本，提示先处理。
+    /// NORMAL `:`：进入专门的命令输入框（COMMAND 模式，ADR-0020）——
+    /// 独立缓冲预填 `/`（补全弹层列出全部命令），草稿保留不受影响。
     #[test]
-    fn normal_colon_prefills_slash_when_draft_empty() {
-        let mut drafting = app();
-        drafting.paste_text("未发送的草稿");
-        drafting.press(Key::Esc);
-        assert!(drafting.press(Key::Char(':')).is_empty());
-        assert_eq!(drafting.mode(), Mode::Insert);
-        assert_eq!(drafting.input.text(), "未发送的草稿", "不覆盖草稿");
-        assert!(drafting.notice().is_some());
-
+    fn normal_colon_opens_command_input() {
         let mut app = app();
+        app.paste_text("未发送的草稿");
         app.press(Key::Esc);
         assert!(app.press(Key::Char(':')).is_empty());
-        assert_eq!(app.mode(), Mode::Insert);
-        assert_eq!(app.input.text(), "/");
-        assert!(app.input.completion().is_some(), "命令补全弹层自动出现");
+        assert_eq!(app.mode(), Mode::Command);
+        assert_eq!(app.command.text(), "/");
+        assert!(app.command.completion().is_some(), "命令补全弹层自动出现");
+        assert_eq!(app.input.text(), "未发送的草稿", "草稿不受影响");
+
+        // 空命令行（仅预填的 `/`）直接 Enter：无声返回 NORMAL，草稿仍在
+        assert!(app.press(Key::Enter).is_empty());
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.input.text(), "未发送的草稿");
+    }
+
+    /// ADR-0020：聊天输入框不再触发命令——`/` 开头的草稿按普通 prompt
+    /// 发送；运行中同样排队而非执行命令。
+    #[test]
+    fn insert_no_longer_triggers_slash_commands() {
+        let mut app = app();
+        app.paste_text("/help");
+        let effects = app.press(Key::Enter);
+        let [Effect::Prompt { text, images }] = &effects[..] else {
+            panic!("expected single Prompt effect");
+        };
+        assert_eq!(text, "/help", "`/` 开头按普通 prompt 发送");
+        assert!(images.is_empty());
+        assert!(app.is_running());
+
+        // 运行中：`/` 开头的输入排队（统一消息队列），不执行命令
+        app.paste_text("/copy");
+        assert!(app.press(Key::Enter).is_empty());
+        assert_eq!(app.queue.len(), 1);
+        assert!(!app.should_quit());
     }
 
     /// 构造含工具调用的历史：user → assistant → tool → assistant。
@@ -4051,11 +4150,11 @@ mod tests {
     #[test]
     fn models_slash_effects_and_set_model_updates_status() {
         let mut app = app();
-        app.paste_text("/models");
+        open_command(&mut app, "models");
         let effects = app.press(Key::Enter);
         assert!(matches!(&effects[..], [Effect::ListModels]));
 
-        app.paste_text("/models:gpt-5.2");
+        open_command(&mut app, "models:gpt-5.2");
         let effects = app.press(Key::Enter);
         assert!(matches!(&effects[..], [Effect::SwitchModel(id)] if id == "gpt-5.2"));
 
@@ -4067,14 +4166,16 @@ mod tests {
     #[test]
     fn unknown_and_invalid_slash_warn_via_notice() {
         let mut unknown = app();
-        unknown.paste_text("/foobar");
+        open_command(&mut unknown, "foobar");
         assert!(unknown.press(Key::Enter).is_empty());
         assert!(unknown.notice().is_some_and(|n| n.contains("未知命令")));
+        assert_eq!(unknown.mode(), Mode::Command, "被拒绝时留在命令行");
 
         let mut invalid = app();
-        invalid.paste_text("/skill a b");
+        open_command(&mut invalid, "skill a b");
         assert!(invalid.press(Key::Enter).is_empty());
         assert!(invalid.notice().is_some_and(|n| n.contains("用法")));
+        assert_eq!(invalid.mode(), Mode::Command, "被拒绝时留在命令行");
     }
 
     #[test]
@@ -4120,7 +4221,7 @@ mod tests {
     #[test]
     fn tree_slash_produces_list_tree_effect() {
         let mut app = app();
-        app.paste_text("/tree");
+        open_command(&mut app, "tree");
         let effects = app.press(Key::Enter);
         assert!(matches!(&effects[..], [Effect::ListTree]));
     }

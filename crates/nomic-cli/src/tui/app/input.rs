@@ -1,7 +1,9 @@
-//! 输入区状态：草稿缓冲、编辑与 slash 补全。
+//! 输入区状态：缓冲、编辑与 slash 补全。
 //!
-//! [`Input`] 自持草稿文本、光标、补全弹层、暂存附件与补全快照
+//! [`Input`] 自持文本缓冲、光标、补全弹层、暂存附件与补全快照
 //! （skill/template）；提交、模式切换与效果分发由 [`super::App`] 路由。
+//! `App` 持有两份：聊天草稿（INSERT/QUEUE 就地编辑，补全不启用）与
+//! 命令输入框（COMMAND 模式，slash 补全常驻启用，ADR-0020）。
 
 use nomic_prompts::PromptTemplate;
 use nomic_skills::SkillScope;
@@ -63,25 +65,26 @@ struct PendingImage {
     image: nomic_ai::ImageContent,
 }
 
-/// 输入区状态：草稿缓冲 + 光标 + 补全 + 附件。编辑操作内部维护补全
-/// 弹层；补全仅在 `completion_enabled`（INSERT 模式，由模式路由层同步）
-/// 时弹出。
+/// 输入区状态：文本缓冲 + 光标 + 补全 + 附件。编辑操作内部维护补全
+/// 弹层；补全仅在 `completion_enabled`（命令输入框常驻启用，聊天草稿
+/// 与 QUEUE 就地编辑不启用，ADR-0020）时弹出。
 #[derive(Debug)]
 pub(in crate::tui) struct Input {
-    /// 输入缓冲（可多行，`\n` 为 Shift+Enter 插入的手动换行）
+    /// 输入缓冲（草稿可多行，`\n` 为 Shift+Enter 插入的手动换行；
+    /// 命令行预填 `/`）
     pub(super) text: String,
     /// 光标位置（字节索引，始终落在 char 边界）
     pub(super) cursor: usize,
-    /// slash 命令补全弹层（输入以 `/` 开头时出现）
+    /// slash 命令补全弹层（启用补全的缓冲以 `/` 开头时出现）
     completion: Option<Completion>,
-    /// 暂存的图片附件（随下一条 prompt 发送）
+    /// 暂存的图片附件（随下一条 prompt 发送；仅聊天草稿使用）
     attachments: Vec<PendingImage>,
     /// `/skill:` 补全用的可用 skill 快照
     skills: Vec<SkillEntry>,
     /// 可用的 prompt templates（`/name` 调用展开与补全用）
     templates: Vec<PromptTemplate>,
-    /// 补全是否启用：仅 INSERT 模式（由模式路由层在模式切换时同步；
-    /// QUEUE 就地编辑的是排队消息文本而非命令，补全不启用）
+    /// 补全是否启用：仅命令输入框启用（ADR-0020；草稿不承载命令，
+    /// QUEUE 就地编辑的是排队消息文本而非命令，均不启用）
     completion_enabled: bool,
 }
 
@@ -419,7 +422,7 @@ impl Input {
         self.completion.as_ref()
     }
 
-    /// 同步补全启用状态（仅 INSERT 模式启用；由模式路由层在模式切换时调用）。
+    /// 同步补全启用状态（命令输入框启用、聊天草稿不启用；构造时设置）。
     pub(super) fn set_completion_enabled(&mut self, enabled: bool) {
         self.completion_enabled = enabled;
         if !enabled {

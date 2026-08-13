@@ -33,7 +33,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     draw_chat(frame, app, chunks[0].inner(Margin::new(CHAT_H_MARGIN, 0)));
     draw_input(frame, app, chunks[1]);
     draw_status(frame, app, chunks[2]);
-    if let Some(completion) = app.input().completion() {
+    if let Some(completion) = app.command().completion() {
         draw_completion(frame, completion, chunks[1]);
     }
     if let Some(picker) = app.picker() {
@@ -404,11 +404,11 @@ fn draw_welcome(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )),
         Line::default(),
         Line::from(Span::styled(
-            "Enter 发送（运行中则排队）· Ctrl+G 外部编辑器编辑 · / 命令（Tab 补全，/help 查看全部）",
+            "Enter 发送（运行中则排队）· Ctrl+G 外部编辑器编辑 · Esc 浏览（NORMAL）",
             theme::dim(),
         )),
         Line::from(Span::styled(
-            "Esc 浏览：j/k 滚动 · ]m 跳消息 · / 搜索 · yy 复制 · Q 队列 · ? 帮助 · i 返回",
+            "NORMAL：j/k 滚动 · : 命令（Tab 补全，/help 查看全部）· / 搜索 · yy 复制 · Q 队列 · ? 帮助",
             theme::dim(),
         )),
         Line::from(Span::styled(
@@ -471,10 +471,13 @@ const MAX_DRAFT_LINES: u16 = 5;
 const MAX_INPUT_LINES: u16 = 10;
 
 /// 输入框总高度（含上下边框）：附件行（可选）+ 队列区 + 草稿区 + 2 行边框。
-/// QUEUE 模式下草稿不单独渲染（就地编辑槽位的行即草稿内容）。
+/// QUEUE 模式下草稿不单独渲染（就地编辑槽位的行即草稿内容）；
+/// COMMAND 模式渲染命令输入框（ADR-0020）而非草稿。
 fn input_height(app: &App) -> u16 {
     let draft = if app.queue_mode_active() {
         0
+    } else if app.mode() == Mode::Command {
+        app.command().line_count().min(MAX_DRAFT_LINES)
     } else {
         app.input().line_count().min(MAX_DRAFT_LINES)
     };
@@ -506,14 +509,71 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
             theme::accent(),
         )));
     }
-    // SEARCH 下输入框复用为搜索框：显示搜索串而非草稿，光标在其末尾
+    // SEARCH 下输入框复用为搜索框：显示搜索串而非草稿；COMMAND 下
+    // 显示专门的命令输入框（ADR-0020），草稿保留不动
     let searching = app.mode() == Mode::Search;
-    // 队列区（oil.nvim 式缓冲，ADR-0014）：运行中入队的消息（当前
-    // 步骤完成后注入本轮）；QUEUE 导航下 gutter 标出游标条目，就地
-    // 编辑槽位的内容即草稿缓冲
+    let commanding = app.mode() == Mode::Command;
+    lines.extend(queue_area_lines(app));
+    // 草稿行（QUEUE 模式下不单独渲染；SEARCH 显示搜索串，COMMAND
+    // 显示命令输入框）
+    if !app.queue_mode_active() {
+        let text = if searching {
+            app.search().query()
+        } else if commanding {
+            app.command().text()
+        } else {
+            app.input().text()
+        };
+        lines.extend(
+            text.split('\n')
+                .map(|text| Line::from(Span::raw(text.to_string()))),
+        );
+    }
+    // 行数超过可见高度时滚动到光标所在行
+    let attachment_offset = u16::from(app.input().has_attachments());
+    let queue_offset = app.queue_display_lines();
+    let (cursor_row, cursor_col) = if searching {
+        (
+            queue_offset,
+            u16::try_from(UnicodeWidthStr::width(app.search().query())).unwrap_or(u16::MAX),
+        )
+    } else if commanding {
+        let (row, col) = app.command().cursor_position();
+        (queue_offset + row, col)
+    } else if app.queue_mode_active() {
+        if app.queue().is_editing() {
+            // 就地编辑：槽位起始行 + 草稿缓冲内的光标行（gutter 宽 2 列）
+            let (row, col) = app.input().cursor_position();
+            (app.queue().cursor_row() + row, col.saturating_add(2))
+        } else {
+            // QUEUE 导航：光标停在游标条目行首（块光标即条目高亮）
+            (app.queue().cursor_row(), 0)
+        }
+    } else {
+        let (row, col) = app.input().cursor_position();
+        (queue_offset + row, col)
+    };
+    let cursor_row = cursor_row + attachment_offset;
+    let visible = inner.height.max(1);
+    let scroll = cursor_row.saturating_sub(visible - 1);
+    frame.render_widget(
+        Paragraph::new(lines).block(border).scroll((scroll, 0)),
+        area,
+    );
+    // 光标定位在文本处；长行贴右边界截断（不横向滚动）
+    let x = inner.x + cursor_col.min(inner.width.saturating_sub(1));
+    let y = inner.y + (cursor_row - scroll).min(visible - 1);
+    frame.set_cursor_position(Position::new(x, y));
+}
+
+/// 队列区内容行（oil.nvim 式缓冲，ADR-0014）：运行中入队的消息（当前
+/// 步骤完成后注入本轮）；QUEUE 导航下 gutter 标出游标条目，就地编辑
+/// 槽位的内容即草稿缓冲。
+fn queue_area_lines(app: &App) -> Vec<Line<'static>> {
     let queue_cursor =
         (app.queue_mode_active() && !app.queue().is_editing()).then(|| app.queue().cursor());
     let editing_slot = app.queue().editing_slot();
+    let mut lines: Vec<Line<'static>> = Vec::new();
     for (index, entry) in app.queue().entries().iter().enumerate() {
         if editing_slot == Some(index) {
             for (row, text) in app.input().text().split('\n').enumerate() {
@@ -547,53 +607,10 @@ fn draw_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ]));
         }
     }
-    // 草稿行（QUEUE 模式下不单独渲染；SEARCH 显示搜索串）
-    if !app.queue_mode_active() {
-        let text = if searching {
-            app.search().query()
-        } else {
-            app.input().text()
-        };
-        lines.extend(
-            text.split('\n')
-                .map(|text| Line::from(Span::raw(text.to_string()))),
-        );
-    }
-    // 行数超过可见高度时滚动到光标所在行
-    let attachment_offset = u16::from(app.input().has_attachments());
-    let queue_offset = app.queue_display_lines();
-    let (cursor_row, cursor_col) = if searching {
-        (
-            queue_offset,
-            u16::try_from(UnicodeWidthStr::width(app.search().query())).unwrap_or(u16::MAX),
-        )
-    } else if app.queue_mode_active() {
-        if app.queue().is_editing() {
-            // 就地编辑：槽位起始行 + 草稿缓冲内的光标行（gutter 宽 2 列）
-            let (row, col) = app.input().cursor_position();
-            (app.queue().cursor_row() + row, col.saturating_add(2))
-        } else {
-            // QUEUE 导航：光标停在游标条目行首（块光标即条目高亮）
-            (app.queue().cursor_row(), 0)
-        }
-    } else {
-        let (row, col) = app.input().cursor_position();
-        (queue_offset + row, col)
-    };
-    let cursor_row = cursor_row + attachment_offset;
-    let visible = inner.height.max(1);
-    let scroll = cursor_row.saturating_sub(visible - 1);
-    frame.render_widget(
-        Paragraph::new(lines).block(border).scroll((scroll, 0)),
-        area,
-    );
-    // 光标定位在文本处；长行贴右边界截断（不横向滚动）
-    let x = inner.x + cursor_col.min(inner.width.saturating_sub(1));
-    let y = inner.y + (cursor_row - scroll).min(visible - 1);
-    frame.set_cursor_position(Position::new(x, y));
+    lines
 }
 
-/// 输入框标题与边框样式：标题只保留运行/picker/搜索等临时功能态；
+/// 输入框标题与边框样式：标题只保留运行/picker/搜索/命令行等临时功能态；
 /// INSERT/NORMAL/VISUAL 等常驻模式的提示由状态栏徽标与右侧键位提示
 /// 承担（ADR-0011），输入框不再叠加，避免同一信息两处渲染。
 fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
@@ -640,6 +657,18 @@ fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
             Some(Line::from(Span::styled(title, theme::accent()))),
             theme::accent(),
         )
+    } else if app.mode() == Mode::Command {
+        // COMMAND（ADR-0020）：专门的命令输入框；运行中打开时叠加 spinner
+        let mut spans = Vec::new();
+        if app.is_running() {
+            spans.push(Span::styled(format!("{} ", app.spinner()), theme::busy()));
+            spans.push(Span::styled("运行中 · ", theme::busy()));
+        }
+        spans.push(Span::styled(
+            "命令 · Tab 补全 · Enter 执行 · Esc 返回",
+            theme::accent(),
+        ));
+        (Some(Line::from(spans)), theme::accent())
     } else if app.mode() == Mode::Search {
         (
             Some(Line::from(Span::styled(
@@ -683,6 +712,7 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // accent 文本，避免与相邻的模型徽标（反色块）糊成一片
     let mode_badge = match app.mode() {
         Mode::Normal => Span::styled(" NORMAL ", theme::normal_badge()),
+        Mode::Command => Span::styled(" COMMAND ", theme::warn()),
         Mode::Search => Span::styled(" SEARCH ", theme::warn()),
         Mode::Visual => Span::styled(" VISUAL ", theme::visual_badge()),
         Mode::Queue => Span::styled(" QUEUE ", theme::queue_badge()),
@@ -711,12 +741,13 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     // 键位提示保持精简：完整键位见欢迎页与 /help，此处只留模式核心键
     let hint = match app.mode() {
-        Mode::Normal => "i 输入 · ]m 消息 · / 搜索 · ? 帮助 ",
+        Mode::Normal => "i 输入 · : 命令 · / 搜索 · ? 帮助 ",
+        Mode::Command => "Tab 补全 · Enter 执行 · Esc 返回 ",
         Mode::Search => "输入即搜 · Enter 完成 · Esc 取消 ",
         Mode::Visual => "j/k 扩展 · y 复制 · Esc 取消 ",
         Mode::Picker => "输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ",
         Mode::Help => "j/k 滚动 · gg/G 顶/底 · Esc 关闭 ",
-        Mode::Insert => "/ 命令 · Tab 补全 · ^G 编辑器 · Esc 浏览 ",
+        Mode::Insert => "Enter 发送 · ^G 编辑器 · Esc 浏览 ",
         Mode::Queue => {
             if app.queue().is_editing() {
                 "Enter/Esc 保存 · Shift+Enter 换行 "
@@ -935,8 +966,7 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Enter", "发送（运行中排入队列）"),
             ("Shift+Enter", "手动换行"),
-            ("Tab", "补全 slash 命令 / 模板 / skill"),
-            ("Esc", "关补全弹层 / 进入 NORMAL"),
+            ("Esc", "进入 NORMAL"),
             ("Ctrl+W · Ctrl+U", "删词 / 清行"),
             ("Ctrl+A/E · Alt+B/F", "行首行尾 / 词级移动"),
             ("Ctrl+G", "外部编辑器（$VISUAL/$EDITOR）编辑草稿"),
@@ -946,7 +976,7 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
         "NORMAL（浏览）",
         &[
             ("i a A I · Enter", "回到输入"),
-            (":", "命令输入（预填 /）"),
+            (":", "命令输入框（COMMAND，预填 /）"),
             ("?", "本帮助"),
             ("j/k · Ctrl+D/U · gg · G", "滚动 / 半页 / 顶部 / 底部"),
             ("[m ]m · [t ]t", "跳上/下一条消息 / 工具调用"),
@@ -955,6 +985,15 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("V 后 y", "复制选择区"),
             ("x · dd · dw", "编辑草稿"),
             ("Q", "队列编辑（QUEUE 模式）"),
+        ],
+    ),
+    (
+        "COMMAND（命令）",
+        &[
+            ("Enter", "执行命令 / 展开模板（/help 查看全部命令）"),
+            ("Tab · ↑/↓", "补全命令 / 模板 / skill 并移动选中"),
+            ("Esc", "关补全弹层 / 放弃返回 NORMAL"),
+            ("编辑键", "与 INSERT 相同（词级移动、删词等）"),
         ],
     ),
     (
@@ -1362,10 +1401,10 @@ mod tests {
         assert!(!compact.contains("推理第二行"), "{compact}");
         assert!(compact.contains("▌思考过程（2行，已折叠"), "{compact}");
 
-        // `/thinking` 展开后渲染正文行
-        for c in "/thinking".chars() {
-            app.press(super::super::app::Key::Char(c));
-        }
+        // `/thinking`（命令行，ADR-0020）展开后渲染正文行
+        app.press(super::super::app::Key::Esc);
+        app.press(super::super::app::Key::Char(':'));
+        app.paste_text("thinking");
         app.press(super::super::app::Key::Enter);
         terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
         let compact = compact_text(&terminal);
@@ -1647,13 +1686,17 @@ mod tests {
         );
     }
 
-    /// 补全弹层与 System 条目也能无 panic 绘制。
+    /// 补全弹层（命令行，ADR-0020）与 System 条目也能无 panic 绘制。
     #[test]
     fn renders_completion_popup_and_system_item() {
+        use super::super::app::Key;
+
         let mut app = App::new("test-model".to_string(), None, 200_000);
         app.chat_mut().push_system("本地系统提示");
-        app.paste_text("/n");
-        assert!(app.input().completion().is_some());
+        app.press(Key::Esc);
+        app.press(Key::Char(':'));
+        app.paste_text("n");
+        assert!(app.command().completion().is_some());
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -1796,7 +1839,9 @@ mod tests {
     fn status_bar_badge_follows_mode() {
         use super::super::app::Key;
 
+        // 占位条目避免欢迎页（其键位简介提到 NORMAL）干扰徽标断言
         let mut app = App::new("test-model".to_string(), None, 200_000);
+        app.chat_mut().push_system("占位");
         let compact = render_compact(&mut app);
         assert!(compact.contains("INSERT"), "{compact}");
         assert!(!compact.contains("NORMAL"), "{compact}");
@@ -1805,6 +1850,12 @@ mod tests {
         let compact = render_compact(&mut app);
         assert!(compact.contains("NORMAL"), "{compact}");
         assert!(!compact.contains("INSERT"), "{compact}");
+
+        // NORMAL `:` 进入 COMMAND：徽标与键位提示切换（ADR-0020）
+        let _ = app.press(Key::Char(':'));
+        let compact = render_compact(&mut app);
+        assert!(compact.contains("COMMAND"), "{compact}");
+        assert!(!compact.contains("NORMAL"), "{compact}");
     }
 
     /// 帮助弹层（NORMAL `?`）：渲染分组键位表与 HELP 徽标，Esc 关闭；

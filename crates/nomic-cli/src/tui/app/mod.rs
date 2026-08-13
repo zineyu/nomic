@@ -1656,10 +1656,13 @@ impl App {
 
     /// `/resume`：以恢复的历史消息替换聊天区并切换 session。
     /// 排队消息属于切换前对话的后续意图，随上下文一起清空。
+    /// picker 确认后底层模式是 NORMAL（命令受理即回 NORMAL），游标需
+    /// 立即定位到最新一条消息，否则 `v`/`yy` 报「没有可选择的消息」。
     pub(super) fn restore_conversation(&mut self, messages: &[Message], session_id: String) {
         self.chat.clear_items();
         self.queue.clear();
         self.load_history(messages);
+        self.chat.move_cursor_to_last_message();
         self.session_id = Some(session_id);
     }
 
@@ -1670,6 +1673,7 @@ impl App {
         self.chat.clear_items();
         self.queue.clear();
         self.load_history(messages);
+        self.chat.move_cursor_to_last_message();
     }
 
     // ── 粘贴与外部编辑器 ────────────────────────────────────────────────────
@@ -4197,6 +4201,50 @@ mod tests {
         assert_eq!(app.chat.items().len(), 1);
         assert!(matches!(&app.chat.items()[0], ChatItem::User(t) if t == "恢复的"));
         assert_eq!(app.session_id(), Some("sid-1"));
+    }
+
+    /// picker 确认恢复后底层模式是 NORMAL（命令受理即回 NORMAL，picker 是
+    /// 派生态），消息游标必须立即有效：恢复前无消息（游标 None）或游标
+    /// 停在旧会话的越界下标时，`v`/`yy` 不应报「没有可选择的消息」。
+    #[test]
+    fn restore_conversation_positions_cursor_on_last_message() {
+        // 恢复前无消息：游标 None
+        let mut app = app();
+        app.press(Key::Esc);
+        assert_eq!(app.chat.cursor_item, None);
+        app.restore_conversation(
+            &[
+                *user_message("问题"),
+                *assistant_message(vec![text_block("回答")], StopReason::Stop, None),
+            ],
+            "sid-1".to_string(),
+        );
+        assert_eq!(app.chat.cursor_item, Some(1), "游标定位到最新一条消息");
+        assert!(app.chat.begin_visual(), "恢复后 v 应可进入 VISUAL");
+
+        // 恢复前游标停在旧会话的大下标（越界）
+        let mut app = app_with_history();
+        app.press(Key::Esc);
+        assert_eq!(app.chat.cursor_item, Some(4));
+        app.restore_conversation(&[*user_message("短历史")], "sid-2".to_string());
+        assert_eq!(app.chat.cursor_item, Some(0), "越界游标被重置到新历史内");
+        let [Effect::CopyText(text)] = &app.copy_cursor_item()[..] else {
+            panic!("恢复后 yy 应可复制游标消息");
+        };
+        assert_eq!(text, "短历史");
+    }
+
+    /// `/tree` 分支重放与 `/resume` 同一口径：游标定位到重放后最新一条消息。
+    #[test]
+    fn restore_branch_positions_cursor_on_last_message() {
+        let mut app = app();
+        app.press(Key::Esc);
+        app.restore_branch(&[
+            *user_message("分支起点"),
+            *assistant_message(vec![text_block("分支回答")], StopReason::Stop, None),
+        ]);
+        assert_eq!(app.chat.cursor_item, Some(1));
+        assert!(app.chat.begin_visual());
     }
 
     /// `/tree` 解析：无参命令；带参数报用法错误。

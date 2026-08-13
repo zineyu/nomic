@@ -75,7 +75,8 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     // 同时记录各条目起始行（消息游标滚动定位用，回写状态层）。
     // 游标/选择区条目整行高亮：gutter 换符号与样式、行铺背景并补齐行宽，
     // 块间隔空行同样延续，形成连续的高亮区（NORMAL 游标与 VISUAL 选择同族，
-    // 仅以 gutter 色相区分；游标条目首行用 `❯` 标出游标端点）
+    // 仅以 gutter 色相区分；VISUAL 选择区游标端点首行用 `❯` 标出端点，
+    // NORMAL 游标无箭头符号）
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut starts = vec![u16::MAX; app.chat().items().len()];
     for (index, block) in blocks {
@@ -84,7 +85,8 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             starts[index] = u16::try_from(lines.len()).unwrap_or(u16::MAX);
         }
         // 选择区高亮优先于游标（游标总在选择范围内）
-        let highlight = if visual.is_some_and(|(start, end)| (start..=end).contains(&index)) {
+        let in_visual = visual.is_some_and(|(start, end)| (start..=end).contains(&index));
+        let highlight = if in_visual {
             Some(theme::visual_marker())
         } else if cursor == Some(index) {
             Some(theme::cursor_marker())
@@ -92,7 +94,8 @@ fn draw_chat(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             None
         };
         let block = if let Some(marker) = highlight {
-            let mut at_cursor_head = first_block_of_item && cursor == Some(index);
+            // 仅 VISUAL 选择区在游标端点首行用 `❯` 标出端点
+            let mut at_cursor_head = in_visual && first_block_of_item && cursor == Some(index);
             block
                 .into_iter()
                 .map(|line| {
@@ -247,7 +250,7 @@ struct MessageBlock {
 const GUTTER_PREFIX: &str = "▌ ";
 /// gutter 占用列数：`▌` + 空格。
 const GUTTER_WIDTH: u16 = 2;
-/// 高亮 gutter：游标条目首行用箭头标出游标端点。
+/// 高亮 gutter：VISUAL 选择区游标端点首行用箭头标出端点。
 const GUTTER_CURSOR_HEAD: &str = "❯ ";
 /// 高亮 gutter：续行与高亮空行用加粗竖条，保持区域连续。
 const GUTTER_CURSOR_BODY: &str = "▐ ";
@@ -1452,8 +1455,8 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
         let compact = compact_text(&terminal);
         assert!(!compact.contains("Thinking"), "{compact}");
-        // 命令受理后回 NORMAL，游标落在该消息上：gutter 变为游标高亮符号
-        assert!(compact.contains("❯推理第一行"), "{compact}");
+        // 命令受理后回 NORMAL，游标落在该消息上：gutter 变为游标高亮竖条
+        assert!(compact.contains("▐推理第一行"), "{compact}");
         assert!(compact.contains("▐推理第二行"), "{compact}");
     }
 
@@ -1540,7 +1543,7 @@ mod tests {
         assert_eq!(app.chat_cursor(), Some(0));
     }
 
-    /// NORMAL 消息游标：整行铺暗色背景，首行 gutter 为 `❯`、续行为 `▐`，
+    /// NORMAL 消息游标：整行铺暗色背景，gutter 统一为 `▐`（无 `❯` 箭头），
     /// 块间隔空行延续高亮，形成连续的整行色带。
     #[test]
     fn normal_cursor_row_highlight_spans_full_width() {
@@ -1563,8 +1566,10 @@ mod tests {
         let position_of = |symbol: &str| -> Option<usize> {
             cells.iter().position(|cell| cell.symbol() == symbol)
         };
-        // 首行 gutter 为 `❯`：accent 前景 + 行背景（非反色块）
-        let head = position_of("❯").expect("游标条目首行 gutter 为 ❯");
+        // NORMAL 游标无 `❯` 箭头：gutter 全部为 `▐`
+        assert!(position_of("❯").is_none(), "NORMAL 游标不应有 ❯ 箭头");
+        // 首行 gutter 为 `▐`：accent 前景 + 行背景（非反色块）
+        let head = position_of("▐").expect("游标条目首行 gutter 为 ▐");
         assert_eq!(cells[head].fg, theme::ACCENT);
         assert_eq!(cells[head].bg, theme::ROW_BG);
         // 整行铺背景：聊天区宽度内（不含左右留白列）每个单元格都是行背景；
@@ -1577,16 +1582,20 @@ mod tests {
                 continue;
             }
             let cell = &cells[head_row * width + x];
-            assert_eq!(cell.bg, theme::ROW_BG, "❯ 行第 {x} 列应为行高亮背景");
+            assert_eq!(cell.bg, theme::ROW_BG, "▐ 行第 {x} 列应为行高亮背景");
             continuation = UnicodeWidthStr::width(cell.symbol()) > 1;
         }
-        // 续行 gutter 为 `▐`：accent 前景，同行背景
-        let body = position_of("▐").expect("续行 gutter 为 ▐");
+        // 续行 gutter 同为 `▐`：accent 前景，同行背景
+        let body = cells[head + width..]
+            .iter()
+            .position(|cell| cell.symbol() == "▐")
+            .map(|offset| head + width + offset)
+            .expect("续行 gutter 为 ▐");
         assert_eq!(cells[body].fg, theme::ACCENT);
         assert_eq!(cells[body].bg, theme::ROW_BG);
-        // 块间隔空行延续高亮：`▐` 不止一个（续行 + 空行）
+        // 块间隔空行延续高亮：`▐` 不止两个（首行 + 续行 + 空行）
         assert!(
-            cells.iter().filter(|cell| cell.symbol() == "▐").count() >= 2,
+            cells.iter().filter(|cell| cell.symbol() == "▐").count() >= 3,
             "空行应延续高亮 gutter"
         );
     }

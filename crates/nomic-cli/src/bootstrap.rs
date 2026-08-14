@@ -16,8 +16,8 @@ use crate::Cli;
 use crate::config::Config;
 use crate::context_files::{ContextFile, discover_agents_files};
 use crate::model::{
-    ModelResolver, api_key_env, build_provider, db_model_history, load_catalog_unless_complete,
-    resolve_api_key, select_startup_model,
+    ModelResolver, api_key_env, build_provider, cli_model_provider, db_model_history,
+    load_catalog_unless_complete, resolve_api_key, select_startup_model,
 };
 
 /// 初始化完成的运行时上下文：构建 agent 所需的全部零件 + 持久化句柄与恢复历史。
@@ -56,12 +56,7 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
     let provider_hint = cli
         .provider
         .clone()
-        .or_else(|| {
-            cli.model.as_deref().and_then(|spec| {
-                spec.split_once('/')
-                    .map(|(provider, _)| provider.to_string())
-            })
-        })
+        .or_else(|| cli_model_provider(cli))
         .or_else(|| {
             db_history
                 .first()

@@ -37,6 +37,15 @@ pub fn build_provider(api: ApiKind, api_key: Option<String>) -> Arc<dyn Provider
     }
 }
 
+/// `--model` spec 中的 provider 段（`<provider>/<模型id>` 全形式时按第一个
+/// `/` 切分，与 [`ModelSelection::parse`] 一致；无 `/` 时为 `None`）。
+pub fn cli_model_provider(cli: &Cli) -> Option<String> {
+    cli.model.as_deref().and_then(|spec| {
+        spec.split_once('/')
+            .map(|(provider, _)| provider.to_string())
+    })
+}
+
 /// sqlite 配置表中模型选择的配置键。
 pub const CONFIG_KEY_MODEL: &str = "model";
 
@@ -126,13 +135,7 @@ pub fn select_startup_model(
     models: &ModelResolver,
 ) -> Result<Model> {
     if cli.provider.is_some() || cli.model.is_some() {
-        let provider = cli
-            .model
-            .as_deref()
-            .and_then(|spec| {
-                spec.split_once('/')
-                    .map(|(provider, _)| provider.to_string())
-            })
+        let provider = cli_model_provider(cli)
             .or_else(|| cli.provider.clone())
             .context("--model 缺 provider：请用 <provider>/<模型id> 全形式，或搭配 --provider")?;
         let model_id = match &cli.model {

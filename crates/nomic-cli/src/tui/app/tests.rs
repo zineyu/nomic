@@ -367,9 +367,9 @@ fn picker_clamps_selection_and_take_closes() {
     app.picker.as_mut().expect("picker").select(1);
     app.picker.as_mut().expect("picker").select(1);
     app.picker.as_mut().expect("picker").select(1);
-    assert_eq!(app.picker().expect("picker").selected, 2);
+    assert_eq!(app.picker().expect("picker").core.selected, 2);
     app.picker.as_mut().expect("picker").select(-5);
-    assert_eq!(app.picker().expect("picker").selected, 0);
+    assert_eq!(app.picker().expect("picker").core.selected, 0);
 
     // Enter 确认：返回选中 id 并关闭；关闭后再次确认为 None
     app.picker.as_mut().expect("picker").select(1);

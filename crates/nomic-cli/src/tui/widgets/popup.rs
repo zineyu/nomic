@@ -2,7 +2,8 @@
 //!
 //! [`CompletionPopup`] 与 [`PickerPopup`] 是 [`Widget`]：以输入框区域为锚点，
 //! 在其顶边向上弹出（先 [`Clear`] 再带边框绘制）。两者同构，仅数据源与
-//! 标题不同。
+//! 标题不同；选择器弹层的滚动窗口来自选择内核（`crate::picker`，
+//! 与 CLI 选择器同一口径），补全弹层因选中循环语义保留本地窗口。
 
 use ratatui::{
     buffer::Buffer,
@@ -11,13 +12,14 @@ use ratatui::{
     widgets::{Block as Border, BorderType, Clear, Paragraph, Widget},
 };
 
-use crate::tui::app::{Completion, CompletionCandidate, Picker, PickerKind};
+use crate::tui::app::{Completion, CompletionCandidate, PICKER_ROW_CAPACITY, Picker, PickerKind};
 use crate::tui::theme;
 
-/// 弹层可见候选数上限，超出时内部滚动窗口。
+/// 补全弹层可见候选数上限，超出时内部滚动窗口。
 const COMPLETION_MAX_VISIBLE: usize = 10;
 
-/// 弹层可见窗口：总数超过上限时让选中项大致居中。
+/// 补全弹层可见窗口（居中语义；选中循环，不走选择内核的贴边窗口）：
+/// 总数超过上限时让选中项大致居中。
 fn visible_window(total: usize, selected: usize, max: usize) -> (usize, usize) {
     if total <= max {
         return (0, total);
@@ -92,7 +94,7 @@ impl Widget for CompletionPopup<'_> {
 }
 
 /// 选择器弹层（`/resume` / `/models` / `/tree` 共用）：与补全弹层同构，贴在输入框上方。
-/// 渲染过滤后的可见行；过滤串显示在标题，无匹配时给占位行。
+/// 渲染过滤后的可见行（滚动窗口取自选择内核）；过滤串显示在标题，无匹配时给占位行。
 pub(in crate::tui) struct PickerPopup<'a> {
     picker: &'a Picker,
 }
@@ -107,6 +109,7 @@ impl Widget for PickerPopup<'_> {
     /// `input_area` 为输入框区域：弹层贴其顶边向上弹出，空间不足时压到聊天区顶部。
     fn render(self, input_area: Rect, buf: &mut Buffer) {
         let picker = self.picker;
+        let core = &picker.core;
         let visible = picker.visible();
         let total = visible.len();
         let action = match picker.kind {
@@ -115,24 +118,25 @@ impl Widget for PickerPopup<'_> {
             PickerKind::Models => "切换模型",
             PickerKind::Reasoning => "思考级别",
         };
-        let mut title = if total > COMPLETION_MAX_VISIBLE {
-            format!("{action} {}/{total}", picker.selected + 1)
+        let mut title = if total > PICKER_ROW_CAPACITY {
+            format!("{action} {}/{total}", core.selected + 1)
         } else {
             action.to_string()
         };
-        if !picker.filter.is_empty() {
-            title = format!("{title} · /{}", picker.filter);
+        if !core.filter.is_empty() {
+            title = format!("{title} · /{}", core.filter);
         }
         let lines: Vec<Line<'static>> = if visible.is_empty() {
             vec![Line::from(Span::styled("  无匹配行", theme::dim()))]
         } else {
-            let (start, end) = visible_window(total, picker.selected, COMPLETION_MAX_VISIBLE);
+            let start = core.window(PICKER_ROW_CAPACITY);
+            let end = (start + PICKER_ROW_CAPACITY).min(total);
             visible[start..end]
                 .iter()
                 .enumerate()
                 .map(|(offset, &row_index)| {
-                    let row = &picker.rows[row_index];
-                    if start + offset == picker.selected {
+                    let row = &core.rows[row_index];
+                    if start + offset == core.selected {
                         Line::from(vec![
                             Span::styled("❯ ", theme::user_marker()),
                             Span::styled(row.text.clone(), theme::accent()),

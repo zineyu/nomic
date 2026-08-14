@@ -38,12 +38,14 @@ use picker::PICKER_PAGE_SCROLL;
 use queue::Queue;
 use search::Search;
 
+use crate::picker::step_row;
+
 pub(super) use chat::{
     AssistantItem, Block, Chat, ChatItem, ToolItem, ToolStatus, skill_load_message,
 };
 pub(super) use copymenu::CopyMenu;
 pub(super) use input::{Completion, CompletionCandidate, SkillEntry};
-pub(super) use picker::{Picker, PickerKind, PickerRow};
+pub(super) use picker::{PICKER_ROW_CAPACITY, Picker, PickerKind, PickerRow};
 
 use crate::print::brief_args;
 
@@ -546,13 +548,6 @@ fn models_usage() -> &'static str {
         .iter()
         .find(|command| command.name == "models")
         .map_or("/models:<provider>/<模型id>", |command| command.usage)
-}
-
-/// 逐行步进：越过边界返回 `None`（钳制语义由调用方决定）。
-/// 聊天区消息游标、队列游标与 picker 选中共用。
-fn step_row(index: usize, direction: isize, len: usize) -> Option<usize> {
-    let next = index.checked_add_signed(direction)?;
-    (next < len).then_some(next)
 }
 
 /// 文本的逻辑行数（空文本为 1）：草稿与队列条目共用的行数口径。

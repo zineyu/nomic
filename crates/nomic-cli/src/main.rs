@@ -15,6 +15,7 @@ mod context_files;
 mod images;
 mod logging;
 mod model;
+mod picker;
 mod print;
 mod sessions;
 mod tui;

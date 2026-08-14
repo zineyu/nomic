@@ -13,6 +13,7 @@ use nomic_session::{SessionStore, SessionSummary};
 use time::macros::format_description;
 
 use crate::Cli;
+use crate::picker::{Picker, PickerRow};
 
 /// 列出全部 session：标题、最后更新时间、消息数与启动目录。
 /// session id 是内部标识，不展示。
@@ -68,49 +69,6 @@ fn resume_cli(cli: &Cli, id: String) -> Cli {
     cli
 }
 
-/// 选择器纯状态：当前选中行与滚动窗口起点（脱离终端可测）。
-#[derive(Debug, Default, PartialEq, Eq)]
-struct Picker {
-    selected: usize,
-    offset: usize,
-}
-
-impl Picker {
-    /// 上移一行；选中行滚出窗口上沿时同步收缩窗口。
-    fn up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
-        self.offset = self.offset.min(self.selected);
-    }
-
-    /// 下移一行（到底停止）；选中行滚出窗口下沿时同步下推窗口。
-    fn down(&mut self, len: usize, capacity: usize) {
-        if len == 0 {
-            self.selected = 0;
-            self.offset = 0;
-            return;
-        }
-        self.selected = self.selected.saturating_add(1).min(len - 1);
-        let capacity = capacity.max(1).min(len);
-        if self.selected >= self.offset.saturating_add(capacity) {
-            self.offset = self.selected.saturating_add(1).saturating_sub(capacity);
-        }
-    }
-
-    /// 实际绘制用的窗口起点：钳制在合法范围，并兜底保证选中行可见
-    /// （终端突然变矮时状态里的 offset 可能失效）。
-    fn window(&self, len: usize, capacity: usize) -> usize {
-        if len == 0 {
-            return 0;
-        }
-        let capacity = capacity.min(len).max(1);
-        let selected = self.selected.min(len - 1);
-        self.offset
-            .min(selected)
-            .max(selected.saturating_sub(capacity - 1))
-            .min(len - capacity)
-    }
-}
-
 /// 键盘输入对应的 picker 行为（脱离终端事件循环可测）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PickerAction {
@@ -122,6 +80,8 @@ enum PickerAction {
 }
 
 /// ↑/↓ 或 j/k 移动，Enter 确认，Esc/q/Ctrl-C 取消；release 事件忽略。
+/// 键位语义是本 adapter 的显式选择（与 TUI picker 弹层不同：那边可打印
+/// 字符即过滤、导航全走箭头/Ctrl 键）；选择内核（`crate::picker`）不含键位。
 fn key_action(key: &KeyEvent) -> PickerAction {
     if key.kind == KeyEventKind::Release {
         return PickerAction::Ignore;
@@ -173,12 +133,21 @@ fn pick_loop(stdout: &mut impl Write, sessions: &[SessionSummary]) -> Result<Opt
 }
 
 /// 事件循环内核；清理由调用方统一负责。
+/// 选择状态全在 [`Picker`] 内核（`crate::picker`），本层只管终端接线。
 fn pick_events(
     stdout: &mut impl Write,
     sessions: &[SessionSummary],
     printed: &mut u16,
 ) -> Result<Option<String>> {
-    let mut picker = Picker::default();
+    let rows = sessions
+        .iter()
+        .map(|summary| PickerRow {
+            id: summary.id.clone(),
+            text: row_text(summary),
+            selectable: true,
+        })
+        .collect();
+    let mut picker = Picker::new(rows);
     loop {
         // 回到上一帧块首并清除旧内容后重绘
         if *printed > 0 {
@@ -188,15 +157,15 @@ fn pick_events(
                 terminal::Clear(ClearType::FromCursorDown)
             )?;
         }
-        *printed = draw_picker(stdout, sessions, &picker)?;
+        *printed = draw_picker(stdout, &picker)?;
         stdout.flush()?;
         let capacity = row_capacity();
         if let Event::Key(key) = crossterm::event::read()? {
             match key_action(&key) {
-                PickerAction::Up => picker.up(),
-                PickerAction::Down => picker.down(sessions.len(), capacity),
+                PickerAction::Up => picker.select(-1, capacity),
+                PickerAction::Down => picker.select(1, capacity),
                 PickerAction::Confirm => {
-                    return Ok(Some(sessions[picker.selected].id.clone()));
+                    return Ok(picker.selected_row().map(|row| row.id.clone()));
                 }
                 PickerAction::Cancel => return Ok(None),
                 PickerAction::Ignore => {}
@@ -226,18 +195,13 @@ fn row_capacity() -> usize {
 }
 
 /// 绘制一帧（表头 + 可见窗口内的行），返回绘制的行数。
-fn draw_picker(
-    stdout: &mut impl Write,
-    sessions: &[SessionSummary],
-    picker: &Picker,
-) -> io::Result<u16> {
-    draw_picker_with_height(stdout, sessions, picker, terminal_height())
+fn draw_picker(stdout: &mut impl Write, picker: &Picker) -> io::Result<u16> {
+    draw_picker_with_height(stdout, picker, terminal_height())
 }
 
 /// 按指定终端高度绘制一帧（脱离真实终端尺寸可测）。
 fn draw_picker_with_height(
     stdout: &mut impl Write,
-    sessions: &[SessionSummary],
     picker: &Picker,
     height: u16,
 ) -> io::Result<u16> {
@@ -253,8 +217,14 @@ fn draw_picker_with_height(
     if capacity == 0 {
         return Ok(lines);
     }
-    let offset = picker.window(sessions.len(), capacity);
-    for (index, summary) in sessions.iter().enumerate().skip(offset).take(capacity) {
+    let offset = picker.window(capacity);
+    for (index, &row_index) in picker
+        .visible()
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(capacity)
+    {
         let selected = index == picker.selected;
         if selected {
             queue!(stdout, style::SetAttribute(Attribute::Reverse))?;
@@ -264,7 +234,7 @@ fn draw_picker_with_height(
             style::Print(format!(
                 "{}{}",
                 if selected { "› " } else { "  " },
-                row_text(summary)
+                picker.rows[row_index].text
             )),
             style::SetAttribute(Attribute::Reset),
             style::Print("\r\n")
@@ -336,82 +306,7 @@ mod tests {
         assert_eq!(format_time(Some(u64::MAX)), "-");
     }
 
-    // ── resume 选择器：纯状态与展示 ──────────────────────────────────────────
-
-    #[test]
-    fn picker_up_clamps_at_top() {
-        let mut picker = Picker::default();
-        picker.up();
-        assert_eq!(picker.selected, 0);
-        assert_eq!(picker.offset, 0);
-    }
-
-    #[test]
-    fn picker_down_clamps_at_bottom() {
-        let mut picker = Picker::default();
-        for _ in 0..10 {
-            picker.down(3, 10);
-        }
-        assert_eq!(picker.selected, 2);
-    }
-
-    #[test]
-    fn picker_down_scrolls_window_to_keep_selection_visible() {
-        let mut picker = Picker::default();
-        for _ in 0..5 {
-            picker.down(10, 3);
-        }
-        assert_eq!(picker.selected, 5);
-        assert_eq!(picker.offset, 3, "选中行应贴在窗口下沿");
-        assert_eq!(picker.window(10, 3), 3);
-    }
-
-    #[test]
-    fn picker_up_scrolls_window_back() {
-        let mut picker = Picker {
-            selected: 5,
-            offset: 3,
-        };
-        for _ in 0..4 {
-            picker.up();
-        }
-        assert_eq!(picker.selected, 1);
-        assert_eq!(picker.offset, 1, "选中行应贴在窗口上沿");
-    }
-
-    #[test]
-    fn picker_window_keeps_selection_visible_after_shrink() {
-        // 终端变矮导致容量缩小：旧 offset 让选中行跑出窗口时兜底修正
-        let picker = Picker {
-            selected: 9,
-            offset: 4,
-        };
-        assert_eq!(picker.window(10, 3), 7);
-    }
-
-    #[test]
-    fn picker_handles_zero_capacity_and_empty_list() {
-        let mut picker = Picker {
-            selected: 5,
-            offset: 3,
-        };
-        assert_eq!(picker.window(0, 0), 0);
-        picker.down(0, 0);
-        assert_eq!(picker, Picker::default());
-
-        picker.down(3, 0);
-        assert_eq!(picker.selected, 1);
-        assert_eq!(picker.window(3, 0), 1, "容量 0 按至少一行保证选中行可见");
-    }
-
-    #[test]
-    fn picker_with_single_session_stays_on_first_row() {
-        let mut picker = Picker::default();
-        picker.down(1, 1);
-        picker.up();
-        assert_eq!(picker.selected, 0);
-        assert_eq!(picker.window(1, 1), 0);
-    }
+    // ── resume 选择器 adapter：键位映射与绘制（选择状态内核见 picker 模块） ──
 
     #[test]
     fn key_action_maps_navigation_confirm_and_cancel() {
@@ -469,23 +364,22 @@ mod tests {
 
     #[test]
     fn draw_picker_respects_tiny_terminal_height() {
-        let sessions = vec![picker_summary("实现会话命名")];
-        let picker = Picker::default();
+        let picker = picker_with(&picker_summary("实现会话命名"));
 
         let mut output = Vec::new();
-        let lines = draw_picker_with_height(&mut output, &sessions, &picker, 0).unwrap();
+        let lines = draw_picker_with_height(&mut output, &picker, 0).unwrap();
         assert_eq!(lines, 0);
         assert!(output.is_empty());
 
         let mut output = Vec::new();
-        let lines = draw_picker_with_height(&mut output, &sessions, &picker, 1).unwrap();
+        let lines = draw_picker_with_height(&mut output, &picker, 1).unwrap();
         assert_eq!(lines, 1);
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("实现会话命名"), "{output:?}");
         assert!(!output.contains("选择要恢复的 session"), "{output:?}");
 
         let mut output = Vec::new();
-        let lines = draw_picker_with_height(&mut output, &sessions, &picker, 2).unwrap();
+        let lines = draw_picker_with_height(&mut output, &picker, 2).unwrap();
         assert_eq!(lines, 2);
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("选择要恢复的 session"), "{output:?}");
@@ -526,6 +420,15 @@ mod tests {
         assert_eq!(selected.session.as_deref(), Some("selected-id"));
         assert_eq!(selected.model.as_deref(), Some("model-x"));
         assert_eq!(selected.print.as_deref(), Some("hi"));
+    }
+
+    /// 由 session 摘要构造内核 picker（与 pick_events 同一口径）。
+    fn picker_with(summary: &SessionSummary) -> Picker {
+        Picker::new(vec![PickerRow {
+            id: summary.id.clone(),
+            text: row_text(summary),
+            selectable: true,
+        }])
     }
 
     fn picker_summary(title: &str) -> SessionSummary {

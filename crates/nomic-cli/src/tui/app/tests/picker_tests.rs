@@ -198,7 +198,7 @@ fn picker_filter_narrows_and_esc_clears_first() {
     }
     let picker = app.picker().expect("picker");
     assert_eq!(picker.visible(), vec![1, 2]);
-    assert_eq!(picker.selected, 0);
+    assert_eq!(picker.core.selected, 0);
 
     // ↓ 在过滤结果上移动，Enter 确认命中行
     app.press(Key::Down);
@@ -209,7 +209,7 @@ fn picker_filter_narrows_and_esc_clears_first() {
     // Esc 先清过滤、再关闭
     app.open_resume_picker(rows());
     app.press(Key::Char('x'));
-    assert_eq!(app.picker().expect("picker").filter, "x");
+    assert_eq!(app.picker().expect("picker").core.filter, "x");
     assert!(app.press(Key::Esc).is_empty());
     assert!(app.picker().is_some(), "第一次 Esc 只清过滤");
     assert_eq!(app.picker().expect("picker").visible().len(), 3);
@@ -240,17 +240,17 @@ fn picker_home_end_and_half_page() {
     app.open_resume_picker(rows);
 
     app.press(Key::End);
-    assert_eq!(app.picker().expect("picker").selected, 29);
+    assert_eq!(app.picker().expect("picker").core.selected, 29);
     app.press(Key::Home);
-    assert_eq!(app.picker().expect("picker").selected, 0);
+    assert_eq!(app.picker().expect("picker").core.selected, 0);
     app.press(Key::Ctrl('d'));
-    assert_eq!(app.picker().expect("picker").selected, 10);
+    assert_eq!(app.picker().expect("picker").core.selected, 10);
     app.press(Key::Ctrl('u'));
-    assert_eq!(app.picker().expect("picker").selected, 0);
+    assert_eq!(app.picker().expect("picker").core.selected, 0);
 
     // g/G 普通过滤字符（不过滤语言引入序列键，一键一义）
     app.press(Key::Char('g'));
-    assert_eq!(app.picker().expect("picker").filter, "g");
+    assert_eq!(app.picker().expect("picker").core.filter, "g");
 }
 
 /// `/models` 解析：无参打开选择器，带 id（空格或冒号）直接切换，
@@ -299,7 +299,7 @@ fn reasoning_picker_enter_sets_level_esc_aborts_switch() {
         ]
     };
     app.open_reasoning_picker(rows(), 1);
-    assert_eq!(app.picker().expect("picker").selected, 1);
+    assert_eq!(app.picker().expect("picker").core.selected, 1);
     let effects = app.press(Key::Enter);
     assert!(matches!(&effects[..], [Effect::SetReasoning(id)] if id == "high"));
     assert!(app.picker().is_none());
@@ -340,7 +340,7 @@ fn model_picker_enter_returns_switch_effect() {
         ],
         1,
     );
-    assert_eq!(app.picker().expect("picker").selected, 1);
+    assert_eq!(app.picker().expect("picker").core.selected, 1);
     let effects = app.press(Key::Enter);
     assert!(matches!(&effects[..], [Effect::SwitchModel(id)] if id == "m2"));
     assert!(app.picker().is_none());
@@ -504,10 +504,10 @@ fn tree_picker_skips_unselectable_rows() {
 
     // 下移跳过不可选行，直接落在下一个可选行
     assert!(app.press(Key::Down).is_empty());
-    assert_eq!(app.picker().expect("picker").selected, 2);
+    assert_eq!(app.picker().expect("picker").core.selected, 2);
     // 上移同样跳过
     assert!(app.press(Key::Up).is_empty());
-    assert_eq!(app.picker().expect("picker").selected, 0);
+    assert_eq!(app.picker().expect("picker").core.selected, 0);
 
     let effects = app.press(Key::Enter);
     assert!(matches!(&effects[..], [Effect::BranchTo(id)] if id == "user-1"));
@@ -533,7 +533,7 @@ fn tree_picker_stays_on_last_selectable_at_boundary() {
     app.open_tree_picker(rows, 0);
 
     assert!(app.press(Key::Char('j')).is_empty());
-    assert_eq!(app.picker().expect("picker").selected, 0);
+    assert_eq!(app.picker().expect("picker").core.selected, 0);
 }
 
 /// 分支切换：以重放的消息替换聊天区，session 不变。

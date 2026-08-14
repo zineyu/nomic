@@ -389,49 +389,64 @@ fn skill_load_notice(text: &str) -> Option<String> {
     })
 }
 
+/// mention 展开块的种类（`<active_skill>` / `<file>`）。
+#[derive(Debug, Clone, Copy)]
+enum MentionBlock {
+    Skill,
+    File,
+}
+
+impl MentionBlock {
+    const fn end_tag(self) -> &'static str {
+        match self {
+            Self::Skill => "</active_skill>",
+            Self::File => "</file>",
+        }
+    }
+
+    /// 块的紧凑标记；无法解析时返回 `None`（调用方原样保留整块）。
+    fn chip(self, block: &str) -> Option<String> {
+        match self {
+            Self::Skill => parse_active_skill_tag(block).map(|tag| format!("@skill:{}", tag.name)),
+            Self::File => mention::file_block_path(block).map(|path| format!("@file:{path}")),
+        }
+    }
+}
+
 /// 折叠 mention 展开出的 `<active_skill>` / `<file>` 块为紧凑标记，
 /// 避免把大段正文刷进聊天区；无法识别闭合的块原样保留。
 fn collapse_mention_blocks(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    loop {
-        let skill_at = rest.find("<active_skill ").map(|i| (i, "skill"));
-        let file_at = rest.find("<file ").map(|i| (i, "file"));
-        let (start, kind) = match (skill_at, file_at) {
-            (Some(s), Some(f)) => {
-                if s.0 <= f.0 {
-                    s
-                } else {
-                    f
-                }
-            }
-            (Some(s), None) => s,
-            (None, Some(f)) => f,
-            (None, None) => break,
-        };
+    while let Some((start, kind)) = next_mention_block(rest) {
         out.push_str(&rest[..start]);
         let tail = &rest[start..];
-        let end_tag = if kind == "skill" {
-            "</active_skill>"
-        } else {
-            "</file>"
-        };
+        let end_tag = kind.end_tag();
         let Some(end) = tail.find(end_tag) else {
+            // 未闭合的块原样保留
             out.push_str(tail);
-            rest = "";
-            break;
+            return out;
         };
         let block = &tail[..end + end_tag.len()];
-        let chip = match kind {
-            "skill" => parse_active_skill_tag(block).map(|tag| format!("@skill:{}", tag.name)),
-            "file" => mention::file_block_path(block).map(|path| format!("@file:{path}")),
-            _ => None,
-        };
-        out.push_str(chip.as_deref().unwrap_or(block));
+        out.push_str(&kind.chip(block).unwrap_or_else(|| block.to_string()));
         rest = &tail[end + end_tag.len()..];
     }
     out.push_str(rest);
     out
+}
+
+/// 最近的 mention 块起点（两类块同位起始不可能：前缀不同），取位置靠前者。
+fn next_mention_block(text: &str) -> Option<(usize, MentionBlock)> {
+    let skill = text
+        .find("<active_skill ")
+        .map(|i| (i, MentionBlock::Skill));
+    let file = text.find("<file ").map(|i| (i, MentionBlock::File));
+    match (skill, file) {
+        (Some(s), Some(f)) => Some(if s.0 <= f.0 { s } else { f }),
+        (Some(s), None) => Some(s),
+        (None, Some(f)) => Some(f),
+        (None, None) => None,
+    }
 }
 
 fn blocks_text(blocks: &[UserContent]) -> String {

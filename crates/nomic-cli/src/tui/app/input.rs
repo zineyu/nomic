@@ -1,9 +1,9 @@
-//! 输入区状态：缓冲、编辑与 slash 补全。
+//! 输入区状态：缓冲、编辑与命令补全。
 //!
 //! [`Input`] 自持文本缓冲、光标、补全弹层、暂存附件与补全快照
 //! （skill/template）；提交、模式切换与效果分发由 [`super::App`] 路由。
 //! `App` 持有两份：聊天草稿（INSERT/QUEUE 就地编辑，补全不启用）与
-//! 命令输入框（COMMAND 模式，slash 补全常驻启用，ADR-0020）。
+//! 命令栏（COMMAND 模式，命令补全常驻启用，ADR-0020）。
 
 use nomic_prompts::PromptTemplate;
 use nomic_skills::SkillScope;
@@ -12,17 +12,17 @@ use unicode_width::UnicodeWidthStr;
 use super::{SLASH_COMMANDS, SlashCommand, line_count_of};
 use crate::tui::mention;
 
-/// 补全候选：slash 命令、prompt template 或 `/skill:` 后的 skill 名。
+/// 补全候选：内建命令、prompt template 或 `skill:` 后的 skill 名。
 #[derive(Debug)]
 pub(in crate::tui) enum CompletionCandidate {
     Command(&'static SlashCommand),
-    /// prompt template（`/name` 调用展开）
+    /// prompt template（`name` 调用展开）
     Template(PromptTemplate),
     Skill(SkillEntry),
 }
 
 impl CompletionCandidate {
-    /// 候选对应的输入片段（不含 `/` 前缀），用于精确匹配、排序与填入。
+    /// 候选对应的输入片段，用于精确匹配、排序与填入。
     pub(super) fn fragment(&self) -> String {
         match self {
             Self::Command(command) => command.name.to_string(),
@@ -42,7 +42,7 @@ impl CompletionCandidate {
     }
 }
 
-/// 可用于 `/skill:` 补全的 skill 元数据（从 resolver catalog 快照）。
+/// 可用于 `skill:` 补全的 skill 元数据（从 resolver catalog 快照）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::tui) struct SkillEntry {
     pub(in crate::tui) name: String,
@@ -72,7 +72,7 @@ pub(in crate::tui) struct Completion {
     pub(in crate::tui) selected: usize,
 }
 
-/// 暂存的图片附件（`/image <路径>` 载入，随下一条 prompt 一起发送）。
+/// 暂存的图片附件（`image <路径>` 命令载入，随下一条 prompt 一起发送）。
 #[derive(Debug)]
 struct PendingImage {
     /// 展示名（文件名）
@@ -82,29 +82,29 @@ struct PendingImage {
 }
 
 /// 输入区状态：文本缓冲 + 光标 + 补全 + 附件。编辑操作内部维护补全
-/// 弹层；补全仅在 `completion_enabled`（命令输入框常驻启用，聊天草稿
+/// 弹层；补全仅在 `completion_enabled`（命令栏常驻启用，聊天草稿
 /// 与 QUEUE 就地编辑不启用，ADR-0020）时弹出。
 #[derive(Debug)]
 pub(in crate::tui) struct Input {
     /// 输入缓冲（草稿可多行，`\n` 为 Shift+Enter 插入的手动换行；
-    /// 命令行预填 `/`）
+    /// 命令栏单行，粘贴的换行由模式路由层折叠为空格）
     pub(super) text: String,
     /// 光标位置（字节索引，始终落在 char 边界）
     pub(super) cursor: usize,
-    /// slash 命令补全弹层（启用补全的缓冲以 `/` 开头时出现）
+    /// 命令补全弹层（启用补全的缓冲中命令名编辑期间出现）
     completion: Option<Completion>,
     /// `@` mention 补全弹层（草稿输入框以 `@` 收尾时出现）
     mention: Option<MentionCompletion>,
     /// 暂存的图片附件（随下一条 prompt 发送；仅聊天草稿使用）
     attachments: Vec<PendingImage>,
-    /// `/skill:` 补全用的可用 skill 快照
+    /// `skill:` 补全用的可用 skill 快照
     skills: Vec<SkillEntry>,
-    /// 可用的 prompt templates（`/name` 调用展开与补全用）
+    /// 可用的 prompt templates（`name` 调用展开与补全用）
     templates: Vec<PromptTemplate>,
-    /// 补全是否启用：仅命令输入框启用（ADR-0020；草稿不承载命令，
+    /// 补全是否启用：仅命令栏启用（ADR-0020；草稿不承载命令，
     /// QUEUE 就地编辑的是排队消息文本而非命令，均不启用）
     completion_enabled: bool,
-    /// `@` mention 补全是否启用：聊天草稿启用，命令输入框不启用
+    /// `@` mention 补全是否启用：聊天草稿启用，命令栏不启用
     mention_enabled: bool,
 }
 
@@ -125,7 +125,7 @@ impl Input {
 
     // ── 快照（补全数据源） ──────────────────────────────────────────────────
 
-    /// 设置 `/skill:` 补全用的可用 skill 快照（启动时从 resolver catalog 取）。
+    /// 设置 `skill:` 补全用的可用 skill 快照（启动时从 resolver catalog 取）。
     pub(in crate::tui) fn set_available_skills(&mut self, skills: Vec<SkillEntry>) {
         self.skills = skills;
     }
@@ -419,14 +419,14 @@ impl Input {
         self.attachments.iter().map(|pending| pending.name.as_str())
     }
 
-    // ── slash 命令补全 ──────────────────────────────────────────────────────
+    // ── 命令补全 ────────────────────────────────────────────────────────
 
     /// 当前补全弹层（渲染用）。
     pub(in crate::tui) const fn completion(&self) -> Option<&Completion> {
         self.completion.as_ref()
     }
 
-    /// 同步补全启用状态（命令输入框启用、聊天草稿不启用；构造时设置）。
+    /// 同步补全启用状态（命令栏启用、聊天草稿不启用；构造时设置）。
     pub(super) fn set_completion_enabled(&mut self, enabled: bool) {
         self.completion_enabled = enabled;
         if !enabled {
@@ -434,16 +434,17 @@ impl Input {
         }
     }
 
-    /// 按当前输入重算补全候选：仅在「补全启用、以 `/` 开头、光标在末尾、
-    /// 命令名未输入完整参数（无空白）」时弹出；`/skill:` 后切换为 skill 名候选。
-    fn refresh_completion(&mut self) {
-        // mention 补全与 slash 补全独立：草稿（slash 关闭）也要能弹 mention。
+    /// 按当前输入重算补全候选：仅在「补全启用、光标在末尾、命令名未
+    /// 输入完整参数（无空白）」时弹出（空片段列出全部命令与模板）；
+    /// `skill:` 后切换为 skill 名候选。
+    pub(super) fn refresh_completion(&mut self) {
+        // mention 补全与命令补全独立：草稿（命令补全关闭）也要能弹 mention。
         self.refresh_mention();
         if !self.completion_enabled {
             self.completion = None;
             return;
         }
-        let Some(fragment) = self.slash_fragment().map(str::to_string) else {
+        let Some(fragment) = self.command_fragment().map(str::to_string) else {
             self.completion = None;
             return;
         };
@@ -454,7 +455,7 @@ impl Input {
         };
     }
 
-    /// slash 命令与 prompt template 候选（按名称/别名前缀匹配，按名称排序；
+    /// 内建命令与 prompt template 候选（按名称/别名前缀匹配，按名称排序；
     /// 同名时内建命令在前）。
     fn command_candidates(&self, fragment: &str) -> Option<Completion> {
         let mut candidates: Vec<CompletionCandidate> = SLASH_COMMANDS
@@ -487,7 +488,7 @@ impl Input {
         })
     }
 
-    /// `/skill:` 后的 skill 名候选（按名称前缀匹配）。
+    /// `skill:` 后的 skill 名候选（按名称前缀匹配）。
     fn skill_candidates(&self, name_fragment: &str) -> Option<Completion> {
         let mut candidates: Vec<CompletionCandidate> = self
             .skills
@@ -509,13 +510,13 @@ impl Input {
         })
     }
 
-    /// 光标位于末尾且输入是「无参数的 slash 前缀」时，返回命令名片段。
-    fn slash_fragment(&self) -> Option<&str> {
-        let rest = self.text.strip_prefix('/')?;
-        if self.cursor != self.text.len() || rest.contains(char::is_whitespace) {
+    /// 光标位于末尾且输入是「无参数的命令名片段」时返回该片段
+    ///（空片段列出全部命令与模板）。
+    fn command_fragment(&self) -> Option<&str> {
+        if self.cursor != self.text.len() || self.text.contains(char::is_whitespace) {
             return None;
         }
-        Some(rest)
+        Some(&self.text)
     }
 
     /// Tab：接受当前选中候选；输入已等于选中项时循环到下一个。
@@ -524,13 +525,13 @@ impl Input {
             return;
         };
         let current = completion.candidates[completion.selected].fragment();
-        let selected = if self.text == format!("/{current}") {
+        let selected = if self.text == current {
             (completion.selected + 1) % completion.candidates.len()
         } else {
             completion.selected
         };
         let fragment = completion.candidates[selected].fragment();
-        self.text = format!("/{fragment}");
+        self.text = fragment;
         self.cursor = self.text.len();
         self.refresh_completion();
     }
@@ -556,7 +557,7 @@ impl Input {
     /// Enter 且补全弹层可见时的智能接受：输入未精确匹配任何候选时
     /// 填入选中候选（返回 `true`，不提交）；已精确匹配则返回 `false` 正常提交。
     pub(super) fn accept_completion_on_enter(&mut self) -> bool {
-        let Some(fragment) = self.slash_fragment() else {
+        let Some(fragment) = self.command_fragment() else {
             return false;
         };
         let Some(completion) = &self.completion else {
@@ -580,7 +581,7 @@ impl Input {
         self.mention.as_ref()
     }
 
-    /// 同步 mention 补全启用状态（草稿启用、命令输入框不启用）。
+    /// 同步 mention 补全启用状态（草稿启用、命令栏不启用）。
     pub(super) fn set_mention_enabled(&mut self, enabled: bool) {
         self.mention_enabled = enabled;
         if !enabled {
@@ -722,14 +723,14 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-/// `/skill` 无参时展示的可用 skill 清单（本地展示，不进上下文）。
+/// `skill` 无参时展示的可用 skill 清单（本地展示，不进上下文）。
 pub(super) fn skill_list_text(skills: &[SkillEntry]) -> String {
     use std::fmt::Write as _;
     if skills.is_empty() {
         return "没有可用的 skill（查找 .nomic/skills、.agents/skills 与用户配置目录）。"
             .to_string();
     }
-    let mut text = "可用 skill（/skill:<name> 载入）：".to_string();
+    let mut text = "可用 skill（skill:<name> 载入）：".to_string();
     for skill in skills {
         let _ = write!(
             text,

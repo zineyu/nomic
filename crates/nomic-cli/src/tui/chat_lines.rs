@@ -73,12 +73,12 @@ fn item_blocks(
                     Block::Thinking(thinking) => {
                         // 同一消息块组件，暗色竖条 + 斜体正文与 assistant 输出区分，
                         // 不加标题行，思考内容直接以 gutter 竖条表达；
-                        // 折叠时只渲染一行占位（`/thinking` 切换）
+                        // 折叠时只渲染一行占位（`thinking` 命令切换）
                         let mut message = MessageBlock::new(theme::thinking_marker());
                         if thinking_collapsed {
                             let count = thinking.lines().count();
                             message.push(Line::from(Span::styled(
-                                format!("思考过程（{count} 行，已折叠；/thinking 展开）"),
+                                format!("思考过程（{count} 行，已折叠；thinking 展开）"),
                                 theme::thinking(),
                             )));
                         } else {

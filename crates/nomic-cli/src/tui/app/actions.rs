@@ -1,4 +1,4 @@
-//! App 的第二组方法：复制/选择器/队列/help/会话与 slash 执行（由 app/mod.rs 的 `impl App` 拆分而来）。
+//! App 的第二组方法：复制/选择器/队列/help/会话与命令执行（由 app/mod.rs 的 `impl App` 拆分而来）。
 
 use super::{
     App, Effect, HALF_PAGE_SCROLL, Key, Message, Mode, PAGE_SCROLL, PICKER_PAGE_SCROLL, Picker,
@@ -7,7 +7,7 @@ use super::{
 };
 
 impl App {
-    /// 复制最新一条消息到剪贴板（`/copy` 与 NORMAL `Y` 共用）。
+    /// 复制最新一条消息到剪贴板（`copy` 命令与 NORMAL `Y` 共用）。
     pub fn copy_latest(&mut self) -> Vec<Effect> {
         if let Some(text) = self.chat.latest_message_text() {
             vec![Effect::CopyText(text)]
@@ -381,7 +381,7 @@ impl App {
         total
     }
 
-    /// slash 命令的内部处置：能就地完成的直接做，需要外部资源的转为效果。
+    /// 命令的内部处置：能就地完成的直接做，需要外部资源的转为效果。
     pub fn execute_slash(&mut self, action: SlashAction) -> Vec<Effect> {
         match action {
             SlashAction::Help => {
@@ -422,7 +422,7 @@ impl App {
                     "已展开"
                 };
                 self.chat
-                    .push_system(format!("thinking 显示：{state}（/thinking 切换）"));
+                    .push_system(format!("thinking 显示：{state}（thinking 命令切换）"));
                 Vec::new()
             }
             SlashAction::Goal => {
@@ -433,7 +433,7 @@ impl App {
                     "已关闭"
                 };
                 self.chat
-                    .push_system(format!("goal 模式{state}（/goal 切换）"));
+                    .push_system(format!("goal 模式{state}（goal 命令切换）"));
                 Vec::new()
             }
             SlashAction::New => vec![Effect::NewSession],
@@ -463,13 +463,13 @@ impl App {
 
     // ── 会话操作 ────────────────────────────────────────────────────────────
 
-    /// `/skill`：刷新命令行补全快照并列出可用 skill（本地展示，不进上下文）。
+    /// `skill` 命令：刷新命令栏补全快照并列出可用 skill（本地展示，不进上下文）。
     pub fn show_skills(&mut self, skills: Vec<SkillEntry>) {
         self.chat.push_system(skill_list_text(&skills));
         self.command.set_available_skills(skills);
     }
 
-    /// `/new`：清空聊天区开启新对话；session 切换由调用方随后经
+    /// `new`：清空聊天区开启新对话；session 切换由调用方随后经
     /// [`Self::set_session`] / [`Self::warn`] 回报。
     /// 排队消息属于旧对话的后续意图，随上下文一起清空。
     pub fn start_new_conversation(&mut self) {
@@ -479,12 +479,12 @@ impl App {
         self.chat.push_system("已开启新对话，上下文已清空。");
     }
 
-    /// 切换当前 session 标识（`/new` 新建或 `/resume` 恢复后）。
+    /// 切换当前 session 标识（`new` 新建或 `resume` 恢复后）。
     pub fn set_session(&mut self, session_id: String) {
         self.session_id = Some(session_id);
     }
 
-    /// `/resume`：以恢复的历史消息替换聊天区并切换 session。
+    /// `resume`：以恢复的历史消息替换聊天区并切换 session。
     /// 排队消息属于切换前对话的后续意图，随上下文一起清空。
     pub fn restore_conversation(&mut self, messages: &[Message], session_id: String) {
         self.chat.clear_items();
@@ -493,7 +493,7 @@ impl App {
         self.session_id = Some(session_id);
     }
 
-    /// `/tree` 选择器确认：以分支重放的消息替换聊天区（session 不变；
+    /// `tree` 选择器确认：以分支重放的消息替换聊天区（session 不变；
     /// 落库父指针切换由调用方随后完成）。
     /// 排队消息属于切换前分支的后续意图，随上下文一起清空。
     pub fn restore_branch(&mut self, messages: &[Message]) {
@@ -506,12 +506,12 @@ impl App {
 
     /// 粘贴一段文本（可含换行；`\r\n` 统一为 `\n`），随后重算补全。
     pub fn paste_text(&mut self, text: &str) {
-        // 粘贴的意图是编辑：命令行粘贴进命令缓冲（留在 COMMAND）；
-        // QUEUE 导航下先进入就地编辑（粘贴即修改游标槽位）；
-        // 其余（NORMAL 等）先回 INSERT 编辑草稿（草稿保留）
+        // 粘贴的意图是编辑：命令栏单行，换行折叠为空格后粘贴进命令
+        // 缓冲（留在 COMMAND）；QUEUE 导航下先进入就地编辑（粘贴即修改
+        // 游标槽位）；其余（NORMAL 等）先回 INSERT 编辑草稿（草稿保留）
         match self.mode {
             Mode::Command => {
-                self.command.paste(text);
+                self.command.paste(&text.replace(['\r', '\n'], " "));
                 return;
             }
             Mode::Queue if !self.queue.is_editing() => self.queue_begin_edit(),
@@ -530,14 +530,14 @@ impl App {
         }
     }
 
-    // ── 选择器（/resume、/models、/tree 共用） ──────────────────────────────
+    // ── 选择器（resume、models、tree 共用） ──────────────────────────────
 
-    /// 打开 `/resume` 选择器（从头选中）；调用方保证候选非空。
+    /// 打开 `resume` 选择器（从头选中）；调用方保证候选非空。
     pub fn open_resume_picker(&mut self, rows: Vec<PickerRow>) {
         self.picker = Some(Picker::resume(rows));
     }
 
-    /// 打开 `/models` 选择器，预选中当前模型；调用方保证候选非空。
+    /// 打开 `models` 选择器，预选中当前模型；调用方保证候选非空。
     pub fn open_model_picker(&mut self, rows: Vec<PickerRow>, selected: usize) {
         self.picker = Some(Picker::models(rows, selected));
     }
@@ -548,7 +548,7 @@ impl App {
         self.picker = Some(Picker::reasoning(rows, selected));
     }
 
-    /// 打开 `/tree` 选择器（预选中 `selected`，通常是当前分支末端）；
+    /// 打开 `tree` 选择器（预选中 `selected`，通常是当前分支末端）；
     /// 调用方保证候选非空且 `selected` 落在可选行上。
     pub fn open_tree_picker(&mut self, rows: Vec<PickerRow>, selected: usize) {
         self.picker = Some(Picker::tree(rows, selected));
@@ -560,7 +560,7 @@ impl App {
     }
 
     /// Enter 确认：取出选中行的（种类, id）并关闭选择器。
-    /// 过滤后无可见行或选中不可选行（`/tree` 的工具调用条目）时不确认、
+    /// 过滤后无可见行或选中不可选行（`tree` 的工具调用条目）时不确认、
     /// 保持打开。
     pub fn take_picker_selection(&mut self) -> Option<(PickerKind, String)> {
         let entry = self.picker.as_ref()?.selected_entry()?;
@@ -615,12 +615,12 @@ impl App {
         self.should_quit
     }
 
-    /// thinking 内容是否折叠显示（`/thinking` 切换）。
+    /// thinking 内容是否折叠显示（`thinking` 命令切换）。
     pub const fn thinking_collapsed(&self) -> bool {
         self.thinking_collapsed
     }
 
-    /// goal 模式是否开启（`/goal` 开关，默认关闭）。
+    /// goal 模式是否开启（`goal` 命令开关，默认关闭）。
     pub const fn goal_mode(&self) -> bool {
         self.goal_mode
     }
@@ -630,7 +630,7 @@ impl App {
         &self.model_name
     }
 
-    /// `/models` 切换成功后更新状态栏的模型徽标与上下文窗口。
+    /// `models` 命令切换成功后更新状态栏的模型徽标与上下文窗口。
     pub fn set_model(&mut self, name: String, context_window: u64) {
         self.model_name = name;
         self.context_window = context_window;

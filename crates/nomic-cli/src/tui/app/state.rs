@@ -9,11 +9,11 @@ use super::{
 impl App {
     pub fn new(model_name: String, session_id: Option<String>, context_window: u64) -> Self {
         let mut input = Input::new();
-        // 草稿不承载命令（ADR-0020）：slash 补全只属于命令输入框；
+        // 草稿不承载命令（ADR-0020）：命令补全只属于浮层命令栏；
         // `@` mention 补全属于草稿
         input.set_completion_enabled(false);
         let mut command = Input::new();
-        // 命令输入框只承载 slash 命令，不启用 `@` mention 补全
+        // 命令栏只承载命令，不启用 `@` mention 补全
         command.set_mention_enabled(false);
         Self {
             chat: Chat::default(),
@@ -72,12 +72,12 @@ impl App {
         &mut self.input
     }
 
-    /// 命令输入框状态（COMMAND 模式渲染用）。
+    /// 命令栏状态（COMMAND 模式渲染用）。
     pub const fn command(&self) -> &Input {
         &self.command
     }
 
-    /// 命令输入框状态（可变）：skill/template 补全快照用。
+    /// 命令栏状态（可变）：skill/template 补全快照用。
     pub const fn command_mut(&mut self) -> &mut Input {
         &mut self.command
     }
@@ -205,7 +205,7 @@ impl App {
     }
 
     /// INSERT 模式键位（ADR-0021）：编辑与提交 prompt；`Esc` 回 NORMAL
-    ///（运行中亦然；中断在 NORMAL 按 `q`，退出用 `/quit` 命令）、
+    ///（运行中亦然；中断在 NORMAL 按 `q`，退出用 `quit` 命令）、
     /// `Ctrl+C` 清草稿/退出、`Ctrl+D` 空草稿退出/非空删字符、`↑/↓` 历史召回。
     /// 命令不在此触发（ADR-0020）：`/` 开头的输入按普通 prompt 发送，
     /// 命令走 COMMAND 模式。
@@ -352,9 +352,10 @@ impl App {
         }
     }
 
-    /// COMMAND 模式键位（ADR-0020）：专门的命令输入框（NORMAL `:` 进入，
-    /// 独立缓冲预填 `/`）。编辑键与 INSERT 一致；Tab 补全，Enter 执行
-    /// 命令（或展开模板），Esc 退回栈：关补全弹层 → 放弃回 NORMAL。
+    /// COMMAND 模式键位（ADR-0020 修订）：屏幕中上方的浮层命令栏
+    ///（NORMAL `:` 进入，独立缓冲，单行）。编辑键与 INSERT 一致；
+    /// Tab 补全，Enter 执行命令（或展开模板），Esc 退回栈：
+    /// 关补全弹层 → 放弃回 NORMAL。命令栏单行：Shift+Enter 不换行。
     pub fn press_command(&mut self, key: Key) -> Vec<Effect> {
         match key {
             // Ctrl+C/D：退出（中断运行归 NORMAL `q`）
@@ -366,18 +367,20 @@ impl App {
             }
             Key::Tab => self.command.tab_complete(),
             Key::Enter => return self.command_enter(),
+            // 命令栏单行：Shift+Enter 不换行
+            Key::Newline => {}
             other => Self::edit_key(&mut self.command, &mut self.chat, other),
         }
         Vec::new()
     }
 
-    /// NORMAL `:`：进入 COMMAND（专门的命令输入框）：清空缓冲并预填
-    /// `/`（补全弹层随之列出全部命令）。草稿在独立缓冲，不受影响。
+    /// NORMAL `:`：进入 COMMAND（浮层命令栏）：清空缓冲并列出全部
+    /// 候选（空片段即全量补全）。草稿在独立缓冲，不受影响。
     pub fn enter_command(&mut self) {
         self.mode = Mode::Command;
         self.pending_key = None;
         self.command.set_text(String::new());
-        self.command.insert_char('/');
+        self.command.refresh_completion();
     }
 
     /// 离开 COMMAND 回 NORMAL：清空命令缓冲（无论已执行还是放弃）。
@@ -387,13 +390,13 @@ impl App {
         self.command.set_text(String::new());
     }
 
-    /// COMMAND 的 Enter：空命令行（仅预填的 `/`）无声返回 NORMAL；
-    /// 补全弹层未精确匹配时先填入候选；其余按命令分发——被拒绝（参数
-    /// 非法、未知命令、运行中会话命令）时留在 COMMAND 供修正，受理后
-    /// 回 NORMAL（vim `:` 执行完回 normal 的同一口径）。
+    /// COMMAND 的 Enter：空命令行无声返回 NORMAL；补全弹层未精确
+    /// 匹配时先填入候选；其余按命令分发——被拒绝（参数非法、未知
+    /// 命令、运行中会话命令）时留在 COMMAND 供修正，受理后回 NORMAL
+    ///（vim `:` 执行完回 normal 的同一口径）。
     pub fn command_enter(&mut self) -> Vec<Effect> {
         let text = self.command.text().trim().to_string();
-        if text.is_empty() || text == "/" {
+        if text.is_empty() {
             // 空命令行：等同 Esc，无声返回 NORMAL
             self.leave_command();
             return Vec::new();
@@ -409,24 +412,25 @@ impl App {
         effects
     }
 
-    /// 命令行提交的分发：slash 命令 / prompt template 展开。返回 `None`
+    /// 命令栏提交的分发：内建命令 / prompt template 展开。返回 `None`
     /// 表示被拒绝（notice 已置，调用方留在 COMMAND 供修正）；`Some`
-    /// 表示已受理（效果可为空，如 `/help` 就地输出）。
+    /// 表示已受理（效果可为空，如 `help` 就地输出）。
     ///
     /// 运行中的口径与 INSERT 提交一致（ADR-0014）：本地命令照常执行；
     /// 模板展开的 prompt 排入统一消息队列；会话命令（经 driver 修改
     /// agent 上下文）仍须等本轮结束，拒绝并保留输入。
     pub fn dispatch_command(&mut self, text: &str) -> Option<Vec<Effect>> {
         match parse_slash(text) {
-            SlashParse::NotCommand => {
-                // 缓冲预填 `/`，只有用户删掉前缀才会落到这里
-                self.notice = Some("命令以 / 开头（/help 查看可用命令）".to_string());
+            SlashParse::SlashPrefixed => {
+                // 命令语法已无前缀（ADR-0020 修订）：明确提示而非报未知命令
+                self.notice =
+                    Some("命令不再需要 / 前缀：直接输入命令名（help 列出全部）".to_string());
                 None
             }
             SlashParse::Known(action) => {
                 if self.running && !action.is_local() {
                     self.notice = Some(
-                        "运行中：会话命令（/compact、/retry、/models 等）须等本轮结束".to_string(),
+                        "运行中：会话命令（compact、retry、models 等）须等本轮结束".to_string(),
                     );
                     return None;
                 }
@@ -438,7 +442,12 @@ impl App {
                 None
             }
             SlashParse::Unknown(name) => {
-                match nomic_prompts::expand_invocation(self.command.templates(), text) {
+                // 模板调用沿用 nomic-prompts 的 `/name` 调用语法（print 模式
+                // 同一实现）；命令栏语法已无前缀，这里补回再展开
+                match nomic_prompts::expand_invocation(
+                    self.command.templates(),
+                    &format!("/{text}"),
+                ) {
                     Ok(Some(expanded)) => {
                         if self.running {
                             Some(self.enqueue(expanded))
@@ -458,7 +467,7 @@ impl App {
                         None
                     }
                     _ => {
-                        self.notice = Some(format!("未知命令 /{name}，输入 /help 查看可用命令"));
+                        self.notice = Some(format!("未知命令 {name}，输入 help 查看可用命令"));
                         None
                     }
                 }
@@ -471,7 +480,7 @@ impl App {
     /// `e` 编辑器、`q` 中断运行；输入字符不进入缓冲（草稿保留，
     /// `i`/`a`/`Enter` 回到 INSERT 继续编辑）。NORMAL 是纯浏览态，不持有
     /// 消息游标（ADR-0026）。退出程序不在此层：用 COMMAND 模式的
-    /// `/quit` 或各模式 `Ctrl+C`。
+    /// `quit` 或各模式 `Ctrl+C`。
     pub fn press_normal(&mut self, key: Key) -> Vec<Effect> {
         if let Some(effects) = self.normal_exit(key) {
             return effects;
@@ -498,7 +507,7 @@ impl App {
             // `?` 打开键位帮助弹层（只读；Esc/`?` 关闭）
             Key::Char('?') => return self.open_help(),
             // q：中断本轮运行（ADR-0021 修订）。退出程序不在此键——
-            // 用 COMMAND 模式的 `/quit` 或各模式 `Ctrl+C`；空闲按 q
+            // 用 COMMAND 模式的 `quit` 或各模式 `Ctrl+C`；空闲按 q
             // 只提示退出路径
             Key::Char('q') => return self.cancel_run(),
             // Ctrl+C：退出（运行中先中断再退出）
@@ -514,18 +523,18 @@ impl App {
     }
 
     /// NORMAL `q`：中断本轮运行，永不退出程序（ADR-0021 修订）。退出
-    /// 统一走命令：COMMAND 模式 `/quit`（或各模式 `Ctrl+C` 硬退出）。
+    /// 统一走命令：COMMAND 模式 `quit`（或各模式 `Ctrl+C` 硬退出）。
     /// 空闲按 q 置一次性提示，指引退出路径。
     pub fn cancel_run(&mut self) -> Vec<Effect> {
         if self.running {
             self.notice = Some("已中断本轮".to_string());
             return vec![Effect::Cancel];
         }
-        self.notice = Some("退出：按 : 执行 /quit（或 Ctrl+C）".to_string());
+        self.notice = Some("退出：按 : 执行 quit（或 Ctrl+C）".to_string());
         Vec::new()
     }
 
-    /// 退出 TUI（COMMAND `/quit`、各模式 `Ctrl+C`/`Ctrl+D`）：运行中先
+    /// 退出 TUI（COMMAND `quit`、各模式 `Ctrl+C`/`Ctrl+D`）：运行中先
     /// 中断本轮再退出。
     pub fn quit(&mut self) -> Vec<Effect> {
         self.should_quit = true;
@@ -535,7 +544,7 @@ impl App {
         Vec::new()
     }
 
-    /// NORMAL `r`：重试最近失败的一轮（与 `/retry` 同一口径）；
+    /// NORMAL `r`：重试最近失败的一轮（与 `retry` 命令同一口径）；
     /// 运行中拒绝并提示。
     pub fn retry_last(&mut self) -> Vec<Effect> {
         if self.running {
@@ -549,8 +558,8 @@ impl App {
     }
 
     /// NORMAL 的「离开动作层」键位：`i`/`a` 回 INSERT（光标原位），
-    /// `Enter`/`A` 到输入末尾，`I` 到当前行首，`:` 进入 COMMAND 命令
-    /// 输入框（ADR-0020）；`Esc` 逐层退回——纯结构导航回 INSERT，运行中
+    /// `Enter`/`A` 到输入末尾，`I` 到当前行首，`:` 进入浮层命令栏
+    ///（ADR-0020）；`Esc` 逐层退回——纯结构导航回 INSERT，运行中
     /// 亦然（不中断运行）。返回 `Some` 表示已处理。
     pub fn normal_exit(&mut self, key: Key) -> Option<Vec<Effect>> {
         match key {
@@ -568,7 +577,7 @@ impl App {
                 self.leave_normal();
                 self.input.cursor_line_home();
             }
-            // `:` 进入专门的命令输入框（ADR-0020）：独立缓冲预填 `/`，
+            // `:` 进入浮层命令栏（ADR-0020 修订）：独立缓冲、语法无前缀，
             // 草稿不受影响（补全弹层随之列出全部命令）
             Key::Char(':') => self.enter_command(),
             _ => return None,

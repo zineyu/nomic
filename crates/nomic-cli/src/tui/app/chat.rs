@@ -25,7 +25,7 @@ pub(in crate::tui) enum ChatItem {
 }
 
 impl ChatItem {
-    /// 是否为对话消息（user/assistant）：`/copy` 与 NORMAL `Y` 的复制目标。
+    /// 是否为对话消息（user/assistant）：`copy` 命令与 NORMAL `Y` 的复制目标。
     pub(super) const fn is_message(&self) -> bool {
         matches!(self, Self::User(_) | Self::Assistant(_))
     }
@@ -108,7 +108,7 @@ impl Chat {
         self.scroll_to_bottom();
     }
 
-    /// 清空聊天区（`/new` 开启新对话、`/resume` 恢复前）。
+    /// 清空聊天区（`new` 开启新对话、`resume` 恢复前）。
     pub(super) fn clear_items(&mut self) {
         self.items.clear();
         self.scroll_to_bottom();
@@ -241,7 +241,7 @@ impl Chat {
         })
     }
 
-    /// `/retry`：弹出聊天区尾部失败/未定稿的 assistant 条目（随历史中的
+    /// `retry` 命令：弹出聊天区尾部失败/未定稿的 assistant 条目（随历史中的
     /// 失败消息一并移除，与 `Agent::retry` 同一口径）。
     pub(super) fn pop_trailing_failed_assistant(&mut self) {
         while matches!(
@@ -252,7 +252,7 @@ impl Chat {
         }
     }
 
-    /// `/copy` 的复制源：聊天区最新一条用户/assistant 消息的纯文本
+    /// `copy` 命令的复制源：聊天区最新一条用户/assistant 消息的纯文本
     ///（[`item_text`] 口径）；全部为空返回 `None`。
     pub(super) fn latest_message_text(&self) -> Option<String> {
         self.items
@@ -358,13 +358,13 @@ pub(super) fn user_text(content: &UserMessageContent) -> String {
     }
 }
 
-// ── skill 手动载入（`/skill:<name>`）────────────────────────────────────────
+// ── skill 手动载入（`skill:<name>`）────────────────────────────────────────
 
 /// 构造手动载入 skill 的注入文本（作为 user 消息进入上下文，随 session 落库）。
 ///
 /// 标签使用 [`ActivatedSkill::prompt_tag`] 的统一格式，与 bootstrap 中 `--skill`
 /// 注入 system prompt 的 `<active_skill>` 一致，模型侧无需区分来源。
-/// `/skill:<name> args` 的附加上下文在消息尾部以 `User: <args>` 追加
+/// `skill:<name> args` 的附加上下文在消息尾部以 `User: <args>` 追加
 ///（参考 omp 的 user-invocation 模板），让 skill 能接收调用方意图。
 pub(in crate::tui) fn skill_load_message(skill: &ActivatedSkill, args: Option<&str>) -> String {
     let mut message = format!(

@@ -53,7 +53,7 @@ impl Queue {
         self.steering.pop_front()
     }
 
-    /// 清空队列（`/new`、`/resume`、`/tree` 切换上下文时随旧对话意图丢弃）。
+    /// 清空队列（`new`、`resume`、`tree` 切换上下文时随旧对话意图丢弃）。
     pub(super) fn clear(&self) {
         self.steering.clear();
     }

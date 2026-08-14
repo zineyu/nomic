@@ -31,22 +31,22 @@ pub(super) enum DriverJob {
     Prompt(String, Vec<nomic_ai::ImageContent>, CancellationToken),
     /// 手动压缩上下文（`/compact [聚焦指令]`，附本轮取消令牌）
     Compact(Option<String>, CancellationToken),
-    /// 重试最近一轮失败的响应（`/retry`，附本轮取消令牌）
+    /// 重试最近一轮失败的响应（`retry`，附本轮取消令牌）
     Retry(CancellationToken),
-    /// 向 agent 历史注入一条 user 消息（`/skill:<name>` 手动载入），不启动 run
+    /// 向 agent 历史注入一条 user 消息（`skill:<name>` 手动载入），不启动 run
     Inject(String),
-    /// 清空 agent 上下文（`/new`）
+    /// 清空 agent 上下文（`new`）
     Clear,
-    /// 整体替换 agent 上下文（`/resume` 恢复历史 session）
+    /// 整体替换 agent 上下文（`resume` 恢复历史 session）
     Restore(Vec<Message>),
-    /// 切换模型（`/models`；上下文保留，spec 已按启动同一口径解析；
+    /// 切换模型（`models`；上下文保留，spec 已按启动同一口径解析；
     /// 跨 provider 时携带新连接实现）
     SwitchModel(ModelSwitch),
     /// 设置思考级别（模型切换流程第二步确认；None 关闭）
     SetReasoning(Option<ThinkingLevel>),
 }
 
-/// `/models` 模型切换载荷：跨 provider 时携带新连接实现与分层的 api_key。
+/// `models` 模型切换载荷：跨 provider 时携带新连接实现与分层的 api_key。
 pub(super) struct ModelSwitch {
     pub(super) model: Model,
     pub(super) provider: Option<ProviderSwitch>,
@@ -195,10 +195,10 @@ pub(super) struct Driver {
     /// actor 是否存活；退出后其 channel 已关闭，事件循环跳过对应分支
     alive: bool,
     /// 会话落库绑定（recorder + cwd）：定稿点落库与父指针推进收在
-    /// [`SessionRecorder`]（print 同一实现），`/tree` 分支与 `/new` /
-    /// `/resume` 的换绑收在 effects::session
+    /// [`SessionRecorder`]（print 同一实现），`tree` 分支与 `new` /
+    /// `resume` 的换绑收在 effects::session
     session: SessionBinding,
-    /// 两步模型切换状态机（`/models`）：当前模型/思考级别、待切换模型
+    /// 两步模型切换状态机（`models`）：当前模型/思考级别、待切换模型
     /// 与运行时解析器收在其中（effects::model 持有定义）
     model: ModelSwitcher,
     /// skill 解析器（ListSkills/LoadSkill 接线用，仅本文件访问）

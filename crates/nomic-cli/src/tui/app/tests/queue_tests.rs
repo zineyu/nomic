@@ -64,10 +64,10 @@ fn skill_completion_after_colon_prefix() {
             scope: SkillScope::AgentUser,
         },
     ]);
-    for c in "/skill:".chars() {
+    for c in "skill:".chars() {
         app.command.insert_char(c);
     }
-    let completion = app.command.completion().expect("/skill: 弹出全部 skill");
+    let completion = app.command.completion().expect("skill: 弹出全部 skill");
     assert_eq!(
         candidate_fragments(completion),
         vec!["skill:jujutsu", "skill:rust-review"]
@@ -75,19 +75,19 @@ fn skill_completion_after_colon_prefix() {
 
     // Tab 接受选中项；接受后候选收敛到精确匹配项，再次 Tab 保持不变
     app.command.tab_complete();
-    assert_eq!(app.command.text(), "/skill:jujutsu");
+    assert_eq!(app.command.text(), "skill:jujutsu");
     app.command.tab_complete();
-    assert_eq!(app.command.text(), "/skill:jujutsu");
+    assert_eq!(app.command.text(), "skill:jujutsu");
 
     // 前缀过滤后 Enter 填入唯一候选，再次 Enter 精确匹配放行提交
     app.command.take_input();
-    for c in "/skill:juj".chars() {
+    for c in "skill:juj".chars() {
         app.command.insert_char(c);
     }
     let completion = app.command.completion().expect("前缀过滤");
     assert_eq!(candidate_fragments(completion), vec!["skill:jujutsu"]);
     assert!(app.command.accept_completion_on_enter());
-    assert_eq!(app.command.text(), "/skill:jujutsu");
+    assert_eq!(app.command.text(), "skill:jujutsu");
     assert!(!app.command.accept_completion_on_enter());
 }
 
@@ -149,7 +149,7 @@ fn skill_list_text_lists_names_or_reports_empty() {
         scope: SkillScope::Project,
     };
     let text = skill_list_text(&[entry]);
-    assert!(text.contains("/skill:<name>"), "{text}");
+    assert!(text.contains("skill:<name>"), "{text}");
     assert!(text.contains("jujutsu — jj vcs（project）"), "{text}");
 }
 
@@ -161,11 +161,11 @@ fn system_item_and_clear_items() {
     let ChatItem::System(text) = &app.chat.items[0] else {
         panic!("expected system item");
     };
-    assert!(text.contains("/help"));
-    assert!(text.contains("/new"));
-    assert!(text.contains("/skill"));
-    assert!(text.contains("/quit"));
-    assert!(text.contains("/exit"));
+    assert!(text.contains("help"));
+    assert!(text.contains("new"));
+    assert!(text.contains("skill:<name>"));
+    assert!(text.contains("quit"));
+    assert!(text.contains("exit"));
     app.chat.clear_items();
     assert!(app.chat.items.is_empty());
 }
@@ -174,11 +174,11 @@ fn system_item_and_clear_items() {
 fn dismiss_completion_reports_whether_popup_was_open() {
     let mut app = app();
     assert!(!app.command.dismiss_completion());
-    app.command.insert_char('/');
+    app.command.insert_char('n');
     assert!(app.command.dismiss_completion());
     assert!(app.command.completion().is_none());
     // 关闭后下次编辑会重新计算
-    app.command.insert_char('n');
+    app.command.insert_char('e');
     assert!(app.command.completion().is_some());
 }
 
@@ -261,7 +261,7 @@ fn template_completion_lists_templates_with_commands() {
         template("review", "Review $@", Some("<path>")),
         template("component", "Create $1", None),
     ]);
-    for c in "/re".chars() {
+    for c in "re".chars() {
         prefixed.command.insert_char(c);
     }
     let completion = prefixed.command.completion().expect("前缀弹出候选");
@@ -272,16 +272,16 @@ fn template_completion_lists_templates_with_commands() {
 
     // Tab 填入首个候选（接受后候选收敛到精确匹配，再次 Tab 不变）
     prefixed.command.tab_complete();
-    assert_eq!(prefixed.command.text(), "/resume");
+    assert_eq!(prefixed.command.text(), "resume");
     prefixed.command.tab_complete();
-    assert_eq!(prefixed.command.text(), "/resume");
+    assert_eq!(prefixed.command.text(), "resume");
 
     // 唯一前缀时 Tab 直接填入模板候选
     let mut unique = app();
     unique
         .command
         .set_available_templates(vec![template("review", "Review $@", Some("<path>"))]);
-    for c in "/rev".chars() {
+    for c in "rev".chars() {
         unique.command.insert_char(c);
     }
     assert_eq!(
@@ -289,14 +289,14 @@ fn template_completion_lists_templates_with_commands() {
         vec!["review"]
     );
     unique.command.tab_complete();
-    assert_eq!(unique.command.text(), "/review");
+    assert_eq!(unique.command.text(), "review");
 
     // 空片段时模板与内建命令一起出现
     let mut empty = app();
     empty
         .command
         .set_available_templates(vec![template("zz-top", "body", None)]);
-    empty.command.insert_char('/');
+    empty.command.refresh_completion();
     let completion = empty.command.completion().expect("全部候选");
     assert!(candidate_fragments(completion).contains(&"zz-top".to_string()));
 }
@@ -354,7 +354,7 @@ fn template_invocation_errors_and_builtin_precedence() {
         missing
             .notice
             .as_deref()
-            .is_some_and(|notice| notice.contains("未知命令 /missing"))
+            .is_some_and(|notice| notice.contains("未知命令 missing"))
     );
 
     // 内建命令优先于同名模板

@@ -11,7 +11,7 @@
 //! 的标记**原样保留**，不阻断发送。
 //!
 //! 展开产出的块沿用既有契约：skill 用 [`nomic_skills::ActivatedSkill::prompt_tag`]
-//! 的 `<active_skill>` 标签（与 `--skill`、`/skill:<name>` 同一格式），文件用
+//! 的 `<active_skill>` 标签（与 `--skill`、`skill:<name>` 同一格式），文件用
 //! `<file path="...">` 标签；chat 侧据此把展开块折叠为紧凑行展示。
 
 use std::path::{Path, PathBuf};

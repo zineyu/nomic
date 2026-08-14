@@ -1,9 +1,10 @@
-//! 输入区 widget：多行草稿/命令输入框 + 附件行 + 队列区 + 光标定位。
+//! 输入区 widget：多行草稿输入框 + 附件行 + 队列区 + 光标定位。
 //!
 //! [`InputArea`] 是 [`Widget`]：从 [`App`] 只读构建输入框画面（附件行 →
-//! 队列区 → 草稿/命令行），高度随内容伸缩；光标位置在渲染后由
-//! 组合根经 [`InputArea::cursor_position`] 计算并设置（[`Widget::render`]
+//! 队列区 → 草稿），高度随内容伸缩；光标位置在渲染后由组合根经
+//! [`InputArea::cursor_position`] 计算并设置（[`Widget::render`]
 //! 只拿到 `&mut Buffer`，光标设置属于 `Frame` 职责）。
+//! 命令不经过这里：COMMAND 模式的浮层命令栏见 [`super::palette`]。
 
 use crate::tui::app::{App, Mode, PickerKind};
 use crate::tui::theme;
@@ -24,12 +25,10 @@ const MAX_INPUT_LINES: u16 = 10;
 
 /// 输入框总高度（含上下边框）：附件行（可选）+ 队列区 + 草稿区 + 2 行边框。
 /// QUEUE 模式下草稿不单独渲染（就地编辑槽位的行即草稿内容）；
-/// COMMAND 模式渲染命令输入框（ADR-0020）而非草稿。
+/// COMMAND 模式下草稿照常渲染（命令在浮层命令栏，不复用此区域）。
 pub(in crate::tui) fn input_height(app: &App) -> u16 {
     let draft = if app.queue_mode_active() {
         0
-    } else if app.mode() == Mode::Command {
-        app.command().line_count().min(MAX_DRAFT_LINES)
     } else {
         app.input().line_count().min(MAX_DRAFT_LINES)
     };
@@ -69,11 +68,7 @@ impl<'a> InputArea<'a> {
             .inner(area);
         let attachment_offset = u16::from(app.input().has_attachments());
         let queue_offset = app.queue_display_lines();
-        let commanding = app.mode() == Mode::Command;
-        let (cursor_row, cursor_col) = if commanding {
-            let (row, col) = app.command().cursor_position();
-            (queue_offset + row, col)
-        } else if app.queue_mode_active() {
+        let (cursor_row, cursor_col) = if app.queue_mode_active() {
             if app.queue().is_editing() {
                 // 就地编辑：槽位起始行 + 草稿缓冲内的光标行（gutter 宽 2 列）
                 let (row, col) = app.input().cursor_position();
@@ -132,16 +127,11 @@ impl Widget for InputArea<'_> {
                 theme::accent(),
             )));
         }
-        // COMMAND 下显示专门的命令输入框（ADR-0020），草稿保留不动
-        let commanding = app.mode() == Mode::Command;
+        // COMMAND 下草稿照常渲染（焦点在浮层命令栏），草稿保留不动
         lines.extend(queue_area_lines(app));
-        // 草稿行（QUEUE 模式下不单独渲染；COMMAND 显示命令输入框）
+        // 草稿行（QUEUE 模式下不单独渲染）
         if !app.queue_mode_active() {
-            let text = if commanding {
-                app.command().text()
-            } else {
-                app.input().text()
-            };
+            let text = app.input().text();
             lines.extend(
                 text.split('\n')
                     .map(|text| Line::from(Span::raw(text.to_string()))),
@@ -245,18 +235,6 @@ fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
             Some(Line::from(Span::styled(title, theme::accent()))),
             theme::accent(),
         )
-    } else if app.mode() == Mode::Command {
-        // COMMAND（ADR-0020）：专门的命令输入框；运行中打开时叠加 spinner
-        let mut spans = Vec::new();
-        if app.is_running() {
-            spans.push(Span::styled(format!("{} ", app.spinner()), theme::busy()));
-            spans.push(Span::styled("运行中 · ", theme::busy()));
-        }
-        spans.push(Span::styled(
-            "命令 · Tab 补全 · Enter 执行 · Esc 返回",
-            theme::accent(),
-        ));
-        (Some(Line::from(spans)), theme::accent())
     } else if app.input().completion().is_some() {
         // 补全弹层自带标题；输入框只以 accent 边框表示补全中
         (None, theme::accent())

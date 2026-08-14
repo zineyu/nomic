@@ -1,9 +1,9 @@
-//! 剪贴板与图片暂存：bracketed paste、Ctrl+V 粘贴、`/copy` 复制、
-//! `/image` 与 `--image` 附件暂存。
+//! 剪贴板与图片暂存：bracketed paste、Ctrl+V 粘贴、`copy` 复制、
+//! `image` 与 `--image` 附件暂存。
 
 use crate::tui::app::App;
 
-/// 加载图片并暂存为附件（`/image` 与粘贴图片路径共用）。
+/// 加载图片并暂存为附件（`image` 与粘贴图片路径共用）。
 pub(in crate::tui) fn attach_image(app: &mut App, path: &std::path::Path) {
     match crate::images::load_image(path) {
         Ok(image) => {
@@ -91,7 +91,7 @@ pub(in crate::tui) async fn paste_clipboard(app: &mut App) {
     }
 }
 
-/// `/copy`：把文本写入系统剪贴板。
+/// `copy`：把文本写入系统剪贴板。
 ///
 /// 与粘贴同理，写入可能阻塞在 X11/Wayland 往返上，放 `spawn_blocking` 中执行。
 pub(in crate::tui) async fn copy_to_clipboard(app: &mut App, text: String) {

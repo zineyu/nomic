@@ -1,4 +1,4 @@
-//! 会话管理：`/resume` 恢复、`/tree` 浏览与分支、`/new` 新建。
+//! 会话管理：`resume` 恢复、`tree` 浏览与分支、`new` 新建。
 //!
 //! 定稿点落库与父指针推进收在 `nomic_session::SessionRecorder`；本模块
 //! 持有会话落库绑定 [`SessionBinding`]（recorder + 创建新 session 用的
@@ -50,7 +50,7 @@ impl SessionBinding {
     }
 }
 
-/// `/resume`：列出历史 session 并打开选择器。
+/// `resume`：列出历史 session 并打开选择器。
 pub(in crate::tui) async fn list_sessions(app: &mut App, session: &SessionBinding) {
     match session_store(session.recorder.as_ref()).await {
         Err(error) => app.warn(format!("{error:#}")),
@@ -74,7 +74,7 @@ pub(in crate::tui) async fn list_sessions(app: &mut App, session: &SessionBindin
     }
 }
 
-/// `/new`：driver 串行清空上下文；本地重置聊天区并新建 session。
+/// `new`：driver 串行清空上下文；本地重置聊天区并新建 session。
 pub(in crate::tui) async fn new_session(
     app: &mut App,
     session: &mut SessionBinding,
@@ -97,7 +97,7 @@ pub(in crate::tui) async fn new_session(
     }
 }
 
-/// `/tree`：列出当前 session 的会话树并打开选择器（预选中当前分支末端）。
+/// `tree`：列出当前 session 的会话树并打开选择器（预选中当前分支末端）。
 pub(in crate::tui) async fn list_tree(app: &mut App, session: &SessionBinding) {
     let Some(recorder) = &session.recorder else {
         app.warn("当前对话未持久化，没有会话树可浏览");
@@ -124,8 +124,8 @@ pub(in crate::tui) async fn list_tree(app: &mut App, session: &SessionBinding) {
     }
 }
 
-/// `/tree` 选择器确认：以所选条目为起点创建分支——重放该分支上下文、
-/// 切换落库父指针；原分支 entries 不动，仍可在 `/tree` 中回访。
+/// `tree` 选择器确认：以所选条目为起点创建分支——重放该分支上下文、
+/// 切换落库父指针；原分支 entries 不动，仍可在 `tree` 中回访。
 pub(in crate::tui) async fn branch_to(
     app: &mut App,
     session: &mut SessionBinding,
@@ -274,7 +274,7 @@ fn entry_row(entry: &TreeEntry, tip: Option<&str>, prefix: &str) -> PickerRow {
 ///
 /// 工具名与失败数从工具结果 preview（`工具结果：{name}` / `工具失败：{name}`，
 /// 见 nomic-session 的 `message_preview`）统计；preview 无法解析（如 payload
-/// 损坏的占位文本）只计入总数。run 内含当前分支末端（运行中打开 `/tree`）
+/// 损坏的占位文本）只计入总数。run 内含当前分支末端（运行中打开 `tree`）
 /// 时带标记。
 fn fold_row(run: &[TreeEntry], tip: Option<&str>, prefix: &str) -> PickerRow {
     let mut calls = 0_usize;
@@ -323,7 +323,7 @@ fn fold_row(run: &[TreeEntry], tip: Option<&str>, prefix: &str) -> PickerRow {
 }
 
 /// 取可用 session store：优先复用 recorder 的；未持久化（启动时打开失败）
-/// 时按需重开——`/resume` 成功后该 store 会随新 recorder 一同被采用。
+/// 时按需重开——`resume` 成功后该 store 会随新 recorder 一同被采用。
 async fn session_store(recorder: Option<&SessionRecorder>) -> Result<SessionStore> {
     match recorder {
         Some(recorder) => Ok(recorder.store().clone()),

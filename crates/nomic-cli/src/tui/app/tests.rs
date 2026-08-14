@@ -52,8 +52,8 @@ fn app() -> App {
     App::new("test-model".to_string(), None, 200_000)
 }
 
-/// 打开命令输入框并键入命令文本（ADR-0020）：INSERT 下先 Esc 进
-/// NORMAL，`:` 打开命令行（预填 `/`），粘贴不含 `/` 前缀的命令文本。
+/// 打开浮层命令栏并键入命令文本（ADR-0020）：INSERT 下先 Esc 进
+/// NORMAL，`:` 打开命令栏（空缓冲、无 `/` 前缀），粘贴命令文本。
 fn open_command(app: &mut App, text: &str) {
     if app.mode() == Mode::Insert {
         app.press(Key::Esc);
@@ -162,7 +162,7 @@ fn message_end_and_agent_end_copy_context_tokens() {
     assert_eq!(app.context_tokens(), 56_000);
 }
 
-/// 恢复历史（启动 / `/resume`）时按估算口径初始化上下文用量。
+/// 恢复历史（启动 / `resume`）时按估算口径初始化上下文用量。
 #[test]
 fn load_history_estimates_context_tokens() {
     let mut app = app();
@@ -171,7 +171,7 @@ fn load_history_estimates_context_tokens() {
     assert_eq!(app.context_tokens(), 100);
 }
 
-/// `/new` 开启新对话时上下文用量清零。
+/// `new` 命令开启新对话时上下文用量清零。
 #[test]
 fn new_conversation_resets_context_tokens() {
     let mut app = app();
@@ -286,9 +286,9 @@ fn multiline_input_tracks_lines_and_cursor() {
 #[test]
 fn newline_dismisses_completion() {
     let mut app = app();
-    app.command.insert_char('/');
+    app.command.insert_char('n');
     assert!(app.command.completion().is_some());
-    // 换行是空白字符，slash 补全随之关闭
+    // 换行是空白字符，命令补全随之关闭
     app.command.insert_newline();
     assert!(app.command.completion().is_none());
 }
@@ -310,19 +310,20 @@ fn input_editing_respects_char_boundaries() {
 }
 
 #[test]
-fn slash_completion_filters_by_prefix_and_tab_cycles() {
+fn command_completion_filters_by_prefix_and_tab_cycles() {
     let mut app = app();
-    app.command.insert_char('/');
-    let completion = app.command.completion().expect("/ 即弹出全部候选");
+    // 空片段即全量候选（进入命令栏即列出全部命令）
+    app.command.refresh_completion();
+    let completion = app.command.completion().expect("空片段即全部候选");
     assert_eq!(completion.candidates.len(), SLASH_COMMANDS.len());
 
     app.command.insert_char('n');
-    let completion = app.command.completion().expect("/n 匹配 new");
+    let completion = app.command.completion().expect("n 匹配 new");
     assert_eq!(candidate_fragments(completion), vec!["new"]);
 
     // Tab 接受候选
     app.command.tab_complete();
-    assert_eq!(app.command.text(), "/new");
+    assert_eq!(app.command.text(), "new");
     // 精确匹配后仍显示（展示描述），且选中该项
     let completion = app.command.completion().expect("精确匹配仍显示候选");
     assert_eq!(completion.candidates[completion.selected].fragment(), "new");
@@ -333,12 +334,12 @@ fn slash_completion_filters_by_prefix_and_tab_cycles() {
 }
 
 #[test]
-fn slash_completion_matches_alias_and_enter_accepts() {
+fn command_completion_matches_alias_and_enter_accepts() {
     let mut app = app();
-    for c in "/ex".chars() {
+    for c in "ex".chars() {
         app.command.insert_char(c);
     }
-    let completion = app.command.completion().expect("/ex 匹配别名 exit");
+    let completion = app.command.completion().expect("ex 匹配别名 exit");
     assert_eq!(
         completion.candidates[completion.selected].fragment(),
         "quit"
@@ -346,7 +347,7 @@ fn slash_completion_matches_alias_and_enter_accepts() {
 
     // 未精确匹配时 Enter 先填入候选，不提交
     assert!(app.command.accept_completion_on_enter());
-    assert_eq!(app.command.text(), "/quit");
+    assert_eq!(app.command.text(), "quit");
     // 精确匹配后 Enter 放行提交
     assert!(!app.command.accept_completion_on_enter());
 }
@@ -382,29 +383,36 @@ fn picker_clamps_selection_and_take_closes() {
 }
 
 #[test]
-fn parse_slash_dispatches_known_unknown_and_plain() {
-    assert_eq!(parse_slash("hello"), SlashParse::NotCommand);
-    assert_eq!(parse_slash("/help"), SlashParse::Known(SlashAction::Help));
-    assert_eq!(parse_slash("/new"), SlashParse::Known(SlashAction::New));
+fn parse_slash_dispatches_known_unknown_and_slash_prefixed() {
+    // 仍以 `/` 开头：命令语法已无前缀（ADR-0020 修订），拒绝并提示
+    assert_eq!(parse_slash("/help"), SlashParse::SlashPrefixed);
+    assert_eq!(parse_slash("/"), SlashParse::SlashPrefixed);
+    assert_eq!(parse_slash("help"), SlashParse::Known(SlashAction::Help));
+    assert_eq!(parse_slash("new"), SlashParse::Known(SlashAction::New));
     assert_eq!(
-        parse_slash("/resume"),
+        parse_slash("resume"),
         SlashParse::Known(SlashAction::Resume)
     );
-    assert_eq!(parse_slash("/quit"), SlashParse::Known(SlashAction::Quit));
-    assert_eq!(parse_slash("/exit"), SlashParse::Known(SlashAction::Quit));
-    assert_eq!(parse_slash("/copy"), SlashParse::Known(SlashAction::Copy));
+    assert_eq!(parse_slash("quit"), SlashParse::Known(SlashAction::Quit));
+    assert_eq!(parse_slash("exit"), SlashParse::Known(SlashAction::Quit));
+    assert_eq!(parse_slash("copy"), SlashParse::Known(SlashAction::Copy));
     assert_eq!(
-        parse_slash("/thinking"),
+        parse_slash("thinking"),
         SlashParse::Known(SlashAction::Thinking)
     );
-    assert_eq!(parse_slash("/goal"), SlashParse::Known(SlashAction::Goal));
-    assert_eq!(parse_slash("/retry"), SlashParse::Known(SlashAction::Retry));
+    assert_eq!(parse_slash("goal"), SlashParse::Known(SlashAction::Goal));
+    assert_eq!(parse_slash("retry"), SlashParse::Known(SlashAction::Retry));
     assert_eq!(
-        parse_slash("/foobar"),
+        parse_slash("foobar"),
         SlashParse::Unknown("foobar".to_string())
     );
+    // 普通文本同样是未知命令（命令栏只承载命令；模板调用由分发层展开）
+    assert_eq!(
+        parse_slash("hello"),
+        SlashParse::Unknown("hello".to_string())
+    );
     // 首尾空白容错
-    assert_eq!(parse_slash("  /new  "), SlashParse::Known(SlashAction::New));
+    assert_eq!(parse_slash("  new  "), SlashParse::Known(SlashAction::New));
 }
 
 #[test]
@@ -556,42 +564,39 @@ fn parse_slash_skill_uses_colon_argument() {
         })))
     };
     assert_eq!(
-        parse_slash("/skill"),
+        parse_slash("skill"),
         SlashParse::Known(SlashAction::Skill(None))
     );
-    assert_eq!(parse_slash("/skill:jujutsu"), skill("jujutsu", None));
+    assert_eq!(parse_slash("skill:jujutsu"), skill("jujutsu", None));
     // 空参数等价于无参（列出清单）
     assert_eq!(
-        parse_slash("/skill:"),
+        parse_slash("skill:"),
         SlashParse::Known(SlashAction::Skill(None))
     );
     // 名称后首个空白起为附带 args（可为含空格的自由文本）
     assert_eq!(
-        parse_slash("/skill:review 只看 unsafe 块"),
+        parse_slash("skill:review 只看 unsafe 块"),
         skill("review", Some("只看 unsafe 块"))
     );
-    // `/skill name` 空白形式仍属于非法用法（避免与 prompt template 调用混淆）
+    // `skill name` 空白形式仍属于非法用法（避免与 prompt template 调用混淆）
     assert!(matches!(
-        parse_slash("/skill jujutsu"),
+        parse_slash("skill jujutsu"),
         SlashParse::InvalidUsage(_)
     ));
     // 无参命令带参数同样报用法错误
-    assert!(matches!(parse_slash("/new x"), SlashParse::InvalidUsage(_)));
+    assert!(matches!(parse_slash("new x"), SlashParse::InvalidUsage(_)));
+    assert!(matches!(parse_slash("goal x"), SlashParse::InvalidUsage(_)));
     assert!(matches!(
-        parse_slash("/goal x"),
+        parse_slash("resume:abc"),
         SlashParse::InvalidUsage(_)
     ));
     assert!(matches!(
-        parse_slash("/resume:abc"),
-        SlashParse::InvalidUsage(_)
-    ));
-    assert!(matches!(
-        parse_slash("/quit:now"),
+        parse_slash("quit:now"),
         SlashParse::InvalidUsage(_)
     ));
     // 未知命令带冒号参数仍报未知
     assert_eq!(
-        parse_slash("/foo:bar"),
+        parse_slash("foo:bar"),
         SlashParse::Unknown("foo".to_string())
     );
 }
@@ -599,27 +604,27 @@ fn parse_slash_skill_uses_colon_argument() {
 #[test]
 fn parse_slash_compact_takes_free_text_instructions() {
     assert_eq!(
-        parse_slash("/compact"),
+        parse_slash("compact"),
         SlashParse::Known(SlashAction::Compact(None))
     );
     // 空白分隔的自由文本（可含空格）
     assert_eq!(
-        parse_slash("/compact 专注 测试 部分"),
+        parse_slash("compact 专注 测试 部分"),
         SlashParse::Known(SlashAction::Compact(Some("专注 测试 部分".to_string())))
     );
     // 冒号形式同样接受
     assert_eq!(
-        parse_slash("/compact:focus on tests"),
+        parse_slash("compact:focus on tests"),
         SlashParse::Known(SlashAction::Compact(Some("focus on tests".to_string())))
     );
     // 空参数等价于无参
     assert_eq!(
-        parse_slash("/compact "),
+        parse_slash("compact "),
         SlashParse::Known(SlashAction::Compact(None))
     );
-    // 前缀不等于命令名：/compactx 报未知
+    // 前缀不等于命令名：compactx 报未知
     assert_eq!(
-        parse_slash("/compactx"),
+        parse_slash("compactx"),
         SlashParse::Unknown("compactx".to_string())
     );
 }
@@ -627,23 +632,20 @@ fn parse_slash_compact_takes_free_text_instructions() {
 #[test]
 fn parse_slash_image_takes_path_argument() {
     assert_eq!(
-        parse_slash("/image:pic.png"),
+        parse_slash("image:pic.png"),
         SlashParse::Known(SlashAction::Image("pic.png".to_string()))
     );
     // 空白分隔形式同样接受（路径可含空格）
     assert_eq!(
-        parse_slash("/image my pics/a.png"),
+        parse_slash("image my pics/a.png"),
         SlashParse::Known(SlashAction::Image("my pics/a.png".to_string()))
     );
     // 无参数报用法
-    assert!(matches!(parse_slash("/image"), SlashParse::InvalidUsage(_)));
-    assert!(matches!(
-        parse_slash("/image "),
-        SlashParse::InvalidUsage(_)
-    ));
-    // 前缀不等于命令名：/imagex 报未知
+    assert!(matches!(parse_slash("image"), SlashParse::InvalidUsage(_)));
+    assert!(matches!(parse_slash("image "), SlashParse::InvalidUsage(_)));
+    // 前缀不等于命令名：imagex 报未知
     assert_eq!(
-        parse_slash("/imagex"),
+        parse_slash("imagex"),
         SlashParse::Unknown("imagex".to_string())
     );
 }

@@ -93,7 +93,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
     app.command_mut()
         .set_available_templates(boot.prompt_templates.clone());
     // 启动解析的思考级别（CLI 参数 / 配置文件）在进入 builder 前取出，
-    // driver 据此维护 `/models` 级别选择器的当前值
+    // driver 据此维护 `models` 级别选择器的当前值
     let initial_reasoning = boot.stream_options.reasoning;
 
     let todo_store = TodoStore::new();

@@ -3,7 +3,8 @@
 //! [`draw`] 是组合根：布局（聊天区 + 输入框 + 状态栏三段）后把各区域交给
 //! 对应 widget 渲染——聊天区 [`ChatView`]（只读；几何在渲染前由
 //! [`App::sync_chat_geometry`] 按视口算进状态层）、输入框 [`InputArea`]、
-//! 状态栏 [`StatusBar`]，以及贴输入框上方的弹层（[`CompletionPopup`] /
+//! 状态栏 [`StatusBar`]，COMMAND 模式的浮层命令栏 [`CommandPalette`]
+//!（覆盖层，不占布局），以及贴输入框上方的弹层（[`MentionPopup`] /
 //! [`PickerPopup`]）与模态覆盖层（[`HelpOverlay`]）。
 //! 各 widget 实现见同名子模块。
 
@@ -11,6 +12,7 @@ mod chat;
 mod input;
 pub(in crate::tui) mod message;
 mod overlay;
+mod palette;
 mod popup;
 mod status;
 
@@ -20,12 +22,13 @@ use ratatui::{
     widgets::Clear,
 };
 
-use crate::tui::app::App;
+use crate::tui::app::{App, Mode};
 
 use chat::ChatView;
 use input::InputArea;
 use overlay::HelpOverlay;
-use popup::{CompletionPopup, MentionPopup, PickerPopup};
+use palette::CommandPalette;
+use popup::{MentionPopup, PickerPopup};
 use status::StatusBar;
 
 pub(in crate::tui) use status::format_tokens;
@@ -47,19 +50,26 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     app.sync_chat_geometry(chat_area.width, chat_area.height);
     frame.render_widget(ChatView::new(app), chat_area);
 
-    // 输入框（渲染后按内容设置光标）
+    // 输入框（COMMAND 下草稿照常渲染，焦点在浮层命令栏）
     let input_widget = InputArea::new(app);
-    let cursor = input_widget.cursor_position(chunks[1]);
+    let input_cursor = input_widget.cursor_position(chunks[1]);
     frame.render_widget(input_widget, chunks[1]);
-    frame.set_cursor_position(cursor);
+
+    // 浮层命令栏（COMMAND，ADR-0020 修订）：屏幕中上方的覆盖层单行
+    // 输入框，不占布局；光标随之移到栏内
+    if app.mode() == Mode::Command {
+        let palette = CommandPalette::new(app.command());
+        let cursor = palette.cursor_position(frame.area());
+        frame.render_widget(palette, frame.area());
+        frame.set_cursor_position(cursor);
+    } else {
+        frame.set_cursor_position(input_cursor);
+    }
 
     // 状态栏
     frame.render_widget(StatusBar::new(app), chunks[2]);
 
-    // 弹层（贴输入框上方）
-    if let Some(completion) = app.command().completion() {
-        frame.render_widget(CompletionPopup::new(completion), chunks[1]);
-    }
+    // 弹层（贴输入框上方；命令补全在浮层命令栏内，不走弹层）
     if let Some(mention) = app.input().mention() {
         frame.render_widget(MentionPopup::new(mention), chunks[1]);
     }
@@ -374,7 +384,7 @@ mod tests {
     }
 
     /// thinking 块套用 gutter 组件：无标题，`▌` 竖条正文，颜色区别于其他条目。
-    /// 默认折叠（仅占位行），`/thinking` 展开后逐行渲染正文。
+    /// 默认折叠（仅占位行），`thinking` 命令展开后逐行渲染正文。
     #[test]
     fn renders_thinking_block_with_gutter() {
         let mut app = thinking_app();
@@ -388,7 +398,7 @@ mod tests {
         assert!(!compact.contains("推理第二行"), "{compact}");
         assert!(compact.contains("▌思考过程（2行，已折叠"), "{compact}");
 
-        // `/thinking`（命令行，ADR-0020）展开后渲染正文行
+        // `thinking` 命令（命令栏，ADR-0020）展开后渲染正文行
         app.press(super::super::app::Key::Esc);
         app.press(super::super::app::Key::Char(':'));
         app.paste_text("thinking");
@@ -411,7 +421,7 @@ mod tests {
         let compact = compact_text(&terminal);
         assert!(compact.contains("nomic"), "{compact}");
         assert!(compact.contains("test-model"), "{compact}");
-        assert!(compact.contains("/help"), "{compact}");
+        assert!(compact.contains("命令栏（help）"), "{compact}");
     }
 
     /// NORMAL：状态栏显示模式徽标与浏览键位提示。
@@ -434,7 +444,7 @@ mod tests {
         assert!(compact.contains("NORMAL"), "{compact}");
     }
 
-    /// `/resume` 选择器弹层：session 行、标题与选中标记均可见。
+    /// `resume` 选择器弹层：session 行、标题与选中标记均可见。
     #[test]
     fn renders_resume_picker() {
         use super::super::app::PickerRow;
@@ -463,7 +473,7 @@ mod tests {
         assert!(compact.contains("02888888"), "{compact}");
     }
 
-    /// `/models` 选择器弹层：标题与模型行可见，预选中当前模型。
+    /// `models` 选择器弹层：标题与模型行可见，预选中当前模型。
     #[test]
     fn renders_model_picker() {
         use super::super::app::PickerRow;
@@ -595,13 +605,15 @@ mod tests {
         );
     }
 
-    /// 补全弹层（命令行，ADR-0020）与 System 条目也能无 panic 绘制。
+    /// 浮层命令栏（COMMAND，ADR-0020 修订）：屏幕中上方的覆盖层单行
+    /// 输入框（`:` 提示符 + 候选列表）；草稿与聊天区保持可见。
     #[test]
-    fn renders_completion_popup_and_system_item() {
+    fn renders_command_palette_overlay() {
         use super::super::app::Key;
 
         let mut app = App::new("test-model".to_string(), None, 200_000);
         app.chat_mut().push_system("本地系统提示");
+        app.paste_text("未发送的草稿");
         app.press(Key::Esc);
         app.press(Key::Char(':'));
         app.paste_text("n");
@@ -612,9 +624,11 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
 
         let compact = compact_text(&terminal);
-        // 弹层候选与 System 条目均可见
-        assert!(compact.contains("/new"));
-        assert!(compact.contains("本地系统提示"));
+        // 命令栏（无前缀候选）、草稿与 System 条目均可见
+        assert!(compact.contains(":n"), "{compact}");
+        assert!(compact.contains("new"), "{compact}");
+        assert!(compact.contains("未发送的草稿"), "{compact}");
+        assert!(compact.contains("本地系统提示"), "{compact}");
     }
 
     /// 聊天区拼接：相邻消息块之间恰好空一行（工具/System/用户等任意组合）。

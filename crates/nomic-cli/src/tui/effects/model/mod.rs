@@ -1,4 +1,4 @@
-//! 模型 + 思考级别两步流（`/models`）的选择器 UI 接线：先选模型，
+//! 模型 + 思考级别两步流（`models`）的选择器 UI 接线：先选模型，
 //! 推理模型再选思考级别（第二步确认时一并应用切换，Esc 放弃）。
 //!
 //! 流程状态与不变量（待切换模型暂存、切换/级别幂等、job 顺序、跨
@@ -19,7 +19,7 @@ mod switch;
 pub(in crate::tui) use switch::ModelSwitcher;
 use switch::{Confirm, Select};
 
-/// `/models`：跨 provider 列出候选模型并打开选择器（预选中当前模型）。
+/// `models`：跨 provider 列出候选模型并打开选择器（预选中当前模型）。
 pub(in crate::tui) fn list_models(app: &mut App, switcher: &ModelSwitcher) {
     let (current, choices) = switcher.candidates();
     if choices.is_empty() {
@@ -42,7 +42,7 @@ pub(in crate::tui) fn list_models(app: &mut App, switcher: &ModelSwitcher) {
     app.open_model_picker(rows, selected);
 }
 
-/// `/models:<p>/<id>` 或模型选择器确认（流程第一步）：转发给状态机，
+/// `models:<p>/<id>` 或模型选择器确认（流程第一步）：转发给状态机，
 /// 按流转结果打开级别选择器 / 更新徽标并落库 / 提示。
 pub(in crate::tui) fn select_model(
     app: &mut App,
@@ -242,7 +242,7 @@ mod tests {
     };
     use nomic_ai::ThinkingLevel;
 
-    /// `/models` 选择器行：id + 展示名 + 窗口，推理模型带标注，当前模型带标记，
+    /// `models` 选择器行：id + 展示名 + 窗口，推理模型带标注，当前模型带标记，
     /// 窗口未知省略 ctx。
     #[test]
     fn model_row_text_formats_window_and_marks_current() {

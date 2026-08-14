@@ -108,28 +108,28 @@ fn picker_home_end_and_half_page() {
     assert_eq!(app.picker().expect("picker").core.filter, "g");
 }
 
-/// `/models` 解析：无参打开选择器，带 id（空格或冒号）直接切换，
+/// `models` 解析：无参打开选择器，带 id（空格或冒号）直接切换，
 /// id 含空白报用法错误。
 #[test]
-fn parse_slash_models_forms() {
+fn parse_models_forms() {
     assert_eq!(
-        parse_slash("/models"),
+        parse_slash("models"),
         SlashParse::Known(SlashAction::Models(None))
     );
     assert_eq!(
-        parse_slash("/models:gpt-5.2"),
+        parse_slash("models:gpt-5.2"),
         SlashParse::Known(SlashAction::Models(Some("gpt-5.2".to_string())))
     );
     assert_eq!(
-        parse_slash("/models gpt-5.2"),
+        parse_slash("models gpt-5.2"),
         SlashParse::Known(SlashAction::Models(Some("gpt-5.2".to_string())))
     );
     assert!(matches!(
-        parse_slash("/models a b"),
+        parse_slash("models a b"),
         SlashParse::InvalidUsage(_)
     ));
     assert_eq!(
-        parse_slash("/modelsx"),
+        parse_slash("modelsx"),
         SlashParse::Unknown("modelsx".to_string())
     );
 }
@@ -176,7 +176,7 @@ fn reasoning_picker_enter_sets_level_esc_aborts_switch() {
     assert!(app.picker().is_none());
 }
 
-/// `/models` 选择器：预选中当前模型，Enter 产出 SwitchModel 效果。
+/// `models` 选择器：预选中当前模型，Enter 产出 SwitchModel 效果。
 #[test]
 fn model_picker_enter_returns_switch_effect() {
     let mut app = app();
@@ -201,7 +201,7 @@ fn model_picker_enter_returns_switch_effect() {
     assert!(app.picker().is_none());
 }
 
-/// `/models` 无参 → ListModels 效果；切换成功后状态栏模型信息更新。
+/// `models` 无参 → ListModels 效果；切换成功后状态栏模型信息更新。
 #[test]
 fn models_slash_effects_and_set_model_updates_status() {
     let mut app = app();
@@ -254,25 +254,22 @@ fn restore_conversation_replaces_items_and_session() {
     assert_eq!(app.session_id(), Some("sid-1"));
 }
 
-/// `/tree` 解析：无参命令；带参数报用法错误。
+/// `tree` 解析：无参命令；带参数报用法错误。
 #[test]
-fn parse_slash_tree_forms() {
-    assert_eq!(parse_slash("/tree"), SlashParse::Known(SlashAction::Tree));
+fn parse_tree_forms() {
+    assert_eq!(parse_slash("tree"), SlashParse::Known(SlashAction::Tree));
+    assert!(matches!(parse_slash("tree x"), SlashParse::InvalidUsage(_)));
     assert!(matches!(
-        parse_slash("/tree x"),
-        SlashParse::InvalidUsage(_)
-    ));
-    assert!(matches!(
-        parse_slash("/tree:abc"),
+        parse_slash("tree:abc"),
         SlashParse::InvalidUsage(_)
     ));
     assert_eq!(
-        parse_slash("/treex"),
+        parse_slash("treex"),
         SlashParse::Unknown("treex".to_string())
     );
 }
 
-/// `/tree` 提交 → ListTree 效果。
+/// `tree` 提交 → ListTree 效果。
 #[test]
 fn tree_slash_produces_list_tree_effect() {
     let mut app = app();
@@ -281,7 +278,7 @@ fn tree_slash_produces_list_tree_effect() {
     assert!(matches!(&effects[..], [Effect::ListTree]));
 }
 
-/// `/tree` 选择器：移动跳过不可选行（工具调用条目），Enter 产出
+/// `tree` 选择器：移动跳过不可选行（工具调用条目），Enter 产出
 /// BranchTo 效果。
 #[test]
 fn tree_picker_skips_unselectable_rows() {

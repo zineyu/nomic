@@ -1,4 +1,4 @@
-//! 两步模型切换的状态机（`/models`）：先选模型，推理模型再选思考级别
+//! 两步模型切换的状态机（`models`）：先选模型，推理模型再选思考级别
 //! （第二步确认时一并应用切换，Esc 放弃整个切换）。
 //!
 //! 状态（当前模型/思考级别、待切换模型）与不变量集中于此：
@@ -22,7 +22,7 @@ use crate::tui::widgets;
 
 /// 两步模型切换状态机：持有当前模型/思考级别与待切换模型。
 pub(in crate::tui) struct ModelSwitcher {
-    /// 运行时模型解析器（`/models` 候选与切换，与启动同一分层口径）
+    /// 运行时模型解析器（`models` 候选与切换，与启动同一分层口径）
     models: ModelResolver,
     /// 当前模型（应用切换后更新；选择器预选与切换幂等判断用）
     current: Model,
@@ -84,14 +84,14 @@ impl ModelSwitcher {
         self.reasoning
     }
 
-    /// `/models` 候选列表与当前选择（选择器行构建与预选用）
+    /// `models` 候选列表与当前选择（选择器行构建与预选用）
     pub(super) fn candidates(&self) -> (ModelSelection, Vec<ModelChoice>) {
         let current = selection_of(&self.current);
         let choices = self.models.candidates(&current);
         (current, choices)
     }
 
-    /// 第一步：选择模型（`/models:<p>/<id>` 或模型选择器确认）。
+    /// 第一步：选择模型（`models:<p>/<id>` 或模型选择器确认）。
     /// 选择项为 `<provider>/<模型id>` 全形式；裸模型 id 在当前 provider 内解析。
     pub(super) fn select(&mut self, id: &str, job_tx: &mpsc::UnboundedSender<DriverJob>) -> Select {
         let selection = match ModelSelection::parse(id, Some(&self.current.provider)) {

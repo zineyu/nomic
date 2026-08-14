@@ -104,10 +104,26 @@ fn enter_while_running_allows_local_slash_commands() {
     let effects = app.press(Key::Enter);
     assert!(matches!(&effects[..], [Effect::CopyText(text)] if text == "已发的消息"));
 
-    // /quit 运行中同样生效
+    // quit 运行中同样生效
     open_command(&mut app, "quit");
     assert!(app.press(Key::Enter).is_empty());
     assert!(app.should_quit());
+}
+
+/// 带 `/` 前缀的输入（旧语法）被拒绝并提示新语法（ADR-0020 修订），
+/// 留在 COMMAND 供修正。
+#[test]
+fn slash_prefixed_input_is_rejected_with_hint() {
+    let mut app = app();
+    open_command(&mut app, "/quit");
+    assert!(app.press(Key::Enter).is_empty());
+    assert!(!app.should_quit());
+    assert!(
+        app.notice().is_some_and(|n| n.contains("不再需要 / 前缀")),
+        "应提示新语法"
+    );
+    assert_eq!(app.mode(), Mode::Command, "被拒绝时留在命令栏");
+    assert_eq!(app.command.text(), "/quit", "输入保留供修正");
 }
 
 /// 运行中：会话命令（经 driver 修改 agent 上下文）仍须等本轮结束，
@@ -117,15 +133,15 @@ fn enter_while_running_blocks_session_commands() {
     let mut app = app();
     app.handle_event(&AgentEvent::AgentStart);
     for input in [
-        "/new",
-        "/resume",
-        "/tree",
-        "/compact",
-        "/retry",
-        "/models",
-        "/skill:jujutsu",
+        "new",
+        "resume",
+        "tree",
+        "compact",
+        "retry",
+        "models",
+        "skill:jujutsu",
     ] {
-        open_command(&mut app, &input[1..]);
+        open_command(&mut app, input);
         assert!(
             app.press(Key::Enter).is_empty(),
             "{input} 运行中不应产生效果"
@@ -150,8 +166,8 @@ fn enter_while_running_accepts_completion_before_dispatch() {
     assert!(app.command.completion().is_some());
     // 第一次 Enter：填入补全候选，不提交
     assert!(app.press(Key::Enter).is_empty());
-    assert_eq!(app.command.text(), "/help");
-    assert_eq!(app.mode(), Mode::Command, "填入候选后留在命令行");
+    assert_eq!(app.command.text(), "help");
+    assert_eq!(app.mode(), Mode::Command, "填入候选后留在命令栏");
     // 第二次 Enter：精确匹配，执行本地命令后回 NORMAL
     assert!(app.press(Key::Enter).is_empty());
     assert_eq!(app.mode(), Mode::Normal);
@@ -231,14 +247,14 @@ fn esc_retreat_stack() {
     assert!(app.notice().is_none(), "进 NORMAL 不再提示");
     assert_eq!(app.input.text(), "/h", "草稿不受 Esc 影响");
 
-    // 2. COMMAND：先关补全弹层（留在命令行），再放弃回 NORMAL（缓冲清空）
+    // 2. COMMAND：先关补全弹层（留在命令栏），再放弃回 NORMAL（缓冲清空）
     assert!(app.press(Key::Char(':')).is_empty());
     assert_eq!(app.mode(), Mode::Command);
     assert!(app.command.completion().is_some());
     assert!(app.press(Key::Esc).is_empty());
-    assert_eq!(app.mode(), Mode::Command, "关弹层后留在命令行");
+    assert_eq!(app.mode(), Mode::Command, "关弹层后留在命令栏");
     assert!(app.command.completion().is_none());
-    assert_eq!(app.command.text(), "/", "命令文本不受 Esc 影响");
+    assert_eq!(app.command.text(), "", "命令缓冲无前缀预填");
     assert!(app.press(Key::Esc).is_empty());
     assert_eq!(app.mode(), Mode::Normal);
     assert_eq!(app.command.text(), "", "命令缓冲随离开清空");
@@ -340,7 +356,7 @@ fn normal_mode_y_copies_latest_message() {
 }
 
 /// NORMAL `q`（ADR-0021 修订）：只中断本轮运行，永不退出程序——退出
-/// 统一走 COMMAND 的 `/quit`（或各模式 `Ctrl+C` 硬退出）。
+/// 统一走 COMMAND 的 `quit`（或各模式 `Ctrl+C` 硬退出）。
 #[test]
 fn normal_q_cancels_run_but_never_quits() {
     // 运行中：q 中断本轮，不退出、留在 NORMAL
@@ -360,7 +376,7 @@ fn normal_q_cancels_run_but_never_quits() {
     assert!(running.press(Key::Char('q')).is_empty());
     assert!(!running.should_quit(), "空闲按 q 也不退出");
     assert!(
-        running.notice().is_some_and(|n| n.contains("/quit")),
+        running.notice().is_some_and(|n| n.contains("quit")),
         "空闲按 q 提示退出路径"
     );
 }
@@ -374,7 +390,7 @@ fn normal_q_idle_never_quits() {
     idle.press(Key::Esc);
     assert!(idle.press(Key::Char('q')).is_empty());
     assert!(!idle.should_quit());
-    assert!(idle.notice().is_some_and(|n| n.contains("/quit")));
+    assert!(idle.notice().is_some_and(|n| n.contains("quit")));
 
     // 未发送草稿：不退出，草稿保留
     let mut drafting = app();
@@ -593,20 +609,20 @@ fn resume_picker_enter_returns_resume_effect() {
     assert!(app.picker().is_none());
 }
 
-/// NORMAL `:`：进入专门的命令输入框（COMMAND 模式，ADR-0020）——
-/// 独立缓冲预填 `/`（补全弹层列出全部命令），草稿保留不受影响。
+/// NORMAL `:`：进入浮层命令栏（COMMAND 模式，ADR-0020 修订）——
+/// 独立空缓冲、语法无前缀（补全弹层列出全部命令），草稿保留不受影响。
 #[test]
-fn normal_colon_opens_command_input() {
+fn normal_colon_opens_command_palette() {
     let mut app = app();
     app.paste_text("未发送的草稿");
     app.press(Key::Esc);
     assert!(app.press(Key::Char(':')).is_empty());
     assert_eq!(app.mode(), Mode::Command);
-    assert_eq!(app.command.text(), "/");
+    assert_eq!(app.command.text(), "");
     assert!(app.command.completion().is_some(), "命令补全弹层自动出现");
     assert_eq!(app.input.text(), "未发送的草稿", "草稿不受影响");
 
-    // 空命令行（仅预填的 `/`）直接 Enter：无声返回 NORMAL，草稿仍在
+    // 空命令栏直接 Enter：无声返回 NORMAL，草稿仍在
     assert!(app.press(Key::Enter).is_empty());
     assert_eq!(app.mode(), Mode::Normal);
     assert_eq!(app.input.text(), "未发送的草稿");

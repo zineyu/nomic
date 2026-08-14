@@ -72,7 +72,7 @@ fn render_welcome(buf: &mut Buffer, area: Rect, model_name: &str) {
             theme::dim(),
         )),
         Line::from(Span::styled(
-            "NORMAL：j/k 滚动 · d/u 半页 · g/G 顶底 · : 命令（/help）· Y 复制最新 · m 队列 · ? 帮助",
+            "NORMAL：j/k 滚动 · d/u 半页 · g/G 顶底 · : 命令栏（help）· Y 复制最新 · m 队列 · ? 帮助",
             theme::dim(),
         )),
         Line::from(Span::styled(

@@ -22,7 +22,7 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
   schemars + serde 即校验，parallel 执行
 - **持久会话**：SQLite 树形存储，支持 resume（按 cwd 隔离）、会话分支浏览与创建、`sessions list`
 - **上下文工程**：AGENTS.md 向上发现注入、skills 系统、prompt templates、自动/手动上下文压缩
-- **图片输入**：`--image` 附件、`/image` 暂存、`Ctrl+V` 剪贴板图片粘贴
+- **图片输入**：`--image` 附件、`image` 命令暂存、`Ctrl+V` 剪贴板图片粘贴
 - **外部编辑器**：INSERT 下 `Ctrl+G` 挂起 TUI，用 `$VISUAL`/`$EDITOR`
   （缺省 `vi`）编辑当前草稿（长文/多行 prompt），保存退出后写回；
   编辑器异常退出或内容为空时原草稿保留，
@@ -36,7 +36,7 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 - [使用](#使用)
   - [运行模式](#运行模式)
   - [TUI 键位](#tui-键位)
-  - [TUI slash 命令](#tui-slash-命令)
+  - [TUI 命令](#tui-命令)
   - [会话恢复与分支](#会话恢复与分支)
   - [图片输入](#图片输入)
   - [上下文压缩](#上下文压缩)
@@ -88,7 +88,7 @@ export ANTHROPIC_API_KEY=sk-ant-...     # 或 OPENAI_API_KEY / OPENAI_BASE_URL
 # 2. 首次启动必须显式指定模型（无内置默认 provider / 模型）
 nomic --model anthropic/claude-sonnet-4-5
 
-# 3. 之后在 TUI 内经 /models 切换，选择结果跨会话记住
+# 3. 之后在 TUI 内经 models 命令切换，选择结果跨会话记住
 ```
 
 ## 使用
@@ -107,7 +107,7 @@ nomic -p "..." --provider openai --base-url https://your.gateway/v1 --model deep
 
 # 推理模型
 nomic -p "..." --reasoning low
-# TUI 内：/models 选择模型后可为推理模型选择思考级别（含 off 关闭）
+# TUI 内：models 命令选择模型后可为推理模型选择思考级别（含 off 关闭）
 
 # 指定工作目录（session 隔离、AGENTS.md/skills 发现、工具相对路径均基于它；
 # 其余相对路径参数如 --image 也按该目录解析）
@@ -133,41 +133,41 @@ nomic --cwd /path/to/project
 | NORMAL | `Y` | 直接复制最新一条消息 |
 | NORMAL | `m` `r` | 队列编辑 / 重试最近一轮 |
 | NORMAL | `s` `b` `c` | 恢复会话 / 会话树（创建分支）/ 新建会话 |
-| NORMAL | `e` `:` `?` | 外部编辑器 / 命令输入框 / 帮助弹层 |
-| NORMAL | `q` | 中断本轮运行（退出程序用 `:→/quit` 命令，或 `Ctrl+C` 硬退出） |
+| NORMAL | `e` `:` `?` | 外部编辑器 / 浮层命令栏 / 帮助弹层 |
+| NORMAL | `q` | 中断本轮运行（退出程序用 `:→quit` 命令，或 `Ctrl+C` 硬退出） |
 | NORMAL | `i` `a` `A` `I` `Enter` | 回到输入（光标原位 / 末尾 / 行首） |
 | COMMAND | `Enter` / `Tab` | 执行命令 / 补全命令、模板、skill |
 | COMMAND | `Esc` | 关补全弹层 / 放弃返回 NORMAL |
 | QUEUE | `j` `k` `g` `G` | 移动条目游标 / 队首 / 队尾 |
 | QUEUE | `i` `o` `O` `Enter` | 就地编辑 / 下方新增 / 上方新增（`Enter`/`Esc` 保存，空文本即删条目） |
 | QUEUE | `dd` `x` `J` `K` | 删除条目 / 下移 / 上移（换位）；打开期间冻结发送，退出恢复 |
-| picker | 输入即过滤 · `↑/↓` 选择 · `Home/End` 首尾 | 适用于 `/resume`、`/models`、`/tree` |
+| picker | 输入即过滤 · `↑/↓` 选择 · `Home/End` 首尾 | 适用于 `resume`、`models`、`tree` 命令 |
 | 通用 | `PgUp/PgDn` 滚轮 | 滚动聊天区（不切态） |
 | 通用 | `Shift`+拖选 | 复制文本（TUI 捕获鼠标用于滚轮，原生选择需按住 Shift） |
 
-### TUI slash 命令
+### TUI 命令
 
-命令只在命令输入框执行（ADR-0020）：NORMAL 下按 `:` 打开，预填 `/` 并自动补全；`/help` 查看全部。聊天输入框（INSERT）不触发命令，`/` 开头的输入按普通文本发送。
+命令只在浮层命令栏执行（ADR-0020）：NORMAL 下按 `:` 在屏幕中上方打开单行命令栏，命令无 `/` 前缀，Tab 补全；`help` 查看全部。聊天输入框（INSERT）不触发命令，`/` 开头的输入按普通文本发送。
 
 | 命令 | 说明 |
 | ---- | ---- |
-| `/help` | 显示可用命令 |
-| `/new` | 清空上下文，开启新对话（新 session） |
-| `/resume` | 交互选择并恢复历史 session（切换上下文与落库目标） |
-| `/tree` | 浏览会话树，选择非工具调用条目作为新分支起点（原分支保留） |
-| `/models` | 跨 provider 切换模型（`/models:<provider>/<模型id>` 亦可）；推理模型联动选择思考级别 |
-| `/skill` `/skill:<name>[ args]` | 列出可用 skill / 手动载入指定 skill（可附加上下文） |
-| `/image:<路径>` | 为下一条消息附加图片（可多次附加） |
-| `/compact [聚焦指令]` | 手动压缩上下文 |
-| `/retry` | 重试最近一轮失败的响应 |
-| `/copy` | 复制最新一条消息到剪贴板 |
-| `/thinking` | 切换 thinking 内容折叠/展开显示 |
-| `/goal` | 开关 goal 模式：开启后 react loop 停止时若 todo 未全部完成，自动以 user 消息追问 |
-| `/quit`（`/exit`） | 退出 TUI |
+| `help` | 显示可用命令 |
+| `new` | 清空上下文，开启新对话（新 session） |
+| `resume` | 交互选择并恢复历史 session（切换上下文与落库目标） |
+| `tree` | 浏览会话树，选择非工具调用条目作为新分支起点（原分支保留） |
+| `models` | 跨 provider 切换模型（`models:<provider>/<模型id>` 亦可）；推理模型联动选择思考级别 |
+| `skill` `skill:<name>[ args]` | 列出可用 skill / 手动载入指定 skill（可附加上下文） |
+| `image:<路径>` | 为下一条消息附加图片（可多次附加） |
+| `compact [聚焦指令]` | 手动压缩上下文 |
+| `retry` | 重试最近一轮失败的响应 |
+| `copy` | 复制最新一条消息到剪贴板 |
+| `thinking` | 切换 thinking 内容折叠/展开显示 |
+| `goal` | 开关 goal 模式：开启后 react loop 停止时若 todo 未全部完成，自动以 user 消息追问 |
+| `quit`（`exit`） | 退出 TUI |
 
-运行中本地 slash 命令（`/help`、`/copy` 等）照常可用，不被工具调用阻塞。
+运行中本地命令（`help`、`copy` 等）照常可用，不被工具调用阻塞。
 运行中输入的普通消息按 `Enter` 排入统一消息队列（见上「排队输入」）；
-命令行提交的模板调用同样入队；会话命令（`/compact`、`/retry`、`/models` 等）仍须等本轮结束。
+命令栏提交的模板调用同样入队；会话命令（`compact`、`retry`、`models` 等）仍须等本轮结束。
 
 ### 会话恢复与分支
 
@@ -180,8 +180,8 @@ nomic resume            # 交互选择器（↑/↓ 或 j/k 移动，Enter 确�
 nomic sessions list
 ```
 
-- TUI 内随时可用 `/resume` 打开同一选择器：选中后替换当前上下文并切换落库目标。
-- 会话分支：`/tree` 浏览当前 session 的消息树，选择非工具调用条目作为新分支起点——
+- TUI 内随时可用 `resume` 命令打开同一选择器：选中后替换当前上下文并切换落库目标。
+- 会话分支：`tree` 命令浏览当前 session 的消息树，选择非工具调用条目作为新分支起点——
   上下文回到该条目，后续对话写入新分支，原分支保留可回访。
 
 ### 图片输入
@@ -192,11 +192,11 @@ print 模式用 `--image` 附带图片（可重复；png/jpeg/gif/webp）：
 nomic -p "这张截图里有什么错误" --image screenshot.png
 ```
 
-交互 TUI 用 `/image` 为下一条消息暂存附件（可多次附加，输入框上方显示
+交互 TUI 用 `image` 命令为下一条消息暂存附件（可多次附加，输入框上方显示
 待发送列表，Enter 随文本一起发送）：
 
 ```text
-/image:/tmp/screenshot.png
+image:/tmp/screenshot.png
 ```
 
 也可以直接 `Ctrl+V` 粘贴：剪贴板里是图片（截图工具、文件管理器复制的
@@ -210,7 +210,7 @@ X11 / Wayland。从文件管理器粘贴或拖入的图片文件路径（含 `fi
 
 对话逼近模型上下文窗口时自动把较早消息压缩为结构化摘要（保留近期消息原样，
 设计见 [docs/adr/0005](docs/adr/0005-context-compaction.md)）；TUI 内也可随时用
-`/compact [聚焦指令]` 手动触发。压缩结果落库，resume 后保持压缩状态。
+`compact [聚焦指令]` 手动触发。压缩结果落库，resume 后保持压缩状态。
 可在配置文件的 `[compaction]` 表中调整阈值（见 `config.example.toml`）。
 
 ### 日志
@@ -234,7 +234,7 @@ X11 / Wayland。从文件管理器粘贴或拖入的图片文件路径（含 `fi
 
 nomic 的配置正从配置文件逐步迁移到 sqlite（设计见 [docs/adr/0009](docs/adr/0009-sqlite-config-model-selection.md)），当前两者共存。
 
-**模型选择**保存在 sqlite（session 库的 `config` 表）：TUI 内 `/models` 跨 provider
+**模型选择**保存在 sqlite（session 库的 `config` 表）：TUI 内 `models` 命令跨 provider
 选择（`<provider>/<模型id>` 格式），选择结果追加保存；启动时按
 **CLI 参数 > sqlite 配置（从最新选择向最老逐条回退）** 解析，
 失效的选择（provider 已删除、模型已不存在）告警后自动回退到更早的选择；
@@ -264,7 +264,7 @@ append_system = "总是用中文回复。"
 
 ### 多 provider 与模型规格
 
-`[providers.<名字>]` 定义多个 provider（没有内置 provider，`/models` 选择器
+`[providers.<名字>]` 定义多个 provider（没有内置 provider，`models` 选择器
 只列出配置中定义的名字），`[providers.<名字>.models."<模型id>"]`
 覆盖单个模型的规格字段（全部可选，只写要覆盖的）。
 provider 与 base_url 永远来自用户指定；模型规格字段逐字段按
@@ -301,7 +301,7 @@ models.dev 目录按模型 id 查询（约 3MB 的 api.json），缓存到平台
 配置已给全规格字段时不读缓存、不联网。models.dev 与缓存都不可用时回落到中性兜底值。
 
 模型 id 必须「存在」：命中 models.dev 目录或 `[providers.*.models]` 定义之一，
-否则启动与 `/models` 切换都会报错（目录不可用、无法校验时维持回落行为）。
+否则启动与 `models` 切换都会报错（目录不可用、无法校验时维持回落行为）。
 
 ## 上下文文件
 
@@ -349,7 +349,7 @@ triggers: [rust, review]
 另有三个控制可见性的可选字段：
 
 - `enabled: false`：整个 skill 不可用（catalog 与 `skill://` 均跳过）；
-- `hide: true`：不出现在系统提示词清单，仍可 `--skill` / `/skill:<name>`
+- `hide: true`：不出现在系统提示词清单，仍可 `--skill` / `skill:<name>` 命令
   显式调用（适合只供显式触发的 skill）。
 
 skill 目录可携带附属文件（`scripts/`、`references/` 等），通过子路径读取：
@@ -401,8 +401,8 @@ session 落库，resume 后仍然有效）：
 
 ### Prompt Templates
 
-prompt template 是一个 `.md` 文件，文件名（去掉 `.md`）即 `/name` 命令名，
-正文是模板。在命令输入框（NORMAL `:`）输入 `/name 参数...`，模板展开为
+prompt template 是一个 `.md` 文件，文件名（去掉 `.md`）即命令名，
+正文是模板。在浮层命令栏（NORMAL `:`）输入 `name 参数...`，模板展开为
 完整 prompt 后提交。
 
 ```text

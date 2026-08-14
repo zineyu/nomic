@@ -14,10 +14,13 @@
 //! - [`widgets`]：纯渲染——组合根 [`widgets::draw`] 布局后由各区域自定义
 //!   widget（聊天区 / 输入框 / 状态栏 / 弹层 / 覆盖层）渲染
 //! - [`driver`]：agent driver 任务（专属 tokio 任务持有 `Agent`）与事件循环
-//!   的唤醒处理（按键映射、`Effect` 转发执行、goal 模式追问）
+//!   的唤醒处理（按键映射、`Effect` 转发执行）；goal 模式追问的状态与
+//!   策略收在 [`goal`]（`GoalNudger`），driver 只消费判定结果
+//! - [`goal`]：goal 模式自动追问（todo 清单共享句柄 + 连续追问计数、
+//!   上限与清零时机、追问提示词）
 //! - [`terminal`]：终端生命周期（raw mode / alternate screen / 键盘增强）、
 //!   panic 恢复 hook 与外部编辑器接线
-//! - 本文件：`run` 事件循环主循环与 goal 追问常量/提示词
+//! - 本文件：`run` 事件循环主循环
 //!
 //! agent 由专属 tokio 任务持有（`Agent::prompt` 需要 `&mut self` 且跨轮复用），
 //! TUI 经 mpsc 发送 prompt（附本轮 `CancellationToken`），agent 事件经既有
@@ -30,6 +33,7 @@
 mod app;
 mod driver;
 mod effects;
+mod goal;
 mod markdown;
 mod terminal;
 mod theme;
@@ -54,26 +58,6 @@ use terminal::{TerminalGuard, block_cursor, set_cursor_style};
 use crate::{Cli, bootstrap};
 
 type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
-
-/// goal 模式连续自动追问的次数上限：防止模型反复不收尾时失控循环
-///（达到上限后暂停追问，用户手动继续或 `/goal` 重开后重新计数）。
-const MAX_GOAL_NUDGES: u32 = 3;
-
-/// goal 模式的追问提示词：列出未完成的 todo（pending / in_progress），
-/// 要求模型继续完成；清单为空或没有未完成项时返回 `None`（不追问）。
-///
-/// 该文本作为 user 消息进入对话历史（聊天区可见、随 session 落库）。
-fn goal_reminder_prompt(todos: &TodoStore) -> Option<String> {
-    let incomplete = todos.incomplete();
-    if incomplete.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "[goal 模式] react loop 已停止，但 todo 清单还有未完成的任务：\n{}\n\
-         请继续完成上述剩余任务：逐项推进，完成后立即用 todo_write 更新状态；全部完成前不要停止。",
-        nomic_tools::render_todos(&incomplete)
-    ))
-}
 
 /// 运行交互 TUI。
 pub async fn run(cli: &Cli) -> Result<()> {

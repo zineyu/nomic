@@ -19,8 +19,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::app::{App, Effect, Key, SkillEntry};
 use super::effects::{self, ModelSwitcher, SessionBinding};
+use super::goal::{GoalNudger, Nudge};
 use super::terminal::edit_input_in_editor;
-use super::{MAX_GOAL_NUDGES, TuiTerminal, goal_reminder_prompt, panic_payload_text};
+use super::{TuiTerminal, panic_payload_text};
 use crate::model::ModelResolver;
 
 /// 提交给 agent driver 的任务。
@@ -173,8 +174,7 @@ pub(super) fn spawn_driver(
         session: SessionBinding::new(recorder, std::env::current_dir().context("get cwd")?),
         model: ModelSwitcher::new(models, model, reasoning),
         skill_resolver,
-        todos,
-        goal_nudges: 0,
+        goal: GoalNudger::new(todos),
     };
     Ok((driver, done_rx))
 }
@@ -198,10 +198,8 @@ pub(super) struct Driver {
     pub(super) model: ModelSwitcher,
     /// skill 解析器（ListSkills/LoadSkill 接线用，仅本文件访问）
     skill_resolver: SkillResolver,
-    /// todo 清单（与 agent 的 todo 工具共享；goal 模式追问判定用）
-    pub(super) todos: TodoStore,
-    /// goal 模式连续自动追问次数（用户提交新 prompt 或 run 异常结束时清零）
-    pub(super) goal_nudges: u32,
+    /// goal 模式自动追问（todo 清单与连续追问计数、上限与清零时机收在其中）
+    goal: GoalNudger,
 }
 /// 事件循环单次等待的结果。
 pub(super) enum Wake {
@@ -302,10 +300,8 @@ pub(super) async fn handle_wake(
 /// 一轮 prompt 结束：队列（ADR-0014）优先于 goal 模式追问——
 /// 队列非空时，正常结束即取出队首自动提交（QUEUE 模式打开期间冻结，
 /// 退出 QUEUE 时恢复）；被取消/失败等异常结束则队列暂停保留，
-/// 用户可空闲 Enter 或 Esc→m 恢复。队列为空时才走 goal 模式追问：
-/// goal 开启、run 正常结束且仍有未完成 todo 时自动以 user 消息追问
-///（连续次数有上限，防模型反复不收尾时失控循环）；其余情况回到空闲态。
-/// 追问计数在用户提交新 prompt、run 异常结束或清单全部完成时清零。
+/// 用户可空闲 Enter 或 Esc→m 恢复。队列为空时交给 [`GoalNudger`] 判定
+/// goal 追问（追问提示词作为 user 消息提交；达到上限则暂停）。
 pub(super) async fn handle_prompt_done(
     app: &mut App,
     driver: &mut Driver,
@@ -315,13 +311,13 @@ pub(super) async fn handle_prompt_done(
     let end = match result {
         Ok(end) => end,
         Err(error) => {
-            driver.goal_nudges = 0;
+            driver.goal.reset();
             app.finish_run(Some(format!("agent loop 失败：{error}")));
             return;
         }
     };
     if !app.queue().is_empty() {
-        driver.goal_nudges = 0;
+        driver.goal.reset();
         if end.ended_normally {
             app.finish_run(None);
             // QUEUE 模式打开时 drain 冻结（返回 None）：退出 QUEUE 时恢复
@@ -336,37 +332,24 @@ pub(super) async fn handle_prompt_done(
         }
         return;
     }
-    let reminder = if end.ended_normally && app.goal_mode() {
-        goal_reminder_prompt(&driver.todos)
-    } else {
-        None
-    };
-    let Some(reminder) = reminder else {
-        driver.goal_nudges = 0;
-        app.finish_run(None);
-        return;
-    };
-    if driver.goal_nudges >= MAX_GOAL_NUDGES {
-        driver.goal_nudges = 0;
-        app.finish_run(Some(format!(
-            "goal 模式：已连续追问 {MAX_GOAL_NUDGES} 次，todo 仍未全部完成，\
-             暂停自动追问（手动继续或 /goal 重开）。"
-        )));
-        return;
-    }
-    driver.goal_nudges += 1;
-    let token = CancellationToken::new();
-    if driver
-        .job_tx
-        .send(DriverJob::Prompt(reminder, Vec::new(), token.clone()))
-        .is_ok()
-    {
-        driver.current_cancel = Some(token);
-        app.begin_run();
-    } else {
-        app.finish_run(Some(
-            "内部错误：agent 任务已退出，goal 追问未发送。".to_string(),
-        ));
+    match driver.goal.next(end.ended_normally && app.goal_mode()) {
+        Nudge::Quiet => app.finish_run(None),
+        Nudge::Capped(notice) => app.finish_run(Some(notice)),
+        Nudge::Remind(reminder) => {
+            let token = CancellationToken::new();
+            if driver
+                .job_tx
+                .send(DriverJob::Prompt(reminder, Vec::new(), token.clone()))
+                .is_ok()
+            {
+                driver.current_cancel = Some(token);
+                app.begin_run();
+            } else {
+                app.finish_run(Some(
+                    "内部错误：agent 任务已退出，goal 追问未发送。".to_string(),
+                ));
+            }
+        }
     }
 }
 /// 等待下一个唤醒源：按键 / 鼠标 / agent 事件 / 本轮完成 / spinner 帧。
@@ -497,7 +480,7 @@ pub(super) async fn execute_effect(
     match effect {
         Effect::Prompt { text, images } => {
             // 用户主动提交：重置 goal 模式连续追问计数
-            driver.goal_nudges = 0;
+            driver.goal.reset();
             let token = CancellationToken::new();
             if driver
                 .job_tx

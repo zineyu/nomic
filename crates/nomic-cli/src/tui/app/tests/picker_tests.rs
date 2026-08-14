@@ -351,9 +351,9 @@ fn restore_branch_replaces_items_keeps_session() {
     assert_eq!(app.session_id(), Some("sid-1"));
 }
 
-/// HELP 弹层（NORMAL `?`）：打开派生 Help 模式，Esc/q/`?` 关闭后
-/// 回到 NORMAL（底层 mode 字段未动）；j/k 滚动、g/G 顶/底，
-/// 上限由渲染回写钳制。
+/// HELP 弹层（NORMAL `?`）：打开派生 Help 模式，Esc/`?` 关闭后
+/// 回到 NORMAL（底层 mode 字段未动；层导航归 Esc 专属，`q` 不关闭）；
+/// j/k 滚动、g/G 顶/底，上限由渲染回写钳制。
 #[test]
 fn help_overlay_opens_scrolls_and_closes() {
     let mut app = app();
@@ -390,11 +390,10 @@ fn help_overlay_opens_scrolls_and_closes() {
     assert_eq!(app.mode(), Mode::Normal);
     assert!(!app.help_open());
 
-    // q / ? 同样关闭
+    // q 不关闭（层导航归 Esc 专属）；`?` 同样关闭
     app.press(Key::Char('?'));
     app.press(Key::Char('q'));
-    assert_eq!(app.mode(), Mode::Normal);
-    app.press(Key::Char('?'));
+    assert_eq!(app.mode(), Mode::Help, "q 在 HELP 弹层不绑定");
     app.press(Key::Char('?'));
     assert_eq!(app.mode(), Mode::Normal);
 }

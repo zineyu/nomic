@@ -31,7 +31,7 @@ impl StatefulWidget for HelpOverlay {
         let block = Border::bordered()
             .border_type(BorderType::Plain)
             .border_style(theme::accent())
-            .title(Span::styled("键位帮助 · Esc/q/? 关闭", theme::accent()));
+            .title(Span::styled("键位帮助 · Esc/? 关闭", theme::accent()));
         Clear.render(panel, buf);
         let inner = block.inner(panel);
         block.render(panel, buf);
@@ -69,7 +69,7 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "通用",
         &[
-            ("Esc", "INSERT→NORMAL；NORMAL 运行中中断 / 空闲回 INSERT"),
+            ("Esc", "退出当前界面层（逐层退回，不中断运行）"),
             ("Ctrl+C", "清草稿 → 再按退出"),
             ("Ctrl+D", "草稿为空时退出"),
             ("PgUp/PgDn · 滚轮", "滚动聊天区"),
@@ -86,10 +86,7 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+A/E · Alt+B/F", "行首行尾 / 词级移动"),
             ("Ctrl+G", "外部编辑器（$VISUAL/$EDITOR）编辑草稿"),
             ("Ctrl+V", "粘贴剪贴板图片"),
-            (
-                "Esc",
-                "进入 NORMAL（运行中亦然；中断在 NORMAL 按 q 或再按 Esc）",
-            ),
+            ("Esc", "进入 NORMAL（运行中亦然；中断/退出在 NORMAL 按 q）"),
         ],
     ),
     (
@@ -101,7 +98,7 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("m · r", "队列编辑 / 重试最近一轮"),
             ("s · b · c", "恢复会话 / 会话树（创建分支）/ 新建会话"),
             ("e · : · ?", "外部编辑器 / 命令 / 帮助"),
-            ("q", "运行中中断本轮（留在 NORMAL）/ 空闲退出"),
+            ("q", "退出：运行中先中断、再按确认；有未发送内容时需确认"),
         ],
     ),
     (

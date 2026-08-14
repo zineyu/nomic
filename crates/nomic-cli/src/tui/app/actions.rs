@@ -151,11 +151,11 @@ impl App {
     }
 
     /// 取出下一条待发消息（run 异常结束后恢复路径；正常结束的 run
-    /// 其队列已被 core 排空）：队列非空且 QUEUE 模式未打开时返回提交
-    /// 效果（`running` 已置位，与用户手动提交同一口径）；QUEUE 模式
-    /// 打开期间冻结发送，空队列返回 `None`。
+    /// 其队列已被 core 排空）：队列非空且 QUEUE 模式未打开、不在退出
+    /// 确认态时返回提交效果（`running` 已置位，与用户手动提交同一口径）；
+    /// QUEUE 模式打开或退出确认态期间冻结发送，空队列返回 `None`。
     pub fn drain_queue(&mut self) -> Option<Effect> {
-        if self.mode == Mode::Queue {
+        if self.mode == Mode::Queue || self.quit_armed_pending() {
             return None;
         }
         let queued = self.queue.pop_front()?;
@@ -255,11 +255,12 @@ impl App {
     }
 
     /// HELP 弹层键位（NORMAL `?` 打开）：只读浏览，j/k 等滚动、
-    /// g/G 到顶/底；Esc/q/`?` 关闭回到底层模式（mode 字段未动，
-    /// 天然回到打开前的 NORMAL）。其余按键忽略，不污染输入缓冲。
+    /// g/G 到顶/底；Esc/`?` 关闭回到底层模式（层导航归 Esc 专属，`q`
+    /// 在此不绑定；mode 字段未动，天然回到打开前的 NORMAL）。其余按键
+    /// 忽略，不污染输入缓冲。
     pub fn press_help(&mut self, key: Key) -> Vec<Effect> {
         match key {
-            Key::Esc | Key::Char('q' | '?') => self.help_scroll = None,
+            Key::Esc | Key::Char('?') => self.help_scroll = None,
             // g 到顶：渲染时由帮助 widget 钳到实际上限
             Key::Char('g') => self.help_scroll = Some(0),
             Key::Char('G') => self.help_scroll = Some(u16::MAX),
@@ -443,8 +444,10 @@ impl App {
     // ── 运行生命周期 ────────────────────────────────────────────────────────
 
     /// 一轮运行（prompt/压缩）结束：回到空闲态，按需置状态栏告警。
+    /// 运行结束即状态变化，解除可能存在的退出确认态。
     pub fn finish_run(&mut self, notice: Option<String>) {
         self.running = false;
+        self.quit_armed = None;
         self.notice = notice;
     }
 

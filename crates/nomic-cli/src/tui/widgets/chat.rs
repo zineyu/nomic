@@ -68,7 +68,7 @@ fn render_welcome(buf: &mut Buffer, area: Rect, model_name: &str) {
         )),
         Line::default(),
         Line::from(Span::styled(
-            "Enter 发送（运行中则排队）· Esc 浏览（NORMAL；NORMAL 下再按 Esc 中断）· Ctrl+G 外部编辑器",
+            "Enter 发送（运行中则排队）· Esc 浏览（NORMAL）· NORMAL 下 q 中断/退出 · Ctrl+G 外部编辑器",
             theme::dim(),
         )),
         Line::from(Span::styled(

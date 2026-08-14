@@ -3,7 +3,8 @@
 ## Status
 
 Accepted（双队列语义由 [ADR-0014](0014-unified-message-queue.md) 合并为
-统一消息队列；steering 注入机制与 QUEUE 编辑继续有效）
+统一消息队列；steering 注入机制与 QUEUE 编辑继续有效；队列代码落点由
+[ADR-0027](0027-steering-queue-in-tui.md) 上移到 TUI，core 只保留注入点）
 
 ## Date
 

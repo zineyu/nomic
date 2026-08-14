@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted（队列代码落点由 [ADR-0027](0027-steering-queue-in-tui.md) 修正：
+`SteeringQueue` 上移到 TUI，core 只保留 `TurnInjection` 注入点）
 
 ## Date
 

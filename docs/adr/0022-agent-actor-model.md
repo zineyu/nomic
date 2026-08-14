@@ -40,8 +40,8 @@ driver 或裸持 `&mut Agent`。
 - **错误**：统一 `ActorError`——`Gone`（actor 任务已退出，发送失败或
   oneshot 被丢弃）与 `Loop(AgentError)` / `Compaction(CompactionError)`
   透传。
-- **`steering_handle()`** 直接返回共享 `SteeringQueue` 克隆
-  （ADR-0014：该句柄本就并发安全、可在运行中随时调用，不经邮箱）。
+- **运行中注入源**（ADR-0014/0027）由 builder 组装进 `Agent` 本体，
+  turn 边界经注入点询问，不经邮箱；handle 不再暴露 steering 句柄。
 - 运行中调用纪律由结构保证：handle 方法均为 `&self`，任意时机可调，
   命令在 actor 内串行执行，原「仅非运行状态调用」约定对 handle
   调用方不复存在（`Agent` 直接 API 的约定不变）。

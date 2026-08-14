@@ -1,17 +1,53 @@
 //! 会话管理：`/resume` 恢复、`/tree` 浏览与分支、`/new` 新建。
 //!
-//! 定稿点落库与父指针推进收在 `nomic_session::SessionRecorder`（driver
-//! 事件分支一行接线）；本模块只做 session 切换时的 recorder 换绑。
+//! 定稿点落库与父指针推进收在 `nomic_session::SessionRecorder`；本模块
+//! 持有会话落库绑定 [`SessionBinding`]（recorder + 创建新 session 用的
+//! cwd），driver 只持有一个实例并转发——事件分支的落库是
+//! `session.record(&event)` 一行，session 切换时的 recorder 换绑收在
+//! 本模块的 effect 函数里。
 
 use anyhow::{Context as _, Result};
-use nomic_session::{SessionRecorder, SessionStore, TreeEntry};
+use nomic_core::AgentEvent;
+use nomic_session::{SessionError, SessionRecorder, SessionStore, TreeEntry};
+use tokio::sync::mpsc;
 
 use crate::tui::app::{App, PickerRow};
-use crate::tui::driver::{Driver, DriverJob};
+use crate::tui::driver::DriverJob;
+
+/// 会话落库绑定：recorder（store、目标 session、父指针）与创建新 session
+/// 用的 cwd。`None` recorder 表示本次不持久化。
+pub(in crate::tui) struct SessionBinding {
+    recorder: Option<SessionRecorder>,
+    cwd: std::path::PathBuf,
+}
+
+impl SessionBinding {
+    pub(in crate::tui) const fn new(
+        recorder: Option<SessionRecorder>,
+        cwd: std::path::PathBuf,
+    ) -> Self {
+        Self { recorder, cwd }
+    }
+
+    /// 可用的 session store（模型选择落库等跨关注点读取用）；未持久化时为 `None`
+    pub(in crate::tui) fn store(&self) -> Option<SessionStore> {
+        self.recorder
+            .as_ref()
+            .map(|recorder| recorder.store().clone())
+    }
+
+    /// 事件落库：定稿点落库与父指针推进（与 print 同一实现）；未持久化时无操作。
+    pub(in crate::tui) async fn record(&mut self, event: &AgentEvent) -> Result<(), SessionError> {
+        match &mut self.recorder {
+            Some(recorder) => recorder.record(event).await,
+            None => Ok(()),
+        }
+    }
+}
 
 /// `/resume`：列出历史 session 并打开选择器。
-pub(in crate::tui) async fn list_sessions(app: &mut App, driver: &Driver) {
-    match session_store(driver.recorder.as_ref()).await {
+pub(in crate::tui) async fn list_sessions(app: &mut App, session: &SessionBinding) {
+    match session_store(session.recorder.as_ref()).await {
         Err(error) => app.warn(format!("{error:#}")),
         Ok(store) => match store.list_sessions().await {
             Err(error) => app.warn(format!("列出 session 失败：{error}")),
@@ -34,12 +70,16 @@ pub(in crate::tui) async fn list_sessions(app: &mut App, driver: &Driver) {
 }
 
 /// `/new`：driver 串行清空上下文；本地重置聊天区并新建 session。
-pub(in crate::tui) async fn new_session(app: &mut App, driver: &mut Driver) {
+pub(in crate::tui) async fn new_session(
+    app: &mut App,
+    session: &mut SessionBinding,
+    job_tx: &mpsc::UnboundedSender<DriverJob>,
+) {
     // driver 串行处理任务；slash 命令仅在空闲时可提交，无需排队等待
-    let _ = driver.job_tx.send(DriverJob::Clear);
+    let _ = job_tx.send(DriverJob::Clear);
     app.start_new_conversation();
-    if let Some(recorder) = &mut driver.recorder {
-        match recorder.store().create_session(&driver.cwd).await {
+    if let Some(recorder) = &mut session.recorder {
+        match recorder.store().create_session(&session.cwd).await {
             Ok(new_id) => {
                 // 换绑新 session：没有任何 entry，父指针重置（自动链最新）
                 recorder.switch(new_id.clone(), None);
@@ -53,8 +93,8 @@ pub(in crate::tui) async fn new_session(app: &mut App, driver: &mut Driver) {
 }
 
 /// `/tree`：列出当前 session 的会话树并打开选择器（预选中当前分支末端）。
-pub(in crate::tui) async fn list_tree(app: &mut App, driver: &Driver) {
-    let Some(recorder) = &driver.recorder else {
+pub(in crate::tui) async fn list_tree(app: &mut App, session: &SessionBinding) {
+    let Some(recorder) = &session.recorder else {
         app.warn("当前对话未持久化，没有会话树可浏览");
         return;
     };
@@ -81,8 +121,13 @@ pub(in crate::tui) async fn list_tree(app: &mut App, driver: &Driver) {
 
 /// `/tree` 选择器确认：以所选条目为起点创建分支——重放该分支上下文、
 /// 切换落库父指针；原分支 entries 不动，仍可在 `/tree` 中回访。
-pub(in crate::tui) async fn branch_to(app: &mut App, driver: &mut Driver, entry_id: String) {
-    let Some(recorder) = &driver.recorder else {
+pub(in crate::tui) async fn branch_to(
+    app: &mut App,
+    session: &mut SessionBinding,
+    job_tx: &mpsc::UnboundedSender<DriverJob>,
+    entry_id: String,
+) {
+    let Some(recorder) = &session.recorder else {
         return; // ListTree 已挡住未持久化场景
     };
     if recorder.tip() == Some(entry_id.as_str()) {
@@ -90,24 +135,20 @@ pub(in crate::tui) async fn branch_to(app: &mut App, driver: &mut Driver, entry_
             .push_system("所选条目就是当前分支末端，无需切换。");
         return;
     }
-    // 提前克隆以结束对 driver 的借用（await 后要切父指针）
+    // 提前克隆以结束对 session 的借用（await 后要切父指针）
     let store = recorder.store().clone();
     let session_id = recorder.session_id().to_string();
     match store.load_branch(&session_id, &entry_id).await {
         Err(error) => app.warn(format!("切换分支失败：{error}")),
         Ok(messages) => {
             // driver 串行处理任务：紧随其后的 prompt 一定排在 Restore 之后
-            if driver
-                .job_tx
-                .send(DriverJob::Restore(messages.clone()))
-                .is_err()
-            {
+            if job_tx.send(DriverJob::Restore(messages.clone())).is_err() {
                 app.warn("内部错误：agent 任务已退出，无法切换分支");
                 return;
             }
             let count = messages.len();
             app.restore_branch(&messages);
-            if let Some(recorder) = &mut driver.recorder {
+            if let Some(recorder) = &mut session.recorder {
                 recorder.set_tip(Some(entry_id));
             }
             app.chat_mut().push_system(format!(
@@ -289,9 +330,14 @@ async fn session_store(recorder: Option<&SessionRecorder>) -> Result<SessionStor
 
 /// 恢复选中 session：加载历史 → 替换 agent 上下文与聊天区 → recorder
 /// 换绑该 session（父指针为默认分支末端）。
-pub(in crate::tui) async fn resume_session(app: &mut App, driver: &mut Driver, id: String) {
+pub(in crate::tui) async fn resume_session(
+    app: &mut App,
+    session: &mut SessionBinding,
+    job_tx: &mpsc::UnboundedSender<DriverJob>,
+    id: String,
+) {
     let loaded = async {
-        let store = session_store(driver.recorder.as_ref()).await?;
+        let store = session_store(session.recorder.as_ref()).await?;
         let messages = store
             .load_messages(&id)
             .await
@@ -308,12 +354,12 @@ pub(in crate::tui) async fn resume_session(app: &mut App, driver: &mut Driver, i
         Ok((store, messages, tip)) => {
             // driver 串行处理任务：紧随其后的 prompt 一定排在 Restore 之后，
             // 不会出现「新 prompt 跑在旧上下文」的交错
-            let _ = driver.job_tx.send(DriverJob::Restore(messages.clone()));
+            let _ = job_tx.send(DriverJob::Restore(messages.clone()));
             app.restore_conversation(&messages, id.clone());
-            match &mut driver.recorder {
+            match &mut session.recorder {
                 Some(recorder) => recorder.switch(id.clone(), tip),
                 None => {
-                    driver.recorder = Some(SessionRecorder::with_tip(store, id.clone(), tip));
+                    session.recorder = Some(SessionRecorder::with_tip(store, id.clone(), tip));
                 }
             }
             let label = nomic_session::session_title(&messages)

@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::app::{App, Effect, Key, SkillEntry};
-use super::effects;
+use super::effects::{self, SessionBinding};
 use super::terminal::edit_input_in_editor;
 use super::{MAX_GOAL_NUDGES, TuiTerminal, goal_reminder_prompt, panic_payload_text};
 use crate::model::ModelResolver;
@@ -170,8 +170,7 @@ pub(super) fn spawn_driver(
         task: Some(actor_task),
         adapter_task: Some(driver_task),
         alive: true,
-        recorder,
-        cwd: std::env::current_dir().context("get cwd")?,
+        session: SessionBinding::new(recorder, std::env::current_dir().context("get cwd")?),
         skill_resolver,
         models,
         model,
@@ -192,13 +191,12 @@ pub(super) struct Driver {
     /// [`driver_failed`] 等待先结束的一方并中止另一方）
     pub(super) adapter_task: Option<tokio::task::JoinHandle<()>>,
     /// actor 是否存活；退出后其 channel 已关闭，事件循环跳过对应分支
-    pub(super) alive: bool,
-    /// 会话落库器：持有 store、目标 session 与父指针（tip）；定稿点落库
-    /// 与父指针推进收在其中（print 同一实现），`/tree` 分支与 `/new` /
-    /// `/resume` 经其切换父指针/目标 session。`None` 表示本次不持久化。
-    pub(super) recorder: Option<SessionRecorder>,
-    pub(super) cwd: std::path::PathBuf,
-    pub(super) skill_resolver: SkillResolver,
+    alive: bool,
+    /// 会话落库绑定（recorder + cwd）：定稿点落库与父指针推进收在
+    /// [`SessionRecorder`]（print 同一实现），`/tree` 分支与 `/new` /
+    /// `/resume` 的换绑收在 effects::session
+    pub(super) session: SessionBinding,
+    skill_resolver: SkillResolver,
     /// 运行时模型解析器（`/models` 候选与切换，与启动同一分层口径）
     pub(super) models: ModelResolver,
     /// 当前模型（`/models` 切换后更新；选择器预选与切换幂等判断用）
@@ -262,9 +260,7 @@ pub(super) async fn handle_wake(
         Wake::AgentEvent(event) => {
             // 落库策略收在 SessionRecorder（与 print 同一实现）：定稿点落库、
             // 父指针推进；失败仅提示不中断（store 非权威源）
-            if let Some(recorder) = &mut driver.recorder
-                && let Err(error) = recorder.record(&event).await
-            {
+            if let Err(error) = driver.session.record(&event).await {
                 app.warn(format!("session 落库失败：{error}"));
             }
             app.handle_event(&event);
@@ -549,12 +545,14 @@ pub(super) async fn execute_effect(
         }
         // INSERT `Ctrl+G`：挂起 TUI 运行外部编辑器（ADR-0017），退出后写回
         Effect::OpenEditor => edit_input_in_editor(app, terminal).await,
-        Effect::ListSessions => effects::list_sessions(app, driver).await,
+        Effect::ListSessions => effects::list_sessions(app, &driver.session).await,
         Effect::Resume(id) => {
-            effects::resume_session(app, driver, id).await;
+            effects::resume_session(app, &mut driver.session, &driver.job_tx, id).await;
         }
-        Effect::ListTree => effects::list_tree(app, driver).await,
-        Effect::BranchTo(entry_id) => effects::branch_to(app, driver, entry_id).await,
+        Effect::ListTree => effects::list_tree(app, &driver.session).await,
+        Effect::BranchTo(entry_id) => {
+            effects::branch_to(app, &mut driver.session, &driver.job_tx, entry_id).await;
+        }
         Effect::ListModels => effects::list_models(app, driver),
         Effect::SwitchModel(id) => effects::select_model(app, driver, &id),
         Effect::SetReasoning(level) => effects::set_reasoning(app, driver, &level),
@@ -589,6 +587,8 @@ pub(super) async fn execute_effect(
         }
         Effect::AttachImage(path) => effects::attach_image(app, &std::path::PathBuf::from(path)),
         Effect::CopyText(text) => effects::copy_to_clipboard(app, text).await,
-        Effect::NewSession => effects::new_session(app, driver).await,
+        Effect::NewSession => {
+            effects::new_session(app, &mut driver.session, &driver.job_tx).await;
+        }
     }
 }

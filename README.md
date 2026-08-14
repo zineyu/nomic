@@ -386,6 +386,16 @@ session 落库，resume 后仍然有效）：
 /skill:rust-review 只看 unsafe  # 名称后空白起为附加上下文，以 User: <args> 追加
 ```
 
+聊天草稿里也可用 `@` mention 内联引用 skill 或文件，随消息一起发送（输入
+`@` 后 Tab 补全，`@skill:` 后补全 skill 名、`@file:` 后补全文件路径）：
+
+```text
+用 @skill:rust-review 审查，参考 @file:src/main.rs
+```
+
+`@` 只是标记，不立即注入；Enter 发送时才把**有效**的 skill / 文件内容展开
+进消息（无效标记原样发送，不阻断）。展开块在聊天区折叠为紧凑标记展示。
+
 `skill://` 是只读资源；如需修改 skill，请显式编辑其 backing file。设计见
 [docs/adr/0003](docs/adr/0003-skills-system.md)。
 

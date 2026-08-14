@@ -212,10 +212,35 @@ impl App {
     }
 
     /// QUEUE 编辑子状态键位：Enter/Esc 保存（vim 保存即应用），
-    /// 其余按键与 INSERT 的缓冲编辑一致（补全在 QUEUE 下不启用）。
+    /// Tab/↑/↓ 处理 `@` mention 补全弹层（与 INSERT 同口径），其余按键
+    /// 与 INSERT 的缓冲编辑一致。
     pub fn press_queue_edit(&mut self, key: Key) -> Vec<Effect> {
         match key {
-            Key::Enter | Key::Esc => self.queue_save_edit(),
+            Key::Enter => self.queue_save_edit(),
+            Key::Esc => {
+                if self.input.dismiss_mention() {
+                    return Vec::new();
+                }
+                self.queue_save_edit();
+            }
+            Key::Tab => {
+                self.input.mention_tab_complete();
+                return Vec::new();
+            }
+            Key::Up => {
+                if self.input.mention().is_some() {
+                    self.input.mention_select(-1);
+                    return Vec::new();
+                }
+                Self::edit_key(&mut self.input, &mut self.chat, Key::Up);
+            }
+            Key::Down => {
+                if self.input.mention().is_some() {
+                    self.input.mention_select(1);
+                    return Vec::new();
+                }
+                Self::edit_key(&mut self.input, &mut self.chat, Key::Down);
+            }
             // Ctrl+C：退出（取消运行归 NORMAL `q`/`Esc`）
             Key::Ctrl('c') => return self.quit(),
             other => Self::edit_key(&mut self.input, &mut self.chat, other),

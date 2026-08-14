@@ -687,6 +687,7 @@ fn user_message_with_images_shows_placeholder() {
     assert_eq!(user_text(&text_only), "hi");
 }
 
+mod mention_tests;
 mod normal_tests;
 mod picker_tests;
 fn image() -> nomic_ai::ImageContent {

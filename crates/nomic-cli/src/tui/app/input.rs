@@ -10,6 +10,7 @@ use nomic_skills::SkillScope;
 use unicode_width::UnicodeWidthStr;
 
 use super::{SLASH_COMMANDS, SlashCommand, line_count_of};
+use crate::tui::mention;
 
 /// 补全候选：slash 命令、prompt template 或 `/skill:` 后的 skill 名。
 #[derive(Debug)]
@@ -49,6 +50,21 @@ pub(in crate::tui) struct SkillEntry {
     pub(in crate::tui) scope: SkillScope,
 }
 
+/// `@` mention 补全弹层状态。
+#[derive(Debug)]
+pub(in crate::tui) struct MentionCompletion {
+    pub(in crate::tui) candidates: Vec<MentionCandidate>,
+    pub(in crate::tui) selected: usize,
+}
+
+/// `@` mention 的单个补全候选：`fragment` 为填入草稿的完整标记
+/// （如 `@skill:jujutsu`），`display` 为弹层展示文本。
+#[derive(Debug)]
+pub(in crate::tui) struct MentionCandidate {
+    pub(in crate::tui) fragment: String,
+    pub(in crate::tui) display: String,
+}
+
 /// 补全弹层状态：候选列表 + 当前选中项。
 #[derive(Debug)]
 pub(in crate::tui) struct Completion {
@@ -77,6 +93,8 @@ pub(in crate::tui) struct Input {
     pub(super) cursor: usize,
     /// slash 命令补全弹层（启用补全的缓冲以 `/` 开头时出现）
     completion: Option<Completion>,
+    /// `@` mention 补全弹层（草稿输入框以 `@` 收尾时出现）
+    mention: Option<MentionCompletion>,
     /// 暂存的图片附件（随下一条 prompt 发送；仅聊天草稿使用）
     attachments: Vec<PendingImage>,
     /// `/skill:` 补全用的可用 skill 快照
@@ -86,6 +104,8 @@ pub(in crate::tui) struct Input {
     /// 补全是否启用：仅命令输入框启用（ADR-0020；草稿不承载命令，
     /// QUEUE 就地编辑的是排队消息文本而非命令，均不启用）
     completion_enabled: bool,
+    /// `@` mention 补全是否启用：聊天草稿启用，命令输入框不启用
+    mention_enabled: bool,
 }
 
 impl Input {
@@ -94,10 +114,12 @@ impl Input {
             text: String::new(),
             cursor: 0,
             completion: None,
+            mention: None,
             attachments: Vec::new(),
             skills: Vec::new(),
             templates: Vec::new(),
             completion_enabled: true,
+            mention_enabled: true,
         }
     }
 
@@ -329,6 +351,7 @@ impl Input {
         self.text.clear();
         self.cursor = 0;
         self.completion = None;
+        self.mention = None;
         Some(text)
     }
 
@@ -338,12 +361,14 @@ impl Input {
         self.text = text;
         self.cursor = self.text.len();
         self.completion = None;
+        self.mention = None;
     }
 
     /// 清空草稿（QUEUE 就地编辑保存后）。
     pub(super) fn clear_buffer(&mut self) {
         self.text.clear();
         self.cursor = 0;
+        self.mention = None;
     }
 
     /// 清空草稿与附件（INSERT `Ctrl+C` 清草稿：文本与暂存图片一并丢弃）。
@@ -351,6 +376,7 @@ impl Input {
         self.text.clear();
         self.cursor = 0;
         self.completion = None;
+        self.mention = None;
         self.attachments.clear();
     }
 
@@ -411,6 +437,8 @@ impl Input {
     /// 按当前输入重算补全候选：仅在「补全启用、以 `/` 开头、光标在末尾、
     /// 命令名未输入完整参数（无空白）」时弹出；`/skill:` 后切换为 skill 名候选。
     fn refresh_completion(&mut self) {
+        // mention 补全与 slash 补全独立：草稿（slash 关闭）也要能弹 mention。
+        self.refresh_mention();
         if !self.completion_enabled {
             self.completion = None;
             return;
@@ -543,6 +571,148 @@ impl Input {
         }
         self.tab_complete();
         true
+    }
+
+    // ── `@` mention 补全 ────────────────────────────────────────────────────
+
+    /// 当前 mention 补全弹层（渲染用）。
+    pub(in crate::tui) const fn mention(&self) -> Option<&MentionCompletion> {
+        self.mention.as_ref()
+    }
+
+    /// 同步 mention 补全启用状态（草稿启用、命令输入框不启用）。
+    pub(super) fn set_mention_enabled(&mut self, enabled: bool) {
+        self.mention_enabled = enabled;
+        if !enabled {
+            self.mention = None;
+        }
+    }
+
+    /// 按当前输入重算 mention 候选：仅当「mention 启用、光标在末尾、文本以
+    /// `@` 收尾且 `@` 后无空白」时弹出。
+    fn refresh_mention(&mut self) {
+        if !self.mention_enabled || self.cursor != self.text.len() {
+            self.mention = None;
+            return;
+        }
+        let Some(fragment) = mention::mention_fragment(&self.text) else {
+            self.mention = None;
+            return;
+        };
+        self.mention = self.mention_candidates(fragment);
+    }
+
+    /// 按 mention 片段构造候选：`@skill:` 后为 skill 名、`@file:` 后为文件
+    /// 路径；`@` + 部分 `skill`/`file` 前缀时为类型候选。
+    fn mention_candidates(&self, fragment: &str) -> Option<MentionCompletion> {
+        if let Some(name) = fragment.strip_prefix(mention::SKILL_PREFIX) {
+            return self.skill_mention_candidates(name);
+        }
+        if let Some(path) = fragment.strip_prefix(mention::FILE_PREFIX) {
+            return Self::file_mention_candidates(path);
+        }
+        let prefix = fragment.strip_prefix('@')?;
+        let mut candidates = Vec::new();
+        if "skill".starts_with(prefix) {
+            candidates.push(MentionCandidate {
+                fragment: mention::SKILL_PREFIX.to_string(),
+                display: mention::SKILL_PREFIX.to_string(),
+            });
+        }
+        if "file".starts_with(prefix) {
+            candidates.push(MentionCandidate {
+                fragment: mention::FILE_PREFIX.to_string(),
+                display: mention::FILE_PREFIX.to_string(),
+            });
+        }
+        if candidates.is_empty() {
+            return None;
+        }
+        Some(MentionCompletion {
+            candidates,
+            selected: 0,
+        })
+    }
+
+    /// `@skill:` 后的 skill 名候选（按名称前缀匹配）。
+    fn skill_mention_candidates(&self, name_fragment: &str) -> Option<MentionCompletion> {
+        let mut candidates: Vec<MentionCandidate> = self
+            .skills
+            .iter()
+            .filter(|entry| entry.name.starts_with(name_fragment))
+            .map(|entry| MentionCandidate {
+                fragment: format!("@skill:{}", entry.name),
+                display: format!("@skill:{} — {}", entry.name, entry.description),
+            })
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        candidates.sort_by(|a, b| a.fragment.cmp(&b.fragment));
+        Some(MentionCompletion {
+            candidates,
+            selected: 0,
+        })
+    }
+
+    /// `@file:` 后的文件路径候选（相对当前工作目录，按前缀匹配）。
+    fn file_mention_candidates(path_fragment: &str) -> Option<MentionCompletion> {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let candidates: Vec<MentionCandidate> =
+            mention::file_mention_candidates(path_fragment, &cwd)
+                .into_iter()
+                .map(|path| MentionCandidate {
+                    fragment: format!("@file:{path}"),
+                    display: format!("@file:{path}"),
+                })
+                .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        Some(MentionCompletion {
+            candidates,
+            selected: 0,
+        })
+    }
+
+    /// Tab：接受当前选中的 mention 候选，替换掉光标处的 mention 片段；
+    /// 片段已等于选中项时循环到下一个。
+    pub(super) fn mention_tab_complete(&mut self) {
+        let Some(at) = self.text.rfind('@') else {
+            return;
+        };
+        let current = self.text[at..].to_string();
+        let Some(completion) = &self.mention else {
+            return;
+        };
+        let selected = if current == completion.candidates[completion.selected].fragment {
+            (completion.selected + 1) % completion.candidates.len()
+        } else {
+            completion.selected
+        };
+        let fragment = completion.candidates[selected].fragment.clone();
+        self.text.truncate(at);
+        self.text.push_str(&fragment);
+        self.cursor = self.text.len();
+        self.refresh_completion();
+    }
+
+    /// mention 补全弹层中选择下一个/上一个候选（环形）。
+    pub(super) const fn mention_select(&mut self, delta: isize) {
+        if let Some(mention) = &mut self.mention {
+            let len = mention.candidates.len();
+            let step = delta.unsigned_abs() % len;
+            mention.selected = if delta < 0 {
+                (mention.selected + len - step) % len
+            } else {
+                (mention.selected + step) % len
+            };
+        }
+    }
+
+    /// Esc：关闭 mention 补全弹层；返回是否确有弹层被关闭。
+    pub(super) fn dismiss_mention(&mut self) -> bool {
+        self.mention.take().is_some()
     }
 }
 

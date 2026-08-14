@@ -38,6 +38,7 @@ mod driver;
 mod effects;
 mod goal;
 mod markdown;
+mod mention;
 mod terminal;
 mod theme;
 mod widgets;
@@ -75,17 +76,19 @@ pub async fn run(cli: &Cli) -> Result<()> {
     // `--image` 附件在 TUI 模式同样生效：作为首轮消息的暂存附件
     effects::stage_cli_images(&mut app, &cli.image);
     let skill_resolver = boot.skill_resolver.clone();
-    app.command_mut().set_available_skills(
-        skill_resolver
-            .catalog()
-            .into_iter()
-            .map(|skill| SkillEntry {
-                name: skill.name,
-                description: skill.document.description,
-                scope: skill.scope,
-            })
-            .collect(),
-    );
+    let skill_entries: Vec<SkillEntry> = skill_resolver
+        .catalog()
+        .into_iter()
+        .map(|skill| SkillEntry {
+            name: skill.name,
+            description: skill.document.description,
+            scope: skill.scope,
+        })
+        .collect();
+    // 命令输入框 `/skill:` 补全与草稿 `@skill:` mention 补全共用同一快照
+    app.command_mut()
+        .set_available_skills(skill_entries.clone());
+    app.input_mut().set_available_skills(skill_entries);
     app.command_mut()
         .set_available_templates(boot.prompt_templates.clone());
     // 启动解析的思考级别（CLI 参数 / 配置文件）在进入 builder 前取出，

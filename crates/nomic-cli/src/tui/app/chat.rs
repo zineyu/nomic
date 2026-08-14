@@ -9,6 +9,7 @@ use nomic_ai::{
 use nomic_skills::{ActivatedSkill, parse_active_skill_tag};
 
 use crate::tui::chat_lines::chat_lines;
+use crate::tui::mention;
 
 /// 聊天区条目。
 #[derive(Debug)]
@@ -87,15 +88,16 @@ impl Chat {
     }
 
     /// 追加一条 user 聊天条目；skill 注入消息与压缩摘要消息压缩为系统提示样式的一行。
-    pub(super) fn push_user_text(&mut self, text: String) {
-        if let Some(notice) = skill_load_notice(&text) {
+    pub(super) fn push_user_text(&mut self, text: &str) {
+        if let Some(notice) = skill_load_notice(text) {
             self.items.push(ChatItem::System(notice));
         } else if text.starts_with(nomic_ai::SUMMARY_PREFIX) {
             self.items.push(ChatItem::System(
                 "更早的对话已压缩为摘要注入上下文。".to_string(),
             ));
         } else {
-            self.items.push(ChatItem::User(text));
+            self.items
+                .push(ChatItem::User(collapse_mention_blocks(text)));
         }
         self.scroll_to_bottom();
     }
@@ -116,7 +118,7 @@ impl Chat {
     pub(super) fn load_history(&mut self, messages: &[Message]) {
         for message in messages {
             match message {
-                Message::User(user) => self.push_user_text(user_text(&user.content)),
+                Message::User(user) => self.push_user_text(&user_text(&user.content)),
                 Message::Assistant(assistant) => {
                     let error =
                         assistant_error(assistant.stop_reason, assistant.error_message.as_deref());
@@ -385,6 +387,51 @@ fn skill_load_notice(text: &str) -> Option<String> {
         Some(path) => format!("已载入 skill `{}`（{}）", tag.name, path.display()),
         None => format!("已载入 skill `{}`", tag.name),
     })
+}
+
+/// 折叠 mention 展开出的 `<active_skill>` / `<file>` 块为紧凑标记，
+/// 避免把大段正文刷进聊天区；无法识别闭合的块原样保留。
+fn collapse_mention_blocks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        let skill_at = rest.find("<active_skill ").map(|i| (i, "skill"));
+        let file_at = rest.find("<file ").map(|i| (i, "file"));
+        let (start, kind) = match (skill_at, file_at) {
+            (Some(s), Some(f)) => {
+                if s.0 <= f.0 {
+                    s
+                } else {
+                    f
+                }
+            }
+            (Some(s), None) => s,
+            (None, Some(f)) => f,
+            (None, None) => break,
+        };
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let end_tag = if kind == "skill" {
+            "</active_skill>"
+        } else {
+            "</file>"
+        };
+        let Some(end) = tail.find(end_tag) else {
+            out.push_str(tail);
+            rest = "";
+            break;
+        };
+        let block = &tail[..end + end_tag.len()];
+        let chip = match kind {
+            "skill" => parse_active_skill_tag(block).map(|tag| format!("@skill:{}", tag.name)),
+            "file" => mention::file_block_path(block).map(|path| format!("@file:{path}")),
+            _ => None,
+        };
+        out.push_str(chip.as_deref().unwrap_or(block));
+        rest = &tail[end + end_tag.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn blocks_text(blocks: &[UserContent]) -> String {

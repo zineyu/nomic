@@ -25,7 +25,7 @@ use crate::tui::app::App;
 use chat::ChatView;
 use input::InputArea;
 use overlay::HelpOverlay;
-use popup::{CompletionPopup, PickerPopup};
+use popup::{CompletionPopup, MentionPopup, PickerPopup};
 use status::StatusBar;
 
 pub(in crate::tui) use status::format_tokens;
@@ -59,6 +59,9 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     // 弹层（贴输入框上方）
     if let Some(completion) = app.command().completion() {
         frame.render_widget(CompletionPopup::new(completion), chunks[1]);
+    }
+    if let Some(mention) = app.input().mention() {
+        frame.render_widget(MentionPopup::new(mention), chunks[1]);
     }
     if let Some(picker) = app.picker() {
         frame.render_widget(PickerPopup::new(picker), chunks[1]);

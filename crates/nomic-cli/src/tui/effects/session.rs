@@ -36,6 +36,11 @@ impl SessionBinding {
             .map(|recorder| recorder.store().clone())
     }
 
+    /// 创建新 session 用的工作目录（mention 文件路径解析等以它为基准）。
+    pub(in crate::tui) fn cwd(&self) -> &std::path::Path {
+        &self.cwd
+    }
+
     /// 事件落库：定稿点落库与父指针推进（与 print 同一实现）；未持久化时无操作。
     pub(in crate::tui) async fn record(&mut self, event: &AgentEvent) -> Result<(), SessionError> {
         match &mut self.recorder {

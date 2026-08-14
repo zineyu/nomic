@@ -12,7 +12,9 @@ use ratatui::{
     widgets::{Block as Border, BorderType, Clear, Paragraph, Widget},
 };
 
-use crate::tui::app::{Completion, CompletionCandidate, PICKER_ROW_CAPACITY, Picker, PickerKind};
+use crate::tui::app::{
+    Completion, CompletionCandidate, MentionCompletion, PICKER_ROW_CAPACITY, Picker, PickerKind,
+};
 use crate::tui::theme;
 
 /// 补全弹层可见候选数上限，超出时内部滚动窗口。
@@ -84,6 +86,53 @@ impl Widget for CompletionPopup<'_> {
             format!("{kind} {}/{total}", completion.selected + 1)
         } else {
             kind.to_string()
+        };
+        let block = Border::bordered()
+            .border_type(BorderType::Plain)
+            .border_style(theme::accent())
+            .title(Span::styled(title, theme::accent()));
+        render_popup(buf, input_area, lines, block);
+    }
+}
+
+/// `@` mention 补全弹层：与 slash 补全弹层同构，贴在输入框上方。
+/// 数据源是草稿输入框的 mention 候选（skill 名 / 文件路径 / 类型提示）。
+pub(in crate::tui) struct MentionPopup<'a> {
+    mention: &'a MentionCompletion,
+}
+
+impl<'a> MentionPopup<'a> {
+    pub(in crate::tui) const fn new(mention: &'a MentionCompletion) -> Self {
+        Self { mention }
+    }
+}
+
+impl Widget for MentionPopup<'_> {
+    fn render(self, input_area: Rect, buf: &mut Buffer) {
+        let mention = self.mention;
+        let total = mention.candidates.len();
+        let (start, end) = visible_window(total, mention.selected, COMPLETION_MAX_VISIBLE);
+        let lines: Vec<Line<'static>> = mention.candidates[start..end]
+            .iter()
+            .enumerate()
+            .map(|(offset, candidate)| {
+                if start + offset == mention.selected {
+                    Line::from(vec![
+                        Span::styled("❯ ", theme::user_marker()),
+                        Span::styled(candidate.display.clone(), theme::accent()),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(candidate.display.clone(), theme::subtle()),
+                    ])
+                }
+            })
+            .collect();
+        let title = if total > COMPLETION_MAX_VISIBLE {
+            format!("提及 {}/{total}", mention.selected + 1)
+        } else {
+            "提及".to_string()
         };
         let block = Border::bordered()
             .border_type(BorderType::Plain)

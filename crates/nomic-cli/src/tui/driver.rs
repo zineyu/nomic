@@ -20,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 use super::app::{App, Effect, Key, SkillEntry};
 use super::effects::{self, ModelSwitcher, SessionBinding};
 use super::goal::{GoalNudger, Nudge};
+use super::mention;
 use super::terminal::edit_input_in_editor;
 use super::{TuiTerminal, panic_payload_text};
 use crate::model::ModelResolver;
@@ -485,6 +486,9 @@ pub(super) async fn execute_effect(
         Effect::Prompt { text, images } => {
             // 用户主动提交：重置 goal 模式连续追问计数
             driver.goal.reset();
+            // 发送前展开有效 `@skill:` / `@file:` mention；无效标记原样保留
+            let text =
+                mention::expand_mentions(&text, &driver.skill_resolver, driver.session.cwd());
             let token = CancellationToken::new();
             if driver
                 .job_tx

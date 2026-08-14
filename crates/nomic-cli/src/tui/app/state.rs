@@ -9,12 +9,16 @@ use super::{
 impl App {
     pub fn new(model_name: String, session_id: Option<String>, context_window: u64) -> Self {
         let mut input = Input::new();
-        // 草稿不承载命令（ADR-0020）：slash 补全只属于命令输入框
+        // 草稿不承载命令（ADR-0020）：slash 补全只属于命令输入框；
+        // `@` mention 补全属于草稿
         input.set_completion_enabled(false);
+        let mut command = Input::new();
+        // 命令输入框只承载 slash 命令，不启用 `@` mention 补全
+        command.set_mention_enabled(false);
         Self {
             chat: Chat::default(),
             input,
-            command: Input::new(),
+            command,
             queue: Queue::default(),
             picker: None,
             mode: Mode::Insert,
@@ -97,7 +101,7 @@ impl App {
             AgentEvent::AgentStart => self.running = true,
             AgentEvent::MessageStart(message) => match message.as_ref() {
                 Message::User(user) => {
-                    self.chat.push_user_text(user_text(&user.content));
+                    self.chat.push_user_text(&user_text(&user.content));
                 }
                 Message::Assistant(_) => self.chat.start_assistant(),
                 Message::ToolResult(_) => {}
@@ -223,20 +227,29 @@ impl App {
                 }
                 self.input.delete_char_at_cursor();
             }
-            // Esc：回 NORMAL（运行中亦然，不中断）；中断运行在 NORMAL 下
-            // 再按一次 Esc（逐层退回，ADR-0021）
-            Key::Esc => self.enter_normal(),
-            // ↑/↓：补全弹层可见时移动选中，否则历史召回（草稿不启用补全）
+            // Esc：先关 `@` mention 补全弹层，否则回 NORMAL（逐层退回，ADR-0021）
+            Key::Esc => {
+                if self.input.dismiss_mention() {
+                    return Vec::new();
+                }
+                self.enter_normal();
+            }
+            // Tab：mention 补全弹层可见时接受选中候选（填入标记，不发送）
+            Key::Tab => {
+                self.input.mention_tab_complete();
+                return Vec::new();
+            }
+            // ↑/↓：mention 补全弹层可见时移动选中，否则历史召回
             Key::Up => {
-                if self.input.completion().is_some() {
-                    self.input.completion_select(-1);
+                if self.input.mention().is_some() {
+                    self.input.mention_select(-1);
                 } else {
                     self.history_prev();
                 }
             }
             Key::Down => {
-                if self.input.completion().is_some() {
-                    self.input.completion_select(1);
+                if self.input.mention().is_some() {
+                    self.input.mention_select(1);
                 } else {
                     self.history_next();
                 }

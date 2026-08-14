@@ -38,7 +38,7 @@ use queue::Queue;
 use crate::picker::step_row;
 
 pub(super) use chat::{Block, Chat, ChatItem, ToolItem, ToolStatus, skill_load_message};
-pub(super) use input::{Completion, CompletionCandidate, SkillEntry};
+pub(super) use input::{Completion, CompletionCandidate, MentionCompletion, SkillEntry};
 pub(super) use picker::{PICKER_ROW_CAPACITY, Picker, PickerKind, PickerRow};
 
 use crate::print::brief_args;

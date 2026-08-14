@@ -209,6 +209,26 @@ impl SlashAction {
     }
 }
 
+/// 命令名后的参数尾巴（[`command_tail`] 的返回值）。
+enum CommandTail<'a> {
+    /// `/name` 精确命中，无参数
+    Bare,
+    /// `/name:arg` / `/name arg`
+    Arg(&'a str),
+}
+
+/// 切分命令名后的参数尾巴；`/namexxx`（命令名只是更长输入的前缀）
+/// 返回 `None`，由调用方落入常规解析报未知命令。
+fn command_tail<'a>(rest: &'a str, name: &str) -> Option<CommandTail<'a>> {
+    let tail = rest.strip_prefix(name)?;
+    if tail.is_empty() {
+        return Some(CommandTail::Bare);
+    }
+    tail.strip_prefix(':')
+        .or_else(|| tail.strip_prefix(' '))
+        .map(CommandTail::Arg)
+}
+
 /// 解析一行输入为 slash 命令。
 ///
 /// 参数只支持 `/name:arg` 冒号形式（如 `/skill:jujutsu`）；
@@ -219,49 +239,38 @@ fn parse_slash(input: &str) -> SlashParse {
     };
     // `/compact` 特判：参数是自由文本（可含空格），`/compact 指令` 与
     // `/compact:指令` 两种形式都接受
-    if let Some(tail) = rest.strip_prefix("compact") {
-        if tail.is_empty() {
-            return SlashParse::Known(SlashAction::Compact(None));
-        }
-        if let Some(instructions) = tail.strip_prefix(':').or_else(|| tail.strip_prefix(' ')) {
-            let instructions = instructions.trim();
-            return SlashParse::Known(SlashAction::Compact(
-                (!instructions.is_empty()).then(|| instructions.to_string()),
-            ));
-        }
-        // `/compactxxx`：落入常规解析报未知命令
+    if let Some(tail) = command_tail(rest, "compact") {
+        let arg = match tail {
+            CommandTail::Bare => None,
+            CommandTail::Arg(text) => Some(text.trim()).filter(|text| !text.is_empty()),
+        };
+        return SlashParse::Known(SlashAction::Compact(arg.map(str::to_string)));
     }
     // `/image` 特判：参数是文件路径（可含空格），`/image 路径` 与
     // `/image:路径` 两种形式都接受
-    if let Some(tail) = rest.strip_prefix("image") {
-        if let Some(path) = tail.strip_prefix(':').or_else(|| tail.strip_prefix(' ')) {
-            let path = path.trim();
-            return if path.is_empty() {
-                SlashParse::InvalidUsage(image_usage())
-            } else {
-                SlashParse::Known(SlashAction::Image(path.to_string()))
-            };
-        }
-        if tail.is_empty() {
-            return SlashParse::InvalidUsage(image_usage());
-        }
-        // `/imagexxx`：落入常规解析报未知命令
+    if let Some(tail) = command_tail(rest, "image") {
+        let path = match tail {
+            CommandTail::Bare => "",
+            CommandTail::Arg(path) => path.trim(),
+        };
+        return if path.is_empty() {
+            SlashParse::InvalidUsage(image_usage())
+        } else {
+            SlashParse::Known(SlashAction::Image(path.to_string()))
+        };
     }
     // `/models` 特判：参数是选择项（`<provider>/<模型id>`，不可含空格），
     // `/models id` 与 `/models:id` 两种形式都接受
-    if let Some(tail) = rest.strip_prefix("models") {
-        if tail.is_empty() {
+    if let Some(tail) = command_tail(rest, "models") {
+        let CommandTail::Arg(id) = tail else {
             return SlashParse::Known(SlashAction::Models(None));
-        }
-        if let Some(id) = tail.strip_prefix(':').or_else(|| tail.strip_prefix(' ')) {
-            let id = id.trim();
-            return if id.is_empty() || id.contains(char::is_whitespace) {
-                SlashParse::InvalidUsage(models_usage())
-            } else {
-                SlashParse::Known(SlashAction::Models(Some(id.to_string())))
-            };
-        }
-        // `/modelsxxx`：落入常规解析报未知命令
+        };
+        let id = id.trim();
+        return if id.is_empty() || id.contains(char::is_whitespace) {
+            SlashParse::InvalidUsage(models_usage())
+        } else {
+            SlashParse::Known(SlashAction::Models(Some(id.to_string())))
+        };
     }
     let (name, arg, junk) = if let Some((name, arg)) = rest.split_once(':') {
         (

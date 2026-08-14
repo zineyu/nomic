@@ -108,6 +108,10 @@ nomic -p "..." --provider openai --base-url https://your.gateway/v1 --model deep
 # 推理模型
 nomic -p "..." --reasoning low
 # TUI 内：/models 选择模型后可为推理模型选择思考级别（含 off 关闭）
+
+# 指定工作目录（session 隔离、AGENTS.md/skills 发现、工具相对路径均基于它；
+# 其余相对路径参数如 --image 也按该目录解析）
+nomic --cwd /path/to/project
 ```
 
 ### TUI 键位

@@ -19,7 +19,9 @@ mod print;
 mod sessions;
 mod tui;
 
-use anyhow::Result;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
 
 use crate::logging::LogTarget;
@@ -32,9 +34,14 @@ pub(crate) struct Cli {
     #[arg(short, long, value_name = "TEXT")]
     pub(crate) print: Option<String>,
 
+    /// 工作目录：session 隔离、AGENTS.md 与 skills/prompts 发现、工具相对路径
+    /// 均基于它；指定后其余相对路径参数（如 --image）也按该目录解析
+    #[arg(short = 'C', long, value_name = "DIR")]
+    pub(crate) cwd: Option<PathBuf>,
+
     /// 随 prompt 发送的图片附件（可重复传入；png/jpeg/gif/webp）
     #[arg(long, value_name = "PATH")]
-    pub(crate) image: Vec<std::path::PathBuf>,
+    pub(crate) image: Vec<PathBuf>,
 
     /// provider：config.toml 的 `[providers]` 中定义的名字（anthropic、openai 可按名推断 api）；
     /// 需搭配 `--model`（无内置默认模型，缺省用数据库中保存的选择）
@@ -76,7 +83,7 @@ pub(crate) struct Cli {
 
     /// 额外的 prompt template 文件或目录（可重复传入；优先级高于项目/用户目录）
     #[arg(long, value_name = "PATH")]
-    pub(crate) prompt_template: Vec<std::path::PathBuf>,
+    pub(crate) prompt_template: Vec<PathBuf>,
 
     /// 禁用 prompt template 目录发现（显式指定的路径仍生效）
     #[arg(long)]
@@ -127,6 +134,9 @@ pub(crate) enum SessionsCommand {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    // 切换工作目录必须先于一切初始化：之后的配置加载、session、上下文文件
+    // 与工具相对路径解析都基于该目录（进程级 cwd，见 enter_workdir）
+    enter_workdir(cli.cwd.as_deref())?;
     // guard 必须活到进程退出，否则非阻塞 writer 尾部缓冲丢失
     let _log_guard = logging::init(cli.log, cli.log_level.as_deref())?;
     tracing::debug!(
@@ -151,5 +161,70 @@ pub(crate) async fn dispatch(cli: &Cli) -> Result<()> {
         print::run(cli, prompt).await
     } else {
         tui::run(cli).await
+    }
+}
+
+/// 切换到 `--cwd` 指定的工作目录。cwd 是进程级状态（工具层的相对路径由 OS
+/// 按进程 cwd 解析），因此在 main 最早期 `set_current_dir`，让下游的
+/// `std::env::current_dir()` 与相对路径参数统一指向该目录。
+fn enter_workdir(cwd: Option<&Path>) -> Result<()> {
+    let Some(dir) = cwd else {
+        return Ok(());
+    };
+    let dir = canonicalize_workdir(dir)?;
+    std::env::set_current_dir(&dir)
+        .with_context(|| format!("切换工作目录到 {} 失败", dir.display()))
+}
+
+/// 校验并规范化工作目录：必须存在且是目录；相对路径按进程当前 cwd 解析。
+fn canonicalize_workdir(dir: &Path) -> Result<PathBuf> {
+    let canonical = dir
+        .canonicalize()
+        .with_context(|| format!("工作目录 {} 不存在或不可访问", dir.display()))?;
+    if !canonical.is_dir() {
+        bail!("工作目录 {} 不是目录", dir.display());
+    }
+    Ok(canonical)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonicalize_workdir_resolves_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let resolved = canonicalize_workdir(tmp.path()).expect("目录应通过校验");
+        assert_eq!(resolved, tmp.path().canonicalize().expect("canonicalize"));
+    }
+
+    #[test]
+    fn canonicalize_workdir_resolves_relative_against_process_cwd() {
+        // 相对路径按进程当前 cwd 解析（enter_workdir 切换前的语义）
+        let resolved = canonicalize_workdir(Path::new(".")).expect(". 应解析为当前目录");
+        assert_eq!(
+            resolved,
+            std::env::current_dir()
+                .expect("current_dir")
+                .canonicalize()
+                .expect("canonicalize")
+        );
+    }
+
+    #[test]
+    fn canonicalize_workdir_rejects_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let missing = tmp.path().join("nope");
+        let err = canonicalize_workdir(&missing).unwrap_err().to_string();
+        assert!(err.contains("不存在或不可访问"), "{err}");
+    }
+
+    #[test]
+    fn canonicalize_workdir_rejects_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = tmp.path().join("f.txt");
+        std::fs::write(&file, "x").expect("write");
+        let err = canonicalize_workdir(&file).unwrap_err().to_string();
+        assert!(err.contains("不是目录"), "{err}");
     }
 }

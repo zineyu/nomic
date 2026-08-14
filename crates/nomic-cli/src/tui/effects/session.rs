@@ -80,7 +80,7 @@ pub(in crate::tui) async fn new_session(
     session: &mut SessionBinding,
     job_tx: &mpsc::UnboundedSender<DriverJob>,
 ) {
-    // driver 串行处理任务；slash 命令仅在空闲时可提交，无需排队等待
+    // driver 串行处理任务；命令仅在空闲时可提交，无需排队等待
     let _ = job_tx.send(DriverJob::Clear);
     app.start_new_conversation();
     if let Some(recorder) = &mut session.recorder {

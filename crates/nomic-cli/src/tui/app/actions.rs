@@ -1,9 +1,9 @@
 //! App 的第二组方法：复制/选择器/队列/help/会话与命令执行（由 app/mod.rs 的 `impl App` 拆分而来）。
 
 use super::{
-    App, Effect, HALF_PAGE_SCROLL, Key, Message, Mode, PAGE_SCROLL, PICKER_PAGE_SCROLL, Picker,
-    PickerKind, PickerRow, SPINNER_FRAMES, SkillEntry, SlashAction, TurnMessage, help_text,
-    line_count_of, skill_list_text,
+    App, CommandAction, Effect, HALF_PAGE_SCROLL, Key, Message, Mode, PAGE_SCROLL,
+    PICKER_PAGE_SCROLL, Picker, PickerKind, PickerRow, SPINNER_FRAMES, SkillEntry, TurnMessage,
+    help_text, line_count_of, skill_list_text,
 };
 
 impl App {
@@ -382,23 +382,23 @@ impl App {
     }
 
     /// 命令的内部处置：能就地完成的直接做，需要外部资源的转为效果。
-    pub fn execute_slash(&mut self, action: SlashAction) -> Vec<Effect> {
+    pub fn execute_command(&mut self, action: CommandAction) -> Vec<Effect> {
         match action {
-            SlashAction::Help => {
+            CommandAction::Help => {
                 self.chat.push_system(help_text());
                 Vec::new()
             }
-            SlashAction::Quit => {
+            CommandAction::Quit => {
                 self.should_quit = true;
                 Vec::new()
             }
-            SlashAction::Compact(instructions) => {
+            CommandAction::Compact(instructions) => {
                 // 压缩是一次 LLM 调用：按 mini-run 处理，NORMAL `q` 可取消
                 self.running = true;
                 self.notice = None;
                 vec![Effect::Compact(instructions)]
             }
-            SlashAction::Retry => {
+            CommandAction::Retry => {
                 // 与 Agent::retry 同一口径：聊天区尾部失败/未定稿的 assistant
                 // 条目随历史中的失败消息一并移除；是否实际重跑由 driver 回执
                 // 告知（agent 历史是唯一权威，这里不做预判定）
@@ -407,14 +407,14 @@ impl App {
                 self.notice = None;
                 vec![Effect::Retry]
             }
-            SlashAction::Resume => vec![Effect::ListSessions],
-            SlashAction::Models(None) => vec![Effect::ListModels],
-            SlashAction::Models(Some(id)) => vec![Effect::SwitchModel(id)],
-            SlashAction::Skill(None) => vec![Effect::ListSkills],
-            SlashAction::Skill(Some(invocation)) => vec![Effect::LoadSkill(invocation)],
-            SlashAction::Image(path) => vec![Effect::AttachImage(path)],
-            SlashAction::Copy => self.copy_latest(),
-            SlashAction::Thinking => {
+            CommandAction::Resume => vec![Effect::ListSessions],
+            CommandAction::Models(None) => vec![Effect::ListModels],
+            CommandAction::Models(Some(id)) => vec![Effect::SwitchModel(id)],
+            CommandAction::Skill(None) => vec![Effect::ListSkills],
+            CommandAction::Skill(Some(invocation)) => vec![Effect::LoadSkill(invocation)],
+            CommandAction::Image(path) => vec![Effect::AttachImage(path)],
+            CommandAction::Copy => self.copy_latest(),
+            CommandAction::Thinking => {
                 self.thinking_collapsed = !self.thinking_collapsed;
                 let state = if self.thinking_collapsed {
                     "已折叠"
@@ -425,7 +425,7 @@ impl App {
                     .push_system(format!("thinking 显示：{state}（thinking 命令切换）"));
                 Vec::new()
             }
-            SlashAction::Goal => {
+            CommandAction::Goal => {
                 self.goal_mode = !self.goal_mode;
                 let state = if self.goal_mode {
                     "已开启：react loop 停止时若 todo 未全部完成，将自动以 user 消息追问"
@@ -436,8 +436,8 @@ impl App {
                     .push_system(format!("goal 模式{state}（goal 命令切换）"));
                 Vec::new()
             }
-            SlashAction::New => vec![Effect::NewSession],
-            SlashAction::Tree => vec![Effect::ListTree],
+            CommandAction::New => vec![Effect::NewSession],
+            CommandAction::Tree => vec![Effect::ListTree],
         }
     }
 

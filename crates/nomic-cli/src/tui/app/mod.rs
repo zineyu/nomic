@@ -50,7 +50,7 @@ const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "�
 
 /// 一条内建命令的静态描述。
 #[derive(Debug)]
-pub(super) struct SlashCommand {
+pub(super) struct Command {
     pub(super) name: &'static str,
     pub(super) aliases: &'static [&'static str],
     pub(super) summary: &'static str,
@@ -61,80 +61,80 @@ pub(super) struct SlashCommand {
 /// 全部内建命令（命令栏补全候选与 `help` 输出的唯一来源）。
 /// 命令只在 COMMAND 模式（NORMAL `:` 打开的浮层命令栏）执行；
 /// 聊天输入框（INSERT）不触发命令，`/` 开头的输入按普通 prompt 发送。
-pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
-    SlashCommand {
+pub(super) const COMMANDS: &[Command] = &[
+    Command {
         name: "help",
         aliases: &[],
         summary: "显示可用命令",
         usage: "help",
     },
-    SlashCommand {
+    Command {
         name: "new",
         aliases: &[],
         summary: "清空上下文，开启新对话（新 session）",
         usage: "new",
     },
-    SlashCommand {
+    Command {
         name: "resume",
         aliases: &[],
         summary: "选择并恢复历史 session（切换上下文与落库目标）",
         usage: "resume",
     },
-    SlashCommand {
+    Command {
         name: "tree",
         aliases: &[],
         summary: "浏览会话树：选择非工具调用条目作为新分支起点（原分支保留）",
         usage: "tree",
     },
-    SlashCommand {
+    Command {
         name: "compact",
         aliases: &[],
         summary: "压缩上下文为摘要（可带聚焦指令：compact 专注某部分）",
         usage: "compact [聚焦指令]",
     },
-    SlashCommand {
+    Command {
         name: "retry",
         aliases: &[],
         summary: "重试最近一轮失败的响应（移除失败消息，以原 user 消息重新请求模型）",
         usage: "retry",
     },
-    SlashCommand {
+    Command {
         name: "models",
         aliases: &[],
         summary: "切换模型（跨 provider；推理模型在选择后继续选择思考级别）",
         usage: "models（选择器）或 models:<provider>/<模型id>",
     },
-    SlashCommand {
+    Command {
         name: "skill",
         aliases: &[],
         summary: "手动载入 skill 到当前对话（skill:<name>[ args]；无参列出可用 skill）",
         usage: "skill:<name>[ args]（skill 列出可用 skill）",
     },
-    SlashCommand {
+    Command {
         name: "image",
         aliases: &[],
         summary: "为下一条消息附加图片（可多次附加；png/jpeg/gif/webp）",
         usage: "image:<路径>（image <路径> 亦可）",
     },
-    SlashCommand {
+    Command {
         name: "copy",
         aliases: &[],
         summary: "复制最新一条消息到剪贴板（assistant 消息取正文，不含 thinking）",
         usage: "copy",
     },
-    SlashCommand {
+    Command {
         name: "thinking",
         aliases: &[],
         summary: "切换 thinking 内容折叠/展开显示（默认折叠）",
         usage: "thinking",
     },
-    SlashCommand {
+    Command {
         name: "goal",
         aliases: &[],
         summary: "开关 goal 模式（默认关闭）：开启后 react loop 停止时若 todo 未全部完成，自动以 user 消息追问",
         usage: "goal",
     },
-    SlashCommand {
+    Command {
         name: "quit",
         aliases: &["exit"],
         summary: "退出 TUI",
@@ -144,11 +144,11 @@ pub(super) const SLASH_COMMANDS: &[SlashCommand] = &[
 
 /// 命令解析结果。
 #[derive(Debug, PartialEq, Eq)]
-enum SlashParse {
+enum CommandParse {
     /// 输入仍以 `/` 开头：命令语法已无前缀（ADR-0020 修订），拒绝并提示
     SlashPrefixed,
     /// 已知命令
-    Known(SlashAction),
+    Known(CommandAction),
     /// 命令存在但参数形式非法（携带用法提示）
     InvalidUsage(&'static str),
     /// 未知命令名
@@ -165,7 +165,7 @@ pub(super) struct SkillInvocation {
 
 /// 已知命令的动作。
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum SlashAction {
+pub(super) enum CommandAction {
     Help,
     New,
     Resume,
@@ -190,7 +190,7 @@ pub(super) enum SlashAction {
     Goal,
 }
 
-impl SlashAction {
+impl CommandAction {
     /// 是否为本地命令：不触碰 agent/driver 状态（不发送 driver job），
     /// 运行中（含工具执行中）可安全执行，不被工具调用阻塞。
     ///
@@ -234,13 +234,13 @@ fn command_tail<'a>(rest: &'a str, name: &str) -> Option<CommandTail<'a>> {
 /// 解析一行命令输入。
 ///
 /// 命令语法无前缀（ADR-0020 修订）：`quit`、`skill:jujutsu`、`compact 指令`。
-/// 仍以 `/` 开头的输入返回 [`SlashParse::SlashPrefixed]`，由调用方提示
+/// 仍以 `/` 开头的输入返回 [`CommandParse::SlashPrefixed]`，由调用方提示
 /// 新语法。参数只支持 `name:arg` 冒号形式（如 `skill:jujutsu`）；
 /// `cmd extra` 视为参数形式非法（`compact`/`image`/`models` 特判除外）。
-fn parse_slash(input: &str) -> SlashParse {
+fn parse_command(input: &str) -> CommandParse {
     let rest = input.trim();
     if rest.starts_with('/') {
-        return SlashParse::SlashPrefixed;
+        return CommandParse::SlashPrefixed;
     }
     // `compact` 特判：参数是自由文本（可含空格），`compact 指令` 与
     // `compact:指令` 两种形式都接受
@@ -249,7 +249,7 @@ fn parse_slash(input: &str) -> SlashParse {
             CommandTail::Bare => None,
             CommandTail::Arg(text) => Some(text.trim()).filter(|text| !text.is_empty()),
         };
-        return SlashParse::Known(SlashAction::Compact(arg.map(str::to_string)));
+        return CommandParse::Known(CommandAction::Compact(arg.map(str::to_string)));
     }
     // `image` 特判：参数是文件路径（可含空格），`image 路径` 与
     // `image:路径` 两种形式都接受
@@ -259,22 +259,22 @@ fn parse_slash(input: &str) -> SlashParse {
             CommandTail::Arg(path) => path.trim(),
         };
         return if path.is_empty() {
-            SlashParse::InvalidUsage(image_usage())
+            CommandParse::InvalidUsage(image_usage())
         } else {
-            SlashParse::Known(SlashAction::Image(path.to_string()))
+            CommandParse::Known(CommandAction::Image(path.to_string()))
         };
     }
     // `models` 特判：参数是选择项（`<provider>/<模型id>`，不可含空格），
     // `models id` 与 `models:id` 两种形式都接受
     if let Some(tail) = command_tail(rest, "models") {
         let CommandTail::Arg(id) = tail else {
-            return SlashParse::Known(SlashAction::Models(None));
+            return CommandParse::Known(CommandAction::Models(None));
         };
         let id = id.trim();
         return if id.is_empty() || id.contains(char::is_whitespace) {
-            SlashParse::InvalidUsage(models_usage())
+            CommandParse::InvalidUsage(models_usage())
         } else {
-            SlashParse::Known(SlashAction::Models(Some(id.to_string())))
+            CommandParse::Known(CommandAction::Models(Some(id.to_string())))
         };
     }
     let (name, arg, junk) = if let Some((name, arg)) = rest.split_once(':') {
@@ -289,12 +289,12 @@ fn parse_slash(input: &str) -> SlashParse {
         let junk = parts.next().is_some();
         (name, None, junk)
     };
-    for command in SLASH_COMMANDS {
+    for command in COMMANDS {
         if command.name == name || command.aliases.contains(&name) {
             let action = match command.name {
                 "skill" => {
                     if junk {
-                        return SlashParse::InvalidUsage(command.usage);
+                        return CommandParse::InvalidUsage(command.usage);
                     }
                     // 名称后首个空白起为附带 args（自由文本，可含空格）
                     let invocation = arg.map(|arg| {
@@ -310,23 +310,23 @@ fn parse_slash(input: &str) -> SlashParse {
                             args,
                         }
                     });
-                    SlashAction::Skill(invocation)
+                    CommandAction::Skill(invocation)
                 }
-                "help" if !junk && arg.is_none() => SlashAction::Help,
-                "new" if !junk && arg.is_none() => SlashAction::New,
-                "resume" if !junk && arg.is_none() => SlashAction::Resume,
-                "tree" if !junk && arg.is_none() => SlashAction::Tree,
-                "retry" if !junk && arg.is_none() => SlashAction::Retry,
-                "copy" if !junk && arg.is_none() => SlashAction::Copy,
-                "thinking" if !junk && arg.is_none() => SlashAction::Thinking,
-                "goal" if !junk && arg.is_none() => SlashAction::Goal,
-                "quit" if !junk && arg.is_none() => SlashAction::Quit,
-                _ => return SlashParse::InvalidUsage(command.usage),
+                "help" if !junk && arg.is_none() => CommandAction::Help,
+                "new" if !junk && arg.is_none() => CommandAction::New,
+                "resume" if !junk && arg.is_none() => CommandAction::Resume,
+                "tree" if !junk && arg.is_none() => CommandAction::Tree,
+                "retry" if !junk && arg.is_none() => CommandAction::Retry,
+                "copy" if !junk && arg.is_none() => CommandAction::Copy,
+                "thinking" if !junk && arg.is_none() => CommandAction::Thinking,
+                "goal" if !junk && arg.is_none() => CommandAction::Goal,
+                "quit" if !junk && arg.is_none() => CommandAction::Quit,
+                _ => return CommandParse::InvalidUsage(command.usage),
             };
-            return SlashParse::Known(action);
+            return CommandParse::Known(action);
         }
     }
-    SlashParse::Unknown(name.to_string())
+    CommandParse::Unknown(name.to_string())
 }
 
 /// `help` 的输出文本。
@@ -334,7 +334,7 @@ fn help_text() -> String {
     use std::fmt::Write as _;
     // 命令只在 COMMAND 模式执行（ADR-0020）：NORMAL 下 `:` 打开命令栏
     let mut text = "可用命令（Esc 进 NORMAL 后按 : 打开命令栏，Tab 补全）：".to_string();
-    for command in SLASH_COMMANDS {
+    for command in COMMANDS {
         let aliases = if command.aliases.is_empty() {
             String::new()
         } else {
@@ -532,14 +532,14 @@ pub(super) struct App {
 }
 
 fn image_usage() -> &'static str {
-    SLASH_COMMANDS
+    COMMANDS
         .iter()
         .find(|command| command.name == "image")
         .map_or("image:<路径>", |command| command.usage)
 }
 
 fn models_usage() -> &'static str {
-    SLASH_COMMANDS
+    COMMANDS
         .iter()
         .find(|command| command.name == "models")
         .map_or("models:<provider>/<模型id>", |command| command.usage)

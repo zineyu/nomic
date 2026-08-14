@@ -113,24 +113,24 @@ fn picker_home_end_and_half_page() {
 #[test]
 fn parse_models_forms() {
     assert_eq!(
-        parse_slash("models"),
-        SlashParse::Known(SlashAction::Models(None))
+        parse_command("models"),
+        CommandParse::Known(CommandAction::Models(None))
     );
     assert_eq!(
-        parse_slash("models:gpt-5.2"),
-        SlashParse::Known(SlashAction::Models(Some("gpt-5.2".to_string())))
+        parse_command("models:gpt-5.2"),
+        CommandParse::Known(CommandAction::Models(Some("gpt-5.2".to_string())))
     );
     assert_eq!(
-        parse_slash("models gpt-5.2"),
-        SlashParse::Known(SlashAction::Models(Some("gpt-5.2".to_string())))
+        parse_command("models gpt-5.2"),
+        CommandParse::Known(CommandAction::Models(Some("gpt-5.2".to_string())))
     );
     assert!(matches!(
-        parse_slash("models a b"),
-        SlashParse::InvalidUsage(_)
+        parse_command("models a b"),
+        CommandParse::InvalidUsage(_)
     ));
     assert_eq!(
-        parse_slash("modelsx"),
-        SlashParse::Unknown("modelsx".to_string())
+        parse_command("modelsx"),
+        CommandParse::Unknown("modelsx".to_string())
     );
 }
 
@@ -203,7 +203,7 @@ fn model_picker_enter_returns_switch_effect() {
 
 /// `models` 无参 → ListModels 效果；切换成功后状态栏模型信息更新。
 #[test]
-fn models_slash_effects_and_set_model_updates_status() {
+fn models_command_effects_and_set_model_updates_status() {
     let mut app = app();
     open_command(&mut app, "models");
     let effects = app.press(Key::Enter);
@@ -219,7 +219,7 @@ fn models_slash_effects_and_set_model_updates_status() {
 }
 
 #[test]
-fn unknown_and_invalid_slash_warn_via_notice() {
+fn unknown_and_invalid_command_warn_via_notice() {
     let mut unknown = app();
     open_command(&mut unknown, "foobar");
     assert!(unknown.press(Key::Enter).is_empty());
@@ -257,21 +257,27 @@ fn restore_conversation_replaces_items_and_session() {
 /// `tree` 解析：无参命令；带参数报用法错误。
 #[test]
 fn parse_tree_forms() {
-    assert_eq!(parse_slash("tree"), SlashParse::Known(SlashAction::Tree));
-    assert!(matches!(parse_slash("tree x"), SlashParse::InvalidUsage(_)));
+    assert_eq!(
+        parse_command("tree"),
+        CommandParse::Known(CommandAction::Tree)
+    );
     assert!(matches!(
-        parse_slash("tree:abc"),
-        SlashParse::InvalidUsage(_)
+        parse_command("tree x"),
+        CommandParse::InvalidUsage(_)
+    ));
+    assert!(matches!(
+        parse_command("tree:abc"),
+        CommandParse::InvalidUsage(_)
     ));
     assert_eq!(
-        parse_slash("treex"),
-        SlashParse::Unknown("treex".to_string())
+        parse_command("treex"),
+        CommandParse::Unknown("treex".to_string())
     );
 }
 
 /// `tree` 提交 → ListTree 效果。
 #[test]
-fn tree_slash_produces_list_tree_effect() {
+fn tree_command_produces_list_tree_effect() {
     let mut app = app();
     open_command(&mut app, "tree");
     let effects = app.press(Key::Enter);

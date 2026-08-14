@@ -82,9 +82,9 @@ fn queue_mode_unified_queue_editing() {
     assert_eq!(app.queue.len(), 0);
 }
 
-/// 运行中（含工具执行中）：本地 slash 命令照常执行，不被工具调用阻塞。
+/// 运行中（含工具执行中）：本地命令照常执行，不被工具调用阻塞。
 #[test]
-fn enter_while_running_allows_local_slash_commands() {
+fn enter_while_running_allows_local_commands() {
     let mut app = app();
     app.handle_event(&AgentEvent::AgentStart);
 
@@ -177,7 +177,7 @@ fn enter_while_running_accepts_completion_before_dispatch() {
 }
 
 #[test]
-fn slash_new_returns_effect_and_start_new_conversation_resets() {
+fn command_new_returns_effect_and_start_new_conversation_resets() {
     let mut app = app();
     app.chat.push_system("旧内容");
     open_command(&mut app, "new");
@@ -631,7 +631,7 @@ fn normal_colon_opens_command_palette() {
 /// ADR-0020：聊天输入框不再触发命令——`/` 开头的草稿按普通 prompt
 /// 发送；运行中同样排队而非执行命令。
 #[test]
-fn insert_no_longer_triggers_slash_commands() {
+fn insert_no_longer_triggers_commands() {
     let mut app = app();
     app.paste_text("/help");
     let effects = app.press(Key::Enter);

@@ -9,13 +9,13 @@ use nomic_prompts::PromptTemplate;
 use nomic_skills::SkillScope;
 use unicode_width::UnicodeWidthStr;
 
-use super::{SLASH_COMMANDS, SlashCommand, line_count_of};
+use super::{COMMANDS, Command, line_count_of};
 use crate::tui::mention;
 
 /// 补全候选：内建命令、prompt template 或 `skill:` 后的 skill 名。
 #[derive(Debug)]
 pub(in crate::tui) enum CompletionCandidate {
-    Command(&'static SlashCommand),
+    Command(&'static Command),
     /// prompt template（`name` 调用展开）
     Template(PromptTemplate),
     Skill(SkillEntry),
@@ -458,7 +458,7 @@ impl Input {
     /// 内建命令与 prompt template 候选（按名称/别名前缀匹配，按名称排序；
     /// 同名时内建命令在前）。
     fn command_candidates(&self, fragment: &str) -> Option<Completion> {
-        let mut candidates: Vec<CompletionCandidate> = SLASH_COMMANDS
+        let mut candidates: Vec<CompletionCandidate> = COMMANDS
             .iter()
             .filter(|command| {
                 command.name.starts_with(fragment)

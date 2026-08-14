@@ -1,9 +1,9 @@
 //! App 的第一组方法：构造/访问器/事件处理/模式路由与 INSERT 按键（由 app/mod.rs 的 `impl App` 拆分而来）。
 
 use super::{
-    AgentEvent, App, Chat, Effect, HALF_PAGE_SCROLL, Input, Key, Message, Mode, PAGE_SCROLL,
-    PromptsError, Queue, SlashParse, ToolItem, ToolStatus, assistant_error, brief_args,
-    estimate_context_tokens, parse_slash, user_text,
+    AgentEvent, App, Chat, CommandParse, Effect, HALF_PAGE_SCROLL, Input, Key, Message, Mode,
+    PAGE_SCROLL, PromptsError, Queue, ToolItem, ToolStatus, assistant_error, brief_args,
+    estimate_context_tokens, parse_command, user_text,
 };
 
 impl App {
@@ -420,14 +420,14 @@ impl App {
     /// 模板展开的 prompt 排入统一消息队列；会话命令（经 driver 修改
     /// agent 上下文）仍须等本轮结束，拒绝并保留输入。
     pub fn dispatch_command(&mut self, text: &str) -> Option<Vec<Effect>> {
-        match parse_slash(text) {
-            SlashParse::SlashPrefixed => {
+        match parse_command(text) {
+            CommandParse::SlashPrefixed => {
                 // 命令语法已无前缀（ADR-0020 修订）：明确提示而非报未知命令
                 self.notice =
                     Some("命令不再需要 / 前缀：直接输入命令名（help 列出全部）".to_string());
                 None
             }
-            SlashParse::Known(action) => {
+            CommandParse::Known(action) => {
                 if self.running && !action.is_local() {
                     self.notice = Some(
                         "运行中：会话命令（compact、retry、models 等）须等本轮结束".to_string(),
@@ -435,13 +435,13 @@ impl App {
                     return None;
                 }
                 self.notice = None;
-                Some(self.execute_slash(action))
+                Some(self.execute_command(action))
             }
-            SlashParse::InvalidUsage(usage) => {
+            CommandParse::InvalidUsage(usage) => {
                 self.notice = Some(format!("参数形式不对，用法：{usage}"));
                 None
             }
-            SlashParse::Unknown(name) => {
+            CommandParse::Unknown(name) => {
                 // 模板调用沿用 nomic-prompts 的 `/name` 调用语法（print 模式
                 // 同一实现）；命令栏语法已无前缀，这里补回再展开
                 match nomic_prompts::expand_invocation(

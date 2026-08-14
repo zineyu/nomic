@@ -315,7 +315,7 @@ fn command_completion_filters_by_prefix_and_tab_cycles() {
     // 空片段即全量候选（进入命令栏即列出全部命令）
     app.command.refresh_completion();
     let completion = app.command.completion().expect("空片段即全部候选");
-    assert_eq!(completion.candidates.len(), SLASH_COMMANDS.len());
+    assert_eq!(completion.candidates.len(), COMMANDS.len());
 
     app.command.insert_char('n');
     let completion = app.command.completion().expect("n 匹配 new");
@@ -383,43 +383,67 @@ fn picker_clamps_selection_and_take_closes() {
 }
 
 #[test]
-fn parse_slash_dispatches_known_unknown_and_slash_prefixed() {
+fn parse_command_dispatches_known_unknown_and_slash_prefixed() {
     // 仍以 `/` 开头：命令语法已无前缀（ADR-0020 修订），拒绝并提示
-    assert_eq!(parse_slash("/help"), SlashParse::SlashPrefixed);
-    assert_eq!(parse_slash("/"), SlashParse::SlashPrefixed);
-    assert_eq!(parse_slash("help"), SlashParse::Known(SlashAction::Help));
-    assert_eq!(parse_slash("new"), SlashParse::Known(SlashAction::New));
+    assert_eq!(parse_command("/help"), CommandParse::SlashPrefixed);
+    assert_eq!(parse_command("/"), CommandParse::SlashPrefixed);
     assert_eq!(
-        parse_slash("resume"),
-        SlashParse::Known(SlashAction::Resume)
+        parse_command("help"),
+        CommandParse::Known(CommandAction::Help)
     );
-    assert_eq!(parse_slash("quit"), SlashParse::Known(SlashAction::Quit));
-    assert_eq!(parse_slash("exit"), SlashParse::Known(SlashAction::Quit));
-    assert_eq!(parse_slash("copy"), SlashParse::Known(SlashAction::Copy));
     assert_eq!(
-        parse_slash("thinking"),
-        SlashParse::Known(SlashAction::Thinking)
+        parse_command("new"),
+        CommandParse::Known(CommandAction::New)
     );
-    assert_eq!(parse_slash("goal"), SlashParse::Known(SlashAction::Goal));
-    assert_eq!(parse_slash("retry"), SlashParse::Known(SlashAction::Retry));
     assert_eq!(
-        parse_slash("foobar"),
-        SlashParse::Unknown("foobar".to_string())
+        parse_command("resume"),
+        CommandParse::Known(CommandAction::Resume)
+    );
+    assert_eq!(
+        parse_command("quit"),
+        CommandParse::Known(CommandAction::Quit)
+    );
+    assert_eq!(
+        parse_command("exit"),
+        CommandParse::Known(CommandAction::Quit)
+    );
+    assert_eq!(
+        parse_command("copy"),
+        CommandParse::Known(CommandAction::Copy)
+    );
+    assert_eq!(
+        parse_command("thinking"),
+        CommandParse::Known(CommandAction::Thinking)
+    );
+    assert_eq!(
+        parse_command("goal"),
+        CommandParse::Known(CommandAction::Goal)
+    );
+    assert_eq!(
+        parse_command("retry"),
+        CommandParse::Known(CommandAction::Retry)
+    );
+    assert_eq!(
+        parse_command("foobar"),
+        CommandParse::Unknown("foobar".to_string())
     );
     // 普通文本同样是未知命令（命令栏只承载命令；模板调用由分发层展开）
     assert_eq!(
-        parse_slash("hello"),
-        SlashParse::Unknown("hello".to_string())
+        parse_command("hello"),
+        CommandParse::Unknown("hello".to_string())
     );
     // 首尾空白容错
-    assert_eq!(parse_slash("  new  "), SlashParse::Known(SlashAction::New));
+    assert_eq!(
+        parse_command("  new  "),
+        CommandParse::Known(CommandAction::New)
+    );
 }
 
 #[test]
 fn copy_takes_latest_message_text() {
     let mut app = app();
     // 空聊天区：无可复制内容，就地提示
-    assert!(app.execute_slash(SlashAction::Copy).is_empty());
+    assert!(app.execute_command(CommandAction::Copy).is_empty());
     assert_eq!(app.notice.as_deref(), Some("没有可复制的消息"));
 
     app.chat
@@ -435,7 +459,7 @@ fn copy_takes_latest_message_text() {
         error: None,
     }));
     // thinking 不复制，多个正文块以空行连接
-    let [Effect::CopyText(text)] = &app.execute_slash(SlashAction::Copy)[..] else {
+    let [Effect::CopyText(text)] = &app.execute_command(CommandAction::Copy)[..] else {
         panic!("expected CopyText effect");
     };
     assert_eq!(text, "第一段正文\n\n第二段正文");
@@ -445,7 +469,7 @@ fn copy_takes_latest_message_text() {
         .items
         .push(ChatItem::Assistant(AssistantItem::default()));
     app.chat.items.push(ChatItem::User("最新问题".to_string()));
-    let [Effect::CopyText(text)] = &app.execute_slash(SlashAction::Copy)[..] else {
+    let [Effect::CopyText(text)] = &app.execute_command(CommandAction::Copy)[..] else {
         panic!("expected CopyText effect");
     };
     assert_eq!(text, "最新问题");
@@ -456,9 +480,9 @@ fn thinking_toggles_collapse_state() {
     let mut app = app();
     // 默认折叠，本地命令不产生外部效果
     assert!(app.thinking_collapsed());
-    assert!(app.execute_slash(SlashAction::Thinking).is_empty());
+    assert!(app.execute_command(CommandAction::Thinking).is_empty());
     assert!(!app.thinking_collapsed());
-    assert!(app.execute_slash(SlashAction::Thinking).is_empty());
+    assert!(app.execute_command(CommandAction::Thinking).is_empty());
     assert!(app.thinking_collapsed());
     // 每次切换在聊天区留下系统提示
     let systems = app
@@ -469,7 +493,7 @@ fn thinking_toggles_collapse_state() {
         .count();
     assert_eq!(systems, 2);
     // 本地命令：运行中也可执行
-    assert!(SlashAction::Thinking.is_local());
+    assert!(CommandAction::Thinking.is_local());
 }
 
 #[test]
@@ -477,9 +501,9 @@ fn goal_toggles_mode_state() {
     let mut app = app();
     // 默认关闭，本地命令不产生外部效果
     assert!(!app.goal_mode());
-    assert!(app.execute_slash(SlashAction::Goal).is_empty());
+    assert!(app.execute_command(CommandAction::Goal).is_empty());
     assert!(app.goal_mode());
-    assert!(app.execute_slash(SlashAction::Goal).is_empty());
+    assert!(app.execute_command(CommandAction::Goal).is_empty());
     assert!(!app.goal_mode());
     // 每次切换在聊天区留下系统提示
     let systems = app
@@ -490,7 +514,7 @@ fn goal_toggles_mode_state() {
         .count();
     assert_eq!(systems, 2);
     // 本地命令：运行中也可执行
-    assert!(SlashAction::Goal.is_local());
+    assert!(CommandAction::Goal.is_local());
 }
 
 #[test]
@@ -507,7 +531,7 @@ fn retry_pops_trailing_failed_assistant_and_requests_retry() {
         context_tokens: 0,
     });
 
-    let effects = app.execute_slash(SlashAction::Retry);
+    let effects = app.execute_command(CommandAction::Retry);
 
     // 失败条目随历史中的失败消息一并移除；提交重试请求并进入运行态
     assert!(matches!(&effects[..], [Effect::Retry]));
@@ -527,7 +551,7 @@ fn retry_pops_unfinished_assistant_item() {
         None,
     )));
 
-    let effects = app.execute_slash(SlashAction::Retry);
+    let effects = app.execute_command(CommandAction::Retry);
 
     assert!(matches!(&effects[..], [Effect::Retry]));
     assert_eq!(app.chat.items.len(), 1);
@@ -549,104 +573,116 @@ fn retry_after_success_keeps_items_and_delegates() {
         context_tokens: 0,
     });
 
-    let effects = app.execute_slash(SlashAction::Retry);
+    let effects = app.execute_command(CommandAction::Retry);
 
     assert!(matches!(&effects[..], [Effect::Retry]));
     assert_eq!(app.chat.items.len(), 2);
 }
 
 #[test]
-fn parse_slash_skill_uses_colon_argument() {
+fn parse_command_skill_uses_colon_argument() {
     let skill = |name: &str, args: Option<&str>| {
-        SlashParse::Known(SlashAction::Skill(Some(SkillInvocation {
+        CommandParse::Known(CommandAction::Skill(Some(SkillInvocation {
             name: name.to_string(),
             args: args.map(str::to_string),
         })))
     };
     assert_eq!(
-        parse_slash("skill"),
-        SlashParse::Known(SlashAction::Skill(None))
+        parse_command("skill"),
+        CommandParse::Known(CommandAction::Skill(None))
     );
-    assert_eq!(parse_slash("skill:jujutsu"), skill("jujutsu", None));
+    assert_eq!(parse_command("skill:jujutsu"), skill("jujutsu", None));
     // 空参数等价于无参（列出清单）
     assert_eq!(
-        parse_slash("skill:"),
-        SlashParse::Known(SlashAction::Skill(None))
+        parse_command("skill:"),
+        CommandParse::Known(CommandAction::Skill(None))
     );
     // 名称后首个空白起为附带 args（可为含空格的自由文本）
     assert_eq!(
-        parse_slash("skill:review 只看 unsafe 块"),
+        parse_command("skill:review 只看 unsafe 块"),
         skill("review", Some("只看 unsafe 块"))
     );
     // `skill name` 空白形式仍属于非法用法（避免与 prompt template 调用混淆）
     assert!(matches!(
-        parse_slash("skill jujutsu"),
-        SlashParse::InvalidUsage(_)
+        parse_command("skill jujutsu"),
+        CommandParse::InvalidUsage(_)
     ));
     // 无参命令带参数同样报用法错误
-    assert!(matches!(parse_slash("new x"), SlashParse::InvalidUsage(_)));
-    assert!(matches!(parse_slash("goal x"), SlashParse::InvalidUsage(_)));
     assert!(matches!(
-        parse_slash("resume:abc"),
-        SlashParse::InvalidUsage(_)
+        parse_command("new x"),
+        CommandParse::InvalidUsage(_)
     ));
     assert!(matches!(
-        parse_slash("quit:now"),
-        SlashParse::InvalidUsage(_)
+        parse_command("goal x"),
+        CommandParse::InvalidUsage(_)
+    ));
+    assert!(matches!(
+        parse_command("resume:abc"),
+        CommandParse::InvalidUsage(_)
+    ));
+    assert!(matches!(
+        parse_command("quit:now"),
+        CommandParse::InvalidUsage(_)
     ));
     // 未知命令带冒号参数仍报未知
     assert_eq!(
-        parse_slash("foo:bar"),
-        SlashParse::Unknown("foo".to_string())
+        parse_command("foo:bar"),
+        CommandParse::Unknown("foo".to_string())
     );
 }
 
 #[test]
-fn parse_slash_compact_takes_free_text_instructions() {
+fn parse_command_compact_takes_free_text_instructions() {
     assert_eq!(
-        parse_slash("compact"),
-        SlashParse::Known(SlashAction::Compact(None))
+        parse_command("compact"),
+        CommandParse::Known(CommandAction::Compact(None))
     );
     // 空白分隔的自由文本（可含空格）
     assert_eq!(
-        parse_slash("compact 专注 测试 部分"),
-        SlashParse::Known(SlashAction::Compact(Some("专注 测试 部分".to_string())))
+        parse_command("compact 专注 测试 部分"),
+        CommandParse::Known(CommandAction::Compact(Some("专注 测试 部分".to_string())))
     );
     // 冒号形式同样接受
     assert_eq!(
-        parse_slash("compact:focus on tests"),
-        SlashParse::Known(SlashAction::Compact(Some("focus on tests".to_string())))
+        parse_command("compact:focus on tests"),
+        CommandParse::Known(CommandAction::Compact(Some("focus on tests".to_string())))
     );
     // 空参数等价于无参
     assert_eq!(
-        parse_slash("compact "),
-        SlashParse::Known(SlashAction::Compact(None))
+        parse_command("compact "),
+        CommandParse::Known(CommandAction::Compact(None))
     );
     // 前缀不等于命令名：compactx 报未知
     assert_eq!(
-        parse_slash("compactx"),
-        SlashParse::Unknown("compactx".to_string())
+        parse_command("compactx"),
+        CommandParse::Unknown("compactx".to_string())
     );
 }
 
 #[test]
-fn parse_slash_image_takes_path_argument() {
+fn parse_command_image_takes_path_argument() {
     assert_eq!(
-        parse_slash("image:pic.png"),
-        SlashParse::Known(SlashAction::Image("pic.png".to_string()))
+        parse_command("image:pic.png"),
+        CommandParse::Known(CommandAction::Image("pic.png".to_string()))
     );
     // 空白分隔形式同样接受（路径可含空格）
     assert_eq!(
-        parse_slash("image my pics/a.png"),
-        SlashParse::Known(SlashAction::Image("my pics/a.png".to_string()))
+        parse_command("image my pics/a.png"),
+        CommandParse::Known(CommandAction::Image("my pics/a.png".to_string()))
     );
     // 无参数报用法
-    assert!(matches!(parse_slash("image"), SlashParse::InvalidUsage(_)));
-    assert!(matches!(parse_slash("image "), SlashParse::InvalidUsage(_)));
+    assert!(matches!(
+        parse_command("image"),
+        CommandParse::InvalidUsage(_)
+    ));
+    assert!(matches!(
+        parse_command("image "),
+        CommandParse::InvalidUsage(_)
+    ));
     // 前缀不等于命令名：imagex 报未知
     assert_eq!(
-        parse_slash("imagex"),
-        SlashParse::Unknown("imagex".to_string())
+        parse_command("imagex"),
+        CommandParse::Unknown("imagex".to_string())
     );
 }
 

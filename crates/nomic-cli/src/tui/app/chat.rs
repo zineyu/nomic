@@ -20,7 +20,7 @@ pub(in crate::tui) enum ChatItem {
     Assistant(AssistantItem),
     /// 一次工具执行
     Tool(ToolItem),
-    /// 本地系统提示（slash 命令输出等，不进上下文）
+    /// 本地系统提示（命令输出等，不进上下文）
     System(String),
 }
 

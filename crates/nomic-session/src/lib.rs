@@ -223,44 +223,16 @@ impl SessionStore {
         parent_id: Option<&str>,
         message: &Message,
     ) -> Result<String, SessionError> {
-        let mut tx = self.pool.begin().await?;
-
-        if !session_exists(&mut tx, session_id).await? {
-            return Err(SessionError::SessionNotFound(session_id.to_string()));
-        }
-
-        let parent = resolve_parent(&mut tx, session_id, parent_id).await?;
-
-        let id = uuid::Uuid::now_v7().to_string();
         let payload = serde_json::to_string(message)?;
-        let timestamp = to_i64(message_timestamp(message));
-        sqlx::query(
-            "INSERT INTO entries (id, session_id, parent_id, role, timestamp, payload)
-             VALUES (?, ?, ?, ?, ?, ?)",
+        self.append_entry(
+            session_id,
+            parent_id,
+            "message",
+            message_role(message),
+            message_timestamp(message),
+            payload,
         )
-        .bind(&id)
-        .bind(session_id)
-        .bind(parent)
-        .bind(message_role(message))
-        .bind(timestamp)
-        .bind(payload)
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            "UPDATE sessions SET
-                 first_message_at = COALESCE(first_message_at, ?),
-                 last_message_at = ?
-             WHERE id = ?",
-        )
-        .bind(timestamp)
-        .bind(timestamp)
-        .bind(session_id)
-        .execute(&mut *tx)
-        .await?;
-
-        tx.commit().await?;
-        Ok(id)
+        .await
     }
 
     /// 追加一条压缩条目，返回新 entry id。
@@ -273,6 +245,29 @@ impl SessionStore {
         parent_id: Option<&str>,
         record: &CompactionRecord,
     ) -> Result<String, SessionError> {
+        let payload = serde_json::to_string(record)?;
+        self.append_entry(
+            session_id,
+            parent_id,
+            "compaction",
+            "compaction",
+            now_millis(),
+            payload,
+        )
+        .await
+    }
+
+    /// 追加一条 entry 的实现内核（消息与压缩条目共用）：同事务内校验
+    /// session 存在、解析父指针、插入条目并维护 `sessions` 的首/末消息时间。
+    async fn append_entry(
+        &self,
+        session_id: &str,
+        parent_id: Option<&str>,
+        kind: &str,
+        role: &str,
+        timestamp: u64,
+        payload: String,
+    ) -> Result<String, SessionError> {
         let mut tx = self.pool.begin().await?;
 
         if !session_exists(&mut tx, session_id).await? {
@@ -282,17 +277,18 @@ impl SessionStore {
         let parent = resolve_parent(&mut tx, session_id, parent_id).await?;
 
         let id = uuid::Uuid::now_v7().to_string();
-        let payload = serde_json::to_string(record)?;
-        let timestamp = to_i64(now_millis());
+        let timestamp = to_i64(timestamp);
         sqlx::query(
             "INSERT INTO entries (id, session_id, parent_id, role, timestamp, payload, kind)
-             VALUES (?, ?, ?, 'compaction', ?, ?, 'compaction')",
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(session_id)
         .bind(parent)
+        .bind(role)
         .bind(timestamp)
         .bind(payload)
+        .bind(kind)
         .execute(&mut *tx)
         .await?;
 

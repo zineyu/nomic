@@ -14,10 +14,13 @@ fn compaction_events_render_as_system_lines() {
     app.handle_event(&AgentEvent::CompactionEnd {
         summary: "## Goal\nwork".to_string(),
         tokens_before: 150_000,
+        context_tokens: 42_000,
         kept_count: 7,
         usage: Usage::default(),
     });
     assert!(app.notice.is_none());
+    // 压缩后的权威上下文估算随事件携带，App 只抄不算
+    assert_eq!(app.context_tokens(), 42_000);
     let system_lines: Vec<&str> = app
         .chat
         .items

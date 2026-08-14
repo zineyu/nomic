@@ -96,11 +96,10 @@ fn accumulates_streaming_text_and_thinking() {
         index: 1,
         delta: "你好".to_string(),
     }));
-    app.handle_event(&AgentEvent::MessageEnd(assistant_message(
-        Vec::new(),
-        StopReason::Stop,
-        None,
-    )));
+    app.handle_event(&AgentEvent::MessageEnd {
+        message: assistant_message(Vec::new(), StopReason::Stop, None),
+        context_tokens: 0,
+    });
 
     let Some(ChatItem::Assistant(item)) = app.chat.items.first() else {
         panic!("expected assistant item");
@@ -123,44 +122,44 @@ fn records_assistant_error_on_message_end() {
         StopReason::Stop,
         None,
     )));
-    app.handle_event(&AgentEvent::MessageEnd(assistant_message(
-        Vec::new(),
-        StopReason::Error,
-        Some("rate limited".to_string()),
-    )));
+    app.handle_event(&AgentEvent::MessageEnd {
+        message: assistant_message(
+            Vec::new(),
+            StopReason::Error,
+            Some("rate limited".to_string()),
+        ),
+        context_tokens: 0,
+    });
     let Some(ChatItem::Assistant(item)) = app.chat.items.first() else {
         panic!("expected assistant item");
     };
     assert_eq!(item.error.as_deref(), Some("rate limited"));
 }
 
-/// 有效 assistant 响应的 usage 即上下文总量锚点；错误/中断响应不作锚点。
+/// MessageEnd / AgentEnd 携带 core 的权威上下文估算，App 只抄不算
+///（含错误响应：锚点规则只在 core 定义，状态层不再自行判别）。
 #[test]
-fn message_end_usage_updates_context_tokens() {
+fn message_end_and_agent_end_copy_context_tokens() {
     let mut app = app();
     assert_eq!(app.context_tokens(), 0);
 
-    let mut message = assistant_message(Vec::new(), StopReason::Stop, None);
-    let Message::Assistant(assistant) = message.as_mut() else {
-        unreachable!()
-    };
-    assistant.usage = Usage {
-        total_tokens: 12_345,
-        ..Usage::default()
-    };
-    app.handle_event(&AgentEvent::MessageEnd(message));
+    app.handle_event(&AgentEvent::MessageEnd {
+        message: assistant_message(Vec::new(), StopReason::Stop, None),
+        context_tokens: 12_345,
+    });
     assert_eq!(app.context_tokens(), 12_345);
 
-    let mut failed = assistant_message(Vec::new(), StopReason::Error, Some("boom".to_string()));
-    let Message::Assistant(assistant) = failed.as_mut() else {
-        unreachable!()
-    };
-    assistant.usage = Usage {
-        total_tokens: 99_000,
-        ..Usage::default()
-    };
-    app.handle_event(&AgentEvent::MessageEnd(failed));
-    assert_eq!(app.context_tokens(), 12_345);
+    app.handle_event(&AgentEvent::MessageEnd {
+        message: assistant_message(Vec::new(), StopReason::Error, Some("boom".to_string())),
+        context_tokens: 12_400,
+    });
+    assert_eq!(app.context_tokens(), 12_400);
+
+    app.handle_event(&AgentEvent::AgentEnd {
+        messages: Vec::new(),
+        context_tokens: 56_000,
+    });
+    assert_eq!(app.context_tokens(), 56_000);
 }
 
 /// 恢复历史（启动 / `/resume`）时按估算口径初始化上下文用量。
@@ -496,11 +495,10 @@ fn retry_pops_trailing_failed_assistant_and_requests_retry() {
         StopReason::Error,
         Some("boom".to_string()),
     )));
-    app.handle_event(&AgentEvent::MessageEnd(assistant_message(
-        Vec::new(),
-        StopReason::Error,
-        Some("boom".to_string()),
-    )));
+    app.handle_event(&AgentEvent::MessageEnd {
+        message: assistant_message(Vec::new(), StopReason::Error, Some("boom".to_string())),
+        context_tokens: 0,
+    });
 
     let effects = app.execute_slash(SlashAction::Retry);
 
@@ -539,11 +537,10 @@ fn retry_after_success_keeps_items_and_delegates() {
         StopReason::Stop,
         None,
     )));
-    app.handle_event(&AgentEvent::MessageEnd(assistant_message(
-        vec![text_block("ok")],
-        StopReason::Stop,
-        None,
-    )));
+    app.handle_event(&AgentEvent::MessageEnd {
+        message: assistant_message(vec![text_block("ok")], StopReason::Stop, None),
+        context_tokens: 0,
+    });
 
     let effects = app.execute_slash(SlashAction::Retry);
 

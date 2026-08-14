@@ -224,6 +224,7 @@ async fn auto_compaction_triggers_between_turns_when_over_threshold() {
         summary,
         kept_count,
         tokens_before,
+        context_tokens,
         ..
     }) = events.get(compaction_end)
     else {
@@ -233,6 +234,9 @@ async fn auto_compaction_triggers_between_turns_when_over_threshold() {
     assert_eq!(*kept_count, 2);
     // tokens_before = 锚点 2000 + 尾部新 user（"new question" 12 chars → 3）
     assert_eq!(*tokens_before, 2003);
+    // 压缩后权威估算随事件携带：保留的 assistant 仍是锚点（摘要在其之前、
+    // 不计入），尾部同样是新 user → 与 tokens_before 同值
+    assert_eq!(*context_tokens, 2003);
 
     // 摘要请求与 agent 事件流隔离：无摘要的 MessageStart/MessageUpdate 混入
     assert_eq!(

@@ -142,7 +142,7 @@ async fn drain_events(
                     "\x1b[2m✂ 上下文已压缩：约 {tokens_before} tokens → 摘要 + {kept_count} 条近期消息\x1b[0m"
                 );
             }
-            AgentEvent::MessageEnd(message) => {
+            AgentEvent::MessageEnd { message, .. } => {
                 if let Message::Assistant(assistant) = *message {
                     if matches!(
                         assistant.stop_reason,

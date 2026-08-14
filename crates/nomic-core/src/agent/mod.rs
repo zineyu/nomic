@@ -203,7 +203,7 @@ impl Agent {
         });
         self.emit(AgentEvent::MessageStart(Box::new(user.clone())));
         self.messages.push(user.clone());
-        self.emit(AgentEvent::MessageEnd(Box::new(user)));
+        self.emit_message_end(user);
     }
 
     /// 手动压缩上下文（`/compact [instructions]` 语义）。
@@ -253,6 +253,7 @@ impl Agent {
         self.emit(AgentEvent::CompactionEnd {
             summary: compaction.summary.clone(),
             tokens_before: compaction.tokens_before,
+            context_tokens: estimate_context_tokens(&self.messages),
             kept_count: compaction.kept_count,
             usage: compaction.usage,
         });
@@ -295,7 +296,7 @@ impl Agent {
         self.emit(AgentEvent::MessageStart(Box::new(user.clone())));
         self.messages.push(user.clone());
         new_messages.push(user.clone());
-        self.emit(AgentEvent::MessageEnd(Box::new(user)));
+        self.emit_message_end(user);
 
         if let Err(error) = self.run_loop(&mut new_messages, cancel).await {
             tracing::error!(%error, "agent run failed");
@@ -304,6 +305,7 @@ impl Agent {
 
         self.emit(AgentEvent::AgentEnd {
             messages: new_messages.clone(),
+            context_tokens: estimate_context_tokens(&self.messages),
         });
         tracing::info!(new_messages = new_messages.len(), "agent run finished");
         Ok(new_messages)
@@ -344,6 +346,7 @@ impl Agent {
         }
         self.emit(AgentEvent::AgentEnd {
             messages: new_messages.clone(),
+            context_tokens: estimate_context_tokens(&self.messages),
         });
         tracing::info!(new_messages = new_messages.len(), "agent retry finished");
         Ok(Some(new_messages))
@@ -370,9 +373,7 @@ impl Agent {
             let stop_reason = message.stop_reason;
             self.messages.push(Message::Assistant(message.clone()));
             new_messages.push(Message::Assistant(message.clone()));
-            self.emit(AgentEvent::MessageEnd(Box::new(Message::Assistant(
-                message.clone(),
-            ))));
+            self.emit_message_end(Message::Assistant(message.clone()));
 
             if matches!(stop_reason, StopReason::Error | StopReason::Aborted) {
                 tracing::warn!(
@@ -466,7 +467,7 @@ impl Agent {
         self.emit(AgentEvent::MessageStart(Box::new(user.clone())));
         self.messages.push(user.clone());
         new_messages.push(user.clone());
-        self.emit(AgentEvent::MessageEnd(Box::new(user)));
+        self.emit_message_end(user);
     }
 
     /// 将一批已决工具调用落为 toolResult 消息（历史 + 本次新增），
@@ -501,9 +502,7 @@ impl Agent {
             tool_results.push(result_message);
         }
         for result in &tool_results {
-            self.emit(AgentEvent::MessageEnd(Box::new(Message::ToolResult(
-                result.clone(),
-            ))));
+            self.emit_message_end(Message::ToolResult(result.clone()));
         }
         tool_results
     }
@@ -721,5 +720,15 @@ impl Agent {
     fn emit(&self, event: AgentEvent) {
         // 无消费者时静默丢弃（print 模式总会消费；嵌入式可自行选择）
         let _ = self.event_tx.send(event);
+    }
+
+    /// 发出 `MessageEnd`：调用方保证消息已落史，事件附带落史后的权威
+    /// 上下文估算（锚点规则唯一定义在 `estimate_context_tokens`，
+    /// 交互端只抄不算）。
+    fn emit_message_end(&self, message: Message) {
+        self.emit(AgentEvent::MessageEnd {
+            context_tokens: estimate_context_tokens(&self.messages),
+            message: Box::new(message),
+        });
     }
 }

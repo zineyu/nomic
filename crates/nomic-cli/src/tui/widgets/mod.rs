@@ -333,8 +333,8 @@ mod tests {
                 timestamp: 0,
             },
         ))));
-        app.handle_event(&AgentEvent::MessageEnd(Box::new(Message::Assistant(
-            nomic_ai::AssistantMessage {
+        app.handle_event(&AgentEvent::MessageEnd {
+            message: Box::new(Message::Assistant(nomic_ai::AssistantMessage {
                 content: Vec::new(),
                 api: nomic_ai::ApiKind::AnthropicMessages,
                 provider: "anthropic".to_string(),
@@ -345,8 +345,9 @@ mod tests {
                 stop_reason: nomic_ai::StopReason::Error,
                 error_message: Some("rate limited".to_string()),
                 timestamp: 0,
-            },
-        ))));
+            })),
+            context_tokens: 0,
+        });
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");

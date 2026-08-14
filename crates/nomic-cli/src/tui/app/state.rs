@@ -2,9 +2,8 @@
 
 use super::{
     AgentEvent, App, Chat, ChatItem, CopyMenu, Effect, HALF_PAGE_SCROLL, Input, Key, Message, Mode,
-    PAGE_SCROLL, PromptsError, Queue, Search, SlashParse, StopReason, ToolItem, ToolStatus,
-    assistant_error, brief_args, estimate_context_tokens, parse_slash, usage_context_tokens,
-    user_text,
+    PAGE_SCROLL, PromptsError, Queue, Search, SlashParse, ToolItem, ToolStatus, assistant_error,
+    brief_args, estimate_context_tokens, parse_slash, user_text,
 };
 
 impl App {
@@ -101,19 +100,14 @@ impl App {
                 Message::ToolResult(_) => {}
             },
             AgentEvent::MessageUpdate(delta) => self.chat.apply_delta(delta),
-            AgentEvent::MessageEnd(message) => {
+            AgentEvent::MessageEnd {
+                message,
+                context_tokens,
+            } => {
+                // 权威上下文估算随事件携带（锚点规则只在 core 定义一次），
+                // 这里只抄不算
+                self.context_tokens = *context_tokens;
                 if let Message::Assistant(assistant) = message.as_ref() {
-                    // 与 estimate_context_tokens 同一锚点规则：有效响应的实际
-                    // usage 即当时上下文总量（错误/中断响应不代表有效上下文）
-                    if !matches!(
-                        assistant.stop_reason,
-                        StopReason::Error | StopReason::Aborted
-                    ) {
-                        let tokens = usage_context_tokens(&assistant.usage);
-                        if tokens > 0 {
-                            self.context_tokens = tokens;
-                        }
-                    }
                     self.chat.finalize_assistant(assistant_error(
                         assistant.stop_reason,
                         assistant.error_message.as_deref(),
@@ -156,15 +150,21 @@ impl App {
             }
             AgentEvent::CompactionEnd {
                 tokens_before,
+                context_tokens,
                 kept_count,
                 ..
             } => {
                 self.notice = None;
+                self.context_tokens = *context_tokens;
                 self.chat.push_system(format!(
                     "上下文已压缩：约 {tokens_before} tokens → 摘要 + {kept_count} 条近期消息。"
                 ));
             }
-            AgentEvent::AgentEnd { .. } | AgentEvent::TurnStart | AgentEvent::TurnEnd { .. } => {}
+            AgentEvent::AgentEnd { context_tokens, .. } => {
+                // job 完成事件携带的权威值（与末尾 MessageEnd 同口径），只抄
+                self.context_tokens = *context_tokens;
+            }
+            AgentEvent::TurnStart | AgentEvent::TurnEnd { .. } => {}
         }
     }
 

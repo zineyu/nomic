@@ -66,8 +66,6 @@ pub(super) enum DriverDone {
     Compact(Result<Option<Compaction>, String>),
     /// 一次重试结束（Ok(false) 表示无可重试状态；Err 为 loop 错误）
     Retry(Result<bool, String>),
-    /// 上下文 token 估算回报（每个 job 处理后发送，状态栏用量显示用）
-    Context(u64),
 }
 
 /// 一轮 prompt 的结束回执（goal 模式是否自动追问的判定依据）。
@@ -141,8 +139,8 @@ pub(super) fn spawn_driver(
                     }
                 }
                 // 变更为 fire-and-forget：邮箱 FIFO 保证其先于紧随的
-                // prompt/查询生效；Err 即 actor 已退出，由下方的
-                // context_tokens 查询兜底退出 driver 任务
+                // prompt 生效；Err 即 actor 已退出，事件 channel 随之关闭，
+                // 经 driver_failed 路径上报
                 DriverJob::Inject(text) => {
                     let _ = handle.inject_user_message(&text);
                 }
@@ -163,15 +161,6 @@ pub(super) fn spawn_driver(
                 DriverJob::SetReasoning(level) => {
                     let _ = handle.set_reasoning(level);
                 }
-            }
-            // 每个 job 都可能改变上下文：回报最新 token 估算（与自动压缩同一口径）；
-            // 查询失败即 actor 已退出，driver 任务随之结束（channel 关闭经
-            // driver_failed 路径上报）
-            let Ok(tokens) = handle.context_tokens().await else {
-                return;
-            };
-            if done_tx.send(DriverDone::Context(tokens)).is_err() {
-                return;
             }
         }
     });
@@ -305,7 +294,6 @@ pub(super) async fn handle_wake(
                 };
                 app.finish_run(notice);
             }
-            DriverDone::Context(tokens) => app.set_context_tokens(tokens),
         },
         Wake::Tick => app.tick(),
         Wake::Redraw => {}

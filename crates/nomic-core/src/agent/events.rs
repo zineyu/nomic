@@ -13,6 +13,9 @@ pub enum AgentEvent {
     AgentEnd {
         /// 本次运行新增的消息
         messages: Vec<Message>,
+        /// 运行结束时的权威上下文 token 估算（`estimate_context_tokens`，
+        /// 与末尾 `MessageEnd` 同口径；交互端状态栏直接采用，不自行估算）
+        context_tokens: u64,
     },
     /// 一个 turn 开始（一个 turn = 一次 assistant 响应 + 工具调用/结果）
     TurnStart,
@@ -30,8 +33,14 @@ pub enum AgentEvent {
     MessageStart(Box<Message>),
     /// assistant 流式更新（携带 provider 层的增量事件）
     MessageUpdate(AssistantEvent),
-    /// 消息完成
-    MessageEnd(Box<Message>),
+    /// 消息完成（附带该消息落史后的权威上下文 token 估算：
+    /// `estimate_context_tokens`，usage 锚点规则唯一定义在 core）
+    MessageEnd {
+        /// 完成的消息
+        message: Box<Message>,
+        /// 该消息落史后的上下文 token 估算
+        context_tokens: u64,
+    },
     /// 上下文压缩开始（自动阈值或 `/compact` 手动触发）
     CompactionStart {
         /// 压缩前的上下文 token 估算
@@ -43,6 +52,8 @@ pub enum AgentEvent {
         summary: String,
         /// 压缩前的上下文 token 估算
         tokens_before: u64,
+        /// 压缩后的权威上下文 token 估算（与 `tokens_before` 同一口径）
+        context_tokens: u64,
         /// 保留的近期消息条数（session 落库 compaction entry 用）
         kept_count: usize,
         /// 摘要请求的 token 用量

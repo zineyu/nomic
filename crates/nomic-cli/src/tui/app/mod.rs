@@ -26,8 +26,10 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-use nomic_ai::{Message, StopReason};
-use nomic_core::{AgentEvent, SteeringMessage, estimate_context_tokens, usage_context_tokens};
+use nomic_ai::Message;
+#[cfg(test)]
+use nomic_ai::StopReason;
+use nomic_core::{AgentEvent, SteeringMessage, estimate_context_tokens};
 use nomic_prompts::PromptsError;
 
 use chat::{assistant_error, user_text};

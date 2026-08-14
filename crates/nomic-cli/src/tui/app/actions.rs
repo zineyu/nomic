@@ -649,7 +649,8 @@ impl App {
         self.context_window
     }
 
-    /// 更新上下文 token 估算（driver 每个 job 后回报，事件循环接线）。
+    /// 测试辅助：直接设定上下文用量（生产路径只抄事件携带的权威值）。
+    #[cfg(test)]
     pub const fn set_context_tokens(&mut self, tokens: u64) {
         self.context_tokens = tokens;
     }

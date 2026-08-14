@@ -81,7 +81,7 @@ impl SessionRecorder {
     /// 方式由调用端决定）。
     pub async fn record(&mut self, event: &AgentEvent) -> Result<(), SessionError> {
         match event {
-            AgentEvent::MessageEnd(message) => {
+            AgentEvent::MessageEnd { message, .. } => {
                 let entry_id = self
                     .store
                     .append_message(&self.session_id, self.tip.as_deref(), message)

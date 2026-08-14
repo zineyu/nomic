@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nomic_ai::{
     AssistantContent, AssistantEvent, AssistantMessage, Message, StopReason, TextContent,
-    ThinkingLevel, ToolCall, now_millis,
+    ThinkingLevel, ToolCall, Usage, now_millis,
 };
 use nomic_core::{Agent, AgentEvent, AgentHooks, BeforeToolCall, DynTool, ToolCallDecision};
 use support::*;
@@ -46,6 +46,60 @@ async fn text_only_prompt_single_turn() {
         e,
         AgentEvent::MessageUpdate(AssistantEvent::TextDelta { .. })
     )));
+}
+
+#[tokio::test]
+async fn message_end_and_agent_end_carry_authoritative_context_tokens() {
+    // 锚点规则只在 core 定义：事件携带的 context_tokens 即 estimate_context_tokens
+    let mut script = text_done("ok");
+    let Some(AssistantEvent::Done { message }) = script.last_mut() else {
+        panic!("text_done ends with Done");
+    };
+    message.usage = Usage {
+        total_tokens: 1_000,
+        ..Usage::default()
+    };
+    let provider = MockProvider::new(vec![script]);
+    let (mut agent, rx) = make_agent(provider, vec![]);
+
+    let collector = tokio::spawn(collect_events(rx));
+    agent
+        .prompt("aaaaaaaa", CancellationToken::new())
+        .await
+        .expect("prompt");
+    let events = collector.await.expect("collector");
+
+    // user 落史后：尚无 usage 锚点，按 chars/4 估算（8 chars → 2）
+    let user_end = events
+        .iter()
+        .find_map(|event| match event {
+            AgentEvent::MessageEnd {
+                message,
+                context_tokens,
+            } if matches!(message.as_ref(), Message::User(_)) => Some(*context_tokens),
+            _ => None,
+        })
+        .expect("user message end");
+    assert_eq!(user_end, 2);
+
+    // assistant 落史后：usage 锚点（1000，无尾部）即权威值
+    let assistant_end = events
+        .iter()
+        .find_map(|event| match event {
+            AgentEvent::MessageEnd {
+                message,
+                context_tokens,
+            } if matches!(message.as_ref(), Message::Assistant(_)) => Some(*context_tokens),
+            _ => None,
+        })
+        .expect("assistant message end");
+    assert_eq!(assistant_end, 1_000);
+
+    // job 完成事件携带同一口径的权威值
+    let Some(AgentEvent::AgentEnd { context_tokens, .. }) = events.last() else {
+        panic!("agent end event");
+    };
+    assert_eq!(*context_tokens, 1_000);
 }
 
 #[tokio::test]
@@ -264,7 +318,7 @@ async fn inject_user_message_joins_history_and_emits_events() {
     assert_eq!(provider.context_lens(), vec![2]);
     // 注入消息的事件先于 AgentStart 发出（驱动端不启动新 run）
     assert!(matches!(events[0], AgentEvent::MessageStart(_)));
-    assert!(matches!(events[1], AgentEvent::MessageEnd(_)));
+    assert!(matches!(events[1], AgentEvent::MessageEnd { .. }));
     assert!(matches!(events[2], AgentEvent::AgentStart));
 }
 
@@ -362,7 +416,11 @@ async fn pre_stream_error_emits_paired_message_start_and_end() {
             AgentEvent::MessageStart(m) if matches!(m.as_ref(), Message::Assistant(_)) => {
                 Some("start")
             }
-            AgentEvent::MessageEnd(m) if matches!(m.as_ref(), Message::Assistant(_)) => Some("end"),
+            AgentEvent::MessageEnd { message, .. }
+                if matches!(message.as_ref(), Message::Assistant(_)) =>
+            {
+                Some("end")
+            }
             _ => None,
         })
         .collect();

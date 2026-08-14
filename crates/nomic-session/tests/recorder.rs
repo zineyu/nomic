@@ -12,13 +12,17 @@ fn user_message(text: &str, timestamp: u64) -> Message {
 }
 
 fn message_end(message: Message) -> AgentEvent {
-    AgentEvent::MessageEnd(Box::new(message))
+    AgentEvent::MessageEnd {
+        message: Box::new(message),
+        context_tokens: 0,
+    }
 }
 
 fn compaction_end(summary: &str) -> AgentEvent {
     AgentEvent::CompactionEnd {
         summary: summary.to_string(),
         tokens_before: 12_000,
+        context_tokens: 0,
         kept_count: 4,
         usage: Usage::default(),
     }

@@ -1,11 +1,9 @@
 //! App 的第一组方法：构造/访问器/事件处理/模式路由与 INSERT 按键（由 app/mod.rs 的 `impl App` 拆分而来）。
 
-use std::time::Instant;
-
 use super::{
     AgentEvent, App, Chat, Effect, HALF_PAGE_SCROLL, Input, Key, Message, Mode, PAGE_SCROLL,
-    PromptsError, QUIT_CONFIRM_TIMEOUT, Queue, SlashParse, ToolItem, ToolStatus, assistant_error,
-    brief_args, estimate_context_tokens, parse_slash, user_text,
+    PromptsError, Queue, SlashParse, ToolItem, ToolStatus, assistant_error, brief_args,
+    estimate_context_tokens, parse_slash, user_text,
 };
 
 impl App {
@@ -31,7 +29,6 @@ impl App {
             help_scroll: None,
             running: false,
             should_quit: false,
-            quit_armed: None,
             model_name,
             session_id,
             context_tokens: 0,
@@ -195,14 +192,6 @@ impl App {
     /// 按交互模式分发（ADR-0011）：picker/补全/命令的路由全部
     /// 在此内部完成。
     pub fn press(&mut self, key: Key) -> Vec<Effect> {
-        // 退出确认态的解除（ADR-0021 修订）：超时解除；确认键（NORMAL
-        // 下的 `q`）以外的任意按键解除（「按其他键继续」）
-        if self.quit_armed.is_some() {
-            let confirm = self.mode() == Mode::Normal && key == Key::Char('q');
-            if !confirm || !self.quit_armed_pending() {
-                self.disarm_quit();
-            }
-        }
         match self.mode() {
             // 选择器打开时接管键位（命令仅在空闲时可提交，
             // 此时 agent 必空闲，无运行可取消）
@@ -216,9 +205,10 @@ impl App {
     }
 
     /// INSERT 模式键位（ADR-0021）：编辑与提交 prompt；`Esc` 回 NORMAL
-    ///（运行中亦然；中断/退出在 NORMAL 按 `q`）、`Ctrl+C` 清草稿/退出、
-    /// `Ctrl+D` 空草稿退出/非空删字符、`↑/↓` 历史召回。命令不在此触发
-    ///（ADR-0020）：`/` 开头的输入按普通 prompt 发送，命令走 COMMAND 模式。
+    ///（运行中亦然；中断在 NORMAL 按 `q`，退出用 `/quit` 命令）、
+    /// `Ctrl+C` 清草稿/退出、`Ctrl+D` 空草稿退出/非空删字符、`↑/↓` 历史召回。
+    /// 命令不在此触发（ADR-0020）：`/` 开头的输入按普通 prompt 发送，
+    /// 命令走 COMMAND 模式。
     pub fn press_insert(&mut self, key: Key) -> Vec<Effect> {
         match key {
             // Ctrl+C：清草稿（含附件）；草稿已空时退出（运行中先中断再退出）
@@ -367,7 +357,7 @@ impl App {
     /// 命令（或展开模板），Esc 退回栈：关补全弹层 → 放弃回 NORMAL。
     pub fn press_command(&mut self, key: Key) -> Vec<Effect> {
         match key {
-            // Ctrl+C/D：退出（取消运行归 NORMAL `q`/`Esc`）
+            // Ctrl+C/D：退出（中断运行归 NORMAL `q`）
             Key::Ctrl('c' | 'd') => return self.quit(),
             Key::Esc => {
                 if !self.command.dismiss_completion() {
@@ -478,9 +468,10 @@ impl App {
 
     /// NORMAL 模式键位（ADR-0021）：单字母动作层——less 式滚动（j/k、
     /// d/u 半页、g/G 顶底）、`Y` 复制最新消息、`m` 队列、`r` 重试、
-    /// `e` 编辑器、`q` 中断运行/退出；输入字符不进入缓冲（草稿保留，
+    /// `e` 编辑器、`q` 中断运行；输入字符不进入缓冲（草稿保留，
     /// `i`/`a`/`Enter` 回到 INSERT 继续编辑）。NORMAL 是纯浏览态，不持有
-    /// 消息游标（ADR-0026）。
+    /// 消息游标（ADR-0026）。退出程序不在此层：用 COMMAND 模式的
+    /// `/quit` 或各模式 `Ctrl+C`。
     pub fn press_normal(&mut self, key: Key) -> Vec<Effect> {
         if let Some(effects) = self.normal_exit(key) {
             return effects;
@@ -504,12 +495,12 @@ impl App {
             Key::Char('r') => return self.retry_last(),
             // e：外部编辑器编辑草稿（与 INSERT Ctrl+G 同一效果）
             Key::Char('e') => return vec![Effect::OpenEditor],
-            // `?` 打开键位帮助弹层（只读；Esc/q/`?` 关闭）
+            // `?` 打开键位帮助弹层（只读；Esc/`?` 关闭）
             Key::Char('?') => return self.open_help(),
-            // q：退出当前活动（ADR-0021 修订）：有未交付意图（运行中 /
-            // 未发送草稿 / 排队消息）时第一次按进入确认态（运行中先中断
-            // 本轮），确认态中第二次按退出；干净空闲直接退出
-            Key::Char('q') => return self.request_quit(),
+            // q：中断本轮运行（ADR-0021 修订）。退出程序不在此键——
+            // 用 COMMAND 模式的 `/quit` 或各模式 `Ctrl+C`；空闲按 q
+            // 只提示退出路径
+            Key::Char('q') => return self.cancel_run(),
             // Ctrl+C：退出（运行中先中断再退出）
             Key::Ctrl('c') => return self.quit(),
             Key::Char('k') | Key::Up => self.chat.scroll_up(1),
@@ -522,54 +513,21 @@ impl App {
         Vec::new()
     }
 
-    /// NORMAL `q`：退出当前活动（ADR-0021 修订）。有未交付意图（运行中 /
-    /// 未发送草稿或附件 / 排队消息）时第一次按进入确认态——运行中先中断
-    /// 本轮，notice 提示再按确认；确认态中第二次按退出。干净空闲态直接
-    /// 退出（session 已落库，退出零损失）。
-    pub fn request_quit(&mut self) -> Vec<Effect> {
-        if self.quit_armed_pending() {
-            return self.quit();
-        }
+    /// NORMAL `q`：中断本轮运行，永不退出程序（ADR-0021 修订）。退出
+    /// 统一走命令：COMMAND 模式 `/quit`（或各模式 `Ctrl+C` 硬退出）。
+    /// 空闲按 q 置一次性提示，指引退出路径。
+    pub fn cancel_run(&mut self) -> Vec<Effect> {
         if self.running {
-            self.arm_quit("已中断本轮；再按 q 退出，按其他键继续".to_string());
+            self.notice = Some("已中断本轮".to_string());
             return vec![Effect::Cancel];
         }
-        if !self.input.text().is_empty() || self.input.has_attachments() {
-            self.arm_quit("草稿未发送；再按 q 退出并丢弃，按其他键继续".to_string());
-            return Vec::new();
-        }
-        if !self.queue.is_empty() {
-            self.arm_quit(format!(
-                "{} 条排队消息；再按 q 退出并丢弃，按其他键继续",
-                self.queue.len()
-            ));
-            return Vec::new();
-        }
-        self.quit()
+        self.notice = Some("退出：按 : 执行 /quit（或 Ctrl+C）".to_string());
+        Vec::new()
     }
 
-    /// 进入退出确认态：记录时间点并置提示。
-    fn arm_quit(&mut self, notice: String) {
-        self.quit_armed = Some(Instant::now());
-        self.notice = Some(notice);
-    }
-
-    /// 解除退出确认态（超时 / 按其他键 / 运行结束）：连带清掉确认提示。
-    fn disarm_quit(&mut self) {
-        self.quit_armed = None;
-        self.notice = None;
-    }
-
-    /// 退出确认态是否仍在有效期内（超时视为已解除）。
-    pub(super) fn quit_armed_pending(&self) -> bool {
-        self.quit_armed
-            .is_some_and(|armed_at| armed_at.elapsed() <= QUIT_CONFIRM_TIMEOUT)
-    }
-
-    /// 退出 TUI（NORMAL 确认态的第二次 `q`、各模式 `Ctrl+C`）：运行中先
+    /// 退出 TUI（COMMAND `/quit`、各模式 `Ctrl+C`/`Ctrl+D`）：运行中先
     /// 中断本轮再退出。
     pub fn quit(&mut self) -> Vec<Effect> {
-        self.quit_armed = None;
         self.should_quit = true;
         if self.running {
             return vec![Effect::Cancel];
@@ -592,12 +550,12 @@ impl App {
 
     /// NORMAL 的「离开动作层」键位：`i`/`a` 回 INSERT（光标原位），
     /// `Enter`/`A` 到输入末尾，`I` 到当前行首，`:` 进入 COMMAND 命令
-    /// 输入框（ADR-0020）；`Esc` 逐层退回——运行中先中断运行（留在
-    /// NORMAL），空闲回 INSERT。返回 `Some` 表示已处理。
+    /// 输入框（ADR-0020）；`Esc` 逐层退回——纯结构导航回 INSERT，运行中
+    /// 亦然（不中断运行）。返回 `Some` 表示已处理。
     pub fn normal_exit(&mut self, key: Key) -> Option<Vec<Effect>> {
         match key {
             // Esc 退出当前界面层（ADR-0021 修订）：纯结构导航回 INSERT，
-            // 永不中断运行（中断归 `q` 确认态的第一阶段）；
+            // 永不中断运行（中断归 `q`）；
             // i/a 回到光标原处继续编辑——效果与 Esc 相同，合并处理
             Key::Esc | Key::Char('i' | 'a') => self.leave_normal(),
             // Enter/A 回 INSERT 并把光标置于输入末尾（ADR-0011）；

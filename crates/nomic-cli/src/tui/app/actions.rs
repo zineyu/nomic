@@ -151,11 +151,11 @@ impl App {
     }
 
     /// 取出下一条待发消息（run 异常结束后恢复路径；正常结束的 run
-    /// 其队列已被 core 排空）：队列非空且 QUEUE 模式未打开、不在退出
-    /// 确认态时返回提交效果（`running` 已置位，与用户手动提交同一口径）；
-    /// QUEUE 模式打开或退出确认态期间冻结发送，空队列返回 `None`。
+    /// 其队列已被 core 排空）：队列非空且 QUEUE 模式未打开时返回提交
+    /// 效果（`running` 已置位，与用户手动提交同一口径）；QUEUE 模式
+    /// 打开期间冻结发送，空队列返回 `None`。
     pub fn drain_queue(&mut self) -> Option<Effect> {
-        if self.mode == Mode::Queue || self.quit_armed_pending() {
+        if self.mode == Mode::Queue {
             return None;
         }
         let queued = self.queue.pop_front()?;
@@ -192,7 +192,7 @@ impl App {
             Key::Char('o') => self.queue_insert_slot(1),
             Key::Char('O') => self.queue_insert_slot(0),
             Key::Esc => return self.leave_queue(),
-            // Ctrl+C：退出（取消运行归 NORMAL `q`/`Esc`）
+            // Ctrl+C：退出（中断运行归 NORMAL `q`）
             Key::Ctrl('c') => return self.quit(),
             Key::PageUp => self.chat.scroll_up(PAGE_SCROLL),
             Key::PageDown => self.chat.scroll_down(PAGE_SCROLL),
@@ -241,14 +241,14 @@ impl App {
                 }
                 Self::edit_key(&mut self.input, &mut self.chat, Key::Down);
             }
-            // Ctrl+C：退出（取消运行归 NORMAL `q`/`Esc`）
+            // Ctrl+C：退出（中断运行归 NORMAL `q`）
             Key::Ctrl('c') => return self.quit(),
             other => Self::edit_key(&mut self.input, &mut self.chat, other),
         }
         Vec::new()
     }
 
-    /// NORMAL `?`：打开键位帮助弹层（滚动置顶；Esc/q/`?` 关闭）。
+    /// NORMAL `?`：打开键位帮助弹层（滚动置顶；Esc/`?` 关闭）。
     pub const fn open_help(&mut self) -> Vec<Effect> {
         self.help_scroll = Some(0);
         Vec::new()
@@ -270,7 +270,7 @@ impl App {
             Key::Ctrl('u') => self.help_scroll_by(-i32::from(HALF_PAGE_SCROLL)),
             Key::PageDown => self.help_scroll_by(i32::from(PAGE_SCROLL)),
             Key::PageUp => self.help_scroll_by(-i32::from(PAGE_SCROLL)),
-            // Ctrl+C：退出（取消运行归 NORMAL `q`/`Esc`）
+            // Ctrl+C：退出（中断运行归 NORMAL `q`）
             Key::Ctrl('c') => return self.quit(),
             _ => {}
         }
@@ -393,7 +393,7 @@ impl App {
                 Vec::new()
             }
             SlashAction::Compact(instructions) => {
-                // 压缩是一次 LLM 调用：按 mini-run 处理，NORMAL `q`/`Esc` 可取消
+                // 压缩是一次 LLM 调用：按 mini-run 处理，NORMAL `q` 可取消
                 self.running = true;
                 self.notice = None;
                 vec![Effect::Compact(instructions)]
@@ -444,10 +444,8 @@ impl App {
     // ── 运行生命周期 ────────────────────────────────────────────────────────
 
     /// 一轮运行（prompt/压缩）结束：回到空闲态，按需置状态栏告警。
-    /// 运行结束即状态变化，解除可能存在的退出确认态。
     pub fn finish_run(&mut self, notice: Option<String>) {
         self.running = false;
-        self.quit_armed = None;
         self.notice = notice;
     }
 

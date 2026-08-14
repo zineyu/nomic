@@ -24,8 +24,6 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-use std::time::{Duration, Instant};
-
 use nomic_ai::Message;
 #[cfg(test)]
 use nomic_ai::StopReason;
@@ -47,9 +45,6 @@ use crate::print::brief_args;
 
 /// braille spinner 帧序列（运行中工具与流式指示共用）。
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-/// 退出确认态（NORMAL `q` 的二次确认，ADR-0021 修订）超时：超时视为解除。
-pub(super) const QUIT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// 一条 slash 命令的静态描述。
 #[derive(Debug)]
@@ -438,12 +433,12 @@ pub(super) enum Effect {
         text: String,
         images: Vec<nomic_ai::ImageContent>,
     },
-    /// `/compact` 手动压缩上下文（`running` 已置位，NORMAL `q`/`Esc` 可取消）
+    /// `/compact` 手动压缩上下文（`running` 已置位，NORMAL `q` 可取消）
     Compact(Option<String>),
     /// `/retry` 重试最近一轮失败的响应（`running` 已置位，聊天区尾部
     /// 失败/未定稿条目已随历史中的失败消息一并移除）
     Retry,
-    /// 取消当前运行（NORMAL `q` 的确认态第一阶段、`Ctrl+C` 硬退出）
+    /// 取消当前运行（NORMAL `q`、`Ctrl+C` 硬退出）
     Cancel,
     /// INSERT `Ctrl+G`：挂起 TUI，用外部编辑器（`$VISUAL`/`$EDITOR`，
     /// 缺省 `vi`，ADR-0017）编辑当前草稿；编辑器退出后由事件循环
@@ -515,10 +510,6 @@ pub(super) struct App {
     help_scroll: Option<u16>,
     running: bool,
     should_quit: bool,
-    /// 退出确认态（NORMAL `q` 的二次确认，ADR-0021 修订）：有未交付意图
-    /// （运行中 / 未发送草稿 / 排队消息）时第一次 `q` 置位并提示，确认态中
-    /// 第二次 `q` 退出；超时、按其他键或运行结束解除
-    quit_armed: Option<Instant>,
     /// 模型展示名
     model_name: String,
     /// 当前 session id（未持久化时为 None；内部标识，不展示给用户）

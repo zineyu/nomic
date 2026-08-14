@@ -60,7 +60,7 @@ impl Widget for StatusBar<'_> {
         }
         // 键位提示保持精简：完整键位见欢迎页与 /help，此处只留模式核心键
         let hint = match app.mode() {
-            Mode::Normal => "i 输入 · : 命令 · q 退出 · ? 帮助 ",
+            Mode::Normal => "i 输入 · : 命令 · q 中断 · ? 帮助 ",
             Mode::Command => "Tab 补全 · Enter 执行 · Esc 返回 ",
             Mode::Picker => "输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ",
             Mode::Help => "j/k 滚动 · g/G 顶/底 · Esc 关闭 ",

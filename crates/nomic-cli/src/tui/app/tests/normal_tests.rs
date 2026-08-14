@@ -339,11 +339,11 @@ fn normal_mode_y_copies_latest_message() {
     assert!(matches!(&effects[..], [Effect::CopyText(text)] if text == "你好"));
 }
 
-/// NORMAL `q`（ADR-0021 修订）：退出当前活动——运行中第一次按中断本轮
-/// 并进入确认态，确认态中第二次按退出；干净空闲直接退出无确认。
+/// NORMAL `q`（ADR-0021 修订）：只中断本轮运行，永不退出程序——退出
+/// 统一走 COMMAND 的 `/quit`（或各模式 `Ctrl+C` 硬退出）。
 #[test]
-fn normal_q_quits_with_confirmation() {
-    // 运行中：第一次 q 中断 + 确认态（不退出），第二次 q 退出
+fn normal_q_cancels_run_but_never_quits() {
+    // 运行中：q 中断本轮，不退出、留在 NORMAL
     let mut running = app();
     running.press(Key::Esc);
     running.handle_event(&AgentEvent::AgentStart);
@@ -351,104 +351,49 @@ fn normal_q_quits_with_confirmation() {
         &running.press(Key::Char('q'))[..],
         [Effect::Cancel]
     ));
-    assert!(!running.should_quit(), "运行中第一次 `q` 只中断不退出");
+    assert!(!running.should_quit(), "q 只中断本轮，不退出程序");
     assert_eq!(running.mode(), Mode::Normal);
-    assert!(
-        running.notice().is_some_and(|n| n.contains("再按 q 退出")),
-        "进入确认态并提示"
-    );
-    let _ = running.press(Key::Char('q'));
-    assert!(running.should_quit(), "确认态中第二次 `q` 退出");
+    assert!(running.notice().is_some_and(|n| n.contains("已中断本轮")));
 
-    // 干净空闲：直接退出，无需确认
+    // 中断收尾后空闲：再按 q 仍不退出，提示退出路径
+    running.finish_run(Some("已取消".to_string()));
+    assert!(running.press(Key::Char('q')).is_empty());
+    assert!(!running.should_quit(), "空闲按 q 也不退出");
+    assert!(
+        running.notice().is_some_and(|n| n.contains("/quit")),
+        "空闲按 q 提示退出路径"
+    );
+}
+
+/// NORMAL `q` 的空闲态守卫已无必要（q 永不退出）：干净空闲、未发送
+/// 草稿、排队消息任一状态下按 q 都不退出，只提示退出路径。
+#[test]
+fn normal_q_idle_never_quits() {
+    // 干净空闲：不退出，提示退出路径
     let mut idle = app();
     idle.press(Key::Esc);
     assert!(idle.press(Key::Char('q')).is_empty());
-    assert!(idle.should_quit());
-}
+    assert!(!idle.should_quit());
+    assert!(idle.notice().is_some_and(|n| n.contains("/quit")));
 
-/// NORMAL `q` 守卫：未发送草稿时第一次按进入确认态（不退出），按其他键
-/// 解除后可继续编辑；再次按 q 重新确认后才退出。
-#[test]
-fn normal_q_guards_unsent_draft() {
-    let mut app = app();
-    app.paste_text("未发内容");
-    app.press(Key::Esc);
-    assert_eq!(app.mode(), Mode::Normal);
+    // 未发送草稿：不退出，草稿保留
+    let mut drafting = app();
+    drafting.paste_text("未发内容");
+    drafting.press(Key::Esc);
+    assert!(drafting.press(Key::Char('q')).is_empty());
+    assert!(!drafting.should_quit());
+    assert_eq!(drafting.input.text(), "未发内容");
 
-    // 第一次 q：确认态，不退出
-    assert!(app.press(Key::Char('q')).is_empty());
-    assert!(!app.should_quit(), "草稿未发送时第一次 `q` 不退出");
-    assert!(app.notice().is_some_and(|n| n.contains("草稿未发送")));
-
-    // 按其他键解除确认态：提示清除，草稿保留
-    assert!(app.press(Key::Char('j')).is_empty());
-    assert!(app.notice().is_none(), "按其他键解除确认态并清除提示");
-    assert_eq!(app.input.text(), "未发内容");
-    assert!(!app.should_quit());
-
-    // 再次按 q 重新进入确认态，确认后退出
-    assert!(app.press(Key::Char('q')).is_empty());
-    assert!(!app.should_quit(), "解除后再按重新进入确认态");
-    assert!(app.press(Key::Char('q')).is_empty());
-    assert!(app.should_quit());
-}
-
-/// NORMAL `q` 守卫：排队消息未清空时退出需确认；确认态期间冻结
-/// drain（防止中断后队列自动续跑抢占确认窗口）。
-#[test]
-fn normal_q_guards_queued_messages_and_freezes_drain() {
-    let mut app = queued_app();
-    app.press(Key::Esc);
-    assert_eq!(app.mode(), Mode::Normal);
-
-    // 第一次 q：确认态（提示排队条数），不退出、冻结 drain
-    assert!(app.press(Key::Char('q')).is_empty());
-    assert!(!app.should_quit(), "队列未清空时第一次 `q` 不退出");
+    // 排队消息：不退出，队列保留且 drain 不再冻结（无退出确认态）
+    let mut queued = queued_app();
+    queued.press(Key::Esc);
+    assert!(queued.press(Key::Char('q')).is_empty());
+    assert!(!queued.should_quit());
+    assert_eq!(queued.queue.len(), 2);
     assert!(
-        app.notice().is_some_and(|n| n.contains("2 条排队消息")),
-        "提示排队条数"
+        queued.drain_queue().is_some(),
+        "无确认态，drain 不受 q 影响"
     );
-    assert!(app.drain_queue().is_none(), "确认态期间冻结 drain");
-
-    // 第二次 q：退出
-    assert!(app.press(Key::Char('q')).is_empty());
-    assert!(app.should_quit());
-}
-
-/// 退出确认态超时自动解除：超时后再按 q 视为第一次按（重新确认而非退出）。
-#[test]
-fn normal_q_confirmation_expires() {
-    use std::time::{Duration, Instant};
-
-    let mut app = app();
-    app.paste_text("草稿");
-    app.press(Key::Esc);
-    assert!(app.press(Key::Char('q')).is_empty());
-    assert!(!app.should_quit());
-    // 手动把确认态时间点拨回超时之前
-    app.quit_armed = Instant::now().checked_sub(Duration::from_secs(10));
-    assert!(
-        app.press(Key::Char('q')).is_empty(),
-        "超时后再按视为第一次按"
-    );
-    assert!(!app.should_quit());
-}
-
-/// 运行结束即状态变化：解除可能存在的退出确认态，中断收尾后干净空闲
-/// 的 q 直接退出。
-#[test]
-fn finish_run_disarms_quit_confirmation() {
-    let mut app = app();
-    app.press(Key::Esc);
-    app.handle_event(&AgentEvent::AgentStart);
-    assert!(matches!(&app.press(Key::Char('q'))[..], [Effect::Cancel]));
-    app.finish_run(Some("已取消".to_string()));
-    assert!(
-        app.press(Key::Char('q')).is_empty(),
-        "确认态已随运行结束解除"
-    );
-    assert!(app.should_quit());
 }
 
 /// NORMAL：Ctrl+C 与 INSERT 同口径（运行中取消并退出，空闲退出）；

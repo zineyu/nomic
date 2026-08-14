@@ -19,7 +19,9 @@ use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use crate::AssistantEvent;
 use crate::providers::retry::{RequestError, RetryPolicy, sleep_or_cancel};
+use crate::providers::shared::empty_output;
 use crate::stream::{AssistantStream, Provider, StreamOptions, channel};
 use crate::types::{
     AssistantContent, AssistantMessage, Context, Message, Model, StopReason, ThinkingContent,
@@ -28,7 +30,6 @@ use crate::types::{
 // 供 `tests.rs` 经 `use super::*` 使用（与拆分前的 import 语义一致）
 #[allow(unused_imports)]
 use crate::types::TextContent;
-use crate::{AssistantEvent, now_millis};
 
 use raw::RawChunk;
 use tool_state::{ToolBlockState, apply_usage, finish_tool_block, handle_delta, map_stop_reason};
@@ -202,21 +203,6 @@ impl Provider for OpenAiProvider {
         );
 
         stream
-    }
-}
-
-fn empty_output(model: &Model) -> AssistantMessage {
-    AssistantMessage {
-        content: Vec::new(),
-        api: model.api,
-        provider: model.provider.clone(),
-        model: model.id.clone(),
-        response_model: None,
-        response_id: None,
-        usage: crate::types::Usage::default(),
-        stop_reason: StopReason::Stop,
-        error_message: None,
-        timestamp: now_millis(),
     }
 }
 

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use super::raw::{RawDelta, RawUsage};
 use crate::AssistantEvent;
+use crate::providers::shared::parse_streaming_json;
 use crate::types::{
     AssistantContent, AssistantMessage, StopReason, TextContent, ThinkingContent, ToolCall,
 };
@@ -160,49 +161,6 @@ pub(super) fn finish_tool_block(
             tool_call: call.clone(),
         });
     }
-}
-
-/// 与 Anthropic provider 相同的截断 JSON 最大努力修复。
-fn parse_streaming_json(partial: &str) -> serde_json::Value {
-    if let Ok(value) = serde_json::from_str(partial) {
-        return value;
-    }
-    let mut fixed = partial.trim_end().to_string();
-    let mut in_string = false;
-    let mut escaped = false;
-    let mut stack = Vec::new();
-    for c in fixed.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match c {
-            '\\' if in_string => escaped = true,
-            '"' => in_string = !in_string,
-            '{' | '[' if !in_string => stack.push(c),
-            '}' | ']' if !in_string => {
-                stack.pop();
-            }
-            _ => {}
-        }
-    }
-    if in_string {
-        fixed.push('"');
-    }
-    while let Some(c) = fixed.chars().last() {
-        if c == '{' || c == '[' || c == '"' || c == '}' || c == ']' {
-            break;
-        }
-        fixed.pop();
-    }
-    if fixed.trim_end().ends_with(':') {
-        fixed.push_str("null");
-    }
-    while let Some(open) = stack.pop() {
-        fixed.push(if open == '{' { '}' } else { ']' });
-    }
-    serde_json::from_str(&fixed)
-        .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()))
 }
 
 pub(super) fn apply_usage(output: &mut AssistantMessage, usage: &RawUsage) {

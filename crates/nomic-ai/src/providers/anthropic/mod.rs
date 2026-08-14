@@ -15,7 +15,9 @@ use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use crate::AssistantEvent;
 use crate::providers::retry::{RequestError, RetryPolicy, sleep_or_cancel};
+use crate::providers::shared::empty_output;
 use crate::stream::{AssistantStream, Provider, StreamOptions, channel};
 use crate::types::{
     AssistantContent, AssistantMessage, Context, Message, Model, StopReason, ThinkingLevel,
@@ -24,7 +26,6 @@ use crate::types::{
 // 供 `tests.rs` 经 `use super::*` 使用（与拆分前的 import 语义一致）
 #[allow(unused_imports)]
 use crate::types::{TextContent, ToolCall};
-use crate::{AssistantEvent, now_millis};
 
 use events::{
     BlockState, apply_usage, handle_block_delta, handle_block_start, handle_block_stop,
@@ -181,21 +182,6 @@ impl Provider for AnthropicProvider {
         );
 
         stream
-    }
-}
-
-fn empty_output(model: &Model) -> AssistantMessage {
-    AssistantMessage {
-        content: Vec::new(),
-        api: model.api,
-        provider: model.provider.clone(),
-        model: model.id.clone(),
-        response_model: None,
-        response_id: None,
-        usage: crate::types::Usage::default(),
-        stop_reason: StopReason::Stop,
-        error_message: None,
-        timestamp: now_millis(),
     }
 }
 

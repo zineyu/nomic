@@ -1,6 +1,6 @@
 //! agent loop 集成测试：用脚本化 mock provider 验证 loop 行为。
 
-mod steering;
+mod injection;
 mod support;
 
 use std::sync::Arc;

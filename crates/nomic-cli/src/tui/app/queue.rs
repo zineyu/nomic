@@ -4,9 +4,12 @@
 //! 游标与就地编辑子状态；冻结/解冻、入队/drain 的时机与效果分发由
 //! [`super::App`] 路由。
 
-use nomic_core::{SteeringMessage, SteeringQueue};
+use std::sync::Arc;
+
+use nomic_core::{TurnInjection, TurnMessage};
 
 use super::{line_count_of, step_row};
+use crate::tui::steering::SteeringQueue;
 
 /// 队列区渲染条目（统一队列视图，与 QUEUE 模式游标的条目空间一致）。
 #[derive(Debug)]
@@ -31,20 +34,22 @@ pub(in crate::tui) struct Queue {
 }
 
 impl Queue {
-    /// 统一消息队列句柄：启动时传给 agent builder，与 core 共享同一份
-    /// 队列（运行中入队直推，不经 driver 串行 job 通道）。
-    pub(in crate::tui) fn handle(&self) -> SteeringQueue {
-        self.steering.clone()
+    /// 统一消息队列句柄（ADR-0014）：与 agent 共享同一份队列，并作为
+    /// core 的注入源（[`TurnInjection`]）在 turn 边界弹出队首；启动时经
+    /// builder 的 `turn_injection` 传入。
+    pub(in crate::tui) fn handle(&self) -> Arc<dyn TurnInjection> {
+        Arc::new(self.steering.clone())
     }
 
     /// 入队（ADR-0014）：当前 turn 的工具调用执行完后由 core 在 turn
-    /// 边界注入本轮运行（run 异常结束时保留，恢复后作为下一轮 prompt）。
-    pub(super) fn push(&self, message: SteeringMessage) {
+    /// 边界经注入点注入本轮运行（run 异常结束时保留，恢复后作为下一轮
+    /// prompt）。
+    pub(super) fn push(&self, message: TurnMessage) {
         self.steering.push(message);
     }
 
     /// 取出队首（drain 恢复路径；QUEUE 模式未打开才由调用方发起）。
-    pub(super) fn pop_front(&self) -> Option<SteeringMessage> {
+    pub(super) fn pop_front(&self) -> Option<TurnMessage> {
         self.steering.pop_front()
     }
 
@@ -62,6 +67,12 @@ impl Queue {
     /// 解冻队列注入（退出 QUEUE 模式）。
     pub(super) fn unfreeze(&self) {
         self.steering.unfreeze();
+    }
+
+    /// 是否处于冻结期（进入 QUEUE 编辑时冻结注入；测试用）。
+    #[cfg(test)]
+    pub(in crate::tui) fn is_frozen(&self) -> bool {
+        self.steering.is_frozen()
     }
 
     /// 排队消息总条数（运行中标题与暂停提示用）。
@@ -153,7 +164,7 @@ impl Queue {
         let index = self.cursor + offset;
         self.steering.insert(
             index,
-            SteeringMessage {
+            TurnMessage {
                 text: String::new(),
                 images: Vec::new(),
             },

@@ -11,8 +11,8 @@
 //!   保证，紧随其后的 `prompt` 一定跑在变更之后；
 //! - 查询（`messages` / `context_tokens` / `model` / `reasoning`）同样
 //!   走邮箱 oneshot（严格 actor，不引入共享只读快照）；
-//! - 运行中排队消息仍经共享 [`SteeringQueue`] 直推（ADR-0014），
-//!   不经邮箱。
+//! - 运行中注入源（[`crate::TurnInjection`]）由 builder 组装进 agent 本体，
+//!   turn 边界注入不经邮箱（ADR-0014）。
 
 use std::sync::Arc;
 
@@ -22,7 +22,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::{Agent, AgentError};
 use crate::compaction::{Compaction, CompactionError, estimate_context_tokens};
-use crate::steering::SteeringQueue;
 
 /// actor 调用错误：actor 任务已退出，或 loop / 压缩本身失败。
 #[derive(Debug, thiserror::Error)]
@@ -92,7 +91,6 @@ enum AgentCommand {
 #[derive(Debug, Clone)]
 pub struct AgentHandle {
     cmd_tx: mpsc::UnboundedSender<AgentCommand>,
-    steering: SteeringQueue,
 }
 
 impl AgentHandle {
@@ -209,12 +207,6 @@ impl AgentHandle {
         self.call(AgentCommand::Reasoning).await
     }
 
-    /// 统一消息队列句柄（ADR-0014）：共享句柄本就并发安全、可在
-    /// 运行中随时入队/编辑，不经邮箱。
-    pub fn steering_handle(&self) -> SteeringQueue {
-        self.steering.clone()
-    }
-
     /// 发送一条 fire-and-forget 命令；邮箱关闭（actor 已退出）时报错。
     fn send(&self, command: AgentCommand) -> Result<(), ActorError> {
         self.cmd_tx.send(command).map_err(|_| ActorError::Gone)
@@ -240,7 +232,6 @@ impl Agent {
     /// 事件流接收端在 builder `build()` 时取得，与 spawn 无关。
     pub fn spawn(self) -> (AgentHandle, tokio::task::JoinHandle<()>) {
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<AgentCommand>();
-        let steering = self.steering.clone();
         let task = tokio::spawn(async move {
             let mut agent = self;
             while let Some(command) = cmd_rx.recv().await {
@@ -286,6 +277,6 @@ impl Agent {
                 }
             }
         });
-        (AgentHandle { cmd_tx, steering }, task)
+        (AgentHandle { cmd_tx }, task)
     }
 }

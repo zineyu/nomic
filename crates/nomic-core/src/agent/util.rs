@@ -17,7 +17,7 @@ pub(super) struct FinalizedToolCall {
 
 /// 构建 user 消息：有图片附件时为内容块列表（图片块在前、文本块在后，
 /// 与 Anthropic 官方建议的排序一致）；空附件为纯文本。prompt 提交与
-/// steering 注入共用同一口径。
+/// 运行中注入共用同一口径。
 pub(super) fn user_message(text: &str, images: &[ImageContent]) -> Message {
     let content = if images.is_empty() {
         UserMessageContent::Text(text.to_string())

@@ -8,7 +8,8 @@
 //!
 //! M1 裁剪（事件枚举预留扩展空间）：follow-up 队列、
 //! `prepareNextTurn`、`shouldStopAfterTurn`。
-//! 统一消息队列（运行中 turn 边界注入，ADR-0014）已实现，见 [`crate::SteeringQueue`]。
+//! 运行中注入（turn 边界转向，ADR-0014）已实现为注入点，见
+//! [`crate::TurnInjection`]——注入源由交互端提供，core 只询问不排队。
 
 mod actor;
 mod events;
@@ -33,7 +34,7 @@ use crate::compaction::{
     estimate_context_tokens, should_compact,
 };
 use crate::hooks::{AfterToolCall, AgentHooks, BeforeToolCall, ToolCallDecision};
-use crate::steering::{SteeringMessage, SteeringQueue};
+use crate::injection::{TurnInjection, TurnMessage};
 use crate::tool::{DynTool, ExecutionMode, ToolResult, ToolUpdate};
 
 /// loop 配置（crate 内部；外部经 [`Agent::builder`] 组装）。
@@ -77,7 +78,7 @@ pub struct Agent {
     messages: Vec<Message>,
     tools: Vec<DynTool>,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
-    steering: SteeringQueue,
+    injection: Option<Arc<dyn TurnInjection>>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -102,7 +103,7 @@ impl Agent {
         tools: Vec<DynTool>,
         system_prompt: String,
         messages: Vec<Message>,
-        steering: SteeringQueue,
+        injection: Option<Arc<dyn TurnInjection>>,
     ) -> (Self, mpsc::UnboundedReceiver<AgentEvent>) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         (
@@ -112,20 +113,10 @@ impl Agent {
                 messages,
                 tools,
                 event_tx,
-                steering,
+                injection,
             },
             event_rx,
         )
-    }
-
-    /// 统一消息队列句柄（ADR-0014）。
-    ///
-    /// 交互端持克隆随时入队/编辑（运行期间 driver 串行 job 通道被
-    /// prompt 占用，无法中转）；agent 在每个 turn 边界（当前 assistant
-    /// turn 的工具调用执行完后、下一次 LLM 调用前）弹出一条注入当前
-    /// run（one-at-a-time），队列未清空时 run 不结束。
-    pub fn steering_handle(&self) -> SteeringQueue {
-        self.steering.clone()
     }
 
     /// 当前消息历史。
@@ -444,11 +435,15 @@ impl Agent {
             if terminate || cancel.is_cancelled() {
                 return Ok(());
             }
-            // 统一队列注入（pi 式 one-at-a-time，ADR-0014）：turn 边界弹出一条
-            // 排队消息注入当前 run（QUEUE 编辑冻结期跳过）；队列未清空时
-            // run 不结束——模型无工具调用也注入续行，直至队列排空
-            if let Some(steered) = self.steering.pop_front() {
-                self.inject_steered(&steered, new_messages);
+            // 运行中注入（turn 边界转向）：每个完成的 turn 询问一次注入源；
+            // 返回消息则作为 user 消息注入续行（one-at-a-time 由实现方保证），
+            // 返回 None 且无更多工具调用时 run 结束。
+            if let Some(message) = self
+                .injection
+                .as_ref()
+                .and_then(|source| source.next_message())
+            {
+                self.inject_message(&message, new_messages);
                 continue;
             }
             // 只要执行过工具调用就继续下一 turn（与 pi 一致：不依赖 stop_reason）
@@ -458,12 +453,12 @@ impl Agent {
         }
     }
 
-    /// 注入一条 steering 消息：作为 user 消息进入历史与本次新增，发出
+    /// 注入一条运行中消息：作为 user 消息进入历史与本次新增，发出
     /// `MessageStart`/`MessageEnd` 事件（交互端渲染与 session 落库经
     /// 既有事件管线自动生效，与 [`Self::inject_user_message`] 同一口径）。
-    fn inject_steered(&mut self, steered: &SteeringMessage, new_messages: &mut Vec<Message>) {
-        let user = user_message(&steered.text, &steered.images);
-        tracing::debug!(text_len = steered.text.len(), "steering message injected");
+    fn inject_message(&mut self, message: &TurnMessage, new_messages: &mut Vec<Message>) {
+        let user = user_message(&message.text, &message.images);
+        tracing::debug!(text_len = message.text.len(), "injected user message");
         self.emit(AgentEvent::MessageStart(Box::new(user.clone())));
         self.messages.push(user.clone());
         new_messages.push(user.clone());

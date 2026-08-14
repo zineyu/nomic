@@ -39,6 +39,7 @@ mod effects;
 mod goal;
 mod markdown;
 mod mention;
+mod steering;
 mod terminal;
 mod theme;
 mod widgets;
@@ -107,9 +108,10 @@ pub async fn run(cli: &Cli) -> Result<()> {
         .messages(boot.history)
         .stream_options(boot.stream_options)
         .compaction(boot.compaction)
-        // 统一消息队列（ADR-0014）：TUI 与 agent 共享同一份，运行中
-        // Enter 直推入队，core 在 turn 边界注入（不经 driver job 通道）
-        .steering_queue(app.queue().handle())
+        // 统一消息队列（ADR-0014）：TUI 自持队列，实现 core 的注入点
+        // （TurnInjection），运行中 Enter 直推入队，core 在 turn 边界经
+        // 注入点弹出注入（不经 driver job 通道）
+        .turn_injection(app.queue().handle())
         .build();
 
     // 落库器：恢复的 session 父指针从默认分支末端起算（分支场景下保证续写

@@ -47,7 +47,7 @@ fn queue_mode_unified_queue_editing() {
     assert!(app.queue_mode_active());
     assert_eq!(app.queue.len(), 3);
     // 进入 QUEUE 即冻结注入（core 在 turn 边界不再弹出）
-    assert!(app.queue.handle().is_frozen());
+    assert!(app.queue().is_frozen());
 
     // 导航与换位：msg-1/msg-2 交换
     app.press(Key::Char('j'));
@@ -67,7 +67,7 @@ fn queue_mode_unified_queue_editing() {
 
     // 退出 QUEUE：解冻；恢复发送按 FIFO（换位后 msg-2 在首）
     let effects = app.press(Key::Esc);
-    assert!(!app.queue.handle().is_frozen());
+    assert!(!app.queue().is_frozen());
     assert!(matches!(&effects[..], [Effect::Prompt { text, .. }] if text == "msg-2"));
     app.finish_run(None);
     let Some(Effect::Prompt { text, .. }) = app.drain_queue() else {

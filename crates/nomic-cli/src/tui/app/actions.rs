@@ -2,7 +2,7 @@
 
 use super::{
     App, Effect, HALF_PAGE_SCROLL, Key, Message, Mode, PAGE_SCROLL, PICKER_PAGE_SCROLL, Picker,
-    PickerKind, PickerRow, SPINNER_FRAMES, SkillEntry, SlashAction, SteeringMessage, help_text,
+    PickerKind, PickerRow, SPINNER_FRAMES, SkillEntry, SlashAction, TurnMessage, help_text,
     line_count_of, skill_list_text,
 };
 
@@ -142,7 +142,7 @@ impl App {
     /// 模式可编辑（编辑期间冻结注入）。
     pub fn enqueue(&mut self, text: String) -> Vec<Effect> {
         let images = self.input.take_attachments();
-        self.queue.push(SteeringMessage { text, images });
+        self.queue.push(TurnMessage { text, images });
         self.notice = Some(format!(
             "已排队（第 {} 条），当前步骤完成后注入本轮 · Esc→m 编辑队列",
             self.queue.len()

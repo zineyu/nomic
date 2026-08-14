@@ -31,7 +31,7 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
         eprintln!("\x1b[2m{label}（{} 条历史消息）\x1b[0m", boot.history.len());
     }
 
-    let (mut agent, mut events) = Agent::builder()
+    let (agent, mut events) = Agent::builder()
         .model(boot.model)
         .provider(boot.provider)
         .system_prompt(boot.system_prompt)
@@ -43,6 +43,8 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
         .stream_options(boot.stream_options)
         .compaction(boot.compaction)
         .build();
+    // actor 模型（ADR-0022）：agent 本体移入专属任务，经 handle 驱动
+    let (handle, _actor_task) = agent.spawn();
 
     let cancel = CancellationToken::new();
     let cancel_on_sigint = cancel.clone();
@@ -54,7 +56,7 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
 
     let cancel_for_prompt = cancel.clone();
     let run = tokio::spawn(async move {
-        agent
+        handle
             .prompt_with_images(&prompt, &images, cancel_for_prompt)
             .await
     });

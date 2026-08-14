@@ -58,6 +58,11 @@ fn ensure_thinking_block(
     index
 }
 
+/// 非空字段才参与回退链：返回 `(回放字段名, 文本)`。
+fn first_non_empty(field: &'static str, value: Option<String>) -> Option<(&'static str, String)> {
+    value.filter(|s| !s.is_empty()).map(|s| (field, s))
+}
+
 pub(super) fn handle_delta(
     output: &mut AssistantMessage,
     tx: &tokio::sync::mpsc::UnboundedSender<AssistantEvent>,
@@ -80,22 +85,9 @@ pub(super) fn handle_delta(
     }
 
     // reasoning_content / reasoning / reasoning_text 取首个非空字段（避免重复）
-    let reasoning = delta
-        .reasoning_content
-        .filter(|s| !s.is_empty())
-        .map(|s| ("reasoning_content", s))
-        .or_else(|| {
-            delta
-                .reasoning
-                .filter(|s| !s.is_empty())
-                .map(|s| ("reasoning", s))
-        })
-        .or_else(|| {
-            delta
-                .reasoning_text
-                .filter(|s| !s.is_empty())
-                .map(|s| ("reasoning_text", s))
-        });
+    let reasoning = first_non_empty("reasoning_content", delta.reasoning_content)
+        .or_else(|| first_non_empty("reasoning", delta.reasoning))
+        .or_else(|| first_non_empty("reasoning_text", delta.reasoning_text));
     if let Some((field, text)) = reasoning {
         let index = ensure_thinking_block(output, tx, thinking_block, field);
         if let AssistantContent::Thinking(block) = &mut output.content[index] {

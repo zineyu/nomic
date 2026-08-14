@@ -12,17 +12,16 @@ mod raw;
 mod tool_state;
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
-use tracing::Instrument;
 
 use crate::AssistantEvent;
-use crate::providers::retry::{RequestError, RetryPolicy, sleep_or_cancel};
-use crate::providers::shared::empty_output;
-use crate::stream::{AssistantStream, Provider, StreamOptions, channel};
+use crate::providers::retry::{RequestError, RetryPolicy};
+use crate::providers::shared::{StreamAttempt, spawn_stream};
+use crate::stream::{AssistantStream, Provider, StreamOptions};
 use crate::types::{
     AssistantContent, AssistantMessage, Context, Message, Model, StopReason, ThinkingContent,
     ThinkingLevel, ToolCall, ToolResultMessage, UserContent,
@@ -113,96 +112,33 @@ impl Provider for OpenAiProvider {
         options: &StreamOptions,
         cancel: CancellationToken,
     ) -> AssistantStream {
-        let (tx, stream) = channel();
-        let mut output = empty_output(model);
-        let client = self.client.clone();
-        let call = StreamCall {
-            base_url: model.base_url.clone(),
-            api_key: self.resolve_api_key(options),
-            request: build_request(model, context, options, &self.compat),
-            timeout_ms: options.timeout_ms,
+        let attempt = OpenAiAttempt {
+            client: self.client.clone(),
+            call: StreamCall {
+                base_url: model.base_url.clone(),
+                api_key: self.resolve_api_key(options),
+                request: build_request(model, context, options, &self.compat),
+                timeout_ms: options.timeout_ms,
+            },
         };
-        let model_for_cost = model.clone();
-        let retry_policy = self.retry_policy;
-        let span = tracing::info_span!(
-            "llm_request",
-            provider = %model.provider,
-            model = %model.id,
-            base_url = %model.base_url,
-        );
+        spawn_stream(model, self.retry_policy, cancel, attempt)
+    }
+}
 
-        tokio::spawn(
-            async move {
-                let started = Instant::now();
-                let mut retries = 0u32;
-                let result = loop {
-                    let attempt = run(&client, &call, cancel.clone(), &mut output, &tx).await;
-                    let Err(error) = attempt else {
-                        break Ok(());
-                    };
-                    // 只重试流建立前的瞬时错误（见 retry 模块文档）；
-                    // 取消与致命错误直接终止
-                    if !error.retryable
-                        || retries >= retry_policy.max_retries
-                        || cancel.is_cancelled()
-                    {
-                        break Err(error.message);
-                    }
-                    retries += 1;
-                    let delay = retry_policy.delay(retries);
-                    tracing::warn!(
-                        error = %error.message,
-                        retry = retries,
-                        max_retries = retry_policy.max_retries,
-                        delay_ms = delay.as_millis(),
-                        "llm request failed, retrying"
-                    );
-                    if sleep_or_cancel(delay, &cancel).await {
-                        break Err("request aborted".to_string());
-                    }
-                    // 防御性重置：重试边界保证失败时未发出任何事件，
-                    // output 应未被触碰；重置使该不变式显式成立
-                    output = empty_output(&model_for_cost);
-                };
-                let elapsed_ms = started.elapsed().as_millis();
-                match result {
-                    Ok(()) => {
-                        model_for_cost.calculate_cost(&mut output.usage);
-                        tracing::debug!(
-                            stop_reason = ?output.stop_reason,
-                            input_tokens = output.usage.input,
-                            output_tokens = output.usage.output,
-                            cache_read_tokens = output.usage.cache_read,
-                            elapsed_ms,
-                            "llm request finished"
-                        );
-                        let _ = tx.send(AssistantEvent::Done {
-                            message: Box::new(output),
-                        });
-                    }
-                    Err(error) => {
-                        model_for_cost.calculate_cost(&mut output.usage);
-                        if cancel.is_cancelled() {
-                            tracing::debug!(elapsed_ms, "llm request aborted");
-                        } else {
-                            tracing::warn!(%error, elapsed_ms, "llm request failed");
-                        }
-                        output.stop_reason = if cancel.is_cancelled() {
-                            StopReason::Aborted
-                        } else {
-                            StopReason::Error
-                        };
-                        output.error_message = Some(error);
-                        let _ = tx.send(AssistantEvent::Error {
-                            message: Box::new(output),
-                        });
-                    }
-                }
-            }
-            .instrument(span),
-        );
+/// OpenAI 的一次流式请求尝试（[`spawn_stream`] 的 provider 侧）。
+struct OpenAiAttempt {
+    client: reqwest::Client,
+    call: StreamCall,
+}
 
-        stream
+impl StreamAttempt for OpenAiAttempt {
+    async fn run(
+        &mut self,
+        output: &mut AssistantMessage,
+        tx: &tokio::sync::mpsc::UnboundedSender<AssistantEvent>,
+        cancel: CancellationToken,
+    ) -> Result<(), RequestError> {
+        run(&self.client, &self.call, cancel, output, tx).await
     }
 }
 

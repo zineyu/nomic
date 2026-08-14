@@ -123,7 +123,7 @@ nomic --cwd /path/to/project
 | 模式 | 键位 | 说明 |
 | ---- | ---- | ---- |
 | INSERT | `Enter` | 发送消息（运行中排入队列，当前步骤完成后注入本轮）；`/` 开头按普通文本发送，不触发命令 |
-| INSERT | `Esc` | 进入 NORMAL（运行中亦然；中断在 NORMAL 按 `q` 或再按一次 `Esc`） |
+| INSERT | `Esc` | 进入 NORMAL（运行中亦然，Esc 永不中断运行；中断/退出在 NORMAL 按 `q`） |
 | INSERT | `Ctrl+W` `Ctrl+U` `Ctrl+A/E` `Alt+B/F` | 删词 / 清行 / 行首行尾 / 词移动 |
 | INSERT | `Ctrl+C` / `Ctrl+D` | 清草稿（再按退出）/ 空草稿退出、非空删字符 |
 | INSERT | `↑/↓` | 输入历史召回（提交过的 prompt，↓ 到底还原暂存草稿） |
@@ -134,7 +134,7 @@ nomic --cwd /path/to/project
 | NORMAL | `m` `r` | 队列编辑 / 重试最近一轮 |
 | NORMAL | `s` `b` `c` | 恢复会话 / 会话树（创建分支）/ 新建会话 |
 | NORMAL | `e` `:` `?` | 外部编辑器 / 命令输入框 / 帮助弹层 |
-| NORMAL | `q` | 运行中中断本轮（留在 NORMAL）；空闲退出 |
+| NORMAL | `q` | 退出：运行中先中断本轮、再按一次确认退出；空闲直接退出（有未发送草稿或排队消息时需再按确认） |
 | NORMAL | `i` `a` `A` `I` `Enter` | 回到输入（光标原位 / 末尾 / 行首） |
 | COMMAND | `Enter` / `Tab` | 执行命令 / 补全命令、模板、skill |
 | COMMAND | `Esc` | 关补全弹层 / 放弃返回 NORMAL |

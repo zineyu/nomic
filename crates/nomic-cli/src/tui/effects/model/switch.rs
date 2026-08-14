@@ -333,7 +333,7 @@ mod tests {
         match job {
             Ok(DriverJob::Prompt(..)) => "Prompt",
             Ok(DriverJob::Compact(..)) => "Compact",
-            Ok(DriverJob::Retry(..)) => "Retry",
+            Ok(DriverJob::Continue(..)) => "Continue",
             Ok(DriverJob::Inject(..)) => "Inject",
             Ok(DriverJob::Clear) => "Clear",
             Ok(DriverJob::Restore(..)) => "Restore",

@@ -93,10 +93,10 @@ pub(super) const COMMANDS: &[Command] = &[
         usage: "compact [聚焦指令]",
     },
     Command {
-        name: "retry",
+        name: "continue",
         aliases: &[],
-        summary: "重试最近一轮失败的响应（移除失败消息，以原 user 消息重新请求模型）",
-        usage: "retry",
+        summary: "续跑：重发最后一条消息（user 消息或 tool result）重新请求模型",
+        usage: "continue",
     },
     Command {
         name: "models",
@@ -176,8 +176,8 @@ pub(super) enum CommandAction {
     Skill(Option<SkillInvocation>),
     /// `compact [聚焦指令]` 手动压缩上下文
     Compact(Option<String>),
-    /// `retry` 重试最近一轮失败的响应
-    Retry,
+    /// `continue` 续跑：重发最后一条消息（user 消息或 tool result）
+    Continue,
     /// `models`（None）打开模型选择器；`models:<provider>/<id>` 直接切换
     Models(Option<String>),
     /// `image <路径>` 为下一条消息附加图片
@@ -194,7 +194,7 @@ impl CommandAction {
     /// 是否为本地命令：不触碰 agent/driver 状态（不发送 driver job），
     /// 运行中（含工具执行中）可安全执行，不被工具调用阻塞。
     ///
-    /// 会话命令（`new` `resume` `tree` `compact` `retry` `models`
+    /// 会话命令（`new` `resume` `tree` `compact` `continue` `models`
     /// `skill:<name>`）都要经 driver 串行修改 agent 上下文，而 agent 方法
     /// 的调用契约要求非运行状态，因此仍须等本轮结束。
     const fn is_local(&self) -> bool {
@@ -316,7 +316,7 @@ fn parse_command(input: &str) -> CommandParse {
                 "new" if !junk && arg.is_none() => CommandAction::New,
                 "resume" if !junk && arg.is_none() => CommandAction::Resume,
                 "tree" if !junk && arg.is_none() => CommandAction::Tree,
-                "retry" if !junk && arg.is_none() => CommandAction::Retry,
+                "continue" if !junk && arg.is_none() => CommandAction::Continue,
                 "copy" if !junk && arg.is_none() => CommandAction::Copy,
                 "thinking" if !junk && arg.is_none() => CommandAction::Thinking,
                 "goal" if !junk && arg.is_none() => CommandAction::Goal,
@@ -436,9 +436,9 @@ pub(super) enum Effect {
     },
     /// `compact` 手动压缩上下文（`running` 已置位，NORMAL `q` 可取消）
     Compact(Option<String>),
-    /// `retry` 重试最近一轮失败的响应（`running` 已置位，聊天区尾部
+    /// `continue` 续跑：重发最后一条消息（`running` 已置位，聊天区尾部
     /// 失败/未定稿条目已随历史中的失败消息一并移除）
-    Retry,
+    Continue,
     /// 取消当前运行（NORMAL `q`、`Ctrl+C` 硬退出）
     Cancel,
     /// INSERT `Ctrl+G`：挂起 TUI，用外部编辑器（`$VISUAL`/`$EDITOR`，

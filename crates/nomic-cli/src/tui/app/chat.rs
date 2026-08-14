@@ -241,8 +241,8 @@ impl Chat {
         })
     }
 
-    /// `retry` 命令：弹出聊天区尾部失败/未定稿的 assistant 条目（随历史中的
-    /// 失败消息一并移除，与 `Agent::retry` 同一口径）。
+    /// `continue` 命令：弹出聊天区尾部失败/未定稿的 assistant 条目（随历史中的
+    /// 失败消息一并移除，与 `Agent::continue_run` 同一口径）。
     pub(super) fn pop_trailing_failed_assistant(&mut self) {
         while matches!(
             self.items.last(),

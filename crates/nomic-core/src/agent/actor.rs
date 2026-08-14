@@ -5,7 +5,7 @@
 //! 交互经邮箱完成——`&mut Agent` 时代的「仅非运行状态调用」纪律对
 //! handle 调用方不复存在，命令在 actor 内按到达顺序串行执行。
 //!
-//! - `prompt` / `retry` / `compact` 携带本轮取消令牌，经 oneshot 回执
+//! - `prompt` / `continue_run` / `compact` 携带本轮取消令牌，经 oneshot 回执
 //!   返回结果；
 //! - `inject_user_message` 等变更为 fire-and-forget：邮箱 FIFO 即顺序
 //!   保证，紧随其后的 `prompt` 一定跑在变更之后；
@@ -47,8 +47,8 @@ enum AgentCommand {
         cancel: CancellationToken,
         reply: oneshot::Sender<Result<Vec<Message>, AgentError>>,
     },
-    /// 重试最近一轮失败的响应
-    Retry {
+    /// 续跑：重发历史尾部的消息（user 消息或 tool result）
+    Continue {
         cancel: CancellationToken,
         reply: oneshot::Sender<Result<Option<Vec<Message>>, AgentError>>,
     },
@@ -123,14 +123,14 @@ impl AgentHandle {
             .await??)
     }
 
-    /// 重试最近一轮失败的响应；无可重试状态返回 `Ok(None)`。语义同
-    /// [`Agent::retry`]。
-    pub async fn retry(
+    /// 续跑：重发历史尾部的消息（user 消息或 tool result）；尾部不是
+    /// 可续跑消息时返回 `Ok(None)`。语义同 [`Agent::continue_run`]。
+    pub async fn continue_run(
         &self,
         cancel: CancellationToken,
     ) -> Result<Option<Vec<Message>>, ActorError> {
         Ok(self
-            .call(|reply| AgentCommand::Retry { cancel, reply })
+            .call(|reply| AgentCommand::Continue { cancel, reply })
             .await??)
     }
 
@@ -244,8 +244,8 @@ impl Agent {
                     } => {
                         let _ = reply.send(agent.prompt_with_images(&text, &images, cancel).await);
                     }
-                    AgentCommand::Retry { cancel, reply } => {
-                        let _ = reply.send(agent.retry(cancel).await);
+                    AgentCommand::Continue { cancel, reply } => {
+                        let _ = reply.send(agent.continue_run(cancel).await);
                     }
                     AgentCommand::Compact {
                         instructions,

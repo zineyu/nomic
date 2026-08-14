@@ -1,6 +1,6 @@
 //! agent driver：薄适配层——agent 本体由 core 的 actor 任务持有
 //! （[`Agent::spawn`]，ADR-0022），driver 任务串行执行事件循环提交的
-//! job（prompt / 压缩 / 重试 / 模型切换等）并回传结果；事件循环的
+//! job（prompt / 压缩 / 续跑 / 模型切换等）并回传结果；事件循环的
 //! 唤醒处理（[`handle_wake`] / [`handle_prompt_done`] / [`next_wake`]）与
 //! 按键映射（[`map_key`]）、Effect 外部资源接线（[`execute_effect`]）也在此。
 
@@ -31,8 +31,8 @@ pub(super) enum DriverJob {
     Prompt(String, Vec<nomic_ai::ImageContent>, CancellationToken),
     /// 手动压缩上下文（`/compact [聚焦指令]`，附本轮取消令牌）
     Compact(Option<String>, CancellationToken),
-    /// 重试最近一轮失败的响应（`retry`，附本轮取消令牌）
-    Retry(CancellationToken),
+    /// 续跑：重发历史尾部的消息（`continue`，附本轮取消令牌）
+    Continue(CancellationToken),
     /// 向 agent 历史注入一条 user 消息（`skill:<name>` 手动载入），不启动 run
     Inject(String),
     /// 清空 agent 上下文（`new`）
@@ -66,8 +66,8 @@ pub(super) enum DriverDone {
     Prompt(Result<PromptEnd, String>),
     /// 一次手动压缩结束（Ok(None) 表示无可压缩内容；Err 为摘要失败）
     Compact(Result<Option<Compaction>, String>),
-    /// 一次重试结束（Ok(false) 表示无可重试状态；Err 为 loop 错误）
-    Retry(Result<bool, String>),
+    /// 一次续跑结束（Ok(false) 表示历史尾部无可续跑消息；Err 为 loop 错误）
+    Continue(Result<bool, String>),
 }
 
 /// 一轮 prompt 的结束回执（goal 模式是否自动追问的判定依据）。
@@ -130,13 +130,13 @@ pub(super) fn spawn_driver(
                         return;
                     }
                 }
-                DriverJob::Retry(cancel) => {
+                DriverJob::Continue(cancel) => {
                     let result = handle
-                        .retry(cancel)
+                        .continue_run(cancel)
                         .await
                         .map(|outcome| outcome.is_some())
                         .map_err(|error| error.to_string());
-                    if done_tx.send(DriverDone::Retry(result)).is_err() {
+                    if done_tx.send(DriverDone::Continue(result)).is_err() {
                         return;
                     }
                 }
@@ -275,15 +275,14 @@ pub(super) async fn handle_wake(
                 };
                 app.finish_run(notice);
             }
-            DriverDone::Retry(result) => {
+            DriverDone::Continue(result) => {
                 driver.current_cancel = None;
-                let notice = match result {
-                    // 重试成功经事件流渲染与落库，这里无需重复处理
+                // 续跑成功经事件流渲染与落库，这里无需重复处理
+                app.finish_run(match result {
                     Ok(true) => None,
-                    Ok(false) => Some("最近一轮没有失败的响应，无需重试。".to_string()),
-                    Err(error) => Some(format!("重试失败：{error}")),
-                };
-                app.finish_run(notice);
+                    Ok(false) => Some("历史尾部没有可续跑的消息。".to_string()),
+                    Err(error) => Some(format!("续跑失败：{error}")),
+                });
             }
         },
         Wake::Tick => app.tick(),
@@ -513,12 +512,13 @@ pub(super) async fn execute_effect(
                 app.finish_run(Some("内部错误：agent 任务已退出，无法压缩。".to_string()));
             }
         }
-        Effect::Retry => {
+        Effect::Continue => {
             let token = CancellationToken::new();
-            if driver.job_tx.send(DriverJob::Retry(token.clone())).is_ok() {
+            let sent = driver.job_tx.send(DriverJob::Continue(token.clone()));
+            if sent.is_ok() {
                 driver.current_cancel = Some(token);
             } else {
-                app.finish_run(Some("内部错误：agent 任务已退出，无法重试。".to_string()));
+                app.finish_run(Some("内部错误：agent 任务已退出，无法续跑。".to_string()));
             }
         }
         Effect::Cancel => {

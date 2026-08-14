@@ -159,7 +159,7 @@ nomic --cwd /path/to/project
 | `skill` `skill:<name>[ args]` | 列出可用 skill / 手动载入指定 skill（可附加上下文） |
 | `image:<路径>` | 为下一条消息附加图片（可多次附加） |
 | `compact [聚焦指令]` | 手动压缩上下文 |
-| `retry` | 重试最近一轮失败的响应 |
+| `continue` | 续跑：重发最后一条消息（user 消息或 tool result）重新请求模型 |
 | `copy` | 复制最新一条消息到剪贴板 |
 | `thinking` | 切换 thinking 内容折叠/展开显示 |
 | `goal` | 开关 goal 模式：开启后 react loop 停止时若 todo 未全部完成，自动以 user 消息追问 |
@@ -167,7 +167,7 @@ nomic --cwd /path/to/project
 
 运行中本地命令（`help`、`copy` 等）照常可用，不被工具调用阻塞。
 运行中输入的普通消息按 `Enter` 排入统一消息队列（见上「排队输入」）；
-命令栏提交的模板调用同样入队；会话命令（`compact`、`retry`、`models` 等）仍须等本轮结束。
+命令栏提交的模板调用同样入队；会话命令（`compact`、`continue`、`models` 等）仍须等本轮结束。
 
 ### 会话恢复与分支
 

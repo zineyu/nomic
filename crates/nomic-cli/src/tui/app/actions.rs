@@ -398,14 +398,14 @@ impl App {
                 self.notice = None;
                 vec![Effect::Compact(instructions)]
             }
-            CommandAction::Retry => {
-                // 与 Agent::retry 同一口径：聊天区尾部失败/未定稿的 assistant
-                // 条目随历史中的失败消息一并移除；是否实际重跑由 driver 回执
-                // 告知（agent 历史是唯一权威，这里不做预判定）
+            CommandAction::Continue => {
+                // 与 Agent::continue_run 同一口径：聊天区尾部失败/未定稿的
+                // assistant 条目随历史中的失败消息一并移除；是否实际续跑由
+                // driver 回执告知（agent 历史是唯一权威，这里不做预判定）
                 self.chat.pop_trailing_failed_assistant();
                 self.running = true;
                 self.notice = None;
-                vec![Effect::Retry]
+                vec![Effect::Continue]
             }
             CommandAction::Resume => vec![Effect::ListSessions],
             CommandAction::Models(None) => vec![Effect::ListModels],

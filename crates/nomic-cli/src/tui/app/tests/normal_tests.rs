@@ -137,7 +137,7 @@ fn enter_while_running_blocks_session_commands() {
         "resume",
         "tree",
         "compact",
-        "retry",
+        "continue",
         "models",
         "skill:jujutsu",
     ] {

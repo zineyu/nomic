@@ -265,10 +265,7 @@ fn template_completion_lists_templates_with_commands() {
         prefixed.command.insert_char(c);
     }
     let completion = prefixed.command.completion().expect("前缀弹出候选");
-    assert_eq!(
-        candidate_fragments(completion),
-        vec!["resume", "retry", "review"]
-    );
+    assert_eq!(candidate_fragments(completion), vec!["resume", "review"]);
 
     // Tab 填入首个候选（接受后候选收敛到精确匹配，再次 Tab 不变）
     prefixed.command.tab_complete();

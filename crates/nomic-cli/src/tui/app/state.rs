@@ -430,7 +430,7 @@ impl App {
             CommandParse::Known(action) => {
                 if self.running && !action.is_local() {
                     self.notice = Some(
-                        "运行中：会话命令（compact、retry、models 等）须等本轮结束".to_string(),
+                        "运行中：会话命令（compact、continue、models 等）须等本轮结束".to_string(),
                     );
                     return None;
                 }
@@ -476,7 +476,7 @@ impl App {
     }
 
     /// NORMAL 模式键位（ADR-0021）：单字母动作层——less 式滚动（j/k、
-    /// d/u 半页、g/G 顶底）、`Y` 复制最新消息、`m` 队列、`r` 重试、
+    /// d/u 半页、g/G 顶底）、`Y` 复制最新消息、`m` 队列、`r` 续跑、
     /// `e` 编辑器、`q` 中断运行；输入字符不进入缓冲（草稿保留，
     /// `i`/`a`/`Enter` 回到 INSERT 继续编辑）。NORMAL 是纯浏览态，不持有
     /// 消息游标（ADR-0026）。退出程序不在此层：用 COMMAND 模式的
@@ -500,8 +500,8 @@ impl App {
             Key::Char('s') => return self.session_command(Effect::ListSessions),
             Key::Char('b') => return self.session_command(Effect::ListTree),
             Key::Char('c') => return self.session_command(Effect::NewSession),
-            // r：重试最近失败的一轮（与 /retry 同一口径；运行中拒绝）
-            Key::Char('r') => return self.retry_last(),
+            // r：续跑（重发最后一条消息，与 continue 命令同一口径；运行中拒绝）
+            Key::Char('r') => return self.continue_last(),
             // e：外部编辑器编辑草稿（与 INSERT Ctrl+G 同一效果）
             Key::Char('e') => return vec![Effect::OpenEditor],
             // `?` 打开键位帮助弹层（只读；Esc/`?` 关闭）
@@ -544,17 +544,17 @@ impl App {
         Vec::new()
     }
 
-    /// NORMAL `r`：重试最近失败的一轮（与 `retry` 命令同一口径）；
+    /// NORMAL `r`：续跑（重发最后一条消息，与 `continue` 命令同一口径）；
     /// 运行中拒绝并提示。
-    pub fn retry_last(&mut self) -> Vec<Effect> {
+    pub fn continue_last(&mut self) -> Vec<Effect> {
         if self.running {
-            self.notice = Some("运行中：等本轮结束后再重试".to_string());
+            self.notice = Some("运行中：等本轮结束后再续跑".to_string());
             return Vec::new();
         }
         self.chat.pop_trailing_failed_assistant();
         self.running = true;
         self.notice = None;
-        vec![Effect::Retry]
+        vec![Effect::Continue]
     }
 
     /// NORMAL 的「离开动作层」键位：`i`/`a` 回 INSERT（光标原位），

@@ -428,7 +428,7 @@ async fn pre_stream_error_emits_paired_message_start_and_end() {
 }
 
 #[tokio::test]
-async fn retry_after_error_drops_failed_message_and_reruns() {
+async fn continue_after_error_drops_failed_message_and_reruns() {
     let provider = MockProvider::new(vec![
         error_done(StopReason::Error, "boom"),
         text_done("recovered"),
@@ -440,15 +440,15 @@ async fn retry_after_error_drops_failed_message_and_reruns() {
         .await
         .expect("prompt");
     assert_eq!(agent.messages().len(), 2);
-    // 清掉首轮事件，隔离观察 retry 本身发出的事件
+    // 清掉首轮事件，隔离观察 continue 本身发出的事件
     while rx.try_recv().is_ok() {}
 
     let collector = tokio::spawn(collect_events(rx));
     let new_messages = agent
-        .retry(CancellationToken::new())
+        .continue_run(CancellationToken::new())
         .await
-        .expect("retry")
-        .expect("retried");
+        .expect("continue")
+        .expect("continued");
     let events = collector.await.expect("collector");
 
     // 不重新注入 user 消息：本次新增只有 assistant 响应；
@@ -459,13 +459,13 @@ async fn retry_after_error_drops_failed_message_and_reruns() {
     assert!(matches!(&all[0], Message::User(_)));
     assert!(matches!(&all[1], Message::Assistant(m) if m.stop_reason == StopReason::Stop));
     assert_eq!(provider.context_lens(), vec![1, 1]);
-    // 重试复用 prompt 的运行事件边界
+    // 续跑复用 prompt 的运行事件边界
     assert!(matches!(events.first(), Some(AgentEvent::AgentStart)));
     assert!(matches!(events.last(), Some(AgentEvent::AgentEnd { .. })));
 }
 
 #[tokio::test]
-async fn retry_after_abort_drops_aborted_message_and_reruns() {
+async fn continue_after_abort_drops_aborted_message_and_reruns() {
     let provider = MockProvider::new(vec![
         error_done(StopReason::Aborted, "cancelled"),
         text_done("recovered"),
@@ -476,19 +476,19 @@ async fn retry_after_abort_drops_aborted_message_and_reruns() {
         .prompt("hi", CancellationToken::new())
         .await
         .expect("prompt");
-    let retried = agent
-        .retry(CancellationToken::new())
+    let continued = agent
+        .continue_run(CancellationToken::new())
         .await
-        .expect("retry")
-        .expect("retried");
+        .expect("continue")
+        .expect("continued");
 
-    assert_eq!(retried.len(), 1);
+    assert_eq!(continued.len(), 1);
     assert_eq!(agent.messages().len(), 2);
     assert_eq!(provider.context_lens(), vec![1, 1]);
 }
 
 #[tokio::test]
-async fn retry_after_successful_run_returns_none() {
+async fn continue_after_successful_run_returns_none() {
     let provider = MockProvider::new(vec![text_done("ok")]);
     let (mut agent, _rx) = make_agent(provider.clone(), vec![]);
 
@@ -496,24 +496,80 @@ async fn retry_after_successful_run_returns_none() {
         .prompt("hi", CancellationToken::new())
         .await
         .expect("prompt");
-    let outcome = agent.retry(CancellationToken::new()).await.expect("retry");
+    let outcome = agent
+        .continue_run(CancellationToken::new())
+        .await
+        .expect("continue");
 
-    // 最近一轮已成功：无可重试状态，历史不变，不消耗 provider 脚本
+    // 最近一轮已成功：尾部是 assistant，无可续跑消息，历史不变，不消耗 provider 脚本
     assert!(outcome.is_none());
     assert_eq!(agent.messages().len(), 2);
     assert_eq!(provider.context_lens(), vec![1]);
 }
 
 #[tokio::test]
-async fn retry_on_empty_history_returns_none() {
+async fn continue_on_empty_history_returns_none() {
     let provider = MockProvider::new(vec![text_done("unused")]);
     let (mut agent, _rx) = make_agent(provider.clone(), vec![]);
 
-    let outcome = agent.retry(CancellationToken::new()).await.expect("retry");
+    let outcome = agent
+        .continue_run(CancellationToken::new())
+        .await
+        .expect("continue");
 
     assert!(outcome.is_none());
     assert!(agent.messages().is_empty());
     assert!(provider.context_lens().is_empty());
+}
+
+#[tokio::test]
+async fn continue_after_tool_result_reruns_without_reinjecting() {
+    let provider = MockProvider::new(vec![text_done("finished the turn")]);
+    let (mut agent, mut rx) = make_agent(provider.clone(), vec![]);
+
+    // 历史以 tool result 结尾（如工具执行后被取消/终止的轮次）：续跑重发该消息
+    agent.restore_messages(vec![
+        Message::User(nomic_ai::UserMessage {
+            content: nomic_ai::UserMessageContent::Text("run the tool".to_string()),
+            timestamp: now_millis(),
+        }),
+        Message::ToolResult(nomic_ai::ToolResultMessage {
+            tool_call_id: "c1".to_string(),
+            tool_name: "echo".to_string(),
+            content: vec![nomic_ai::UserContent::Text(TextContent {
+                text: "tool output".to_string(),
+                text_signature: None,
+            })],
+            details: None,
+            is_error: false,
+            timestamp: now_millis(),
+        }),
+    ]);
+    while rx.try_recv().is_ok() {}
+
+    let collector = tokio::spawn(collect_events(rx));
+    let new_messages = agent
+        .continue_run(CancellationToken::new())
+        .await
+        .expect("continue")
+        .expect("continued");
+    let events = collector.await.expect("collector");
+
+    // 不重新注入消息：新增只有 assistant 响应，tool result 留在历史中作为上下文
+    assert_eq!(new_messages.len(), 1);
+    assert!(matches!(
+        &new_messages[0],
+        Message::Assistant(m) if m.stop_reason == StopReason::Stop
+    ));
+    assert_eq!(agent.messages().len(), 3);
+    assert!(matches!(
+        agent.messages().last(),
+        Some(Message::Assistant(_))
+    ));
+    assert!(!events.iter().any(|e| matches!(
+        e,
+        AgentEvent::MessageStart(m) if matches!(m.as_ref(), Message::User(_))
+    )));
 }
 
 #[tokio::test]

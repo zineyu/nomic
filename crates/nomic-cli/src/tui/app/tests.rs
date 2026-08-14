@@ -420,8 +420,8 @@ fn parse_command_dispatches_known_unknown_and_slash_prefixed() {
         CommandParse::Known(CommandAction::Goal)
     );
     assert_eq!(
-        parse_command("retry"),
-        CommandParse::Known(CommandAction::Retry)
+        parse_command("continue"),
+        CommandParse::Known(CommandAction::Continue)
     );
     assert_eq!(
         parse_command("foobar"),
@@ -518,7 +518,7 @@ fn goal_toggles_mode_state() {
 }
 
 #[test]
-fn retry_pops_trailing_failed_assistant_and_requests_retry() {
+fn continue_pops_trailing_failed_assistant_and_requests_continue() {
     let mut app = app();
     app.handle_event(&AgentEvent::MessageStart(user_message("hi")));
     app.handle_event(&AgentEvent::MessageStart(assistant_message(
@@ -531,17 +531,17 @@ fn retry_pops_trailing_failed_assistant_and_requests_retry() {
         context_tokens: 0,
     });
 
-    let effects = app.execute_command(CommandAction::Retry);
+    let effects = app.execute_command(CommandAction::Continue);
 
-    // 失败条目随历史中的失败消息一并移除；提交重试请求并进入运行态
-    assert!(matches!(&effects[..], [Effect::Retry]));
+    // 失败条目随历史中的失败消息一并移除；提交续跑请求并进入运行态
+    assert!(matches!(&effects[..], [Effect::Continue]));
     assert!(app.running);
     assert_eq!(app.chat.items.len(), 1);
     assert!(matches!(app.chat.items[0], ChatItem::User(_)));
 }
 
 #[test]
-fn retry_pops_unfinished_assistant_item() {
+fn continue_pops_unfinished_assistant_item() {
     // 流协议错误路径：MessageStart 后没有 MessageEnd 的未定稿条目同样移除
     let mut app = app();
     app.handle_event(&AgentEvent::MessageStart(user_message("hi")));
@@ -551,16 +551,16 @@ fn retry_pops_unfinished_assistant_item() {
         None,
     )));
 
-    let effects = app.execute_command(CommandAction::Retry);
+    let effects = app.execute_command(CommandAction::Continue);
 
-    assert!(matches!(&effects[..], [Effect::Retry]));
+    assert!(matches!(&effects[..], [Effect::Continue]));
     assert_eq!(app.chat.items.len(), 1);
     assert!(matches!(app.chat.items[0], ChatItem::User(_)));
 }
 
 #[test]
-fn retry_after_success_keeps_items_and_delegates() {
-    // 是否可重试由 agent 判定（历史是唯一权威）：成功条目保留，照常提交
+fn continue_after_success_keeps_items_and_delegates() {
+    // 是否可续跑由 agent 判定（历史是唯一权威）：成功条目保留，照常提交
     let mut app = app();
     app.handle_event(&AgentEvent::MessageStart(user_message("hi")));
     app.handle_event(&AgentEvent::MessageStart(assistant_message(
@@ -573,9 +573,9 @@ fn retry_after_success_keeps_items_and_delegates() {
         context_tokens: 0,
     });
 
-    let effects = app.execute_command(CommandAction::Retry);
+    let effects = app.execute_command(CommandAction::Continue);
 
-    assert!(matches!(&effects[..], [Effect::Retry]));
+    assert!(matches!(&effects[..], [Effect::Continue]));
     assert_eq!(app.chat.items.len(), 2);
 }
 

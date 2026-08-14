@@ -302,18 +302,18 @@ impl Agent {
         Ok(new_messages)
     }
 
-    /// 重试最近一轮失败的响应（`/retry`）：弹出历史尾部失败（Error/Aborted）
-    /// 的 assistant 消息，以暴露出的 user 消息为起点重跑 loop。
+    /// 续跑（`/continue`）：重发历史尾部的消息——弹出尾部失败（Error/Aborted）
+    /// 的 assistant 消息，以暴露出的最后一条消息（user 消息或 tool result）
+    /// 为起点重跑 loop。
     ///
     /// 不重新注入 user 消息（原消息含图片附件仍在历史中，不会在上下文里
     /// 重复）；弹出的失败消息不回填——失败/中止的响应不应作为上下文继续
     /// 发给模型（部分内容 + 缺失 toolResult 会被 API 拒绝）。session 落库是
     /// append-only，失败消息仍留在 session 记录中，resume 时按历史回放。
     ///
-    /// 无可重试状态（历史不以 user 消息结尾，如最近一轮已成功）返回
-    /// `Ok(None)`；与 [`Self::prompt`] 同一错误口径，`Err` 仅表示 provider
-    /// 违反流协议。
-    pub async fn retry(
+    /// 历史尾部不是可续跑消息（最近一轮已成功、空历史等）返回 `Ok(None)`；
+    /// 与 [`Self::prompt`] 同一错误口径，`Err` 仅表示 provider 违反流协议。
+    pub async fn continue_run(
         &mut self,
         cancel: CancellationToken,
     ) -> Result<Option<Vec<Message>>, AgentError> {
@@ -324,22 +324,25 @@ impl Agent {
         ) {
             self.messages.pop();
         }
-        if !matches!(self.messages.last(), Some(Message::User(_))) {
+        if !matches!(
+            self.messages.last(),
+            Some(Message::User(_) | Message::ToolResult(_))
+        ) {
             return Ok(None);
         }
 
         let mut new_messages = Vec::new();
-        tracing::debug!("agent retry started");
+        tracing::debug!("agent continue started");
         self.emit(AgentEvent::AgentStart);
         if let Err(error) = self.run_loop(&mut new_messages, cancel).await {
-            tracing::error!(%error, "agent retry failed");
+            tracing::error!(%error, "agent continue failed");
             return Err(error);
         }
         self.emit(AgentEvent::AgentEnd {
             messages: new_messages.clone(),
             context_tokens: estimate_context_tokens(&self.messages),
         });
-        tracing::info!(new_messages = new_messages.len(), "agent retry finished");
+        tracing::info!(new_messages = new_messages.len(), "agent continue finished");
         Ok(Some(new_messages))
     }
 

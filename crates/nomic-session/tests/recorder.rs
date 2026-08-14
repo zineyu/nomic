@@ -155,7 +155,7 @@ async fn failed_append_keeps_tip() {
     recorder
         .record(&message_end(user_message("二", 2)))
         .await
-        .expect("retry append");
+        .expect("continue append");
     assert_ne!(recorder.tip(), Some(tip.as_str()));
 }
 

@@ -253,7 +253,6 @@ fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
             PickerKind::Tree => "会话树 · 输入过滤 · ↑/↓ 选择 · Enter 创建分支 · Esc 取消",
             PickerKind::Models => "切换模型 · 输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
             PickerKind::Reasoning => "思考级别 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
-            PickerKind::Session => "会话菜单 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
         };
         (
             Some(Line::from(Span::styled(title, theme::accent()))),

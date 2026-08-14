@@ -66,7 +66,6 @@ impl App {
                         PickerKind::Tree => vec![Effect::BranchTo(id)],
                         PickerKind::Models => vec![Effect::SwitchModel(id)],
                         PickerKind::Reasoning => vec![Effect::SetReasoning(id)],
-                        PickerKind::Session => self.session_menu_confirm(&id),
                     };
                 }
             }
@@ -559,23 +558,15 @@ impl App {
         Some(entry)
     }
 
-    /// 会话菜单（NORMAL `s`）确认：恢复/新建/分支树三者都是会话命令，
-    /// 运行中拒绝并提示（与 COMMAND 下会话命令同一口径）。
-    pub fn session_menu_confirm(&mut self, id: &str) -> Vec<Effect> {
+    /// 会话命令（NORMAL `s`/`b`/`c` 直达）：恢复/分支树/新建都是
+    /// 会话命令，运行中拒绝并提示（与 COMMAND 下会话命令同一口径）。
+    pub fn session_command(&mut self, effect: Effect) -> Vec<Effect> {
         if self.running {
             self.notice = Some("运行中：会话命令（恢复/新建/分支树）须等本轮结束".to_string());
             return Vec::new();
         }
         self.notice = None;
-        match id {
-            "resume" => vec![Effect::ListSessions],
-            "new" => vec![Effect::NewSession],
-            "tree" => vec![Effect::ListTree],
-            other => {
-                self.notice = Some(format!("未知会话菜单项 {other}"));
-                Vec::new()
-            }
-        }
+        vec![effect]
     }
 
     // ── spinner ─────────────────────────────────────────────────────────────

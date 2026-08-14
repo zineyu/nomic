@@ -2,7 +2,7 @@
 
 use super::{
     AgentEvent, App, Chat, ChatItem, CopyMenu, Effect, HALF_PAGE_SCROLL, Input, Key, Message, Mode,
-    PAGE_SCROLL, Picker, PromptsError, Queue, Search, SlashParse, StopReason, ToolItem, ToolStatus,
+    PAGE_SCROLL, PromptsError, Queue, Search, SlashParse, StopReason, ToolItem, ToolStatus,
     assistant_error, brief_args, estimate_context_tokens, parse_slash, usage_context_tokens,
     user_text,
 };
@@ -500,10 +500,10 @@ impl App {
             }
             // m：队列编辑 overlay（oil.nvim 式，ADR-0014）
             Key::Char('m') => self.enter_queue(),
-            // s：会话菜单（恢复 / 新建 / 分支树合一入口，ADR-0021）
-            Key::Char('s') => {
-                self.picker = Some(Picker::session());
-            }
+            // s/b/c：会话命令直达（恢复 / 分支树 / 新建，ADR-0021 修订）
+            Key::Char('s') => return self.session_command(Effect::ListSessions),
+            Key::Char('b') => return self.session_command(Effect::ListTree),
+            Key::Char('c') => return self.session_command(Effect::NewSession),
             // r：重试最近失败的一轮（与 /retry 同一口径；运行中拒绝）
             Key::Char('r') => return self.retry_last(),
             // e：外部编辑器编辑草稿（与 INSERT Ctrl+G 同一效果）

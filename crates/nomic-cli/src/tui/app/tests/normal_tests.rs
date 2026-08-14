@@ -1,4 +1,4 @@
-//! NORMAL 模式 / 会话菜单 / 搜索相关测试。
+//! NORMAL 模式 / 会话快捷键 / 搜索相关测试。
 
 use super::*;
 
@@ -341,38 +341,38 @@ fn normal_mode_ctrl_c_quits_and_d_scrolls() {
     assert!(running.should_quit(), "运行中 Ctrl+C 也退出");
 }
 
-/// NORMAL `s`：会话菜单 overlay，Enter 分发恢复/新建/分支树；
-/// 运行中拒绝。
+/// NORMAL 会话快捷键（ADR-0021 修订）：`s` 恢复会话、`b` 会话树创建分支、
+/// `c` 新建会话，均直达对应 Effect；运行中拒绝并提示。
 #[test]
-fn normal_s_opens_session_menu() {
+fn normal_session_shortcuts_dispatch_directly() {
     let mut app = app();
     app.press(Key::Esc);
-    app.press(Key::Char('s'));
-    assert_eq!(app.mode(), Mode::Picker);
-    assert!(matches!(app.picker(), Some(p) if matches!(p.kind, PickerKind::Session)));
 
-    // 默认选中第一项（恢复 session）
-    let effects = app.press(Key::Enter);
+    // s：恢复会话（列出 session 打开选择器）
+    let effects = app.press(Key::Char('s'));
     assert!(matches!(&effects[..], [Effect::ListSessions]));
-
-    // 选中「新建对话」（picker 关闭后回 NORMAL，直接重开）
-    app.press(Key::Char('s'));
-    app.press(Key::Down);
-    let effects = app.press(Key::Enter);
-    assert!(matches!(&effects[..], [Effect::NewSession]));
-
-    // 选中「会话树」
-    app.press(Key::Char('s'));
-    app.press(Key::Down);
-    app.press(Key::Down);
-    let effects = app.press(Key::Enter);
+    // b：会话树（创建分支）
+    let effects = app.press(Key::Char('b'));
     assert!(matches!(&effects[..], [Effect::ListTree]));
+    // c：新建会话
+    let effects = app.press(Key::Char('c'));
+    assert!(matches!(&effects[..], [Effect::NewSession]));
+    // 不再打开会话菜单 overlay
+    assert!(app.picker().is_none());
+    assert_eq!(app.mode(), Mode::Normal);
 
-    // 运行中拒绝
+    // 运行中拒绝（与 COMMAND 下会话命令同一口径）
     app.handle_event(&AgentEvent::AgentStart);
-    app.press(Key::Char('s'));
-    assert!(app.press(Key::Enter).is_empty());
-    assert!(app.notice().is_some_and(|n| n.contains("运行中")));
+    for key in ['s', 'b', 'c'] {
+        assert!(
+            app.press(Key::Char(key)).is_empty(),
+            "运行中 `{key}` 不应产生效果"
+        );
+        assert!(
+            app.notice().is_some_and(|n| n.contains("运行中")),
+            "运行中 `{key}` 应提示"
+        );
+    }
 }
 
 /// INSERT 历史召回：↑ 上一条 / ↓ 下一条，到最新后还原暂存草稿；

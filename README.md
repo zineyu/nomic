@@ -130,7 +130,8 @@ nomic -p "..." --reasoning low
 | NORMAL | `/` `n` `N` | 聊天搜索与跳转 |
 | NORMAL | `y` `Y` | 复制菜单（消息/代码块，`1-9` 直达）/ 直接复制最新消息 |
 | NORMAL | `Space` | 折叠/展开当前条目（assistant/工具输出） |
-| NORMAL | `m` `s` `r` | 队列编辑 / 会话菜单（恢复·新建·分支树）/ 重试最近一轮 |
+| NORMAL | `m` `r` | 队列编辑 / 重试最近一轮 |
+| NORMAL | `s` `b` `c` | 恢复会话 / 会话树（创建分支）/ 新建会话 |
 | NORMAL | `e` `:` `?` `q` | 外部编辑器 / 命令输入框 / 帮助弹层 / 退出 |
 | NORMAL | `i` `a` `A` `I` `Enter` | 回到输入（光标原位 / 末尾 / 行首） |
 | COMMAND | `Enter` / `Tab` | 执行命令 / 补全命令、模板、skill |

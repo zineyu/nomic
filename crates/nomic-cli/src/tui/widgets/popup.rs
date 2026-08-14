@@ -114,7 +114,6 @@ impl Widget for PickerPopup<'_> {
             PickerKind::Tree => "会话树",
             PickerKind::Models => "切换模型",
             PickerKind::Reasoning => "思考级别",
-            PickerKind::Session => "会话菜单",
         };
         let mut title = if total > COMPLETION_MAX_VISIBLE {
             format!("{action} {}/{total}", picker.selected + 1)

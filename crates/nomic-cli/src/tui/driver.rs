@@ -178,24 +178,28 @@ pub(super) fn spawn_driver(
     };
     Ok((driver, done_rx))
 }
-/// 事件循环持有的驱动端资源。
+/// 事件循环持有的驱动端资源。字段全私有（ADR-0024）：业务状态按关注点
+/// 收在子结构（[`SessionBinding`] / [`ModelSwitcher`] / [`GoalNudger`]），
+/// effects 函数经 [`execute_effect`] 转发拿到对应子结构，字段表不再是 interface。
 pub(super) struct Driver {
-    pub(super) job_tx: mpsc::UnboundedSender<DriverJob>,
-    pub(super) current_cancel: Option<CancellationToken>,
+    /// driver job 邮箱（提交 prompt / 压缩 / 恢复上下文 / 模型切换等任务）
+    job_tx: mpsc::UnboundedSender<DriverJob>,
+    /// 当前轮的取消令牌（Ctrl+C 取消用）
+    current_cancel: Option<CancellationToken>,
     /// agent actor 任务的 JoinHandle：任务退出时取出详情转为 TUI 内错误提示
-    pub(super) task: Option<tokio::task::JoinHandle<()>>,
+    task: Option<tokio::task::JoinHandle<()>>,
     /// driver 适配任务的 JoinHandle（与 actor 任务任一退出即整体不可用，
     /// [`driver_failed`] 等待先结束的一方并中止另一方）
-    pub(super) adapter_task: Option<tokio::task::JoinHandle<()>>,
+    adapter_task: Option<tokio::task::JoinHandle<()>>,
     /// actor 是否存活；退出后其 channel 已关闭，事件循环跳过对应分支
     alive: bool,
     /// 会话落库绑定（recorder + cwd）：定稿点落库与父指针推进收在
     /// [`SessionRecorder`]（print 同一实现），`/tree` 分支与 `/new` /
     /// `/resume` 的换绑收在 effects::session
-    pub(super) session: SessionBinding,
+    session: SessionBinding,
     /// 两步模型切换状态机（`/models`）：当前模型/思考级别、待切换模型
     /// 与运行时解析器收在其中（effects::model 持有定义）
-    pub(super) model: ModelSwitcher,
+    model: ModelSwitcher,
     /// skill 解析器（ListSkills/LoadSkill 接线用，仅本文件访问）
     skill_resolver: SkillResolver,
     /// goal 模式自动追问（todo 清单与连续追问计数、上限与清零时机收在其中）

@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::app::{App, Effect, Key, SkillEntry};
-use super::effects::{self, SessionBinding};
+use super::effects::{self, ModelSwitcher, SessionBinding};
 use super::terminal::edit_input_in_editor;
 use super::{MAX_GOAL_NUDGES, TuiTerminal, goal_reminder_prompt, panic_payload_text};
 use crate::model::ModelResolver;
@@ -171,11 +171,8 @@ pub(super) fn spawn_driver(
         adapter_task: Some(driver_task),
         alive: true,
         session: SessionBinding::new(recorder, std::env::current_dir().context("get cwd")?),
+        model: ModelSwitcher::new(models, model, reasoning),
         skill_resolver,
-        models,
-        model,
-        reasoning,
-        pending_model: None,
         todos,
         goal_nudges: 0,
     };
@@ -196,16 +193,11 @@ pub(super) struct Driver {
     /// [`SessionRecorder`]（print 同一实现），`/tree` 分支与 `/new` /
     /// `/resume` 的换绑收在 effects::session
     pub(super) session: SessionBinding,
+    /// 两步模型切换状态机（`/models`）：当前模型/思考级别、待切换模型
+    /// 与运行时解析器收在其中（effects::model 持有定义）
+    pub(super) model: ModelSwitcher,
+    /// skill 解析器（ListSkills/LoadSkill 接线用，仅本文件访问）
     skill_resolver: SkillResolver,
-    /// 运行时模型解析器（`/models` 候选与切换，与启动同一分层口径）
-    pub(super) models: ModelResolver,
-    /// 当前模型（`/models` 切换后更新；选择器预选与切换幂等判断用）
-    pub(super) model: Model,
-    /// 当前思考级别（`/models` 级别选择器确认后更新；预选与幂等判断用）
-    pub(super) reasoning: Option<ThinkingLevel>,
-    /// 待切换模型（模型切换流程第二步暂存）：模型选择器确认后、思考级别
-    /// 选择器确认（应用切换）或 Esc（放弃切换）前持有
-    pub(super) pending_model: Option<Model>,
     /// todo 清单（与 agent 的 todo 工具共享；goal 模式追问判定用）
     pub(super) todos: TodoStore,
     /// goal 模式连续自动追问次数（用户提交新 prompt 或 run 异常结束时清零）
@@ -553,10 +545,20 @@ pub(super) async fn execute_effect(
         Effect::BranchTo(entry_id) => {
             effects::branch_to(app, &mut driver.session, &driver.job_tx, entry_id).await;
         }
-        Effect::ListModels => effects::list_models(app, driver),
-        Effect::SwitchModel(id) => effects::select_model(app, driver, &id),
-        Effect::SetReasoning(level) => effects::set_reasoning(app, driver, &level),
-        Effect::CancelModelSwitch => effects::cancel_model_switch(app, driver),
+        Effect::ListModels => effects::list_models(app, &driver.model),
+        Effect::SwitchModel(id) => {
+            effects::select_model(app, &mut driver.model, &driver.job_tx, &driver.session, &id);
+        }
+        Effect::SetReasoning(level) => {
+            effects::set_reasoning(
+                app,
+                &mut driver.model,
+                &driver.job_tx,
+                &driver.session,
+                &level,
+            );
+        }
+        Effect::CancelModelSwitch => effects::cancel_model_switch(app, &mut driver.model),
         Effect::ListSkills => {
             // 列出时顺带刷新补全快照：会话期间新增的 skill 也能被 Tab 补全
             let catalog = driver.skill_resolver.catalog();

@@ -21,14 +21,13 @@ use crossterm::{
 use super::TuiTerminal;
 use super::app::{App, Mode};
 
-/// 光标是否用实心块：NORMAL/HELP/COPYMENU 与 QUEUE 导航子状态为实心块
-/// 光标是否用实心块：NORMAL/HELP/COPYMENU 与 QUEUE 导航子状态为实心块
+/// 光标是否用实心块：NORMAL/HELP 与 QUEUE 导航子状态为实心块
 ///（不可键入文本的浏览态）；COMMAND 是键入态，用竖条。
 pub(super) const fn block_cursor(app: &App) -> bool {
     match app.mode() {
-        Mode::Normal | Mode::Help | Mode::CopyMenu => true,
+        Mode::Normal | Mode::Help => true,
         Mode::Queue => !app.queue().is_editing(),
-        Mode::Insert | Mode::Command | Mode::Search | Mode::Picker => false,
+        Mode::Insert | Mode::Command | Mode::Picker => false,
     }
 }
 

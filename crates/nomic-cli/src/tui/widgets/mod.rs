@@ -4,7 +4,7 @@
 //! 对应 widget 渲染——聊天区 [`ChatView`]（只读；几何在渲染前由
 //! [`App::sync_chat_geometry`] 按视口算进状态层）、输入框 [`InputArea`]、
 //! 状态栏 [`StatusBar`]，以及贴输入框上方的弹层（[`CompletionPopup`] /
-//! [`PickerPopup`]）与模态覆盖层（[`CopyMenuOverlay`] / [`HelpOverlay`]）。
+//! [`PickerPopup`]）与模态覆盖层（[`HelpOverlay`]）。
 //! 各 widget 实现见同名子模块。
 
 mod chat;
@@ -24,7 +24,7 @@ use crate::tui::app::App;
 
 use chat::ChatView;
 use input::InputArea;
-use overlay::{CopyMenuOverlay, HelpOverlay};
+use overlay::HelpOverlay;
 use popup::{CompletionPopup, PickerPopup};
 use status::StatusBar;
 
@@ -63,14 +63,11 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     if let Some(picker) = app.picker() {
         frame.render_widget(PickerPopup::new(picker), chunks[1]);
     }
-    // 复制菜单与帮助弹层是模态覆盖层：内容区（状态栏以上）整体作为画布
+    // 帮助弹层是模态覆盖层：内容区（状态栏以上）整体作为画布
     let content = Rect {
         height: frame.area().height.saturating_sub(1),
         ..frame.area()
     };
-    if let Some(menu) = app.copy_menu() {
-        frame.render_widget(CopyMenuOverlay::new(menu), content);
-    }
     if app.help_open()
         && let Some(scroll) = app.help_scroll_mut()
     {
@@ -83,10 +80,8 @@ mod tests {
     use nomic_ai::Message;
     use nomic_core::{AgentEvent, ToolResult};
     use ratatui::{Terminal, backend::TestBackend};
-    use unicode_width::UnicodeWidthStr;
 
     use super::*;
-    use crate::tui::theme;
 
     /// 提取 buffer 全文（去空白），便于断言可见内容。
     fn compact_text(terminal: &Terminal<TestBackend>) -> String {
@@ -398,9 +393,8 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
         let compact = compact_text(&terminal);
         assert!(!compact.contains("Thinking"), "{compact}");
-        // 命令受理后回 NORMAL，游标落在该消息上：gutter 变为游标高亮竖条
-        assert!(compact.contains("▐推理第一行"), "{compact}");
-        assert!(compact.contains("▐推理第二行"), "{compact}");
+        assert!(compact.contains("▌推理第一行"), "{compact}");
+        assert!(compact.contains("▌推理第二行"), "{compact}");
     }
 
     /// 空状态绘制欢迎页：logo、模型名与键位速查均可见。
@@ -417,10 +411,9 @@ mod tests {
         assert!(compact.contains("/help"), "{compact}");
     }
 
-    /// NORMAL：状态栏显示模式徽标与浏览键位提示，消息游标定位到最新条目
-    ///（几何在渲染前已由状态层按视口计算，不再经渲染回写）。
+    /// NORMAL：状态栏显示模式徽标与浏览键位提示。
     #[test]
-    fn renders_normal_mode_badge_and_positions_cursor() {
+    fn renders_normal_mode_badge() {
         use super::super::app::Key;
         let mut app = App::new("test-model".to_string(), None, 200_000);
         app.handle_event(&AgentEvent::MessageStart(Box::new(Message::User(
@@ -436,65 +429,6 @@ mod tests {
 
         let compact = compact_text(&terminal);
         assert!(compact.contains("NORMAL"), "{compact}");
-        // 游标定位到最新（唯一）消息条目
-        assert_eq!(app.chat_cursor(), Some(0));
-    }
-
-    /// NORMAL 消息游标：整行铺暗色背景，gutter 统一为 `▐`（无 `❯` 箭头），
-    /// 块间隔空行延续高亮，形成连续的整行色带。
-    #[test]
-    fn normal_cursor_row_highlight_spans_full_width() {
-        use super::super::app::Key;
-        let mut app = App::new("test-model".to_string(), None, 200_000);
-        app.handle_event(&AgentEvent::MessageStart(Box::new(Message::User(
-            nomic_ai::UserMessage {
-                content: nomic_ai::UserMessageContent::Text("第一行\n第二行".to_string()),
-                timestamp: 0,
-            },
-        ))));
-        app.press(Key::Esc);
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
-
-        let buffer = terminal.backend().buffer();
-        let width = usize::from(buffer.area.width);
-        let cells = buffer.content();
-        let position_of = |symbol: &str| -> Option<usize> {
-            cells.iter().position(|cell| cell.symbol() == symbol)
-        };
-        // NORMAL 游标无 `❯` 箭头：gutter 全部为 `▐`
-        assert!(position_of("❯").is_none(), "NORMAL 游标不应有 ❯ 箭头");
-        // 首行 gutter 为 `▐`：accent 前景 + 行背景（非反色块）
-        let head = position_of("▐").expect("游标条目首行 gutter 为 ▐");
-        assert_eq!(cells[head].fg, theme::ACCENT);
-        assert_eq!(cells[head].bg, theme::ROW_BG);
-        // 整行铺背景：聊天区宽度内（不含左右留白列）每个单元格都是行背景；
-        // 宽字符的续列被 ratatui 重置为 Reset（渲染随首列样式），跳过
-        let head_row = head / width;
-        let mut continuation = false;
-        for x in 1..(width - 1) {
-            if continuation {
-                continuation = false;
-                continue;
-            }
-            let cell = &cells[head_row * width + x];
-            assert_eq!(cell.bg, theme::ROW_BG, "▐ 行第 {x} 列应为行高亮背景");
-            continuation = UnicodeWidthStr::width(cell.symbol()) > 1;
-        }
-        // 续行 gutter 同为 `▐`：accent 前景，同行背景
-        let body = cells[head + width..]
-            .iter()
-            .position(|cell| cell.symbol() == "▐")
-            .map(|offset| head + width + offset)
-            .expect("续行 gutter 为 ▐");
-        assert_eq!(cells[body].fg, theme::ACCENT);
-        assert_eq!(cells[body].bg, theme::ROW_BG);
-        // 块间隔空行延续高亮：`▐` 不止两个（首行 + 续行 + 空行）
-        assert!(
-            cells.iter().filter(|cell| cell.symbol() == "▐").count() >= 3,
-            "空行应延续高亮 gutter"
-        );
     }
 
     /// `/resume` 选择器弹层：session 行、标题与选中标记均可见。

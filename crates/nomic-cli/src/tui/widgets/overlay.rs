@@ -1,9 +1,8 @@
-//! 模态覆盖层 widget：复制菜单（NORMAL `y`）与键位帮助弹层（NORMAL `?`）。
+//! 模态覆盖层 widget：键位帮助弹层（NORMAL `?`）。
 //!
-//! 两者都是模态覆盖层：内容区（状态栏以上）整体作为画布，先 [`Clear`]
-//! 再在其中居中面板。[`CopyMenuOverlay`] 是 [`Widget`]（只读快照）；
-//! [`HelpOverlay`] 是 [`StatefulWidget`]，渲染时把滚动偏移钳制回写
-//! （`App::help_scroll_mut` 提供的 `&mut u16`）。
+//! 模态覆盖层：内容区（状态栏以上）整体作为画布，先 [`Clear`]
+//! 再在其中居中面板。[`HelpOverlay`] 是 [`StatefulWidget`]，渲染时把
+//! 滚动偏移钳制回写（`App::help_scroll_mut` 提供的 `&mut u16`）。
 
 use ratatui::{
     buffer::Buffer,
@@ -13,55 +12,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::tui::app::CopyMenu;
 use crate::tui::theme;
-
-/// 复制菜单（NORMAL `y`）：模态覆盖层，居中面板列出可复制条目；
-/// 选中行高亮，Enter/数字键复制、Esc/q 关闭。
-pub(in crate::tui) struct CopyMenuOverlay<'a> {
-    menu: &'a CopyMenu,
-}
-
-impl<'a> CopyMenuOverlay<'a> {
-    pub(in crate::tui) const fn new(menu: &'a CopyMenu) -> Self {
-        Self { menu }
-    }
-}
-
-impl Widget for CopyMenuOverlay<'_> {
-    /// `area` 为内容区画布：先整体 [`Clear`]，再居中面板。
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        Clear.render(area, buf);
-        let menu = self.menu;
-        let rows = menu.rows();
-        let selected = menu.selected();
-        let lines: Vec<Line<'static>> = rows
-            .iter()
-            .enumerate()
-            .map(|(index, row)| {
-                let prefix = if index == selected { "▸ " } else { "  " };
-                let style = if index == selected {
-                    theme::selected()
-                } else {
-                    theme::dim()
-                };
-                Line::from(Span::styled(format!("{prefix}{}", row.label), style))
-            })
-            .collect();
-        let panel = centered_panel(area, &lines);
-        let block = Border::bordered()
-            .border_type(BorderType::Plain)
-            .border_style(theme::accent())
-            .title(Span::styled(
-                "复制 · j/k 选择 · 1-9 直达 · Enter 确认 · Esc 关闭",
-                theme::accent(),
-            ));
-        Clear.render(panel, buf);
-        let inner = block.inner(panel);
-        block.render(panel, buf);
-        Paragraph::new(lines).render(inner, buf);
-    }
-}
 
 /// 键位帮助弹层（NORMAL `?`）：模态覆盖层，内容超长时 j/k 等滚动。
 /// [`StatefulWidget`]：渲染时把滚动偏移钳制到内容上限并回写。
@@ -146,23 +97,11 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("i a Enter · A · I", "回到输入（光标原位 / 末尾 / 行首）"),
             ("j k · d u · g G", "滚动 / 半页 / 顶部 / 底部（less 式）"),
-            ("[ ] · { }", "上/下一条消息 · 上/下一个工具调用"),
-            ("/ · n · N", "聊天搜索与跳转"),
-            ("y · Y", "复制菜单 / 直接复制最新消息"),
-            ("Space", "折叠/展开当前条目"),
+            ("Y", "复制最新一条消息"),
             ("m · r", "队列编辑 / 重试最近一轮"),
             ("s · b · c", "恢复会话 / 会话树（创建分支）/ 新建会话"),
             ("e · : · ?", "外部编辑器 / 命令 / 帮助"),
             ("q", "运行中中断本轮（留在 NORMAL）/ 空闲退出"),
-        ],
-    ),
-    (
-        "复制菜单（y）",
-        &[
-            ("j k · g G", "选择 / 首 / 尾"),
-            ("1-9", "数字键直达复制对应行"),
-            ("Enter", "复制选中行并关闭"),
-            ("Esc · q", "关闭"),
         ],
     ),
     (
@@ -188,11 +127,8 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
-        "SEARCH · PICKER",
-        &[
-            ("SEARCH", "输入即搜 · Enter 完成 · Esc 取消"),
-            ("PICKER", "输入过滤 · ↑/↓ 选择 · Home/End 首尾 · Enter/Esc"),
-        ],
+        "PICKER",
+        &[("PICKER", "输入过滤 · ↑/↓ 选择 · Home/End 首尾 · Enter/Esc")],
     ),
 ];
 

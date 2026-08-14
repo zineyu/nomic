@@ -34,8 +34,6 @@ impl Widget for StatusBar<'_> {
         let mode_badge = match app.mode() {
             Mode::Normal => Span::styled(" NORMAL ", theme::normal_badge()),
             Mode::Command => Span::styled(" COMMAND ", theme::warn()),
-            Mode::Search => Span::styled(" SEARCH ", theme::warn()),
-            Mode::CopyMenu => Span::styled(" COPY ", theme::queue_badge()),
             Mode::Queue => Span::styled(" QUEUE ", theme::queue_badge()),
             Mode::Insert => Span::styled(" INSERT ", theme::accent()),
             Mode::Picker => Span::styled(" PICKER ", theme::accent()),
@@ -62,10 +60,8 @@ impl Widget for StatusBar<'_> {
         }
         // 键位提示保持精简：完整键位见欢迎页与 /help，此处只留模式核心键
         let hint = match app.mode() {
-            Mode::Normal => "i 输入 · : 命令 · / 搜索 · ? 帮助 ",
+            Mode::Normal => "i 输入 · : 命令 · ? 帮助 ",
             Mode::Command => "Tab 补全 · Enter 执行 · Esc 返回 ",
-            Mode::Search => "输入即搜 · Enter 完成 · Esc 取消 ",
-            Mode::CopyMenu => "j/k 选择 · 1-9 直达 · Enter 复制 · Esc 关闭 ",
             Mode::Picker => "输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ",
             Mode::Help => "j/k 滚动 · g/G 顶/底 · Esc 关闭 ",
             Mode::Insert => "Enter 发送 · ^G 编辑器 · Esc 浏览 ",

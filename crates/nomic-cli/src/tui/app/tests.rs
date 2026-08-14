@@ -425,7 +425,6 @@ fn copy_takes_latest_message_text() {
         ],
         done: true,
         error: None,
-        collapsed: false,
     }));
     // thinking 不复制，多个正文块以空行连接
     let [Effect::CopyText(text)] = &app.execute_slash(SlashAction::Copy)[..] else {

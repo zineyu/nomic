@@ -1,9 +1,9 @@
 //! App 的第一组方法：构造/访问器/事件处理/模式路由与 INSERT 按键（由 app/mod.rs 的 `impl App` 拆分而来）。
 
 use super::{
-    AgentEvent, App, Chat, ChatItem, CopyMenu, Effect, HALF_PAGE_SCROLL, Input, Key, Message, Mode,
-    PAGE_SCROLL, PromptsError, Queue, Search, SlashParse, ToolItem, ToolStatus, assistant_error,
-    brief_args, estimate_context_tokens, parse_slash, user_text,
+    AgentEvent, App, Chat, Effect, HALF_PAGE_SCROLL, Input, Key, Message, Mode, PAGE_SCROLL,
+    PromptsError, Queue, SlashParse, ToolItem, ToolStatus, assistant_error, brief_args,
+    estimate_context_tokens, parse_slash, user_text,
 };
 
 impl App {
@@ -16,9 +16,7 @@ impl App {
             input,
             command: Input::new(),
             queue: Queue::default(),
-            search: Search::default(),
             picker: None,
-            copy_menu: None,
             mode: Mode::Insert,
             pending_key: None,
             history: Vec::new(),
@@ -85,11 +83,6 @@ impl App {
         &self.queue
     }
 
-    /// 搜索状态（查询串、命中数、高亮词）。
-    pub const fn search(&self) -> &Search {
-        &self.search
-    }
-
     // ── 事件与历史 ──────────────────────────────────────────────────────────
 
     /// 把 resume 恢复的历史消息渲染为聊天条目。
@@ -135,7 +128,6 @@ impl App {
                     args: brief_args(tool_name, args),
                     status: ToolStatus::Running,
                     detail: Vec::new(),
-                    collapsed: false,
                 });
             }
             AgentEvent::ToolExecutionUpdate {
@@ -180,15 +172,13 @@ impl App {
 
     // ── 按键（语义分发） ────────────────────────────────────────────────────
 
-    /// 当前交互模式（渲染光标/徽标与外部查询用）：picker/帮助弹层/
-    /// 复制菜单打开时派生为对应模式，否则为字段值（Insert/Normal）。
+    /// 当前交互模式（渲染光标/徽标与外部查询用）：picker/帮助弹层
+    /// 打开时派生为对应模式，否则为字段值（Insert/Normal）。
     pub const fn mode(&self) -> Mode {
         if self.picker.is_some() {
             Mode::Picker
         } else if self.help_scroll.is_some() {
             Mode::Help
-        } else if self.copy_menu.is_some() {
-            Mode::CopyMenu
         } else {
             self.mode
         }
@@ -203,8 +193,6 @@ impl App {
             // 此时 agent 必空闲，无运行可取消）
             Mode::Picker => self.press_picker(key),
             Mode::Help => self.press_help(key),
-            Mode::CopyMenu => self.press_copy_menu(key),
-            Mode::Search => self.press_search(key),
             Mode::Normal => self.press_normal(key),
             Mode::Insert => self.press_insert(key),
             Mode::Command => self.press_command(key),
@@ -465,45 +453,23 @@ impl App {
     }
 
     /// NORMAL 模式键位（ADR-0021）：单字母动作层——less 式滚动（j/k、
-    /// d/u 半页、g/G 顶底）、`[`/`]` 消息跳转、`/` 搜索、`y` 复制菜单、
-    /// `m` 队列、`r` 重试、`e` 编辑器、`q` 中断运行/退出；输入字符不进入缓冲
-    ///（草稿保留，`i`/`a`/`Enter` 回到 INSERT 继续编辑）。
+    /// d/u 半页、g/G 顶底）、`Y` 复制最新消息、`m` 队列、`r` 重试、
+    /// `e` 编辑器、`q` 中断运行/退出；输入字符不进入缓冲（草稿保留，
+    /// `i`/`a`/`Enter` 回到 INSERT 继续编辑）。NORMAL 是纯浏览态，不持有
+    /// 消息游标（ADR-0026）。
     pub fn press_normal(&mut self, key: Key) -> Vec<Effect> {
         if let Some(effects) = self.normal_exit(key) {
             return effects;
         }
         match key {
             // g/G：到顶/回底（less 惯例；渲染前经 sync_chat_geometry 钳到上限）
-            Key::Char('g') => {
-                self.chat.scroll_up(u16::MAX);
-                self.chat.move_cursor_to_first_message();
-            }
-            Key::Char('G') => {
-                self.chat.scroll_to_bottom();
-                self.chat.move_cursor_to_last_message();
-            }
+            Key::Char('g') => self.chat.scroll_up(u16::MAX),
+            Key::Char('G') => self.chat.scroll_to_bottom(),
             // d/u：半页下/上（less 惯例）
             Key::Char('d') => self.chat.scroll_down(HALF_PAGE_SCROLL),
             Key::Char('u') => self.chat.scroll_up(HALF_PAGE_SCROLL),
-            // [/]：上一条/下一条对话消息；{/}：上一个/下一个工具调用
-            Key::Char('[') => self.chat.step_cursor(-1, ChatItem::is_message),
-            Key::Char(']') => self.chat.step_cursor(1, ChatItem::is_message),
-            Key::Char('{') => self.chat.step_cursor(-1, ChatItem::is_tool),
-            Key::Char('}') => self.chat.step_cursor(1, ChatItem::is_tool),
-            // `/` 进入搜索（输入框复用为搜索框；保留上次查询可编辑）
-            Key::Char('/') => self.mode = Mode::Search,
-            // n/N：在搜索命中条目间循环跳转
-            Key::Char('n') => self.search_jump(1),
-            Key::Char('N') => self.search_jump(-1),
-            // y：复制菜单（消息与代码块快照）；Y：直接复制最新一条（等价 /copy）
-            Key::Char('y') => self.open_copy_menu(),
+            // Y：直接复制最新一条消息（等价 /copy）
             Key::Char('Y') => return self.copy_latest(),
-            // Space：折叠/展开游标条目（assistant/工具；user/system 不可折叠）
-            Key::Char(' ') => {
-                if !self.chat.toggle_collapsed() {
-                    self.notice = Some("该条目不可折叠".to_string());
-                }
-            }
             // m：队列编辑 overlay（oil.nvim 式，ADR-0014）
             Key::Char('m') => self.enter_queue(),
             // s/b/c：会话命令直达（恢复 / 分支树 / 新建，ADR-0021 修订）
@@ -590,100 +556,10 @@ impl App {
         Some(Vec::new())
     }
 
-    /// 复制菜单键位（NORMAL `y` 打开，ADR-0021）：j/k/g/G 导航，
-    /// Enter 复制选中行后关闭，数字键 `1`-`9` 直达复制对应行，
-    /// Esc/q 关闭。
-    pub fn press_copy_menu(&mut self, key: Key) -> Vec<Effect> {
-        let Some(menu) = &mut self.copy_menu else {
-            return Vec::new();
-        };
-        match key {
-            Key::Char('j') | Key::Down => menu.select(1),
-            Key::Char('k') | Key::Up => menu.select(-1),
-            Key::Char('g') => menu.jump_first(),
-            Key::Char('G') => menu.jump_last(),
-            Key::Enter => {
-                let text = menu.selected_text();
-                self.copy_menu = None;
-                return vec![Effect::CopyText(text)];
-            }
-            Key::Char(c @ '1'..='9') => {
-                let index = (c.to_digit(10).unwrap_or(1) - 1) as usize;
-                if let Some(text) = menu.select_index(index) {
-                    self.copy_menu = None;
-                    return vec![Effect::CopyText(text)];
-                }
-            }
-            Key::Esc | Key::Char('q') => self.copy_menu = None,
-            Key::Ctrl('c') => self.should_quit = true,
-            _ => {}
-        }
-        Vec::new()
-    }
-
-    /// NORMAL `y`：打开复制菜单（聊天条目快照；无可复制内容时提示）。
-    pub fn open_copy_menu(&mut self) {
-        match CopyMenu::build(self.chat.items(), self.chat.cursor()) {
-            Some(menu) => self.copy_menu = Some(menu),
-            None => self.notice = Some("没有可复制的消息".to_string()),
-        }
-    }
-
-    /// SEARCH 模式键位：输入即搜（增量跳转第一个命中），Enter 保留命中
-    /// 回 NORMAL（n/N 可继续跳），Esc 清空搜索回 NORMAL。
-    pub fn press_search(&mut self, key: Key) -> Vec<Effect> {
-        match key {
-            Key::Char(c) => {
-                self.search.push_char(c);
-                self.refresh_search();
-            }
-            Key::Backspace => {
-                self.search.pop_char();
-                self.refresh_search();
-            }
-            Key::Enter => {
-                self.mode = Mode::Normal;
-                let count = self.search.match_count();
-                self.notice = Some(if count == 0 {
-                    "没有搜索命中".to_string()
-                } else {
-                    format!("{count} 处命中 · n/N 跳转")
-                });
-            }
-            Key::Esc => {
-                self.mode = Mode::Normal;
-                self.search.clear();
-            }
-            Key::Ctrl('c') => self.should_quit = true,
-            _ => {}
-        }
-        Vec::new()
-    }
-
-    /// 重算搜索命中（输入即搜）：游标跳到当前位置之后（含）的第一个
-    /// 命中（循环），无命中保持游标。
-    pub fn refresh_search(&mut self) {
-        if let Some(target) = self.search.refresh(self.chat.items(), self.chat.cursor()) {
-            self.chat.focus_item(target);
-        }
-    }
-
-    /// NORMAL `n`/`N`：在搜索命中条目间循环跳转。
-    pub fn search_jump(&mut self, direction: isize) {
-        let Some((index, pos)) = self.search.jump(direction, self.chat.cursor().unwrap_or(0))
-        else {
-            self.notice = Some("没有搜索命中（NORMAL 下 / 开始搜索）".to_string());
-            return;
-        };
-        self.chat.focus_item(index);
-        self.notice = Some(format!("命中 {}/{}", pos + 1, self.search.match_count()));
-    }
-
-    /// 进入 NORMAL：草稿保留；消息游标定位到最新一条对话消息。
-    pub fn enter_normal(&mut self) {
+    /// 进入 NORMAL：草稿保留。
+    pub const fn enter_normal(&mut self) {
         self.mode = Mode::Normal;
         self.pending_key = None;
-        self.chat.move_cursor_to_last_message();
     }
 
     /// 离开 NORMAL 回 INSERT：清掉序列键 pending，避免残留的首键
@@ -691,16 +567,5 @@ impl App {
     pub const fn leave_normal(&mut self) {
         self.mode = Mode::Insert;
         self.pending_key = None;
-    }
-
-    /// 消息游标（渲染 gutter 高亮用）；浏览类模式（NORMAL/COMMAND/
-    /// SEARCH/COPYMENU）下返回。
-    pub fn chat_cursor(&self) -> Option<usize> {
-        matches!(
-            self.mode(),
-            Mode::Normal | Mode::Command | Mode::Search | Mode::CopyMenu
-        )
-        .then_some(self.chat.cursor())
-        .flatten()
     }
 }

@@ -207,7 +207,7 @@ impl Picker {
 }
 
 /// 逐行步进：越过边界返回 `None`（钳制语义由调用方决定）。
-/// picker 选中、聊天区消息游标与队列游标共用。
+/// picker 选中与队列游标共用。
 pub fn step_row(index: usize, direction: isize, len: usize) -> Option<usize> {
     let next = index.checked_add_signed(direction)?;
     (next < len).then_some(next)

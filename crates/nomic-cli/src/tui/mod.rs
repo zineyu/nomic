@@ -4,7 +4,7 @@
 //! - [`app`]：纯状态层——对外为语义操作（按键 [`app::Key`] → [`app::Effect`]、
 //!   应用事件、滚动、会话/附件管理），脱离终端可测；内部按关注点拆为
 //!   chat（条目 + delta 累积 + 滚动）、input（草稿 + 编辑 + 补全）、
-//!   queue（统一消息队列与 QUEUE 模式）、picker/search 子模块，`App`
+//!   queue（统一消息队列与 QUEUE 模式）、picker 子模块，`App`
 //!   只做组合与模式路由；INSERT `Ctrl+G` 外部编辑器（ADR-0017）由
 //!   [`terminal::edit_input_in_editor`] 接线，状态层只消费写回结果
 //! - [`effects`]：Effect 执行逻辑，按族分组为子模块——`model`

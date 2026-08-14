@@ -1,10 +1,12 @@
-//! 输入区 widget：多行草稿/命令/搜索输入框 + 附件行 + 队列区 + 光标定位。
+//! 输入区 widget：多行草稿/命令输入框 + 附件行 + 队列区 + 光标定位。
 //!
 //! [`InputArea`] 是 [`Widget`]：从 [`App`] 只读构建输入框画面（附件行 →
-//! 队列区 → 草稿/命令/搜索行），高度随内容伸缩；光标位置在渲染后由
+//! 队列区 → 草稿/命令行），高度随内容伸缩；光标位置在渲染后由
 //! 组合根经 [`InputArea::cursor_position`] 计算并设置（[`Widget::render`]
 //! 只拿到 `&mut Buffer`，光标设置属于 `Frame` 职责）。
 
+use crate::tui::app::{App, Mode, PickerKind};
+use crate::tui::theme;
 use ratatui::{
     buffer::Buffer,
     layout::{Position, Rect},
@@ -12,10 +14,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block as Border, BorderType, Paragraph, Widget},
 };
-use unicode_width::UnicodeWidthStr;
-
-use crate::tui::app::{App, Mode, PickerKind};
-use crate::tui::theme;
 
 /// 草稿区行数上限：高度随行数伸缩，超过后内部滚动。
 const MAX_DRAFT_LINES: u16 = 5;
@@ -71,14 +69,8 @@ impl<'a> InputArea<'a> {
             .inner(area);
         let attachment_offset = u16::from(app.input().has_attachments());
         let queue_offset = app.queue_display_lines();
-        let searching = app.mode() == Mode::Search;
         let commanding = app.mode() == Mode::Command;
-        let (cursor_row, cursor_col) = if searching {
-            (
-                queue_offset,
-                u16::try_from(UnicodeWidthStr::width(app.search().query())).unwrap_or(u16::MAX),
-            )
-        } else if commanding {
+        let (cursor_row, cursor_col) = if commanding {
             let (row, col) = app.command().cursor_position();
             (queue_offset + row, col)
         } else if app.queue_mode_active() {
@@ -140,17 +132,12 @@ impl Widget for InputArea<'_> {
                 theme::accent(),
             )));
         }
-        // SEARCH 下输入框复用为搜索框：显示搜索串而非草稿；COMMAND 下
-        // 显示专门的命令输入框（ADR-0020），草稿保留不动
-        let searching = app.mode() == Mode::Search;
+        // COMMAND 下显示专门的命令输入框（ADR-0020），草稿保留不动
         let commanding = app.mode() == Mode::Command;
         lines.extend(queue_area_lines(app));
-        // 草稿行（QUEUE 模式下不单独渲染；SEARCH 显示搜索串，COMMAND
-        // 显示命令输入框）
+        // 草稿行（QUEUE 模式下不单独渲染；COMMAND 显示命令输入框）
         if !app.queue_mode_active() {
-            let text = if searching {
-                app.search().query()
-            } else if commanding {
+            let text = if commanding {
                 app.command().text()
             } else {
                 app.input().text()
@@ -211,8 +198,8 @@ fn queue_area_lines(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
-/// 输入框标题与边框样式：标题只保留运行/picker/搜索/命令行等临时功能态；
-/// INSERT/NORMAL/VISUAL 等常驻模式的提示由状态栏徽标与右侧键位提示
+/// 输入框标题与边框样式：标题只保留运行/picker/命令行等临时功能态；
+/// INSERT/NORMAL 等常驻模式的提示由状态栏徽标与右侧键位提示
 /// 承担（ADR-0011），输入框不再叠加，避免同一信息两处渲染。
 fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
     // QUEUE 模式（ADR-0012）：队列缓冲标题；运行中叠加 spinner
@@ -270,17 +257,6 @@ fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
             theme::accent(),
         ));
         (Some(Line::from(spans)), theme::accent())
-    } else if app.mode() == Mode::Search {
-        (
-            Some(Line::from(Span::styled(
-                format!(
-                    "搜索 · Enter 完成 · Esc 取消（{} 处命中）",
-                    app.search().match_count()
-                ),
-                theme::accent(),
-            ))),
-            theme::accent(),
-        )
     } else if app.input().completion().is_some() {
         // 补全弹层自带标题；输入框只以 accent 边框表示补全中
         (None, theme::accent())

@@ -116,9 +116,9 @@ nomic --cwd /path/to/project
 
 ### TUI 键位
 
-交互为「双态 + 叠加层」：INSERT 输入（默认），NORMAL 为单字母动作层
-（less/lazygit 式，设计见 [ADR-0021](docs/adr/0021-single-letter-action-layer.md)）；
-`Esc` 逐层退回。
+交互为「双态 + 叠加层」：INSERT 输入（默认），NORMAL 为纯浏览态的单字母动作层
+（less/lazygit 式，设计见 [ADR-0021](docs/adr/0021-single-letter-action-layer.md)，
+纯浏览化见 [ADR-0026](docs/adr/0026-normal-browse-only.md)）；`Esc` 逐层退回。
 
 | 模式 | 键位 | 说明 |
 | ---- | ---- | ---- |
@@ -130,10 +130,7 @@ nomic --cwd /path/to/project
 | INSERT | `Ctrl+G` | 外部编辑器（`$VISUAL`/`$EDITOR`，缺省 `vi`）编辑当前草稿；保存退出后写回，异常退出或内容为空时原草稿保留 |
 | INSERT | `Ctrl+V` | 粘贴剪贴板图片 |
 | NORMAL | `j` `k` `d` `u` `g` `G` | 滚动 / 半页下上 / 顶部 / 底部（less 式） |
-| NORMAL | `[` `]` `{` `}` | 上/下一条消息、上/下一个工具调用 |
-| NORMAL | `/` `n` `N` | 聊天搜索与跳转 |
-| NORMAL | `y` `Y` | 复制菜单（消息/代码块，`1-9` 直达）/ 直接复制最新消息 |
-| NORMAL | `Space` | 折叠/展开当前条目（assistant/工具输出） |
+| NORMAL | `Y` | 直接复制最新一条消息 |
 | NORMAL | `m` `r` | 队列编辑 / 重试最近一轮 |
 | NORMAL | `s` `b` `c` | 恢复会话 / 会话树（创建分支）/ 新建会话 |
 | NORMAL | `e` `:` `?` | 外部编辑器 / 命令输入框 / 帮助弹层 |

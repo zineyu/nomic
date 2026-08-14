@@ -1,4 +1,4 @@
-//! 聊天区状态：条目列表、流式增量累积、消息游标与滚动。
+//! 聊天区状态：条目列表、流式增量累积与滚动。
 //!
 //! 条目模型（user/assistant/tool/system）与 [`Chat`] 状态结构自持；
 //! 复制等操作返回数据，提示语由模式路由层（[`super::App`]）落到状态栏。
@@ -8,7 +8,6 @@ use nomic_ai::{
 };
 use nomic_skills::{ActivatedSkill, parse_active_skill_tag};
 
-use super::step_row;
 use crate::tui::chat_lines::chat_lines;
 
 /// 聊天区条目。
@@ -25,14 +24,9 @@ pub(in crate::tui) enum ChatItem {
 }
 
 impl ChatItem {
-    /// 是否为对话消息（user/assistant）：NORMAL `]`/`[` 的跳转目标。
+    /// 是否为对话消息（user/assistant）：`/copy` 与 NORMAL `Y` 的复制目标。
     pub(super) const fn is_message(&self) -> bool {
         matches!(self, Self::User(_) | Self::Assistant(_))
-    }
-
-    /// 是否为工具调用条目：NORMAL `}`/`{` 的跳转目标。
-    pub(super) const fn is_tool(&self) -> bool {
-        matches!(self, Self::Tool(_))
     }
 }
 
@@ -43,8 +37,6 @@ pub(in crate::tui) struct AssistantItem {
     pub(in crate::tui) done: bool,
     /// `stop_reason` 为 Error/Aborted 时的错误信息
     pub(in crate::tui) error: Option<String>,
-    /// 条目级折叠（NORMAL `Space` 切换）：折叠为单行摘要显示
-    pub(in crate::tui) collapsed: bool,
 }
 
 /// assistant 内容块（工具调用块不进聊天区，由 `ToolExecution*` 事件承载）。
@@ -73,19 +65,13 @@ pub(in crate::tui) struct ToolItem {
     pub(in crate::tui) status: ToolStatus,
     /// 进度/结果的尾部摘要（最多 `DETAIL_LINES` 行）
     pub(in crate::tui) detail: Vec<String>,
-    /// 条目级折叠（NORMAL `Space` 切换）：折叠为单行摘要显示
-    pub(in crate::tui) collapsed: bool,
 }
 
-/// 聊天区状态：条目 + 消息游标 + 滚动。不碰交互模式，由 [`super::App`]
+/// 聊天区状态：条目 + 滚动。不碰交互模式，由 [`super::App`]
 /// 组合并按模式路由调用。
 #[derive(Debug, Default)]
 pub(in crate::tui) struct Chat {
     pub(super) items: Vec<ChatItem>,
-    /// NORMAL 的消息游标（items 下标）；进入 NORMAL 时定位到最新一条消息
-    pub(super) cursor_item: Option<usize>,
-    /// 各条目起始行（[`Self::sync_geometry`] 按视口几何预先计算；未经同步时为空）
-    item_starts: Vec<u16>,
     /// 从底部向上滚动的行数（0 = 跟随最新内容）
     pub(super) scroll: u16,
     /// 聊天区最大可上滚行数（[`Self::sync_geometry`] 按视口计算，状态栏滚动位置显示用）
@@ -121,11 +107,8 @@ impl Chat {
     }
 
     /// 清空聊天区（`/new` 开启新对话、`/resume` 恢复前）。
-    /// 游标一并重置，保持「游标指向有效条目或 None」的不变量，
-    /// 避免残留旧下标越界。
     pub(super) fn clear_items(&mut self) {
         self.items.clear();
-        self.cursor_item = None;
         self.scroll_to_bottom();
     }
 
@@ -153,7 +136,6 @@ impl Chat {
                             .collect(),
                         done: true,
                         error,
-                        collapsed: false,
                     }));
                 }
                 Message::ToolResult(result) => {
@@ -167,7 +149,6 @@ impl Chat {
                             ToolStatus::Ok
                         },
                         detail: result_summary(&result.content),
-                        collapsed: false,
                     }));
                 }
             }
@@ -294,10 +275,9 @@ impl Chat {
     }
 
     /// 渲染前按已知视口计算聊天区几何：以与上屏相同的行组装
-    ///（[`crate::tui::chat_lines`]）折行，回写各条目起始行与滚动上限，
-    /// 并就地钳制滚动偏移。几何由此进状态层（每帧渲染前由
-    /// [`super::App::sync_chat_geometry`] 调用一次），渲染 widget 只读；
-    /// 按键行为与测试不再依赖「上一帧是否画过」。
+    ///（[`crate::tui::chat_lines`]）折行，回写滚动上限并就地钳制滚动
+    /// 偏移。几何由此进状态层（每帧渲染前由 [`super::App::sync_chat_geometry`]
+    /// 调用一次），渲染 widget 只读；按键行为与测试不再依赖「上一帧是否画过」。
     pub(in crate::tui) fn sync_geometry(
         &mut self,
         width: u16,
@@ -305,8 +285,7 @@ impl Chat {
         thinking_collapsed: bool,
         spinner: &str,
     ) {
-        let (lines, starts) = chat_lines(&self.items, width, None, thinking_collapsed, spinner);
-        self.item_starts = starts;
+        let lines = chat_lines(&self.items, width, thinking_collapsed, spinner);
         self.scroll_max =
             u16::try_from(lines.len().saturating_sub(usize::from(height))).unwrap_or(u16::MAX);
         self.scroll = self.scroll.min(self.scroll_max);
@@ -320,83 +299,6 @@ impl Chat {
     /// 聊天区最大可上滚行数（几何同步后有效）。
     pub(in crate::tui) const fn scroll_max(&self) -> u16 {
         self.scroll_max
-    }
-
-    // ── 消息游标 ────────────────────────────────────────────────────────────
-
-    /// 各条目起始行（[`Self::sync_geometry`] 计算结果；测试断言用）。
-    #[cfg(test)]
-    pub(super) fn item_starts(&self) -> &[u16] {
-        &self.item_starts
-    }
-
-    /// 当前消息游标（items 下标）；是否展示由模式路由层裁决。
-    pub(super) const fn cursor(&self) -> Option<usize> {
-        self.cursor_item
-    }
-
-    /// 游标定位到最早一条对话消息（NORMAL `g`）。
-    pub(super) fn move_cursor_to_first_message(&mut self) {
-        self.cursor_item = self.items.iter().position(ChatItem::is_message);
-    }
-
-    /// 游标定位到最新一条对话消息（进入 NORMAL、`G`）。
-    pub(super) fn move_cursor_to_last_message(&mut self) {
-        self.cursor_item = self.items.iter().rposition(ChatItem::is_message);
-    }
-
-    /// 移动消息游标到方向上下一个匹配谓词的条目（钳制不循环），并滚动到位。
-    pub(super) fn step_cursor(&mut self, direction: isize, matches: fn(&ChatItem) -> bool) {
-        let Some(current) = self.cursor_item else {
-            return;
-        };
-        let mut index = current;
-        while let Some(next) = step_row(index, direction, self.items.len()) {
-            index = next;
-            if matches(&self.items[index]) {
-                self.focus_item(index);
-                return;
-            }
-        }
-    }
-
-    /// 游标聚焦指定条目并滚动到位：搜索命中跳转用。
-    pub(super) fn focus_item(&mut self, index: usize) {
-        self.cursor_item = Some(index);
-        self.scroll_to_cursor_item();
-    }
-
-    /// 切换游标条目的折叠状态（NORMAL `Space`）：仅 assistant 与 tool
-    /// 条目可折叠；返回是否确实切换（user/system 不可折叠返回 `false`）。
-    pub(super) fn toggle_collapsed(&mut self) -> bool {
-        let Some(index) = self.cursor_item else {
-            return false;
-        };
-        match &mut self.items[index] {
-            ChatItem::Assistant(assistant) => {
-                assistant.collapsed = !assistant.collapsed;
-                true
-            }
-            ChatItem::Tool(tool) => {
-                tool.collapsed = !tool.collapsed;
-                true
-            }
-            ChatItem::User(_) | ChatItem::System(_) => false,
-        }
-    }
-
-    /// 把消息游标条目滚到视野顶部（几何未同步时起始行为空，不动）。
-    fn scroll_to_cursor_item(&mut self) {
-        let Some(index) = self.cursor_item else {
-            return;
-        };
-        let Some(&line) = self.item_starts.get(index) else {
-            return;
-        };
-        // u16::MAX：条目无可见块（空 assistant），没有可定位的行
-        if line != u16::MAX {
-            self.scroll = self.scroll_max.saturating_sub(line);
-        }
     }
 }
 

@@ -3,8 +3,7 @@
 //! [`MessageBlock`] 把一条消息渲染为带 gutter 竖条的物理行组（gutter
 //! 颜色区分条目类型），并负责按显示宽度折行（CJK 友好，续行延续竖条）。
 //! 折行基于 `unicode_width`，使行数精确可知以支撑聊天区的精确滚动；
-//! [`wrap_line`] / [`wrap_lines`] 供组件外的裸行（条目留白等）折行，
-//! [`truncate_line`] 供折叠摘要行按显示宽度截断。
+//! [`wrap_line`] / [`wrap_lines`] 供组件外的裸行（条目留白等）折行。
 
 use ratatui::{
     style::Style,
@@ -12,14 +11,10 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthChar;
 
-use crate::tui::theme;
-
 /// gutter 竖条前缀：每条物理行的行首。
 pub(in crate::tui) const GUTTER_PREFIX: &str = "▌ ";
 /// gutter 占用列数：`▌` + 空格。
 pub(in crate::tui) const GUTTER_WIDTH: u16 = 2;
-/// 高亮 gutter：续行与高亮空行用加粗竖条，保持区域连续。
-pub(in crate::tui) const GUTTER_CURSOR_BODY: &str = "▐ ";
 
 /// 消息块组件：聊天区每条消息的视觉单元，gutter 竖条是组件的一部分。
 ///
@@ -117,41 +112,10 @@ pub(in crate::tui) fn wrap_lines(lines: &[Line<'static>], width: u16) -> Vec<Lin
     lines.iter().flat_map(|line| wrap_line(line, max)).collect()
 }
 
-/// 把行截断到 `max` 显示宽度：超长时只留前 `max - 1` 列并以 `…` 收尾
-///（条目折叠摘要行用；CJK 宽字符按显示宽度计）。
-pub(in crate::tui) fn truncate_line(line: Line<'static>, max: usize) -> Line<'static> {
-    if line.width() <= max {
-        return line;
-    }
-    let limit = max.saturating_sub(1);
-    let mut spans = Vec::new();
-    let mut used = 0_usize;
-    let mut full = false;
-    for span in line.spans {
-        let mut buf = String::new();
-        for c in span.content.chars() {
-            let width = UnicodeWidthChar::width(c).unwrap_or(0);
-            if used + width > limit {
-                full = true;
-                break;
-            }
-            used += width;
-            buf.push(c);
-        }
-        if !buf.is_empty() {
-            spans.push(Span::styled(buf, span.style));
-        }
-        if full {
-            break;
-        }
-    }
-    spans.push(Span::styled("…", theme::dim()));
-    Line::from(spans)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::theme;
 
     /// 消息块组件：折行后续行保留 gutter 竖条，块引用视觉不断裂，每行宽度不超上限。
     #[test]

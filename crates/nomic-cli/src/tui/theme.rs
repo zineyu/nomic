@@ -20,11 +20,6 @@ pub(super) const ERR: Color = Color::Red;
 pub(super) const BUSY: Color = Color::Yellow;
 /// 代码文本（行内代码与代码块，与 BUSY 同色但语义独立）。
 pub(super) const CODE: Color = Color::Yellow;
-/// 行高亮背景（NORMAL 消息游标）：极暗的灰，
-/// 只提供「当前行」的面感，不引入新色相，与 accent/magenta gutter 叠加。
-/// 256 色索引值；16 色终端由渲染层近似映射（退化为默认背景时
-/// 仍有 gutter 符号变化兜底）。
-pub(super) const ROW_BG: Color = Color::Indexed(236);
 
 /// 加粗正文（工具名等）。
 pub(super) const fn bold() -> Style {
@@ -119,25 +114,6 @@ pub(super) const fn normal_badge() -> Style {
     Style::new()
         .fg(Color::Black)
         .bg(OK)
-        .add_modifier(Modifier::BOLD)
-}
-
-/// 搜索命中高亮：反色黄块（与选中态的反色 accent 区分）。
-pub(super) const fn search_hit() -> Style {
-    Style::new().fg(Color::Black).bg(BUSY)
-}
-
-/// 行高亮背景：整行铺 `ROW_BG`，游标呈现为完整色带。
-pub(super) const fn highlight_bg() -> Style {
-    Style::new().bg(ROW_BG)
-}
-
-/// 消息游标 gutter（NORMAL）：accent 加粗竖条叠加行背景，标出 `y`
-/// 复制菜单/折叠的作用目标。
-pub(super) const fn cursor_marker() -> Style {
-    Style::new()
-        .fg(ACCENT)
-        .bg(ROW_BG)
         .add_modifier(Modifier::BOLD)
 }
 

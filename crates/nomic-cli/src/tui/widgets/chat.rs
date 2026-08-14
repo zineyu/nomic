@@ -10,7 +10,6 @@
 use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
-    style::Style,
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
@@ -41,106 +40,19 @@ impl Widget for ChatView<'_> {
             render_welcome(buf, area, self.app.model_name());
             return;
         }
-        // 与状态层几何同一行组装（游标高亮只补样式不改行数）；
-        // 自行折行（硬换行，CJK 友好），行数与几何精确一致
-        let (lines, _) = chat_lines(
+        // 与状态层几何同一行组装；自行折行（硬换行，CJK 友好），
+        // 行数与几何精确一致
+        let lines = chat_lines(
             chat.items(),
             area.width,
-            self.app.chat_cursor(),
             self.app.thinking_collapsed(),
             self.app.spinner(),
         );
         let lines = wrap_lines(&lines, area.width);
-        // 搜索命中高亮：Enter 后保留（Esc 清空搜索串即消除）
-        let lines = if let Some(query) = self.app.search().highlight() {
-            lines
-                .iter()
-                .map(|line| highlight_line(line, query, theme::search_hit()))
-                .collect()
-        } else {
-            lines
-        };
         // 滚动偏移与上限读状态层（渲染前已按本区域宽高同步并钳制）
         let offset = chat.scroll_max().saturating_sub(chat.scroll());
         Paragraph::new(lines).scroll((offset, 0)).render(area, buf);
     }
-}
-
-/// 把行内所有大小写不敏感的 `query` 命中片段覆盖为 `hit` 样式
-///（搜索高亮）；无命中原样返回。
-pub(in crate::tui) fn highlight_line(
-    line: &Line<'static>,
-    query: &str,
-    hit: Style,
-) -> Line<'static> {
-    let text: String = line
-        .spans
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect();
-    let hits = match_positions(&text, query);
-    if hits.iter().all(|hit| !hit) {
-        return line.clone();
-    }
-    // 重建 spans：按命中边界切分，命中片段用 hit 样式、其余保留原样式
-    let mut out: Vec<Span<'static>> = Vec::new();
-    let mut pos = 0_usize; // 行内字符下标
-    for span in &line.spans {
-        let mut buf = String::new();
-        let mut buf_hit = None;
-        for c in span.content.chars() {
-            let current_hit = hits.get(pos).copied().unwrap_or(false);
-            pos += 1;
-            match buf_hit {
-                None => {
-                    buf_hit = Some(current_hit);
-                    buf.push(c);
-                }
-                Some(previous) if previous == current_hit => buf.push(c),
-                Some(previous) => {
-                    out.push(Span::styled(
-                        std::mem::take(&mut buf),
-                        if previous { hit } else { span.style },
-                    ));
-                    buf.push(c);
-                    buf_hit = Some(current_hit);
-                }
-            }
-        }
-        if !buf.is_empty() {
-            out.push(Span::styled(
-                buf,
-                if buf_hit == Some(true) {
-                    hit
-                } else {
-                    span.style
-                },
-            ));
-        }
-    }
-    Line::from(out)
-}
-
-/// `query` 在 `text` 中大小写不敏感命中的字符位置表（逐字符 bool）。
-pub(in crate::tui) fn match_positions(text: &str, query: &str) -> Vec<bool> {
-    let mut hits = vec![false; text.chars().count()];
-    if query.is_empty() {
-        return hits;
-    }
-    let lower = text.to_lowercase();
-    let needle = query.to_lowercase();
-    let mut from = 0;
-    while let Some(found) = lower.get(from..).and_then(|rest| rest.find(&needle)) {
-        let byte_start = from + found;
-        let byte_end = byte_start + needle.len();
-        let start = lower[..byte_start].chars().count();
-        let end = lower[..byte_end].chars().count();
-        for hit in &mut hits[start..end] {
-            *hit = true;
-        }
-        from = byte_end;
-    }
-    hits
 }
 
 /// 空状态欢迎页：居中 logo + 键位速查。
@@ -160,7 +72,7 @@ fn render_welcome(buf: &mut Buffer, area: Rect, model_name: &str) {
             theme::dim(),
         )),
         Line::from(Span::styled(
-            "NORMAL：j/k 滚动 · d/u 半页 · g/G 顶底 · : 命令（/help）· / 搜索 · y 复制 · m 队列 · ? 帮助",
+            "NORMAL：j/k 滚动 · d/u 半页 · g/G 顶底 · : 命令（/help）· Y 复制最新 · m 队列 · ? 帮助",
             theme::dim(),
         )),
         Line::from(Span::styled(
@@ -180,34 +92,4 @@ fn render_welcome(buf: &mut Buffer, area: Rect, model_name: &str) {
     Paragraph::new(lines)
         .alignment(Alignment::Center)
         .render(centered, buf);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 搜索高亮：命中片段覆盖 hit 样式（大小写不敏感），跨 span 命中也能切分。
-    #[test]
-    fn highlight_line_covers_case_insensitive_matches() {
-        let line = Line::from(vec![
-            Span::styled("Hello ", Style::new()),
-            Span::styled("WORLD hello", Style::new()),
-        ]);
-        let hit = Style::new().fg(ratatui::style::Color::Black);
-        let highlighted = highlight_line(&line, "hello", hit);
-        let styles: Vec<Style> = highlighted.spans.iter().map(|span| span.style).collect();
-        // 「Hello 」命中 + 「WORLD hello」尾部命中：命中片段为 hit，其余原样
-        assert_eq!(highlighted.spans[0].content.as_ref(), "Hello");
-        assert_eq!(styles[0], hit);
-        assert_eq!(
-            highlighted.spans.last().expect("last").content.as_ref(),
-            "hello"
-        );
-        assert_eq!(*styles.last().expect("last"), hit);
-        assert!(styles.iter().any(|style| *style != hit), "保留未命中片段");
-
-        // 无命中原样返回；空 query 不高亮
-        assert_eq!(highlight_line(&line, "xyz", hit).spans.len(), 2);
-        assert_eq!(highlight_line(&line, "", hit).spans.len(), 2);
-    }
 }

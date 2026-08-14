@@ -9,18 +9,16 @@
 //! - [`input`]：草稿/命令行缓冲 + 编辑 + 补全（[`Input`]；草稿与命令
 //!   输入框各持一份，ADR-0020）
 //! - [`queue`]：统一消息队列与 QUEUE 模式状态（[`Queue`]）
-//! - [`picker`] / [`search`]：选择器与搜索状态（[`Picker`] / [`Search`]）
+//! - [`picker`]：选择器状态（[`Picker`]）
 //!
 //! 子模块各自自持状态与方法集；跨模块协调（模式切换、提示语、
 //! [`Effect`] 分发）由本壳完成。
 
 mod actions;
 mod chat;
-mod copymenu;
 mod input;
 mod picker;
 mod queue;
-mod search;
 mod state;
 
 #[cfg(test)]
@@ -36,14 +34,10 @@ use chat::{assistant_error, user_text};
 use input::{Input, skill_list_text};
 use picker::PICKER_PAGE_SCROLL;
 use queue::Queue;
-use search::Search;
 
 use crate::picker::step_row;
 
-pub(super) use chat::{
-    AssistantItem, Block, Chat, ChatItem, ToolItem, ToolStatus, skill_load_message,
-};
-pub(super) use copymenu::CopyMenu;
+pub(super) use chat::{Block, Chat, ChatItem, ToolItem, ToolStatus, skill_load_message};
 pub(super) use input::{Completion, CompletionCandidate, SkillEntry};
 pub(super) use picker::{PICKER_ROW_CAPACITY, Picker, PickerKind, PickerRow};
 
@@ -368,19 +362,17 @@ const HALF_PAGE_SCROLL: u16 = 5;
 /// TUI 交互模式（ADR-0021）：模式是一等状态，每个按键在当前模式
 /// 只有一个语义。
 ///
-/// SEARCH 复用输入框显示搜索串；COMMAND 有专门的命令输入框（独立缓冲）。
+/// COMMAND 有专门的命令输入框（独立缓冲）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Mode {
     /// 输入（默认）：编辑与提交 prompt；不触发命令，`/` 开头按普通文本发送
     Insert,
-    /// 动作层（ADR-0021）：单字母直达——滚动、跳转、复制、队列、会话；
+    /// 动作层（ADR-0021）：单字母直达——滚动、复制、队列、会话；
     /// 输入字符不进入缓冲（草稿保留）
     Normal,
     /// 命令（ADR-0020）：NORMAL `:` 进入的专门命令输入框（独立缓冲，预填
     /// `/`）；Tab 补全、Enter 执行命令或展开模板、Esc 放弃回 NORMAL
     Command,
-    /// 搜索：输入框复用为搜索框（增量命中），Enter/Esc 回 NORMAL
-    Search,
     /// 队列编辑（ADR-0012，oil.nvim 式）：排队消息作为可编辑缓冲，
     /// 导航/删除/换位/就地编辑；打开期间冻结队列发送
     Queue,
@@ -388,9 +380,6 @@ pub(super) enum Mode {
     /// Esc/q/`?` 关闭。派生态：由 `help_scroll.is_some()` 决定，
     /// 不入 `App::mode` 字段（与 Picker 同构）
     Help,
-    /// 复制菜单（NORMAL `y` 打开，ADR-0021）：消息与代码块快照列表，
-    /// Enter/数字键复制、Esc/q 关闭。派生态：由 `copy_menu.is_some()` 决定
-    CopyMenu,
     /// 选择器打开（`/resume`、`/models`、`/tree`），接管键位。
     /// 派生态：由 `picker.is_some()` 决定，不入 `App::mode` 字段
     Picker,
@@ -483,7 +472,7 @@ pub(super) enum Effect {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub(super) struct App {
-    /// 聊天区：条目、消息游标与滚动
+    /// 聊天区：条目与滚动
     chat: Chat,
     /// 聊天输入区：草稿缓冲、编辑与附件（INSERT/QUEUE 就地编辑共用；
     /// 不触发命令，slash 补全不启用）
@@ -493,16 +482,11 @@ pub(super) struct App {
     command: Input,
     /// 统一消息队列与 QUEUE 模式状态
     queue: Queue,
-    /// 搜索状态（NORMAL `/` 进入 SEARCH）
-    search: Search,
     /// 选择器（`/resume` / `/models` / `/tree`，打开时接管键位）
     picker: Option<Picker>,
-    /// 复制菜单（NORMAL `y` 打开；`Some` 即打开）
-    copy_menu: Option<CopyMenu>,
-    /// 交互模式（ADR-0021）：只取 Insert/Normal/Search/Queue；
-    /// Picker/Help/CopyMenu 是派生态（`picker.is_some()` /
-    /// `help_scroll.is_some()` / `copy_menu.is_some()` 时 [`Self::mode`]
-    /// 返回对应值），不入此字段
+    /// 交互模式（ADR-0021）：只取 Insert/Normal/Command/Queue；
+    /// Picker/Help 是派生态（`picker.is_some()` / `help_scroll.is_some()`
+    /// 时 [`Self::mode`] 返回对应值），不入此字段
     mode: Mode,
     /// 序列键首键（QUEUE 的 `d`），等待第二键
     pending_key: Option<char>,

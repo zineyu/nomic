@@ -1,4 +1,4 @@
-//! NORMAL 模式 / 会话快捷键 / 搜索相关测试。
+//! NORMAL 模式 / 会话快捷键相关测试。
 
 use super::*;
 
@@ -592,39 +592,4 @@ fn insert_no_longer_triggers_slash_commands() {
     assert!(app.press(Key::Enter).is_empty());
     assert_eq!(app.queue.len(), 1);
     assert!(!app.should_quit());
-}
-
-/// NORMAL 消息游标：进入时定位最新一条消息；[/] 在消息间移动（跳过
-/// 工具与系统条目），{/} 在工具条目间移动；越界钳制。
-#[test]
-fn normal_cursor_steps_between_messages_and_tools() {
-    let mut app = app_with_history();
-    app.press(Key::Esc);
-    // 条目布局：0 user, 1 assistant, 2 tool, 3 user, 4 assistant
-    assert_eq!(
-        app.chat.cursor_item,
-        Some(4),
-        "进入 NORMAL 定位最新一条消息"
-    );
-
-    // [ 逐条向前：assistant → user（跳过 tool）
-    app.press(Key::Char('['));
-    assert_eq!(app.chat.cursor_item, Some(3));
-    app.press(Key::Char('['));
-    assert_eq!(app.chat.cursor_item, Some(1), "跳过 tool 条目");
-    // ] 回到尾部
-    app.press(Key::Char(']'));
-    assert_eq!(app.chat.cursor_item, Some(3));
-
-    // { 定位工具条目；继续 { 越界钳制在原位
-    app.press(Key::Char('{'));
-    assert_eq!(app.chat.cursor_item, Some(2));
-    app.press(Key::Char('{'));
-    assert_eq!(app.chat.cursor_item, Some(2), "没有更早的工具条目，钳制");
-
-    // g/G：游标随滚动到首/尾消息
-    app.press(Key::Char('g'));
-    assert_eq!(app.chat.cursor_item, Some(0));
-    app.press(Key::Char('G'));
-    assert_eq!(app.chat.cursor_item, Some(4));
 }

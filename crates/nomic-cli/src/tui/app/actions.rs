@@ -1,9 +1,9 @@
 //! App 的第二组方法：复制/选择器/队列/help/会话与 slash 执行（由 app/mod.rs 的 `impl App` 拆分而来）。
 
 use super::{
-    App, CopyMenu, Effect, HALF_PAGE_SCROLL, Key, Message, Mode, PAGE_SCROLL, PICKER_PAGE_SCROLL,
-    Picker, PickerKind, PickerRow, SPINNER_FRAMES, SkillEntry, SlashAction, SteeringMessage,
-    help_text, line_count_of, skill_list_text,
+    App, Effect, HALF_PAGE_SCROLL, Key, Message, Mode, PAGE_SCROLL, PICKER_PAGE_SCROLL, Picker,
+    PickerKind, PickerRow, SPINNER_FRAMES, SkillEntry, SlashAction, SteeringMessage, help_text,
+    line_count_of, skill_list_text,
 };
 
 impl App {
@@ -460,13 +460,10 @@ impl App {
 
     /// `/resume`：以恢复的历史消息替换聊天区并切换 session。
     /// 排队消息属于切换前对话的后续意图，随上下文一起清空。
-    /// picker 确认后底层模式是 NORMAL（命令受理即回 NORMAL），游标需
-    /// 立即定位到最新一条消息，否则 `v`/`yy` 报「没有可选择的消息」。
     pub fn restore_conversation(&mut self, messages: &[Message], session_id: String) {
         self.chat.clear_items();
         self.queue.clear();
         self.load_history(messages);
-        self.chat.move_cursor_to_last_message();
         self.session_id = Some(session_id);
     }
 
@@ -477,7 +474,6 @@ impl App {
         self.chat.clear_items();
         self.queue.clear();
         self.load_history(messages);
-        self.chat.move_cursor_to_last_message();
     }
 
     // ── 粘贴与外部编辑器 ────────────────────────────────────────────────────
@@ -486,7 +482,7 @@ impl App {
     pub fn paste_text(&mut self, text: &str) {
         // 粘贴的意图是编辑：命令行粘贴进命令缓冲（留在 COMMAND）；
         // QUEUE 导航下先进入就地编辑（粘贴即修改游标槽位）；
-        // 其余（NORMAL/SEARCH 等）先回 INSERT 编辑草稿（草稿保留）
+        // 其余（NORMAL 等）先回 INSERT 编辑草稿（草稿保留）
         match self.mode {
             Mode::Command => {
                 self.command.paste(text);
@@ -579,13 +575,6 @@ impl App {
     /// 帮助弹层滚动状态（渲染时由帮助 widget 钳制回写；打开期间为 `Some`）。
     pub const fn help_scroll_mut(&mut self) -> Option<&mut u16> {
         self.help_scroll.as_mut()
-    }
-
-    // ── 复制菜单 ────────────────────────────────────────────────────────────
-
-    /// 当前复制菜单（渲染用）。
-    pub const fn copy_menu(&self) -> Option<&CopyMenu> {
-        self.copy_menu.as_ref()
     }
 
     // ── 渲染读接口 ──────────────────────────────────────────────────────────

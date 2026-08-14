@@ -10,9 +10,11 @@
 //! `prepareNextTurn`、`shouldStopAfterTurn`。
 //! 统一消息队列（运行中 turn 边界注入，ADR-0014）已实现，见 [`crate::SteeringQueue`]。
 
+mod actor;
 mod events;
 mod util;
 
+pub use actor::{ActorError, AgentHandle};
 pub use events::AgentEvent;
 use util::{FinalizedToolCall, user_message};
 

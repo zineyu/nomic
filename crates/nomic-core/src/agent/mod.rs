@@ -17,7 +17,7 @@ mod util;
 
 pub use actor::{ActorError, AgentHandle};
 pub use events::AgentEvent;
-use util::{FinalizedToolCall, user_message};
+use util::{FinalizedToolCall, PreparedToolCall, user_message};
 
 use std::sync::Arc;
 
@@ -571,8 +571,8 @@ impl Agent {
                 })
             });
 
-        // 预备阶段（串行）：查找工具 + hooks 门控；失败转为即时错误结果
-        let mut prepared: Vec<Result<(&ToolCall, DynTool), FinalizedToolCall>> = Vec::new();
+        // 预备阶段（串行）：查找工具 + hooks 门控；拒绝转为即时错误结果
+        let mut prepared = Vec::new();
         for call in tool_calls {
             self.emit(AgentEvent::ToolExecutionStart {
                 tool_call_id: call.id.clone(),
@@ -585,13 +585,7 @@ impl Agent {
         if sequential {
             let mut finalized = Vec::new();
             for entry in prepared {
-                let f = match entry {
-                    Err(immediate) => immediate,
-                    Ok((call, tool)) => {
-                        self.execute_and_finalize(message, call, tool, cancel).await
-                    }
-                };
-                finalized.push(f);
+                finalized.push(self.finalize_prepared(message, entry, cancel).await);
                 if cancel.is_cancelled() {
                     break;
                 }
@@ -601,28 +595,35 @@ impl Agent {
 
         let futures: Vec<_> = prepared
             .into_iter()
-            .map(|entry| async move {
-                match entry {
-                    Err(immediate) => immediate,
-                    Ok((call, tool)) => {
-                        self.execute_and_finalize(message, call, tool, cancel).await
-                    }
-                }
-            })
+            .map(|entry| self.finalize_prepared(message, entry, cancel))
             .collect();
         futures::future::join_all(futures).await
     }
 
+    /// 执行（或采纳门控拒绝的即时失败结果）一个已预备的工具调用。
+    async fn finalize_prepared(
+        &self,
+        message: &AssistantMessage,
+        entry: PreparedToolCall<'_>,
+        cancel: &CancellationToken,
+    ) -> FinalizedToolCall {
+        match entry {
+            PreparedToolCall::Rejected(immediate) => immediate,
+            PreparedToolCall::Ready(call, tool) => {
+                self.execute_and_finalize(message, call, tool, cancel).await
+            }
+        }
+    }
+
     /// 预备一个工具调用：找到工具、过 `before_tool_call` 门控。
-    #[allow(clippy::result_large_err)] // FinalizedToolCall 体积小，直接内联错误路径
     async fn prepare_tool_call<'a>(
         &self,
         message: &AssistantMessage,
         call: &'a ToolCall,
-    ) -> Result<(&'a ToolCall, DynTool), FinalizedToolCall> {
+    ) -> PreparedToolCall<'a> {
         let Some(tool) = self.tools.iter().find(|t| t.name() == call.name).cloned() else {
             tracing::warn!(tool = %call.name, "tool not found");
-            return Err(FinalizedToolCall {
+            return PreparedToolCall::Rejected(FinalizedToolCall {
                 tool_call: call.clone(),
                 result: ToolResult::text(format!("Tool {} not found", call.name)),
                 is_error: true,
@@ -638,13 +639,13 @@ impl Agent {
             .await;
         if let ToolCallDecision::Block { reason } = decision {
             tracing::warn!(tool = %call.name, %reason, "tool call blocked by hook");
-            return Err(FinalizedToolCall {
+            return PreparedToolCall::Rejected(FinalizedToolCall {
                 tool_call: call.clone(),
                 result: ToolResult::text(reason),
                 is_error: true,
             });
         }
-        Ok((call, tool))
+        PreparedToolCall::Ready(call, tool)
     }
 
     /// 执行单个工具调用并过 `after_tool_call` 改写。

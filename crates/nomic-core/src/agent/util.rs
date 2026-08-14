@@ -5,7 +5,7 @@ use nomic_ai::{
     now_millis,
 };
 
-use crate::tool::ToolResult;
+use crate::tool::{DynTool, ToolResult};
 
 /// 一次工具调用的最终结局。
 #[derive(Debug)]
@@ -13,6 +13,15 @@ pub(super) struct FinalizedToolCall {
     pub(super) tool_call: ToolCall,
     pub(super) result: ToolResult,
     pub(super) is_error: bool,
+}
+
+/// 预备完成的工具调用：门控未通过时是即时失败结果（不再执行），
+/// 否则待执行。用枚举而非 `Result`：拒绝不是错误路径，是分支之一。
+pub(super) enum PreparedToolCall<'a> {
+    /// 待执行（工具调用 + 已解析的工具实现）
+    Ready(&'a ToolCall, DynTool),
+    /// 门控拒绝（工具不存在 / hooks 拦截）的即时失败结果
+    Rejected(FinalizedToolCall),
 }
 
 /// 构建 user 消息：有图片附件时为内容块列表（图片块在前、文本块在后，

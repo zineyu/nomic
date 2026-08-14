@@ -433,8 +433,7 @@ impl SessionStore {
             let payload: String = row.get("payload");
             let title = serde_json::from_str::<Message>(&payload)
                 .ok()
-                .map(|message| vec![message])
-                .and_then(|messages| session_title(&messages));
+                .and_then(|message| session_title(std::slice::from_ref(&message)));
             if let Some(title) = title {
                 titles.insert(row.get::<String, _>("session_id"), title);
             }

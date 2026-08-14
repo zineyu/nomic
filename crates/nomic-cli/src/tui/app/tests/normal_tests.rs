@@ -338,6 +338,25 @@ fn normal_mode_y_copies_latest_message() {
     assert!(matches!(&effects[..], [Effect::CopyText(text)] if text == "你好"));
 }
 
+/// NORMAL `q`：运行中中断本轮（不退出，留在 NORMAL）；空闲退出。
+#[test]
+fn normal_q_interrupts_run_then_quits_when_idle() {
+    let mut running = app();
+    running.press(Key::Esc);
+    running.handle_event(&AgentEvent::AgentStart);
+    assert!(matches!(
+        &running.press(Key::Char('q'))[..],
+        [Effect::Cancel]
+    ));
+    assert!(!running.should_quit(), "运行中 `q` 只中断不退出");
+    assert_eq!(running.mode(), Mode::Normal);
+
+    let mut idle = app();
+    idle.press(Key::Esc);
+    assert!(idle.press(Key::Char('q')).is_empty());
+    assert!(idle.should_quit());
+}
+
 /// NORMAL：Ctrl+C 与 INSERT 同口径（运行中取消并退出，空闲退出）；
 /// d/u 半页滚动。
 #[test]

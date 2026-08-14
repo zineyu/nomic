@@ -403,7 +403,7 @@ pub(super) enum Mode {
 pub(super) enum Key {
     /// 普通字符输入（含 Shift 修饰的可见字符）
     Char(char),
-    /// Ctrl+字母（Ctrl+C/D 取消或退出；INSERT 下 Ctrl+W/U/A/E 词级编辑；
+    /// Ctrl+字母（Ctrl+C/D 退出；INSERT 下 Ctrl+W/U/A/E 词级编辑；
     /// NORMAL 下 Ctrl+D/U 半页滚动）
     Ctrl(char),
     /// Alt+字母（INSERT 下 Alt+B/F 词级移动）
@@ -435,12 +435,12 @@ pub(super) enum Effect {
         text: String,
         images: Vec<nomic_ai::ImageContent>,
     },
-    /// `/compact` 手动压缩上下文（`running` 已置位，Ctrl+C 可取消）
+    /// `/compact` 手动压缩上下文（`running` 已置位，NORMAL `q`/`Esc` 可取消）
     Compact(Option<String>),
     /// `/retry` 重试最近一轮失败的响应（`running` 已置位，聊天区尾部
     /// 失败/未定稿条目已随历史中的失败消息一并移除）
     Retry,
-    /// 取消当前运行（Ctrl+C）
+    /// 取消当前运行（NORMAL `q`/`Esc`）
     Cancel,
     /// INSERT `Ctrl+G`：挂起 TUI，用外部编辑器（`$VISUAL`/`$EDITOR`，
     /// 缺省 `vi`，ADR-0017）编辑当前草稿；编辑器退出后由事件循环

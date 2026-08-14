@@ -355,12 +355,8 @@ impl App {
     /// 命令（或展开模板），Esc 退回栈：关补全弹层 → 放弃回 NORMAL。
     pub fn press_command(&mut self, key: Key) -> Vec<Effect> {
         match key {
-            Key::Ctrl('c' | 'd') => {
-                if self.running {
-                    return vec![Effect::Cancel];
-                }
-                self.should_quit = true;
-            }
+            // Ctrl+C/D：退出（取消运行归 NORMAL `q`/`Esc`）
+            Key::Ctrl('c' | 'd') => return self.quit(),
             Key::Esc => {
                 if !self.command.dismiss_completion() {
                     self.leave_command();
@@ -470,7 +466,7 @@ impl App {
 
     /// NORMAL 模式键位（ADR-0021）：单字母动作层——less 式滚动（j/k、
     /// d/u 半页、g/G 顶底）、`[`/`]` 消息跳转、`/` 搜索、`y` 复制菜单、
-    /// `m` 队列、`r` 重试、`e` 编辑器、`q` 退出；输入字符不进入缓冲
+    /// `m` 队列、`r` 重试、`e` 编辑器、`q` 中断运行/退出；输入字符不进入缓冲
     ///（草稿保留，`i`/`a`/`Enter` 回到 INSERT 继续编辑）。
     pub fn press_normal(&mut self, key: Key) -> Vec<Effect> {
         if let Some(effects) = self.normal_exit(key) {
@@ -520,8 +516,15 @@ impl App {
             Key::Char('e') => return vec![Effect::OpenEditor],
             // `?` 打开键位帮助弹层（只读；Esc/q/`?` 关闭）
             Key::Char('?') => return self.open_help(),
-            // q：退出（运行中先中断再退出）
-            Key::Char('q') | Key::Ctrl('c') => return self.quit(),
+            // q：运行中中断本轮（留在 NORMAL）；空闲退出
+            Key::Char('q') => {
+                if self.running {
+                    return vec![Effect::Cancel];
+                }
+                return self.quit();
+            }
+            // Ctrl+C：退出（运行中先中断再退出）
+            Key::Ctrl('c') => return self.quit(),
             Key::Char('k') | Key::Up => self.chat.scroll_up(1),
             Key::Char('j') | Key::Down => self.chat.scroll_down(1),
             Key::PageUp => self.chat.scroll_up(PAGE_SCROLL),
@@ -532,7 +535,7 @@ impl App {
         Vec::new()
     }
 
-    /// 退出 TUI（NORMAL `q`/`Ctrl+C`）：运行中先中断本轮再退出。
+    /// 退出 TUI（NORMAL 空闲 `q`、各模式 `Ctrl+C`）：运行中先中断本轮再退出。
     pub fn quit(&mut self) -> Vec<Effect> {
         self.should_quit = true;
         if self.running {

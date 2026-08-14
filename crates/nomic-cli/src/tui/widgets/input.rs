@@ -236,7 +236,7 @@ fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
     if app.is_running() {
         let mut spans = vec![
             Span::styled(format!("{} ", app.spinner()), theme::busy()),
-            Span::styled("运行中 · Ctrl+C 取消", theme::busy()),
+            Span::styled("运行中 · NORMAL q/Esc 中断", theme::busy()),
         ];
         // 排队消息数（ADR-0014）：运行中 Enter 排队的可见反馈
         if !app.queue().is_empty() {

@@ -192,12 +192,8 @@ impl App {
             Key::Char('o') => self.queue_insert_slot(1),
             Key::Char('O') => self.queue_insert_slot(0),
             Key::Esc => return self.leave_queue(),
-            Key::Ctrl('c') => {
-                if self.running {
-                    return vec![Effect::Cancel];
-                }
-                self.should_quit = true;
-            }
+            // Ctrl+C：退出（取消运行归 NORMAL `q`/`Esc`）
+            Key::Ctrl('c') => return self.quit(),
             Key::PageUp => self.chat.scroll_up(PAGE_SCROLL),
             Key::PageDown => self.chat.scroll_down(PAGE_SCROLL),
             _ => {}
@@ -220,12 +216,8 @@ impl App {
     pub fn press_queue_edit(&mut self, key: Key) -> Vec<Effect> {
         match key {
             Key::Enter | Key::Esc => self.queue_save_edit(),
-            Key::Ctrl('c') => {
-                if self.running {
-                    return vec![Effect::Cancel];
-                }
-                self.should_quit = true;
-            }
+            // Ctrl+C：退出（取消运行归 NORMAL `q`/`Esc`）
+            Key::Ctrl('c') => return self.quit(),
             other => Self::edit_key(&mut self.input, &mut self.chat, other),
         }
         Vec::new()
@@ -252,12 +244,8 @@ impl App {
             Key::Ctrl('u') => self.help_scroll_by(-i32::from(HALF_PAGE_SCROLL)),
             Key::PageDown => self.help_scroll_by(i32::from(PAGE_SCROLL)),
             Key::PageUp => self.help_scroll_by(-i32::from(PAGE_SCROLL)),
-            Key::Ctrl('c') => {
-                if self.running {
-                    return vec![Effect::Cancel];
-                }
-                self.should_quit = true;
-            }
+            // Ctrl+C：退出（取消运行归 NORMAL `q`/`Esc`）
+            Key::Ctrl('c') => return self.quit(),
             _ => {}
         }
         Vec::new()
@@ -379,7 +367,7 @@ impl App {
                 Vec::new()
             }
             SlashAction::Compact(instructions) => {
-                // 压缩是一次 LLM 调用：按 mini-run 处理，Ctrl+C 可取消
+                // 压缩是一次 LLM 调用：按 mini-run 处理，NORMAL `q`/`Esc` 可取消
                 self.running = true;
                 self.notice = None;
                 vec![Effect::Compact(instructions)]

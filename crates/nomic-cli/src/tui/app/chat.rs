@@ -9,6 +9,7 @@ use nomic_ai::{
 use nomic_skills::{ActivatedSkill, parse_active_skill_tag};
 
 use super::step_row;
+use crate::tui::chat_lines::chat_lines;
 
 /// 聊天区条目。
 #[derive(Debug)]
@@ -83,11 +84,11 @@ pub(in crate::tui) struct Chat {
     pub(super) items: Vec<ChatItem>,
     /// NORMAL 的消息游标（items 下标）；进入 NORMAL 时定位到最新一条消息
     pub(super) cursor_item: Option<usize>,
-    /// 渲染回写的各条目起始行（聊天 widget 折行后同步；未经渲染时为空）
-    item_lines: Vec<u16>,
+    /// 各条目起始行（[`Self::sync_geometry`] 按视口几何预先计算；未经同步时为空）
+    item_starts: Vec<u16>,
     /// 从底部向上滚动的行数（0 = 跟随最新内容）
     pub(super) scroll: u16,
-    /// 聊天区最大可上滚行数（渲染时更新，状态栏滚动位置显示用）
+    /// 聊天区最大可上滚行数（[`Self::sync_geometry`] 按视口计算，状态栏滚动位置显示用）
     scroll_max: u16,
 }
 
@@ -292,12 +293,23 @@ impl Chat {
         self.scroll = 0;
     }
 
-    /// 渲染同步滚动边界：钳制滚动偏移、记录上限，返回生效的滚动偏移。
-    /// 聊天区唯一的状态回写通道（状态栏滚动位置显示依赖 `scroll_max`）。
-    pub(in crate::tui) fn clamp_scroll(&mut self, max_scroll: u16) -> u16 {
-        self.scroll_max = max_scroll;
-        self.scroll = self.scroll.min(max_scroll);
-        self.scroll
+    /// 渲染前按已知视口计算聊天区几何：以与上屏相同的行组装
+    ///（[`crate::tui::chat_lines`]）折行，回写各条目起始行与滚动上限，
+    /// 并就地钳制滚动偏移。几何由此进状态层（每帧渲染前由
+    /// [`super::App::sync_chat_geometry`] 调用一次），渲染 widget 只读；
+    /// 按键行为与测试不再依赖「上一帧是否画过」。
+    pub(in crate::tui) fn sync_geometry(
+        &mut self,
+        width: u16,
+        height: u16,
+        thinking_collapsed: bool,
+        spinner: &str,
+    ) {
+        let (lines, starts) = chat_lines(&self.items, width, None, thinking_collapsed, spinner);
+        self.item_starts = starts;
+        self.scroll_max =
+            u16::try_from(lines.len().saturating_sub(usize::from(height))).unwrap_or(u16::MAX);
+        self.scroll = self.scroll.min(self.scroll_max);
     }
 
     /// 当前滚动偏移（从底部向上计）。
@@ -305,16 +317,17 @@ impl Chat {
         self.scroll
     }
 
-    /// 聊天区最大可上滚行数（渲染同步后有效）。
+    /// 聊天区最大可上滚行数（几何同步后有效）。
     pub(in crate::tui) const fn scroll_max(&self) -> u16 {
         self.scroll_max
     }
 
     // ── 消息游标 ────────────────────────────────────────────────────────────
 
-    /// 渲染回写各条目起始行（聊天 widget 折行后同步；测试未经渲染时为空）。
-    pub(in crate::tui) fn sync_item_lines(&mut self, starts: Vec<u16>) {
-        self.item_lines = starts;
+    /// 各条目起始行（[`Self::sync_geometry`] 计算结果；测试断言用）。
+    #[cfg(test)]
+    pub(super) fn item_starts(&self) -> &[u16] {
+        &self.item_starts
     }
 
     /// 当前消息游标（items 下标）；是否展示由模式路由层裁决。
@@ -372,12 +385,12 @@ impl Chat {
         }
     }
 
-    /// 把消息游标条目滚到视野顶部（渲染同步过行号才生效；未经渲染不动）。
+    /// 把消息游标条目滚到视野顶部（几何未同步时起始行为空，不动）。
     fn scroll_to_cursor_item(&mut self) {
         let Some(index) = self.cursor_item else {
             return;
         };
-        let Some(&line) = self.item_lines.get(index) else {
+        let Some(&line) = self.item_starts.get(index) else {
             return;
         };
         // u16::MAX：条目无可见块（空 assistant），没有可定位的行

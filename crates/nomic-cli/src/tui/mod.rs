@@ -11,6 +11,8 @@
 //!   （模型 + 思考级别两步流）、`session`（resume / tree / branch /
 //!   new 与 recorder 换绑；定稿点落库收在 `nomic_session::SessionRecorder`）、
 //!   `clipboard`（粘贴 / 复制 / 图片暂存）
+//! - [`chat_lines`]：聊天区行组装（条目 → 带 gutter 的行 + 各条目起始行），
+//!   状态层几何（渲染前主动计算）与渲染上屏共用同一实现，行数精确一致
 //! - [`widgets`]：纯渲染——组合根 [`widgets::draw`] 布局后由各区域自定义
 //!   widget（聊天区 / 输入框 / 状态栏 / 弹层 / 覆盖层）渲染
 //! - [`driver`]：agent driver 任务（专属 tokio 任务持有 `Agent`）与事件循环
@@ -31,6 +33,7 @@
 //! 聊天区提示，TUI 保持存活供查看记录，而非静默退出。
 
 mod app;
+mod chat_lines;
 mod driver;
 mod effects;
 mod goal;

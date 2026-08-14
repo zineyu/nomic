@@ -1,14 +1,15 @@
 //! TUI 渲染：组合根与各区域自定义 widget（ratatui）。
 //!
 //! [`draw`] 是组合根：布局（聊天区 + 输入框 + 状态栏三段）后把各区域交给
-//! 对应 widget 渲染——聊天区 [`ChatView`]（`StatefulWidget`，渲染期回写
-//! 滚动与条目行号）、输入框 [`InputArea`]、状态栏 [`StatusBar`]，以及贴
-//! 输入框上方的弹层（[`CompletionPopup`] / [`PickerPopup`]）与模态覆盖层
-//! （[`CopyMenuOverlay`] / [`HelpOverlay`]）。各 widget 实现见同名子模块。
+//! 对应 widget 渲染——聊天区 [`ChatView`]（只读；几何在渲染前由
+//! [`App::sync_chat_geometry`] 按视口算进状态层）、输入框 [`InputArea`]、
+//! 状态栏 [`StatusBar`]，以及贴输入框上方的弹层（[`CompletionPopup`] /
+//! [`PickerPopup`]）与模态覆盖层（[`CopyMenuOverlay`] / [`HelpOverlay`]）。
+//! 各 widget 实现见同名子模块。
 
 mod chat;
 mod input;
-mod message;
+pub(in crate::tui) mod message;
 mod overlay;
 mod popup;
 mod status;
@@ -40,10 +41,11 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     // Paragraph 不清理文本以外的单元格；先 Clear 避免长行残留
     frame.render_widget(Clear, frame.area());
 
-    // 聊天区（渲染期把滚动边界与条目行号回写 Chat 状态）
+    // 聊天区：渲染前按已知视口把几何（条目起始行/滚动上限）算进状态层，
+    // ChatView 只读渲染，不再有渲染期回写
     let chat_area = chunks[0].inner(Margin::new(chat::CHAT_H_MARGIN, 0));
-    let chat_view = ChatView::new(app);
-    frame.render_stateful_widget(chat_view, chat_area, app.chat_mut());
+    app.sync_chat_geometry(chat_area.width, chat_area.height);
+    frame.render_widget(ChatView::new(app), chat_area);
 
     // 输入框（渲染后按内容设置光标）
     let input_widget = InputArea::new(app);
@@ -415,9 +417,10 @@ mod tests {
         assert!(compact.contains("/help"), "{compact}");
     }
 
-    /// NORMAL：状态栏显示模式徽标与浏览键位提示，条目行号回写状态层。
+    /// NORMAL：状态栏显示模式徽标与浏览键位提示，消息游标定位到最新条目
+    ///（几何在渲染前已由状态层按视口计算，不再经渲染回写）。
     #[test]
-    fn renders_normal_mode_badge_and_syncs_item_lines() {
+    fn renders_normal_mode_badge_and_positions_cursor() {
         use super::super::app::Key;
         let mut app = App::new("test-model".to_string(), None, 200_000);
         app.handle_event(&AgentEvent::MessageStart(Box::new(Message::User(
@@ -433,7 +436,7 @@ mod tests {
 
         let compact = compact_text(&terminal);
         assert!(compact.contains("NORMAL"), "{compact}");
-        // 渲染后条目起始行已回写（游标滚动定位依赖）
+        // 游标定位到最新（唯一）消息条目
         assert_eq!(app.chat_cursor(), Some(0));
     }
 

@@ -150,18 +150,21 @@ fn normal_space_toggles_item_collapse() {
     assert!(app.notice().is_some_and(|n| n.contains("不可折叠")));
 }
 
-/// 消息游标滚动定位：渲染回写条目行号后，移动游标滚动到该条目。
+/// 消息游标滚动定位：几何由状态层按视口主动计算（无需先渲一帧），
+/// 移动游标滚动到该条目。
 #[test]
 fn cursor_movement_scrolls_to_item() {
     let mut app = app_with_history();
-    // 模拟渲染回写：条目 0..=4 起始行 0,10,20,30,40；scroll_max 50
-    app.chat.sync_item_lines(vec![0, 10, 20, 30, 40]);
-    app.chat.clamp_scroll(50);
+    // 状态层按已知视口计算几何：条目起始行与滚动上限不经渲染即就位
+    app.sync_chat_geometry(40, 5);
+    assert!(app.chat.scroll_max() > 0);
     app.press(Key::Esc);
     assert_eq!(app.chat.cursor_item, Some(4));
     app.press(Key::Char('['));
-    // 条目 3 起始行 30：scroll = 50 - 30
-    assert_eq!(app.chat.scroll(), 20);
+    // 游标到条目 3：scroll = scroll_max - 条目起始行
+    let expected = app.chat.scroll_max() - app.chat.item_starts()[3];
+    assert!(expected > 0, "条目 3 应在底屏之上");
+    assert_eq!(app.chat.scroll(), expected);
     app.press(Key::Char('g'));
     assert_eq!(app.chat.scroll(), u16::MAX, "g 仍然直接滚到顶");
 }

@@ -290,7 +290,11 @@ fn normal_mode_g_half_page_and_scroll() {
     app.press(Key::Esc);
 
     app.press(Key::Char('g'));
-    assert_eq!(app.chat.scroll(), u16::MAX, "g 滚到顶（渲染时钳到上限）");
+    assert_eq!(
+        app.chat.scroll(),
+        u16::MAX,
+        "g 滚到顶（几何同步时钳到上限）"
+    );
 
     app.press(Key::Char('G'));
     assert_eq!(app.chat.scroll(), 0, "G 回底");
@@ -305,6 +309,18 @@ fn normal_mode_g_half_page_and_scroll() {
     assert_eq!(app.chat.scroll(), 1);
     app.press(Key::Char('j'));
     assert_eq!(app.chat.scroll(), 0, "j 向下滚动钳在 0");
+}
+
+/// 几何在状态层主动计算：g 到顶的 u16::MAX 偏移经 sync_chat_geometry
+/// 按视口钳到上限——滚动正确性不依赖先渲一帧。
+#[test]
+fn geometry_sync_clamps_scroll_without_render() {
+    let mut app = app_with_history();
+    app.press(Key::Esc);
+    app.press(Key::Char('g'));
+    app.sync_chat_geometry(40, 5);
+    assert!(app.chat.scroll_max() > 0);
+    assert_eq!(app.chat.scroll(), app.chat.scroll_max());
 }
 
 /// NORMAL：Y 复制最新一条消息（与 /copy 同效果）；无消息时提示。

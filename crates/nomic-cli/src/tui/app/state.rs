@@ -40,14 +40,24 @@ impl App {
 
     // ── 子模块访问（渲染与事件循环的读/回写通道） ────────────────────────────
 
-    /// 聊天区状态（条目、滚动、渲染回写）。
+    /// 聊天区状态（条目、滚动与几何）。
     pub const fn chat(&self) -> &Chat {
         &self.chat
     }
 
-    /// 聊天区状态（可变）：渲染回写滚动边界/条目行号、滚动与系统提示用。
+    /// 聊天区状态（可变）：滚动、系统提示与条目操作用。
     pub const fn chat_mut(&mut self) -> &mut Chat {
         &mut self.chat
+    }
+
+    /// 渲染前按已知视口刷新聊天区几何（条目起始行、滚动上限并就地钳制
+    /// 滚动）：「宽度 → 折行 → 条目起始行」在状态层主动计算，渲染 widget
+    /// 只读。每帧 draw 渲染聊天区前调用；测试可直接调用，无需先渲一帧。
+    pub fn sync_chat_geometry(&mut self, width: u16, height: u16) {
+        let thinking_collapsed = self.thinking_collapsed;
+        let spinner = self.spinner();
+        self.chat
+            .sync_geometry(width, height, thinking_collapsed, spinner);
     }
 
     /// 输入区状态（草稿、补全、附件）。
@@ -467,7 +477,7 @@ impl App {
             return effects;
         }
         match key {
-            // g/G：到顶/回底（less 惯例；渲染时经 clamp_scroll 钳到上限）
+            // g/G：到顶/回底（less 惯例；渲染前经 sync_chat_geometry 钳到上限）
             Key::Char('g') => {
                 self.chat.scroll_up(u16::MAX);
                 self.chat.move_cursor_to_first_message();

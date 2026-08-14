@@ -1,5 +1,6 @@
-//! agent driver：专属 tokio 任务持有 `Agent`，串行执行事件循环提交的
-//! job（prompt / 压缩 / 重试 / 模型切换等），完成后回传结果；事件循环的
+//! agent driver：薄适配层——agent 本体由 core 的 actor 任务持有
+//! （[`Agent::spawn`]，ADR-0022），driver 任务串行执行事件循环提交的
+//! job（prompt / 压缩 / 重试 / 模型切换等）并回传结果；事件循环的
 //! 唤醒处理（[`handle_wake`] / [`handle_prompt_done`] / [`next_wake`]）与
 //! 按键映射（[`map_key`]）、Effect 外部资源接线（[`execute_effect`]）也在此。
 
@@ -9,7 +10,7 @@ use crossterm::event::{
 };
 use futures::StreamExt as _;
 use nomic_ai::{Message, Model, StopReason, ThinkingLevel};
-use nomic_core::{Agent, AgentEvent, Compaction, estimate_context_tokens};
+use nomic_core::{Agent, AgentEvent, Compaction};
 use nomic_session::SessionStore;
 use nomic_skills::SkillResolver;
 use nomic_tools::TodoStore;
@@ -75,7 +76,8 @@ pub(super) struct PromptEnd {
     /// 收尾时为 false——失败与中断的恢复由用户主导，不自动追问
     ended_normally: bool,
 }
-/// 启动 agent driver：专属 tokio 任务持有 Agent，串行执行 job，完成后回传结果。
+/// 启动 agent driver：agent 经 [`Agent::spawn`] 移入 core actor 任务，
+/// driver 任务串行执行 job（经 [`nomic_core::AgentHandle`] 转发），完成后回传结果。
 // 参数均为 driver 的独立组成部分，打包为参数结构只会增加间接层
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_driver(
@@ -88,14 +90,14 @@ pub(super) fn spawn_driver(
     reasoning: Option<ThinkingLevel>,
     todos: TodoStore,
 ) -> Result<(Driver, mpsc::UnboundedReceiver<DriverDone>)> {
+    let (handle, actor_task) = agent.spawn();
     let (job_tx, mut job_rx) = mpsc::unbounded_channel::<DriverJob>();
     let (done_tx, done_rx) = mpsc::unbounded_channel::<DriverDone>();
     let driver_task = tokio::spawn(async move {
-        let mut agent = agent;
         while let Some(job) = job_rx.recv().await {
             match job {
                 DriverJob::Prompt(text, images, cancel) => {
-                    let result = agent
+                    let result = handle
                         .prompt_with_images(&text, &images, cancel.clone())
                         .await;
                     let done = match result {
@@ -121,7 +123,7 @@ pub(super) fn spawn_driver(
                     }
                 }
                 DriverJob::Compact(instructions, cancel) => {
-                    let result = agent
+                    let result = handle
                         .compact(instructions.as_deref(), cancel)
                         .await
                         .map_err(|error| error.to_string());
@@ -130,7 +132,7 @@ pub(super) fn spawn_driver(
                     }
                 }
                 DriverJob::Retry(cancel) => {
-                    let result = agent
+                    let result = handle
                         .retry(cancel)
                         .await
                         .map(|outcome| outcome.is_some())
@@ -139,21 +141,36 @@ pub(super) fn spawn_driver(
                         return;
                     }
                 }
-                DriverJob::Inject(text) => agent.inject_user_message(&text),
-                DriverJob::Clear => agent.clear_messages(),
-                DriverJob::Restore(messages) => agent.restore_messages(messages),
+                // 变更为 fire-and-forget：邮箱 FIFO 保证其先于紧随的
+                // prompt/查询生效；Err 即 actor 已退出，由下方的
+                // context_tokens 查询兜底退出 driver 任务
+                DriverJob::Inject(text) => {
+                    let _ = handle.inject_user_message(&text);
+                }
+                DriverJob::Clear => {
+                    let _ = handle.clear_messages();
+                }
+                DriverJob::Restore(messages) => {
+                    let _ = handle.restore_messages(messages);
+                }
                 DriverJob::SwitchModel(switch) => {
-                    // 先换 provider 再换模型：driver 串行处理，紧随的请求
+                    // 先换 provider 再换模型：命令按序入邮箱，紧随的请求
                     // 一定跑在新 provider 的新模型上
                     if let Some(provider) = switch.provider {
-                        agent.set_provider(provider.provider, provider.api_key);
+                        let _ = handle.set_provider(provider.provider, provider.api_key);
                     }
-                    agent.set_model(switch.model);
+                    let _ = handle.set_model(switch.model);
                 }
-                DriverJob::SetReasoning(level) => agent.set_reasoning(level),
+                DriverJob::SetReasoning(level) => {
+                    let _ = handle.set_reasoning(level);
+                }
             }
-            // 每个 job 都可能改变上下文：回报最新 token 估算（与自动压缩同一口径）
-            let tokens = estimate_context_tokens(agent.messages());
+            // 每个 job 都可能改变上下文：回报最新 token 估算（与自动压缩同一口径）；
+            // 查询失败即 actor 已退出，driver 任务随之结束（channel 关闭经
+            // driver_failed 路径上报）
+            let Ok(tokens) = handle.context_tokens().await else {
+                return;
+            };
             if done_tx.send(DriverDone::Context(tokens)).is_err() {
                 return;
             }
@@ -162,7 +179,8 @@ pub(super) fn spawn_driver(
     let driver = Driver {
         job_tx,
         current_cancel: None,
-        task: Some(driver_task),
+        task: Some(actor_task),
+        adapter_task: Some(driver_task),
         alive: true,
         session,
         tip,
@@ -181,9 +199,12 @@ pub(super) fn spawn_driver(
 pub(super) struct Driver {
     pub(super) job_tx: mpsc::UnboundedSender<DriverJob>,
     pub(super) current_cancel: Option<CancellationToken>,
-    /// driver 任务的 JoinHandle：任务 panic 时取出详情转为 TUI 内错误提示
+    /// agent actor 任务的 JoinHandle：任务退出时取出详情转为 TUI 内错误提示
     pub(super) task: Option<tokio::task::JoinHandle<()>>,
-    /// driver 是否存活；退出后其 channel 已关闭，事件循环跳过对应分支
+    /// driver 适配任务的 JoinHandle（与 actor 任务任一退出即整体不可用，
+    /// [`driver_failed`] 等待先结束的一方并中止另一方）
+    pub(super) adapter_task: Option<tokio::task::JoinHandle<()>>,
+    /// actor 是否存活；退出后其 channel 已关闭，事件循环跳过对应分支
     pub(super) alive: bool,
     pub(super) session: Option<(SessionStore, String)>,
     /// 落库父指针：当前分支末端的 entry id（新 session 或无条目时为 None，
@@ -440,23 +461,41 @@ pub(super) async fn next_wake(
         },
     }
 }
-/// driver 任务退出：取出 JoinHandle 详情（panic 负载等），转为 TUI 内提示。
+/// actor / 适配任务退出：任一退出即整体不可用（events 与 done channel
+/// 的关闭都路由到这里）；等待先结束的一方取出详情（panic 负载等），
+/// 中止另一方，转为 TUI 内提示。
 pub(super) async fn driver_failed(driver: &mut Driver) -> Wake {
     driver.alive = false;
-    let detail = match &mut driver.task {
-        Some(handle) => match handle.await {
-            Ok(()) => "任务提前结束".to_string(),
-            Err(error) if error.is_panic() => {
-                let payload = error.into_panic();
-                format!("panic：{}", panic_payload_text(&*payload))
+    let actor = driver.task.take();
+    let adapter = driver.adapter_task.take();
+    let detail = match (actor, adapter) {
+        (Some(mut actor), Some(mut adapter)) => {
+            tokio::select! {
+                result = &mut actor => {
+                    adapter.abort();
+                    task_exit_detail("agent actor", result)
+                }
+                result = &mut adapter => {
+                    actor.abort();
+                    task_exit_detail("driver", result)
+                }
             }
-            Err(error) => error.to_string(),
-        },
+        }
         // 已报告过一次（events 与 done 两个 channel 先后关闭）
-        None => "任务已退出".to_string(),
+        _ => "任务已退出".to_string(),
     };
-    driver.task = None;
     Wake::DriverFailed(detail)
+}
+/// 任务退出详情：panic 负载、提前结束或 join 错误。
+fn task_exit_detail(label: &str, result: Result<(), tokio::task::JoinError>) -> String {
+    match result {
+        Ok(()) => format!("{label}任务提前结束"),
+        Err(error) if error.is_panic() => {
+            let payload = error.into_panic();
+            format!("{label}任务 panic：{}", panic_payload_text(&*payload))
+        }
+        Err(error) => format!("{label}任务错误：{error}"),
+    }
 }
 /// 把 crossterm 按键映射为状态层的语义按键；未识别的组合返回 `None`。
 pub(super) const fn map_key(key: KeyEvent) -> Option<Key> {

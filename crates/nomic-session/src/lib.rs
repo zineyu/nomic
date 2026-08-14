@@ -11,6 +11,8 @@
 //!   读取方从最新一行向最老一行逐步回退（feedback），直到无可回退的行为止；
 //!   值用 sqlite 原生 JSON 类型（JSONB）存储
 //! - 全局单库，默认位于 XDG data dir：`$XDG_DATA_HOME/nomic/sessions.db`
+//! - [`SessionRecorder`] 把落库策略（定稿点、落什么、父指针推进）收在
+//!   事件流 seam 后面：print / TUI 只做一行接线，语义不再漂移
 //!
 //! 消息 payload 原样存 [`Message`] 的 serde JSON；`role`/`timestamp` 为提取列，
 //! 供查询与维护 session 时间字段。
@@ -25,6 +27,9 @@ use nomic_ai::{
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row as _, SqlitePool};
+
+mod recorder;
+pub use recorder::SessionRecorder;
 
 /// 内嵌迁移（`crates/nomic-session/migrations/`）。
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();

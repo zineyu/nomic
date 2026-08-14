@@ -1,16 +1,17 @@
-//! 会话管理：`/resume` 恢复、`/tree` 浏览与分支、`/new` 新建，以及
-//! MessageEnd / CompactionEnd 定稿点落库（父指针推进）。
+//! 会话管理：`/resume` 恢复、`/tree` 浏览与分支、`/new` 新建。
+//!
+//! 定稿点落库与父指针推进收在 `nomic_session::SessionRecorder`（driver
+//! 事件分支一行接线）；本模块只做 session 切换时的 recorder 换绑。
 
 use anyhow::{Context as _, Result};
-use nomic_ai::Message;
-use nomic_session::{CompactionRecord, SessionStore, TreeEntry};
+use nomic_session::{SessionRecorder, SessionStore, TreeEntry};
 
 use crate::tui::app::{App, PickerRow};
 use crate::tui::driver::{Driver, DriverJob};
 
 /// `/resume`：列出历史 session 并打开选择器。
 pub(in crate::tui) async fn list_sessions(app: &mut App, driver: &Driver) {
-    match session_store(driver.session.as_ref()).await {
+    match session_store(driver.recorder.as_ref()).await {
         Err(error) => app.warn(format!("{error:#}")),
         Ok(store) => match store.list_sessions().await {
             Err(error) => app.warn(format!("列出 session 失败：{error}")),
@@ -37,12 +38,11 @@ pub(in crate::tui) async fn new_session(app: &mut App, driver: &mut Driver) {
     // driver 串行处理任务；slash 命令仅在空闲时可提交，无需排队等待
     let _ = driver.job_tx.send(DriverJob::Clear);
     app.start_new_conversation();
-    // 新 session 没有任何 entry：落库父指针重置（自动链最新）
-    driver.tip = None;
-    if let Some((store, id)) = &mut driver.session {
-        match store.create_session(&driver.cwd).await {
+    if let Some(recorder) = &mut driver.recorder {
+        match recorder.store().create_session(&driver.cwd).await {
             Ok(new_id) => {
-                id.clone_from(&new_id);
+                // 换绑新 session：没有任何 entry，父指针重置（自动链最新）
+                recorder.switch(new_id.clone(), None);
                 app.set_session(new_id);
             }
             Err(error) => {
@@ -54,23 +54,22 @@ pub(in crate::tui) async fn new_session(app: &mut App, driver: &mut Driver) {
 
 /// `/tree`：列出当前 session 的会话树并打开选择器（预选中当前分支末端）。
 pub(in crate::tui) async fn list_tree(app: &mut App, driver: &Driver) {
-    let Some((store, session_id)) = &driver.session else {
+    let Some(recorder) = &driver.recorder else {
         app.warn("当前对话未持久化，没有会话树可浏览");
         return;
     };
-    match store.list_tree(session_id).await {
+    match recorder.store().list_tree(recorder.session_id()).await {
         Err(error) => app.warn(format!("加载会话树失败：{error}")),
         Ok(entries) if entries.is_empty() => {
             app.chat_mut()
                 .push_system("当前 session 还没有消息，发送一条后再来浏览会话树。");
         }
         Ok(entries) => {
-            let rows = tree_rows(&entries, driver.tip.as_deref());
+            let rows = tree_rows(&entries, recorder.tip());
             // 预选中当前分支末端；末端不可选（工具结果，或已被折叠进摘要行）
             // 时退到首个可选行
-            let selected = driver
-                .tip
-                .as_deref()
+            let selected = recorder
+                .tip()
                 .and_then(|tip| rows.iter().position(|row| row.id == tip))
                 .filter(|&index| rows[index].selectable)
                 .or_else(|| rows.iter().position(|row| row.selectable))
@@ -83,15 +82,18 @@ pub(in crate::tui) async fn list_tree(app: &mut App, driver: &Driver) {
 /// `/tree` 选择器确认：以所选条目为起点创建分支——重放该分支上下文、
 /// 切换落库父指针；原分支 entries 不动，仍可在 `/tree` 中回访。
 pub(in crate::tui) async fn branch_to(app: &mut App, driver: &mut Driver, entry_id: String) {
-    let Some((store, session_id)) = &driver.session else {
+    let Some(recorder) = &driver.recorder else {
         return; // ListTree 已挡住未持久化场景
     };
-    if driver.tip.as_deref() == Some(entry_id.as_str()) {
+    if recorder.tip() == Some(entry_id.as_str()) {
         app.chat_mut()
             .push_system("所选条目就是当前分支末端，无需切换。");
         return;
     }
-    match store.load_branch(session_id, &entry_id).await {
+    // 提前克隆以结束对 driver 的借用（await 后要切父指针）
+    let store = recorder.store().clone();
+    let session_id = recorder.session_id().to_string();
+    match store.load_branch(&session_id, &entry_id).await {
         Err(error) => app.warn(format!("切换分支失败：{error}")),
         Ok(messages) => {
             // driver 串行处理任务：紧随其后的 prompt 一定排在 Restore 之后
@@ -105,7 +107,9 @@ pub(in crate::tui) async fn branch_to(app: &mut App, driver: &mut Driver, entry_
             }
             let count = messages.len();
             app.restore_branch(&messages);
-            driver.tip = Some(entry_id);
+            if let Some(recorder) = &mut driver.recorder {
+                recorder.set_tip(Some(entry_id));
+            }
             app.chat_mut().push_system(format!(
                 "已从所选条目创建分支（{count} 条消息），后续对话写入新分支；\
                  原分支保留，仍可在 /tree 中回访。"
@@ -272,22 +276,22 @@ fn fold_row(run: &[TreeEntry], tip: Option<&str>, prefix: &str) -> PickerRow {
     }
 }
 
-/// 取可用 session store：优先复用当前 session 的；未持久化（启动时打开失败）
-/// 时按需重开——`/resume` 成功后该 store 会随恢复的 session 一同被采用。
-async fn session_store(session: Option<&(SessionStore, String)>) -> Result<SessionStore> {
-    match session {
-        Some((store, _)) => Ok(store.clone()),
+/// 取可用 session store：优先复用 recorder 的；未持久化（启动时打开失败）
+/// 时按需重开——`/resume` 成功后该 store 会随新 recorder 一同被采用。
+async fn session_store(recorder: Option<&SessionRecorder>) -> Result<SessionStore> {
+    match recorder {
+        Some(recorder) => Ok(recorder.store().clone()),
         None => SessionStore::open_default()
             .await
             .context("打开 session 库失败"),
     }
 }
 
-/// 恢复选中 session：加载历史 → 替换 agent 上下文与聊天区 → 切换落库目标
-/// 与落库父指针（默认分支末端）。
+/// 恢复选中 session：加载历史 → 替换 agent 上下文与聊天区 → recorder
+/// 换绑该 session（父指针为默认分支末端）。
 pub(in crate::tui) async fn resume_session(app: &mut App, driver: &mut Driver, id: String) {
     let loaded = async {
-        let store = session_store(driver.session.as_ref()).await?;
+        let store = session_store(driver.recorder.as_ref()).await?;
         let messages = store
             .load_messages(&id)
             .await
@@ -306,10 +310,11 @@ pub(in crate::tui) async fn resume_session(app: &mut App, driver: &mut Driver, i
             // 不会出现「新 prompt 跑在旧上下文」的交错
             let _ = driver.job_tx.send(DriverJob::Restore(messages.clone()));
             app.restore_conversation(&messages, id.clone());
-            driver.tip = tip;
-            match &mut driver.session {
-                Some((_, current)) => current.clone_from(&id),
-                None => driver.session = Some((store, id.clone())),
+            match &mut driver.recorder {
+                Some(recorder) => recorder.switch(id.clone(), tip),
+                None => {
+                    driver.recorder = Some(SessionRecorder::with_tip(store, id.clone(), tip));
+                }
             }
             let label = nomic_session::session_title(&messages)
                 .map_or_else(String::new, |title| format!("「{title}」"));
@@ -318,46 +323,6 @@ pub(in crate::tui) async fn resume_session(app: &mut App, driver: &mut Driver, i
                 messages.len()
             ));
         }
-    }
-}
-
-/// `MessageEnd` 定稿点落库：以当前分支末端为父 entry，成功后推进父指针；
-/// 失败仅提示不中断（store 非权威源）。
-pub(in crate::tui) async fn persist(driver: &mut Driver, message: &Message, app: &mut App) {
-    let Some((store, session_id)) = &driver.session else {
-        return;
-    };
-    match store
-        .append_message(session_id, driver.tip.as_deref(), message)
-        .await
-    {
-        Ok(entry_id) => driver.tip = Some(entry_id),
-        Err(error) => app.warn(format!("session 落库失败：{error}")),
-    }
-}
-
-/// `CompactionEnd` 落库压缩条目（父指针语义与 [`persist`] 一致）。
-pub(in crate::tui) async fn persist_compaction(
-    driver: &mut Driver,
-    summary: &str,
-    tokens_before: u64,
-    kept_count: usize,
-    app: &mut App,
-) {
-    let Some((store, session_id)) = &driver.session else {
-        return;
-    };
-    let record = CompactionRecord {
-        summary: summary.to_string(),
-        kept_count: kept_count as u64,
-        tokens_before,
-    };
-    match store
-        .append_compaction(session_id, driver.tip.as_deref(), &record)
-        .await
-    {
-        Ok(entry_id) => driver.tip = Some(entry_id),
-        Err(error) => app.warn(format!("compaction 落库失败：{error}")),
     }
 }
 

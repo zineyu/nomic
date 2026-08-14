@@ -9,7 +9,8 @@
 //!   [`terminal::edit_input_in_editor`] 接线，状态层只消费写回结果
 //! - [`effects`]：Effect 执行逻辑，按族分组为子模块——`model`
 //!   （模型 + 思考级别两步流）、`session`（resume / tree / branch /
-//!   new 与落库）、`clipboard`（粘贴 / 复制 / 图片暂存）
+//!   new 与 recorder 换绑；定稿点落库收在 `nomic_session::SessionRecorder`）、
+//!   `clipboard`（粘贴 / 复制 / 图片暂存）
 //! - [`widgets`]：纯渲染——组合根 [`widgets::draw`] 布局后由各区域自定义
 //!   widget（聊天区 / 输入框 / 状态栏 / 弹层 / 覆盖层）渲染
 //! - [`driver`]：agent driver 任务（专属 tokio 任务持有 `Agent`）与事件循环
@@ -20,7 +21,7 @@
 //!
 //! agent 由专属 tokio 任务持有（`Agent::prompt` 需要 `&mut self` 且跨轮复用），
 //! TUI 经 mpsc 发送 prompt（附本轮 `CancellationToken`），agent 事件经既有
-//! channel 回流；`MessageEnd` 定稿点复用事件驱动落库。
+//! channel 回流；定稿点落库由 `SessionRecorder` 消费事件流完成。
 //!
 //! 错误策略：可预期错误（agent loop 失败、压缩失败、落库失败等）就地转为
 //! 状态栏/聊天区提示；意外错误（driver 任务 panic）经 JoinHandle 捕获后在
@@ -42,6 +43,7 @@ use std::io;
 use anyhow::{Context as _, Result};
 use crossterm::event::EventStream;
 use nomic_core::Agent;
+use nomic_session::SessionRecorder;
 use nomic_tools::TodoStore;
 use ratatui::{Terminal, backend::CrosstermBackend};
 
@@ -120,15 +122,18 @@ pub async fn run(cli: &Cli) -> Result<()> {
         .steering_queue(app.queue().handle())
         .build();
 
-    // 落库父指针：恢复的 session 从默认分支末端起算（分支场景下保证续写
+    // 落库器：恢复的 session 父指针从默认分支末端起算（分支场景下保证续写
     // 落在默认分支而非全局最新 entry）；读取失败退回自动链最新
-    let mut tip = None;
-    if let Some((store, id)) = &boot.session {
-        match store.latest_entry_id(id).await {
-            Ok(latest) => tip = latest,
-            Err(error) => app.warn(format!("读取分支末端失败，落库将链到最新 entry：{error}")),
-        }
-    }
+    let recorder = match boot.session {
+        Some((store, id)) => match store.latest_entry_id(&id).await {
+            Ok(tip) => Some(SessionRecorder::with_tip(store, id, tip)),
+            Err(error) => {
+                app.warn(format!("读取分支末端失败，落库将链到最新 entry：{error}"));
+                Some(SessionRecorder::new(store, id))
+            }
+        },
+        None => None,
+    };
 
     let _guard = TerminalGuard::enter().context("初始化终端失败")?;
     let mut terminal =
@@ -136,11 +141,10 @@ pub async fn run(cli: &Cli) -> Result<()> {
 
     let (mut driver, mut done_rx) = spawn_driver(
         agent,
-        boot.session,
+        recorder,
         boot.models,
         boot.model,
         skill_resolver,
-        tip,
         initial_reasoning,
         todo_store,
     )?;

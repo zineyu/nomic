@@ -295,10 +295,10 @@ fn apply_model_switch(app: &mut App, driver: &mut Driver, model: Model) -> bool 
 /// 库不可用（启动已告警）时跳过；写失败只记日志不打断切换——
 /// 下次启动的回退链只是少了这一条。
 fn persist_model_selection(driver: &Driver, model: &Model) {
-    let Some((store, _)) = &driver.session else {
+    let Some(recorder) = &driver.recorder else {
         return;
     };
-    let store = store.clone();
+    let store = recorder.store().clone();
     let spec = current_selection(model).spec();
     tokio::spawn(async move {
         if let Err(error) = store

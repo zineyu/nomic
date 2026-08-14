@@ -1,16 +1,16 @@
 //! print 模式（`-p`）：非交互，流式输出到 stdout，工具执行摘要到 stderr，
 //! 退出码反映成功/失败，管道可用。
 //!
-//! session 持久化（事件驱动）：core 零改动，在事件流中对每条 `MessageEnd`
-//! （消息定稿点）调 `SessionStore::append_message` 落库；持久化失败仅告警
-//! 不中断运行（store 非权威源）。
+//! session 持久化：core 零改动，事件流经 [`SessionRecorder`] 落库（定稿点
+//! 与父指针推进收在 recorder 内）；持久化失败仅告警不中断运行（store
+//! 非权威源）。
 
 use std::io::Write as _;
 
 use anyhow::{Context as _, Result, bail};
 use nomic_ai::{AssistantEvent, Message, StopReason};
 use nomic_core::{Agent, AgentEvent};
-use nomic_session::SessionStore;
+use nomic_session::SessionRecorder;
 use tokio_util::sync::CancellationToken;
 
 use crate::{Cli, bootstrap};
@@ -61,7 +61,10 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
             .await
     });
 
-    let saw_error = drain_events(&mut events, boot.session.as_ref()).await;
+    let mut recorder = boot
+        .session
+        .map(|(store, id)| SessionRecorder::new(store, id));
+    let saw_error = drain_events(&mut events, recorder.as_mut()).await;
 
     let result = run.await.context("prompt task panicked")?;
     if let Err(error) = result {
@@ -81,15 +84,23 @@ fn load_images(paths: &[std::path::PathBuf]) -> Result<Vec<nomic_ai::ImageConten
         .collect()
 }
 
-/// 消费 agent 事件流：流式输出到 stdout/stderr，消息定稿点落库。
+/// 消费 agent 事件流：落库走 [`SessionRecorder`]（一行接线），流式输出到
+/// stdout/stderr。
 ///
 /// 返回运行中见过的 provider 错误（编码在 assistant 消息里）。
 async fn drain_events(
     events: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
-    session: Option<&(SessionStore, String)>,
+    recorder: Option<&mut SessionRecorder>,
 ) -> Option<String> {
+    let mut recorder: Option<&mut SessionRecorder> = recorder;
     let mut saw_error: Option<String> = None;
     while let Some(event) = events.recv().await {
+        // 定稿点落库（父指针推进在 recorder 内）；失败仅告警不中断
+        if let Some(recorder) = &mut recorder
+            && let Err(error) = recorder.record(&event).await
+        {
+            eprintln!("\x1b[33m⚠ session 落库失败：{error}\x1b[0m");
+        }
         match event {
             AgentEvent::MessageUpdate(AssistantEvent::TextDelta { delta, .. }) => {
                 // 锁不跨 await 持有（StdoutLock 非 Send）
@@ -123,7 +134,6 @@ async fn drain_events(
                 eprintln!("\x1b[2m⟳ 压缩上下文（约 {tokens_before} tokens）…\x1b[0m");
             }
             AgentEvent::CompactionEnd {
-                summary,
                 tokens_before,
                 kept_count,
                 ..
@@ -131,24 +141,8 @@ async fn drain_events(
                 eprintln!(
                     "\x1b[2m✂ 上下文已压缩：约 {tokens_before} tokens → 摘要 + {kept_count} 条近期消息\x1b[0m"
                 );
-                if let Some((store, session_id)) = session {
-                    let record = nomic_session::CompactionRecord {
-                        summary,
-                        kept_count: kept_count as u64,
-                        tokens_before,
-                    };
-                    if let Err(error) = store.append_compaction(session_id, None, &record).await {
-                        eprintln!("\x1b[33m⚠ compaction 落库失败：{error}\x1b[0m");
-                    }
-                }
             }
             AgentEvent::MessageEnd(message) => {
-                // 消息定稿点：按事件顺序追加（parent_id=None 自动链到最新 entry）
-                if let Some((store, session_id)) = session
-                    && let Err(error) = store.append_message(session_id, None, &message).await
-                {
-                    eprintln!("\x1b[33m⚠ session 落库失败：{error}\x1b[0m");
-                }
                 if let Message::Assistant(assistant) = *message {
                     if matches!(
                         assistant.stop_reason,

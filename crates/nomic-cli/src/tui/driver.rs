@@ -11,7 +11,7 @@ use crossterm::event::{
 use futures::StreamExt as _;
 use nomic_ai::{Message, Model, StopReason, ThinkingLevel};
 use nomic_core::{Agent, AgentEvent, Compaction};
-use nomic_session::SessionStore;
+use nomic_session::SessionRecorder;
 use nomic_skills::SkillResolver;
 use nomic_tools::TodoStore;
 use tokio::sync::mpsc;
@@ -82,11 +82,10 @@ pub(super) struct PromptEnd {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_driver(
     agent: Agent,
-    session: Option<(SessionStore, String)>,
+    recorder: Option<SessionRecorder>,
     models: ModelResolver,
     model: Model,
     skill_resolver: SkillResolver,
-    tip: Option<String>,
     reasoning: Option<ThinkingLevel>,
     todos: TodoStore,
 ) -> Result<(Driver, mpsc::UnboundedReceiver<DriverDone>)> {
@@ -182,8 +181,7 @@ pub(super) fn spawn_driver(
         task: Some(actor_task),
         adapter_task: Some(driver_task),
         alive: true,
-        session,
-        tip,
+        recorder,
         cwd: std::env::current_dir().context("get cwd")?,
         skill_resolver,
         models,
@@ -206,11 +204,10 @@ pub(super) struct Driver {
     pub(super) adapter_task: Option<tokio::task::JoinHandle<()>>,
     /// actor 是否存活；退出后其 channel 已关闭，事件循环跳过对应分支
     pub(super) alive: bool,
-    pub(super) session: Option<(SessionStore, String)>,
-    /// 落库父指针：当前分支末端的 entry id（新 session 或无条目时为 None，
-    /// 追加时自动链到最新 entry）。`/tree` 创建分支即切换该指针；每次成功
-    /// 落库后推进到新 entry。
-    pub(super) tip: Option<String>,
+    /// 会话落库器：持有 store、目标 session 与父指针（tip）；定稿点落库
+    /// 与父指针推进收在其中（print 同一实现），`/tree` 分支与 `/new` /
+    /// `/resume` 经其切换父指针/目标 session。`None` 表示本次不持久化。
+    pub(super) recorder: Option<SessionRecorder>,
     pub(super) cwd: std::path::PathBuf,
     pub(super) skill_resolver: SkillResolver,
     /// 运行时模型解析器（`/models` 候选与切换，与启动同一分层口径）
@@ -274,20 +271,12 @@ pub(super) async fn handle_wake(
         Wake::ScrollDown => app.chat_mut().scroll_down(3),
         Wake::Paste(text) => effects::handle_paste(app, &text),
         Wake::AgentEvent(event) => {
-            match &event {
-                AgentEvent::MessageEnd(message) => {
-                    effects::persist(driver, message, app).await;
-                }
-                AgentEvent::CompactionEnd {
-                    summary,
-                    tokens_before,
-                    kept_count,
-                    ..
-                } => {
-                    effects::persist_compaction(driver, summary, *tokens_before, *kept_count, app)
-                        .await;
-                }
-                _ => {}
+            // 落库策略收在 SessionRecorder（与 print 同一实现）：定稿点落库、
+            // 父指针推进；失败仅提示不中断（store 非权威源）
+            if let Some(recorder) = &mut driver.recorder
+                && let Err(error) = recorder.record(&event).await
+            {
+                app.warn(format!("session 落库失败：{error}"));
             }
             app.handle_event(&event);
         }

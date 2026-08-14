@@ -217,11 +217,13 @@ X11 / Wayland。从文件管理器粘贴或拖入的图片文件路径（含 `fi
 
 ### 日志
 
-基于 tracing，默认写入 XDG state 目录并按天滚动：
+基于 tracing，默认写入平台标准 state 目录（由 [`dirs`](https://docs.rs/dirs) 解析）并按天滚动：
 
 ```bash
---log file      # 默认：$XDG_STATE_HOME/nomic/logs/nomic.log.YYYY-MM-DD
-                # （fallback ~/.local/state/nomic/logs）
+--log file      # 默认：<state 目录>/nomic/logs/nomic.log.YYYY-MM-DD
+                # Linux：$XDG_STATE_HOME（缺省 ~/.local/state）；
+                # 其他平台无 state 目录定义，回退 data 目录
+                # （macOS：~/Library/Application Support）
 --log terminal  # 输出到 stderr（TUI 模式下会干扰界面）
 --log off       # 关闭
 --log-level debug            # 过滤规则（tracing 指令语法，如 nomic=trace）
@@ -243,7 +245,8 @@ nomic 的配置正从配置文件逐步迁移到 sqlite（设计见 [docs/adr/00
 ### 配置文件
 
 其余配置（provider 定义、连接/请求参数、压缩阈值等）在用户级配置文件
-`$XDG_CONFIG_HOME/nomic/config.toml`（缺省 `~/.config/nomic/config.toml`）。
+`nomic/config.toml`，位于平台标准配置目录下（由 `dirs` 解析：
+Linux 为 `$XDG_CONFIG_HOME`，缺省 `~/.config`；macOS 为 `~/Library/Application Support`）。
 仓库根目录的 [`config.example.toml`](config.example.toml) 是带注释的完整示例，复制后按需修改。
 全部字段可选；优先级为 CLI 参数 > 环境变量 > 配置文件 > 协议默认。
 未知键或非法取值（reasoning）会在启动时硬报错。
@@ -294,8 +297,9 @@ api_key = "sk-..."
 max_tokens = 8192
 ```
 
-models.dev 目录按模型 id 查询（约 3MB 的 api.json），缓存到
-`$XDG_CACHE_HOME/nomic/models-dev-api.json`（24h 有效期，网络失败时用过期缓存兜底）；
+models.dev 目录按模型 id 查询（约 3MB 的 api.json），缓存到平台标准 cache 目录下的
+`nomic/models-dev-api.json`（Linux：`$XDG_CACHE_HOME`，缺省 `~/.cache`；macOS：`~/Library/Caches`；
+24h 有效期，网络失败时用过期缓存兜底）；
 配置已给全规格字段时不读缓存、不联网。models.dev 与缓存都不可用时回落到中性兜底值。
 
 模型 id 必须「存在」：命中 models.dev 目录或 `[providers.*.models]` 定义之一，
@@ -326,8 +330,9 @@ skill 是包含 `SKILL.md` 的目录，可放在项目或用户级目录中：
 .agents/skills/<name>/SKILL.md
 
 # 用户级（项目级覆盖用户级；nomic 目录优先于通用 agent 目录）
-$XDG_CONFIG_HOME/nomic/skills/<name>/SKILL.md
-~/.config/nomic/skills/<name>/SKILL.md
+# <config 目录>：Linux 为 $XDG_CONFIG_HOME（缺省 ~/.config），
+#   macOS 为 ~/Library/Application Support
+<config 目录>/nomic/skills/<name>/SKILL.md
 ~/.agents/skills/<name>/SKILL.md
 ```
 
@@ -396,9 +401,8 @@ prompt template 是一个 `.md` 文件，文件名（去掉 `.md`）即 `/name` 
 # 项目级（从 cwd 向上发现，越近优先级越高）
 .nomic/prompts/<name>.md
 
-# 用户级
-$XDG_CONFIG_HOME/nomic/prompts/<name>.md
-~/.config/nomic/prompts/<name>.md
+# 用户级（<config 目录> 规则同上）
+<config 目录>/nomic/prompts/<name>.md
 ```
 
 模板可带 frontmatter（`description` 缺省退化为正文第一个非空行；

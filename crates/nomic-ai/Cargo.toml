@@ -10,6 +10,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+dirs.workspace = true
 eventsource-stream.workspace = true
 futures.workspace = true
 reqwest.workspace = true

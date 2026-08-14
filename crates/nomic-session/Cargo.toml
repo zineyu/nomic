@@ -10,6 +10,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+dirs.workspace = true
 nomic-ai.workspace = true
 nomic-core.workspace = true
 serde.workspace = true

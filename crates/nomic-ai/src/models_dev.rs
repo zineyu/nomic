@@ -1,7 +1,7 @@
 //! models.dev 模型目录：按模型 id 查询规格（展示名、推理能力、上下文/输出上限、费率）。
 //!
 //! 数据源为 <https://models.dev/api.json>（约 3MB，provider → models 嵌套结构）。
-//! 拉取结果写磁盘缓存（`$XDG_CACHE_HOME/nomic/models-dev-api.json`，24h TTL）；
+//! 拉取结果写磁盘缓存（平台标准 cache 目录下的 `nomic/models-dev-api.json`，24h TTL）；
 //! 网络失败时回退到过期缓存，缓存与网络均不可用时返回 `None`，由调用方落到
 //! 兜底默认值。本模块只提供「模型 id → 规格」查询，provider 与 base_url 永远
 //! 来自用户配置，不经由 models.dev。
@@ -258,24 +258,16 @@ fn write_cache(path: &Path, text: &str) {
     let _ = std::fs::write(path, text);
 }
 
-/// 缓存路径：`$XDG_CACHE_HOME/nomic/models-dev-api.json`，
-/// fallback `~/.cache/nomic/models-dev-api.json`（与 `config` 模块的手写 XDG 解析一致）。
+/// 缓存路径：平台标准 cache 目录下的 `nomic/models-dev-api.json`（由 `dirs`
+/// 解析：Linux 为 `$XDG_CACHE_HOME` 或 `~/.cache`，macOS 为 `~/Library/Caches`）。
 fn cache_path() -> std::io::Result<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME")
-        && !xdg.is_empty()
-    {
-        return Ok(PathBuf::from(xdg).join("nomic").join("models-dev-api.json"));
-    }
-    let home = std::env::var_os("HOME").ok_or_else(|| {
+    let dir = dirs::cache_dir().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "cannot resolve cache path: neither XDG_CACHE_HOME nor HOME is set",
+            "cannot resolve cache path: no platform cache directory",
         )
     })?;
-    Ok(PathBuf::from(home)
-        .join(".cache")
-        .join("nomic")
-        .join("models-dev-api.json"))
+    Ok(dir.join("nomic").join("models-dev-api.json"))
 }
 
 #[cfg(test)]

@@ -1,26 +1,23 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::{ProjectDiscovery, SkillRoot, SkillScope, SkillsError};
 
 /// 默认用户级 skill 根（低优先级在前，高优先级在后）。
+///
+/// nomic 用户级根为平台标准配置目录下的 `nomic/skills`（由 `dirs` 解析：
+/// Linux 为 `$XDG_CONFIG_HOME` 或 `~/.config`，macOS 为 `~/Library/Application Support`）；
+/// 通用 agent 级根固定为 `~/.agents/skills`。
 pub fn default_user_roots() -> Vec<SkillRoot> {
     let mut roots = Vec::new();
-    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+    if let Some(home) = dirs::home_dir() {
         roots.push(SkillRoot {
-            path: PathBuf::from(&home).join(".agents").join("skills"),
+            path: home.join(".agents").join("skills"),
             scope: SkillScope::AgentUser,
         });
-        roots.push(SkillRoot {
-            path: PathBuf::from(&home)
-                .join(".config")
-                .join("nomic")
-                .join("skills"),
-            scope: SkillScope::NomicUser,
-        });
     }
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
+    if let Some(config) = dirs::config_dir() {
         roots.push(SkillRoot {
-            path: PathBuf::from(xdg).join("nomic").join("skills"),
+            path: config.join("nomic").join("skills"),
             scope: SkillScope::NomicUser,
         });
     }

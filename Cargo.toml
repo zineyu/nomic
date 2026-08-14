@@ -62,6 +62,9 @@ sqlx = { version = "0.9", default-features = false, features = [
 ] }
 uuid = { version = "1", features = ["v7"] }
 
+# ── 平台标准目录（XDG / known folders）──────────────────────────────────────
+dirs = "6"
+
 # ── 错误处理 ────────────────────────────────────────────────────────────────
 anyhow = "1.0"
 thiserror = "2.0"

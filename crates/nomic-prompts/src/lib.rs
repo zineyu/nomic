@@ -5,7 +5,8 @@
 //!
 //! 支持三类来源（低优先级 → 高优先级，同名覆盖）：
 //!
-//! - 用户级：`~/.config/nomic/prompts/*.md` 与 `$XDG_CONFIG_HOME/nomic/prompts/*.md`
+//! - 用户级：平台标准配置目录下的 `nomic/prompts/*.md`（由 `dirs` 解析：
+//!   Linux 为 `$XDG_CONFIG_HOME` 或 `~/.config`，macOS 为 `~/Library/Application Support`）
 //! - 项目级：当前目录向上发现的 `.nomic/prompts/*.md`（越靠近 cwd 越优先）
 //! - 显式：配置文件 `prompts` 数组与 `--prompt-template` 指定的文件或目录
 //!
@@ -112,8 +113,8 @@ pub struct PromptResolver {
 impl PromptResolver {
     /// 按当前 cwd 构造标准 resolver。
     ///
-    /// 项目目录从 `cwd` 向上查找 `.nomic/prompts`；用户目录按 XDG / HOME 解析。
-    /// `HOME` 缺失时仍允许只使用 XDG 用户目录。
+    /// 项目目录从 `cwd` 向上查找 `.nomic/prompts`；用户目录为平台标准配置
+    /// 目录（由 `dirs` 解析），无法解析时仅使用项目级目录。
     pub fn for_cwd(cwd: &Path) -> Result<Self, PromptsError> {
         Self::new(
             cwd,
@@ -278,25 +279,16 @@ pub enum PromptsError {
     },
 }
 
-/// 默认用户级模板根（低优先级在前，高优先级在后）。
+/// 默认用户级模板根：平台标准配置目录下的 `nomic/prompts`（由 `dirs` 解析：
+/// Linux 为 `$XDG_CONFIG_HOME` 或 `~/.config`，macOS 为 `~/Library/Application Support`）。
 fn default_user_roots() -> Vec<PromptRoot> {
-    let mut roots = Vec::new();
-    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
-        roots.push(PromptRoot {
-            path: PathBuf::from(&home)
-                .join(".config")
-                .join("nomic")
-                .join("prompts"),
+    dirs::config_dir()
+        .map(|dir| PromptRoot {
+            path: dir.join("nomic").join("prompts"),
             scope: PromptScope::User,
-        });
-    }
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
-        roots.push(PromptRoot {
-            path: PathBuf::from(xdg).join("nomic").join("prompts"),
-            scope: PromptScope::User,
-        });
-    }
-    roots
+        })
+        .into_iter()
+        .collect()
 }
 
 /// 发现项目级模板根。返回顺序从低优先级到高优先级。

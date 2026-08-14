@@ -1,6 +1,7 @@
 # nomic 示例配置文件
 #
-# 复制为 $XDG_CONFIG_HOME/nomic/config.toml（缺省 ~/.config/nomic/config.toml）后按需修改。
+# 复制到平台标准配置目录下的 nomic/config.toml 后按需修改
+#（Linux：$XDG_CONFIG_HOME，缺省 ~/.config；macOS：~/Library/Application Support）。
 # 全部字段可选；未知键或非法取值会在启动时硬报错（防拼写错误）。
 #
 # 优先级总览：
@@ -41,7 +42,7 @@
 # prompt template 是 .md 文件，文件名（去掉 .md）即 /name 命令名，正文是模板，
 # 支持 $1 / $@ / ${1:-default} / ${@:N:L} 等参数占位符。自动发现（非递归）：
 #   项目级 .nomic/prompts/*.md（从 cwd 向上查找，越近越优先）
-#   用户级 $XDG_CONFIG_HOME/nomic/prompts/*.md 与 ~/.config/nomic/prompts/*.md
+#   用户级 <配置目录>/nomic/prompts/*.md（Linux：$XDG_CONFIG_HOME，缺省 ~/.config）
 # 下面可追加显式文件或目录（同名时优先级最高）；也可用 --prompt-template 指定、
 # --no-prompt-templates 关闭目录发现。
 # prompts = ["prompts/review.md", "~/.local/share/nomic/prompts"]

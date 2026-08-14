@@ -3,7 +3,8 @@
 //! skill 是包含 `SKILL.md` 的目录。系统支持三类来源：
 //!
 //! - 项目级：当前目录向上发现的 `.nomic/skills` 与 `.agents/skills`
-//! - nomic 用户级：`$XDG_CONFIG_HOME/nomic/skills` 与 `~/.config/nomic/skills`
+//! - nomic 用户级：平台标准配置目录下的 `nomic/skills`（由 `dirs` 解析：
+//!   Linux 为 `$XDG_CONFIG_HOME` 或 `~/.config`，macOS 为 `~/Library/Application Support`）
 //! - 通用 agent 用户级：`~/.agents/skills`
 //!
 //! 同名 skill 由更高优先级来源覆盖：`项目级 > nomic 用户级 > 通用 agent 级`；
@@ -132,7 +133,7 @@ impl SkillResolver {
     /// 按当前 cwd 构造标准 resolver。
     ///
     /// 项目目录从 `cwd` 向上查找 `.nomic/skills` 与 `.agents/skills`；
-    /// 用户目录按 XDG / HOME 解析。`HOME` 缺失时仍允许只使用 XDG 用户目录。
+    /// 用户目录为平台标准配置目录与 `~/.agents`（由 `dirs` 解析）。
     pub fn for_cwd(cwd: &Path) -> Result<Self, SkillsError> {
         Self::new(cwd, ProjectDiscovery::Ancestors, default_user_roots())
     }

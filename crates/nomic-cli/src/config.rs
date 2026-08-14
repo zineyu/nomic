@@ -141,26 +141,18 @@ fn load_from(path: &Path) -> Result<Option<Config>> {
     Ok(Some(config))
 }
 
-/// 默认配置路径：`$XDG_CONFIG_HOME/nomic/config.toml`，fallback `~/.config/nomic/config.toml`。
+/// 默认配置路径：平台标准配置目录下的 `nomic/config.toml`（由 `dirs` 解析：
+/// Linux 为 `$XDG_CONFIG_HOME` 或 `~/.config`，macOS 为 `~/Library/Application Support`）。
 ///
-/// 手写解析 XDG，不引入 `dirs` 依赖（与 `nomic-session` 的 `default_db_path` 一致）；
-/// 无 `HOME` 时返回 io 错误。
+/// 无法解析标准目录时返回 io 错误。
 fn default_config_path() -> Result<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
-        && !xdg.is_empty()
-    {
-        return Ok(PathBuf::from(xdg).join("nomic").join("config.toml"));
-    }
-    let home = std::env::var_os("HOME").ok_or_else(|| {
+    let dir = dirs::config_dir().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "cannot resolve default config path: neither XDG_CONFIG_HOME nor HOME is set",
+            "cannot resolve default config path: no platform config directory",
         )
     })?;
-    Ok(PathBuf::from(home)
-        .join(".config")
-        .join("nomic")
-        .join("config.toml"))
+    Ok(dir.join("nomic").join("config.toml"))
 }
 
 #[cfg(test)]

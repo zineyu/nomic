@@ -10,7 +10,8 @@
 //! - `config` 表存配置历史：每次修改新增一行（append-only，含更新时间戳），
 //!   读取方从最新一行向最老一行逐步回退（feedback），直到无可回退的行为止；
 //!   值用 sqlite 原生 JSON 类型（JSONB）存储
-//! - 全局单库，默认位于 XDG data dir：`$XDG_DATA_HOME/nomic/sessions.db`
+//! - 全局单库，默认位于平台标准 data 目录下的 `nomic/sessions.db`
+//!   （由 `dirs` 解析，见 [`default_db_path`]）
 //! - [`SessionRecorder`] 把落库策略（定稿点、落什么、父指针推进）收在
 //!   事件流 seam 后面：print / TUI 只做一行接线，语义不再漂移
 //!
@@ -176,7 +177,7 @@ impl SessionStore {
         Self::migrate(pool).await
     }
 
-    /// 打开默认路径（XDG data dir）的库，见 [`default_db_path`]。
+    /// 打开默认路径（平台标准 data 目录）的库，见 [`default_db_path`]。
     pub async fn open_default() -> Result<Self, SessionError> {
         Self::open(default_db_path()?).await
     }
@@ -500,25 +501,18 @@ impl SessionStore {
     }
 }
 
-/// 默认库路径：`$XDG_DATA_HOME/nomic/sessions.db`，fallback `~/.local/share/nomic/sessions.db`。
+/// 默认库路径：平台标准 data 目录下的 `nomic/sessions.db`（由 `dirs` 解析：
+/// Linux 为 `$XDG_DATA_HOME` 或 `~/.local/share`，macOS 为 `~/Library/Application Support`）。
 ///
-/// 手写解析 XDG，不引入 `dirs` 依赖；无 `HOME` 时返回 [`SessionError::Io`]。
+/// 无法解析标准目录时返回 [`SessionError::Io`]。
 pub fn default_db_path() -> Result<PathBuf, SessionError> {
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME")
-        && !xdg.is_empty()
-    {
-        return Ok(PathBuf::from(xdg).join("nomic").join("sessions.db"));
-    }
-    let home = std::env::var_os("HOME").ok_or_else(|| {
+    let dir = dirs::data_dir().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "cannot resolve default db path: neither XDG_DATA_HOME nor HOME is set",
+            "cannot resolve default db path: no platform data directory",
         )
     })?;
-    Ok(PathBuf::from(home)
-        .join(".local/share")
-        .join("nomic")
-        .join("sessions.db"))
+    Ok(dir.join("nomic").join("sessions.db"))
 }
 
 /// 分支重放用的一行 entry（`fetch_entries` 内部表示）。

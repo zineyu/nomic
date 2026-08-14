@@ -99,7 +99,8 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "ID", hide = true)]
     pub(crate) session: Option<String>,
 
-    /// 日志输出目标：file 默认写入 XDG state 目录并按天滚动；
+    /// 日志输出目标：file 默认写入平台标准 state 目录（Linux 为 XDG state
+    /// 目录，其他平台回退 data 目录）并按天滚动；
     /// terminal 输出到 stderr（TUI 模式下会干扰界面）；off 关闭
     #[arg(long, value_enum, default_value = "file")]
     pub(crate) log: LogTarget,

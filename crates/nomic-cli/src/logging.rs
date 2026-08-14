@@ -1,8 +1,9 @@
-//! 日志系统：tracing subscriber 装配与 XDG 日志目录解析。
+//! 日志系统：tracing subscriber 装配与平台标准日志目录解析。
 //!
 //! 输出目标由 `--log` 选择：
-//! - `file`（默认）：写入 XDG state 目录（`$XDG_STATE_HOME/nomic/logs`，
-//!   fallback `~/.local/state/nomic/logs`），按天滚动（`nomic.log.YYYY-MM-DD`），
+//! - `file`（默认）：写入平台标准 state 目录下的 `nomic/logs`（由 `dirs` 解析：
+//!   Linux 为 `$XDG_STATE_HOME` 或 `~/.local/state`；无 state 目录定义的平台回退
+//!   data 目录），按天滚动（`nomic.log.YYYY-MM-DD`），
 //!   经 tracing-appender 的非阻塞 writer 落盘；
 //! - `terminal`：输出到 stderr（print 模式调试用；TUI 模式下会干扰界面）；
 //! - `off`：关闭日志。
@@ -10,7 +11,6 @@
 //! 过滤规则优先级：`--log-level` > `RUST_LOG` 环境变量 > [`DEFAULT_FILTER`]。
 //! 日志永不写 stdout，print 模式的管道输出不受污染。
 
-use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
@@ -81,60 +81,23 @@ fn resolve_filter(level: Option<&str>) -> tracing_subscriber::EnvFilter {
     )
 }
 
-/// 默认日志目录：`$XDG_STATE_HOME/nomic/logs`，fallback `~/.local/state/nomic/logs`。
+/// 默认日志目录：平台标准 state 目录下的 `nomic/logs`（由 `dirs` 解析）；
+/// `state_dir` 仅 Linux 有定义，其余平台回退 data 目录。
 ///
-/// 手写解析 XDG，不引入 `dirs` 依赖（与 `config` / `nomic-session` 一致）；
-/// 无 `HOME` 时返回 io 错误。
+/// 无法解析标准目录时返回 io 错误。
 fn default_log_dir() -> Result<PathBuf> {
-    log_dir_from(
-        std::env::var_os("XDG_STATE_HOME").as_deref(),
-        std::env::var_os("HOME").as_deref(),
-    )
-    .ok_or_else(|| {
+    let dir = dirs::state_dir().or_else(dirs::data_dir).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "cannot resolve default log dir: neither XDG_STATE_HOME nor HOME is set",
+            "cannot resolve default log dir: no platform state/data directory",
         )
-        .into()
-    })
-}
-
-/// 日志目录解析的纯函数内核（可测试）。
-fn log_dir_from(xdg_state: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
-    if let Some(xdg) = xdg_state
-        && !xdg.is_empty()
-    {
-        return Some(PathBuf::from(xdg).join("nomic").join("logs"));
-    }
-    home.map(|home| PathBuf::from(home).join(".local/state/nomic/logs"))
+    })?;
+    Ok(dir.join("nomic").join("logs"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn xdg_state_home_takes_precedence() {
-        let dir = log_dir_from(Some(OsStr::new("/xdg")), Some(OsStr::new("/home/u")));
-        assert_eq!(dir, Some(PathBuf::from("/xdg/nomic/logs")));
-    }
-
-    #[test]
-    fn empty_xdg_state_home_falls_back_to_home() {
-        let dir = log_dir_from(Some(OsStr::new("")), Some(OsStr::new("/home/u")));
-        assert_eq!(dir, Some(PathBuf::from("/home/u/.local/state/nomic/logs")));
-    }
-
-    #[test]
-    fn home_fallback_without_xdg() {
-        let dir = log_dir_from(None, Some(OsStr::new("/home/u")));
-        assert_eq!(dir, Some(PathBuf::from("/home/u/.local/state/nomic/logs")));
-    }
-
-    #[test]
-    fn unresolvable_without_xdg_or_home() {
-        assert_eq!(log_dir_from(None, None), None);
-    }
 
     #[test]
     fn flag_level_wins_over_default() {

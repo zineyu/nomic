@@ -69,7 +69,8 @@
               # workspace 产物只需 nomic 二进制
               cargoExtraArgs = "--package nomic-cli";
               # nix 构建沙箱中 HOME（/homeless-shelter）不可写，而 nomic 缺省
-              # 向 XDG state 目录写滚动日志（fallback ~/.local/state）。
+              # 向平台标准 state 目录写滚动日志（Linux：XDG state，
+              # fallback ~/.local/state）。
               # 检查阶段把 HOME 指到可写目录，否则 cli 集成测试 spawn 出的
               # 二进制初始化日志失败（EACCES）。
               preCheck = ''

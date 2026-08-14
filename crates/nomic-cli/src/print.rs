@@ -90,9 +90,8 @@ fn load_images(paths: &[std::path::PathBuf]) -> Result<Vec<nomic_ai::ImageConten
 /// 返回运行中见过的 provider 错误（编码在 assistant 消息里）。
 async fn drain_events(
     events: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
-    recorder: Option<&mut SessionRecorder>,
+    mut recorder: Option<&mut SessionRecorder>,
 ) -> Option<String> {
-    let mut recorder: Option<&mut SessionRecorder> = recorder;
     let mut saw_error: Option<String> = None;
     while let Some(event) = events.recv().await {
         // 定稿点落库（父指针推进在 recorder 内）；失败仅告警不中断
@@ -169,8 +168,7 @@ pub fn brief_args(tool_name: &str, args: &serde_json::Value) -> String {
     const MAX: usize = 120;
     let key_field = match tool_name {
         "bash" => args.get("command").and_then(|v| v.as_str()),
-        "read" | "write" => args.get("path").and_then(|v| v.as_str()),
-        "edit" => args.get("path").and_then(|v| v.as_str()),
+        "read" | "write" | "edit" => args.get("path").and_then(|v| v.as_str()),
         "grep" | "find" => args.get("pattern").and_then(|v| v.as_str()),
         _ => None,
     };

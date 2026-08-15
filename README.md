@@ -462,7 +462,7 @@ check               # 与 CI 等价的全部检查：fmt / clippy / nextest / do
 ### 项目结构
 
 - `crates/nomic-ai`：统一消息模型 + 流式事件协议 + provider 实现（Anthropic Messages、OpenAI Completions 兼容）
-- `crates/nomic-core`：agent loop（四层生命周期事件、parallel 工具执行、hooks）+ 工具抽象（schemars + serde 即校验）+ 上下文压缩（ADR-0005）
+- `crates/nomic-core`：agent loop（四层生命周期事件、parallel 工具执行、事件拦截 event interception）+ 工具抽象（schemars + serde 即校验）+ 上下文压缩（ADR-0005）
 - `crates/nomic-tools`：内建工具——`read` / `write` / `edit` / `bash`（截断、模糊匹配、BOM/CRLF 保留、文件变更队列、超时强杀进程组）、`grep` / `find`（ripgrep/fd 语义，纯库实现）、`todo_read` / `todo_write`（父子嵌套任务列表）
 - `crates/nomic-session`：SQLite session 存储（树形 entries、resume、分支浏览/加载、sqlite 配置表、`sessions list`）
 - `crates/nomic-skills`：skill 发现、frontmatter 元数据、覆盖规则与显式激活

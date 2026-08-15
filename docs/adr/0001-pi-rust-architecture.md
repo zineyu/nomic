@@ -235,3 +235,10 @@ ADR-0001 的里程碑边界描述已成历史，以下为当前实际状态，�
   显式激活，以及 `read` 的只读 `skill://<name>` 分页读取。prompt templates 仍未实现。
 - **测试策略**：「所有测试基于 fixture」不再准确 —— core/tools/session/CLI 均有
   直接构造的单元与集成测试（含进程级 CLI 测试）；provider 协议层仍为 fixture 回放。
+
+### 2026-08-15：hooks 被事件拦截取代
+
+「可选闭包 hooks 改为 `AgentHooks` trait」的工具执行挂点决策已被
+[ADR-0028](0028-agent-hook-to-event-interception.md) 取代：hooks 并入事件流，
+`AgentHooks` → `AgentInterceptor`（多拦截器插入序 / 门控短路 / 改写 pipeline）。
+阅读 hooks 相关段落时以 ADR-0028 为准。

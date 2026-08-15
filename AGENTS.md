@@ -35,7 +35,7 @@ ratchet gate).
 ## Testing
 
 - Framework: `cargo-nextest` (unit + integration)
-- Location: `#[cfg(test)]` modules inside each crate and `crates/*/tests/`
+- Location: `#[cfg(test)]` modules inside each crate and `crates/runtime/*/tests/` / `crates/app/*/tests/`
 - Coverage threshold: none
 
 ## Security & Safety

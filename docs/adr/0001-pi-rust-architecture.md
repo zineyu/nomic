@@ -242,3 +242,27 @@ ADR-0001 的里程碑边界描述已成历史，以下为当前实际状态，�
 [ADR-0028](0028-agent-hook-to-event-interception.md) 取代：hooks 并入事件流，
 `AgentHooks` → `AgentInterceptor`（多拦截器插入序 / 门控短路 / 改写 pipeline）。
 阅读 hooks 相关段落时以 ADR-0028 为准。
+
+### 2026-08-15：crate 目录按层级分组
+
+「Crate 划分」一节的平铺 `crates/*` 布局已被按层级分组取代：
+
+```
+crates/
+  runtime/    # 可复用 agent harness（零 nomic 品牌概念）
+    nomic-ai
+    nomic-core
+    nomic-tools
+    nomic-session
+  app/        # nomic 产品
+    nomic-cli
+    nomic-skills
+    nomic-prompts
+```
+
+依赖方向仍单向：`app → runtime`；runtime 内部 `tools → core → ai`、
+`session → core/ai`。
+
+> 已知例外：`nomic-tools` 的 `ReadTool` 仍直接依赖 `nomic-skills` 的具体类型
+> （`skill://` 读取），使 runtime 层在编译上仍依赖 app 层。该跨层依赖计划后续以
+> trait 反转（framework 定义 `SkillResolver` 契约，`nomic-skills` 实现）打破。

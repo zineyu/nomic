@@ -32,7 +32,7 @@ use sqlx::{Row as _, SqlitePool};
 mod recorder;
 pub use recorder::SessionRecorder;
 
-/// 内嵌迁移（`crates/nomic-session/migrations/`）。
+/// 内嵌迁移（`crates/runtime/nomic-session/migrations/`）。
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 
 /// 压缩条目（`entries.kind = 'compaction'`）的 payload。

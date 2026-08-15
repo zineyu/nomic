@@ -77,7 +77,7 @@ nix profile install github:zineyu/nomic/v0.1.0  # 或安装指定版本（tag �
 ### 从源码构建
 
 ```bash
-cargo install --path crates/nomic-cli  # 或 cargo build --release -p nomic-cli
+cargo install --path crates/app/nomic-cli  # 或 cargo build --release -p nomic-cli
 ```
 
 ## 快速上手
@@ -465,19 +465,22 @@ check               # 与 CI 等价的全部检查：fmt / clippy / nextest / do
 
 ### 项目结构
 
-- `crates/nomic-ai`：统一消息模型 + 流式事件协议 + provider 实现（Anthropic Messages、OpenAI Completions 兼容）
-- `crates/nomic-core`：agent loop（四层生命周期事件、parallel 工具执行、事件拦截 event interception）+ 工具抽象（schemars + serde 即校验）+ 上下文压缩（ADR-0005）
-- `crates/nomic-tools`：内建工具——`read` / `write` / `edit` / `bash`（截断、模糊匹配、BOM/CRLF 保留、文件变更队列、超时强杀进程组）、`grep` / `find`（ripgrep/fd 语义，纯库实现）、`todo_read` / `todo_write`（父子嵌套任务列表）
-- `crates/nomic-session`：SQLite session 存储（树形 entries、resume、分支浏览/加载、sqlite 配置表、`sessions list`）
-- `crates/nomic-skills`：skill 发现、frontmatter 元数据、覆盖规则与显式激活
-- `crates/nomic-prompts`：prompt template 发现、frontmatter 元数据、覆盖规则与参数展开
-- `crates/nomic-cli`：`nomic` 二进制（print 模式 + ratatui 交互 TUI + resume/sessions 子命令 + tracing 日志）
-- `docs/adr/`：架构决策记录（0001–0011）
+`crates/` 按层级分为两组：`runtime/` 是可复用的 agent harness（零 nomic 品牌概念），
+`app/` 是 nomic 产品自身。依赖方向单向：`app → runtime`。
+
+- `crates/runtime/nomic-ai`：统一消息模型 + 流式事件协议 + provider 实现（Anthropic Messages、OpenAI Completions 兼容）
+- `crates/runtime/nomic-core`：agent loop（四层生命周期事件、parallel 工具执行、事件拦截 event interception）+ 工具抽象（schemars + serde 即校验）+ 上下文压缩（ADR-0005）
+- `crates/runtime/nomic-tools`：内建工具——`read` / `write` / `edit` / `bash`（截断、模糊匹配、BOM/CRLF 保留、文件变更队列、超时强杀进程组）、`grep` / `find`（ripgrep/fd 语义，纯库实现）、`todo_read` / `todo_write`（父子嵌套任务列表）
+- `crates/runtime/nomic-session`：SQLite session 存储（树形 entries、resume、分支浏览/加载、sqlite 配置表、`sessions list`）
+- `crates/app/nomic-skills`：skill 发现、frontmatter 元数据、覆盖规则与显式激活
+- `crates/app/nomic-prompts`：prompt template 发现、frontmatter 元数据、覆盖规则与参数展开
+- `crates/app/nomic-cli`：`nomic` 二进制（print 模式 + ratatui 交互 TUI + resume/sessions 子命令 + tracing 日志）
+- `docs/adr/`：架构决策记录（0001–0029）
 
 ### 新增 crate
 
 ```bash
-cargo new crates/<name> --lib
+cargo new crates/runtime/<name> --lib   # 或 crates/app/<name>
 ```
 
 crate 的 `Cargo.toml` 中继承 workspace 配置：

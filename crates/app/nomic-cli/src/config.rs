@@ -356,7 +356,7 @@ contex_window = 400000
     #[test]
     fn repo_example_config_parses_and_validates() {
         // 仓库根目录的 config.example.toml 必须与配置 schema 同步
-        let text = include_str!("../../../config.example.toml");
+        let text = include_str!("../../../../config.example.toml");
         let config: Config = toml::from_str(text).expect("示例配置必须可解析");
         config.validate().expect("示例配置必须合法");
     }

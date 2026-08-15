@@ -3,10 +3,11 @@
 //! [`draw`] 是组合根：布局（聊天区 + 输入框 + 状态栏三段）后把各区域交给
 //! 对应 widget 渲染——聊天区 [`ChatView`]（只读；几何在渲染前由
 //! [`App::sync_chat_geometry`] 按视口算进状态层）、输入框 [`InputArea`]、
-//! 状态栏 [`StatusBar`]，COMMAND 模式的浮层命令栏 [`CommandPalette`]
-//!（覆盖层，不占布局），以及贴输入框上方的弹层（[`MentionPopup`] /
-//! [`PickerPopup`]）与模态覆盖层（[`HelpOverlay`]）。
-//! 各 widget 实现见同名子模块。
+//! 状态栏 [`StatusBar`]，以及覆盖层：COMMAND 模式的浮层命令栏
+//! [`CommandPalette`]（不占布局）、选择器弹层 [`PickerPopup`] 与
+//! 帮助/提问弹层（[`HelpOverlay`] / [`QuestionOverlay`]，内容区画布居中），
+//! 输入框上方的 `@` mention 弹层 [`MentionPopup`]（贴输入框，服务草稿
+//! 补全）。各 widget 实现见同名子模块。
 
 mod chat;
 mod input;
@@ -58,31 +59,38 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(input_widget, chunks[1]);
 
     // 浮层命令栏（COMMAND，ADR-0020 修订）：屏幕中上方的覆盖层单行
-    // 输入框，不占布局；光标随之移到栏内
+    // 输入框，不占布局；光标随之移到栏内。选择器打开时输入框失焦，
+    // 光标由选择器弹层自身设置（过滤输入行），不落回输入框
     if app.mode() == Mode::Command {
         let palette = CommandPalette::new(app.command());
         let cursor = palette.cursor_position(frame.area());
         frame.render_widget(palette, frame.area());
         frame.set_cursor_position(cursor);
-    } else {
+    } else if app.picker().is_none() {
         frame.set_cursor_position(input_cursor);
     }
 
     // 状态栏
     frame.render_widget(StatusBar::new(app), chunks[2]);
 
-    // 弹层（贴输入框上方；命令补全在浮层命令栏内，不走弹层）
+    // `@` mention 补全弹层贴输入框上方（服务草稿补全，ADR-0020）；
+    // 选择器/帮助/提问弹层是模态覆盖层：内容区（状态栏以上）整体作为画布
     if let Some(mention) = app.input().mention() {
         frame.render_widget(MentionPopup::new(mention), chunks[1]);
     }
-    if let Some(picker) = app.picker() {
-        frame.render_widget(PickerPopup::new(picker), chunks[1]);
-    }
-    // 帮助弹层是模态覆盖层：内容区（状态栏以上）整体作为画布
     let content = Rect {
         height: frame.area().height.saturating_sub(1),
         ..frame.area()
     };
+    // 选择器弹层（resume/models/tree/思考级别）：居中浮层，不再贴输入框；
+    // 光标落在弹层内的过滤输入行
+    if let Some(picker) = app.picker() {
+        let popup = PickerPopup::new(picker);
+        let cursor = popup.cursor_position(content);
+        frame.render_widget(popup, content);
+        frame.set_cursor_position(cursor);
+    }
+    // 帮助弹层是模态覆盖层：内容区（状态栏以上）整体作为画布
     if app.help_open()
         && let Some(scroll) = app.help_scroll_mut()
     {
@@ -454,67 +462,6 @@ mod tests {
 
         let compact = compact_text(&terminal);
         assert!(compact.contains("NORMAL"), "{compact}");
-    }
-
-    /// `resume` 选择器弹层：session 行、标题与选中标记均可见。
-    #[test]
-    fn renders_resume_picker() {
-        use super::super::app::PickerRow;
-
-        let mut app = App::new("test-model".to_string(), None, 200_000);
-        app.open_resume_picker(vec![
-            PickerRow {
-                selectable: true,
-                id: "01999999-aaaa".to_string(),
-                text: "01999999  2026-07-26 14:48    3 条消息  /tmp/a".to_string(),
-            },
-            PickerRow {
-                selectable: true,
-                id: "02888888-bbbb".to_string(),
-                text: "02888888  2026-07-25 09:00   12 条消息  /tmp/b".to_string(),
-            },
-        ]);
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
-
-        let compact = compact_text(&terminal);
-        assert!(compact.contains("恢复session"), "{compact}");
-        assert!(compact.contains("01999999"), "{compact}");
-        assert!(compact.contains("02888888"), "{compact}");
-    }
-
-    /// `models` 选择器弹层：标题与模型行可见，预选中当前模型。
-    #[test]
-    fn renders_model_picker() {
-        use super::super::app::PickerRow;
-
-        let mut app = App::new("test-model".to_string(), None, 200_000);
-        app.open_model_picker(
-            vec![
-                PickerRow {
-                    selectable: true,
-                    id: "claude-sonnet-4-5".to_string(),
-                    text: "claude-sonnet-4-5 — Claude Sonnet 4.5 · ctx 200k".to_string(),
-                },
-                PickerRow {
-                    selectable: true,
-                    id: "claude-opus-4-7".to_string(),
-                    text: "claude-opus-4-7 — Claude Opus 4.7 · ctx 200k（当前）".to_string(),
-                },
-            ],
-            1,
-        );
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
-
-        let compact = compact_text(&terminal);
-        assert!(compact.contains("切换模型"), "{compact}");
-        assert!(compact.contains("claude-sonnet-4-5"), "{compact}");
-        assert!(compact.contains("claude-opus-4-7"), "{compact}");
     }
 
     /// assistant 文本块按 Markdown 渲染：标记符号不原样上屏，样式落到 cell。

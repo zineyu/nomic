@@ -126,7 +126,10 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
     ),
     (
         "PICKER",
-        &[("PICKER", "输入过滤 · ↑/↓ 选择 · Home/End 首尾 · Enter/Esc")],
+        &[(
+            "PICKER",
+            "输入即过滤 · ↑/↓ 选择 · Home/End 首尾 · Enter/Esc",
+        )],
     ),
     (
         "提问（ask_user_question）",

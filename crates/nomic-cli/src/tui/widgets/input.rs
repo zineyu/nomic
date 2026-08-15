@@ -6,7 +6,7 @@
 //! 只拿到 `&mut Buffer`，光标设置属于 `Frame` 职责）。
 //! 命令不经过这里：COMMAND 模式的浮层命令栏见 [`super::palette`]。
 
-use crate::tui::app::{App, Mode, PickerKind};
+use crate::tui::app::{App, Mode};
 use crate::tui::theme;
 use ratatui::{
     buffer::Buffer,
@@ -188,9 +188,10 @@ fn queue_area_lines(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
-/// 输入框标题与边框样式：标题只保留运行/picker/命令行等临时功能态；
+/// 输入框标题与边框样式：标题只保留运行/队列等临时功能态；
 /// INSERT/NORMAL 等常驻模式的提示由状态栏徽标与右侧键位提示
 /// 承担（ADR-0011），输入框不再叠加，避免同一信息两处渲染。
+/// 选择器打开时输入框失焦：说明与键位提示在浮层弹层自身。
 fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
     // QUEUE 模式（ADR-0012）：队列缓冲标题；运行中叠加 spinner
     if app.queue_mode_active() {
@@ -224,18 +225,12 @@ fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
         }
         return (Some(Line::from(spans)), theme::busy());
     }
-    if let Some(picker) = app.picker() {
-        let title = match picker.kind {
-            PickerKind::Resume => "恢复 session · 输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
-            PickerKind::Tree => "会话树 · 输入过滤 · ↑/↓ 选择 · Enter 创建分支 · Esc 取消",
-            PickerKind::Models => "切换模型 · 输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
-            PickerKind::Reasoning => "思考级别 · ↑/↓ 选择 · Enter 确认 · Esc 取消",
-        };
-        (
-            Some(Line::from(Span::styled(title, theme::accent()))),
-            theme::accent(),
-        )
-    } else if app.input().completion().is_some() {
+    // 选择器打开时输入框失焦：不叠加标题（选择器的说明与键位提示
+    // 已收进浮层弹层自身），边框降为暗色
+    if app.picker().is_some() {
+        return (None, theme::dim());
+    }
+    if app.input().completion().is_some() {
         // 补全弹层自带标题；输入框只以 accent 边框表示补全中
         (None, theme::accent())
     } else if !app.queue().is_empty() {

@@ -14,6 +14,7 @@ pub(in crate::tui) mod message;
 mod overlay;
 mod palette;
 mod popup;
+mod question;
 mod status;
 
 use ratatui::{
@@ -29,6 +30,7 @@ use input::InputArea;
 use overlay::HelpOverlay;
 use palette::CommandPalette;
 use popup::{MentionPopup, PickerPopup};
+use question::QuestionOverlay;
 use status::StatusBar;
 
 pub(in crate::tui) use status::format_tokens;
@@ -85,6 +87,16 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
         && let Some(scroll) = app.help_scroll_mut()
     {
         frame.render_stateful_widget(HelpOverlay, content, scroll);
+    }
+    // 提问弹层（ADR-0029）：模态覆盖层，最后渲染（最上层）；自定义输入
+    // 阶段把终端光标放进弹层内的输入行（列表阶段光标形状归 block_cursor）
+    if let Some(question) = app.question() {
+        let overlay = QuestionOverlay::new(question);
+        let position = overlay.cursor_position(content);
+        frame.render_widget(overlay, content);
+        if let Some(position) = position {
+            frame.set_cursor_position(position);
+        }
     }
 }
 

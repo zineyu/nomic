@@ -18,8 +18,9 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
   未清空则持续续行；运行被取消或失败时队列保留，恢复后按序作为下一轮发送）；
   oil.nvim 式 QUEUE 模式编辑队列（就地编辑/删除/换位），设计见
   [ADR-0014](docs/adr/0014-unified-message-queue.md)
-- **八件工具**：`read` / `write` / `edit` / `bash` / `grep` / `find` / `todo_read` / `todo_write`，
-  schemars + serde 即校验，parallel 执行
+- **九件工具**：`read` / `write` / `edit` / `bash` / `grep` / `find` / `todo_read` /
+  `todo_write` / `ask_user_question`（单选/多选/填空，自动追加自定义填写选项，
+  TUI 弹出模态提问框），schemars + serde 即校验，parallel 执行
 - **持久会话**：SQLite 树形存储，支持 resume（按 cwd 隔离）、会话分支浏览与创建、`sessions list`
 - **上下文工程**：AGENTS.md 向上发现注入、skills 系统、prompt templates、自动/手动上下文压缩
 - **图片输入**：`--image` 附件、`image` 命令暂存、`Ctrl+V` 剪贴板图片粘贴
@@ -141,6 +142,9 @@ nomic --cwd /path/to/project
 | QUEUE | `j` `k` `g` `G` | 移动条目游标 / 队首 / 队尾 |
 | QUEUE | `i` `o` `O` `Enter` | 就地编辑 / 下方新增 / 上方新增（`Enter`/`Esc` 保存，空文本即删条目） |
 | QUEUE | `dd` `x` `J` `K` | 删除条目 / 下移 / 上移（换位）；打开期间冻结发送，退出恢复 |
+| 提问 | `↑/↓`（`j/k`） | 移动选项（`ask_user_question` 弹层；单选/多选问题自动带「自定义填写」选项） |
+| 提问 | `空格` / `Enter` | 多选勾选 / 提交（单选直接 `Enter` 提交；自定义选项先输入文本再提交） |
+| 提问 | `Esc` | 取消提问（自定义输入阶段先放弃回选项列表） |
 | picker | 输入即过滤 · `↑/↓` 选择 · `Home/End` 首尾 | 适用于 `resume`、`models`、`tree` 命令 |
 | 通用 | `PgUp/PgDn` 滚轮 | 滚动聊天区（不切态） |
 | 通用 | `Shift`+拖选 | 复制文本（TUI 捕获鼠标用于滚轮，原生选择需按住 Shift） |

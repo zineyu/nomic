@@ -23,10 +23,16 @@ use super::app::{App, Mode};
 
 /// 光标是否用实心块：NORMAL/HELP 与 QUEUE 导航子状态为实心块
 ///（不可键入文本的浏览态）；COMMAND 是键入态，用竖条。
+/// 提问弹层：选项列表浏览态用实心块，自定义输入键入态用竖条。
 pub(super) const fn block_cursor(app: &App) -> bool {
     match app.mode() {
         Mode::Normal | Mode::Help => true,
         Mode::Queue => !app.queue().is_editing(),
+        // 提问弹层：选项列表浏览态用实心块，自定义输入键入态用竖条
+        Mode::Question => match app.question() {
+            Some(question) => !question.is_custom_input(),
+            None => false,
+        },
         Mode::Insert | Mode::Command | Mode::Picker => false,
     }
 }

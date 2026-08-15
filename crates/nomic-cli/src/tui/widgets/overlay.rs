@@ -43,7 +43,8 @@ impl StatefulWidget for HelpOverlay {
 }
 
 /// 居中面板：宽高取内容与可用区域的较小值（边框 + 左右留白各一列），居中。
-fn centered_panel(area: Rect, lines: &[Line<'static>]) -> Rect {
+/// 键位帮助弹层与提问弹层共用。
+pub(in crate::tui) fn centered_panel(area: Rect, lines: &[Line<'static>]) -> Rect {
     let max_line_width = lines
         .iter()
         .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
@@ -126,6 +127,15 @@ const HELP_GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "PICKER",
         &[("PICKER", "输入过滤 · ↑/↓ 选择 · Home/End 首尾 · Enter/Esc")],
+    ),
+    (
+        "提问（ask_user_question）",
+        &[
+            ("↑/↓ · j/k", "移动选项（循环）"),
+            ("空格", "多选勾选 / 取消勾选（单选直接 Enter 提交）"),
+            ("Enter", "提交（单选/多选）；自定义选项先输入文本再提交"),
+            ("Esc", "取消提问（放弃自定义输入先回选项列表）"),
+        ],
     ),
 ];
 

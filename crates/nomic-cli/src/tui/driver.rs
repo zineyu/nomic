@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::app::{App, Effect, Key, SkillEntry};
+use super::ask::PendingQuestion;
 use super::effects::{self, ModelSwitcher, SessionBinding};
 use super::goal::{GoalNudger, Nudge};
 use super::mention;
@@ -169,6 +170,7 @@ pub(super) fn spawn_driver(
     let driver = Driver {
         job_tx,
         current_cancel: None,
+        pending_question: None,
         task: Some(actor_task),
         adapter_task: Some(driver_task),
         alive: true,
@@ -187,6 +189,9 @@ pub(super) struct Driver {
     job_tx: mpsc::UnboundedSender<DriverJob>,
     /// 当前轮的取消令牌（Ctrl+C 取消用）
     current_cancel: Option<CancellationToken>,
+    /// 在途问题的回答回传端（提问弹层打开期间持有；作答/取消/中断
+    /// 时发送或丢弃——丢弃即关闭通道，工具侧收到关闭转为错误结果）
+    pending_question: Option<tokio::sync::oneshot::Sender<nomic_tools::AskUserAnswer>>,
     /// agent actor 任务的 JoinHandle：任务退出时取出详情转为 TUI 内错误提示
     task: Option<tokio::task::JoinHandle<()>>,
     /// driver 适配任务的 JoinHandle（与 actor 任务任一退出即整体不可用，
@@ -217,6 +222,8 @@ pub(super) enum Wake {
     Paste(String),
     /// agent 事件
     AgentEvent(AgentEvent),
+    /// 提问弹层请求（`ask_user_question` 工具；回答通道由事件循环持有）
+    UserQuestion(PendingQuestion),
     /// driver 任务完成（prompt 或手动压缩）
     AgentDone(DriverDone),
     /// spinner 帧推进
@@ -259,6 +266,12 @@ pub(super) async fn handle_wake(
                 app.warn(format!("session 落库失败：{error}"));
             }
             app.handle_event(&event);
+        }
+        // 提问弹层请求：回答通道暂存在 driver（状态层不持有外部资源），
+        // 用户在弹层作答后经 Effect 回传；Esc 取消/运行中断时丢弃
+        Wake::UserQuestion(pending) => {
+            driver.pending_question = Some(pending.answer_tx);
+            app.open_question(pending.question);
         }
         Wake::AgentDone(done) => match done {
             DriverDone::Prompt(result) => {
@@ -367,6 +380,7 @@ pub(super) async fn next_wake(
     spinner_ticker: &mut tokio::time::Interval,
     events: &mut mpsc::UnboundedReceiver<AgentEvent>,
     done_rx: &mut mpsc::UnboundedReceiver<DriverDone>,
+    question_rx: &mut mpsc::UnboundedReceiver<PendingQuestion>,
 ) -> Wake {
     let driver_alive = driver.alive;
     let running = app.is_running();
@@ -389,6 +403,18 @@ pub(super) async fn next_wake(
             },
             Some(Ok(_)) => Wake::Redraw,
             Some(Err(_)) | None => Wake::TermClosed,
+        },
+        // 提问弹层请求（工具侧在 agent 任务内推入；通道关闭即任务退出，
+        // 已由 driver_failed 分支兜底；driver 退出后挂起避免空转）
+        pending = async {
+            if driver_alive {
+                question_rx.recv().await
+            } else {
+                std::future::pending().await
+            }
+        } => match pending {
+            Some(pending) => Wake::UserQuestion(pending),
+            None => driver_failed(driver).await,
         },
         // driver 退出后 channel 已关闭，分支挂起避免立即返回 None 空转
         maybe_event = async {
@@ -482,24 +508,7 @@ pub(super) async fn execute_effect(
     effect: Effect,
 ) {
     match effect {
-        Effect::Prompt { text, images } => {
-            // 用户主动提交：重置 goal 模式连续追问计数
-            driver.goal.reset();
-            // 发送前展开有效 `@skill:` / `@file:` mention；无效标记原样保留
-            let text =
-                mention::expand_mentions(&text, &driver.skill_resolver, driver.session.cwd());
-            let token = CancellationToken::new();
-            if driver
-                .job_tx
-                .send(DriverJob::Prompt(text, images, token.clone()))
-                .is_ok()
-            {
-                driver.current_cancel = Some(token);
-            } else {
-                // driver 已退出：不会有回执，立即回到空闲态并提示
-                app.finish_run(Some("内部错误：agent 任务已退出，消息未发送。".to_string()));
-            }
-        }
+        Effect::Prompt { text, images } => submit_prompt(app, driver, &text, images),
         Effect::Compact(instructions) => {
             let token = CancellationToken::new();
             if driver
@@ -525,6 +534,9 @@ pub(super) async fn execute_effect(
             if let Some(token) = &driver.current_cancel {
                 token.cancel();
             }
+            // 提问弹层随中断关闭，回答通道丢弃（工具侧经取消令牌/通道
+            // 关闭解除阻塞，不挂起）
+            driver.pending_question = None;
         }
         // INSERT `Ctrl+G`：挂起 TUI 运行外部编辑器（ADR-0017），退出后写回
         Effect::OpenEditor => edit_input_in_editor(app, terminal).await,
@@ -580,8 +592,46 @@ pub(super) async fn execute_effect(
         }
         Effect::AttachImage(path) => effects::attach_image(app, &std::path::PathBuf::from(path)),
         Effect::CopyText(text) => effects::copy_to_clipboard(app, text).await,
+        Effect::SubmitQuestionAnswer(answer) => {
+            // 作答回传：发送端即返回（工具侧在 agent 任务内 await，
+            // 失败仅可能因 agent 任务退出，无需提示）
+            if let Some(answer_tx) = driver.pending_question.take() {
+                let _ = answer_tx.send(answer);
+            }
+        }
+        Effect::CancelQuestion => {
+            // 丢弃回答通道：工具侧收到关闭转为错误结果回喂模型
+            driver.pending_question = None;
+        }
         Effect::NewSession => {
             effects::new_session(app, &mut driver.session, &driver.job_tx).await;
         }
+    }
+}
+
+/// `Effect::Prompt` 的实现：用户主动提交 prompt（重置 goal 计数、丢弃
+/// 上一轮残留的在途问题回答通道、展开 mention、发送 driver job）。
+fn submit_prompt(
+    app: &mut App,
+    driver: &mut Driver,
+    text: &str,
+    images: Vec<nomic_ai::ImageContent>,
+) {
+    // 用户主动提交：重置 goal 模式连续追问计数；丢弃上一轮残留的
+    // 在途问题回答通道（防御：正常路径弹层已随运行结束关闭）
+    driver.goal.reset();
+    driver.pending_question = None;
+    // 发送前展开有效 `@skill:` / `@file:` mention；无效标记原样保留
+    let text = mention::expand_mentions(text, &driver.skill_resolver, driver.session.cwd());
+    let token = CancellationToken::new();
+    if driver
+        .job_tx
+        .send(DriverJob::Prompt(text, images, token.clone()))
+        .is_ok()
+    {
+        driver.current_cancel = Some(token);
+    } else {
+        // driver 已退出：不会有回执，立即回到空闲态并提示
+        app.finish_run(Some("内部错误：agent 任务已退出，消息未发送。".to_string()));
     }
 }

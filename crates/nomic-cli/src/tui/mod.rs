@@ -4,9 +4,11 @@
 //! - [`app`]：纯状态层——对外为语义操作（按键 [`app::Key`] → [`app::Effect`]、
 //!   应用事件、滚动、会话/附件管理），脱离终端可测；内部按关注点拆为
 //!   chat（条目 + delta 累积 + 滚动）、input（草稿 + 编辑 + 补全）、
-//!   queue（统一消息队列与 QUEUE 模式）、picker 子模块，`App`
-//!   只做组合与模式路由；INSERT `Ctrl+G` 外部编辑器（ADR-0017）由
-//!   [`terminal::edit_input_in_editor`] 接线，状态层只消费写回结果
+//!   queue（统一消息队列与 QUEUE 模式）、picker、question（`ask_user_question`
+//!   提问弹层）子模块，`App` 只做组合与模式路由；INSERT `Ctrl+G` 外部编辑器
+//!   （ADR-0017）由 [`terminal::edit_input_in_editor`] 接线，状态层只消费写回结果
+//! - [`ask`]：`ask_user_question` 的 TUI 交互端（ADR-0029）——工具侧
+//!   [`ask::TuiQuestionSink`] 与事件循环间的提问通道与在途问题
 //! - [`effects`]：Effect 执行逻辑，按族分组为子模块——`model`
 //!   （模型 + 思考级别两步流）、`session`（resume / tree / branch /
 //!   new 与 recorder 换绑；定稿点落库收在 `nomic_session::SessionRecorder`）、
@@ -33,6 +35,7 @@
 //! 聊天区提示，TUI 保持存活供查看记录，而非静默退出。
 
 mod app;
+mod ask;
 mod chat_lines;
 mod driver;
 mod effects;
@@ -53,10 +56,12 @@ use anyhow::{Context as _, Result};
 use crossterm::event::EventStream;
 use nomic_core::Agent;
 use nomic_session::SessionRecorder;
-use nomic_tools::TodoStore;
+use nomic_tools::{QuestionSink, TodoStore};
 use ratatui::{Terminal, backend::CrosstermBackend};
+use tokio::sync::mpsc;
 
 use app::{App, SkillEntry};
+use ask::{PendingQuestion, TuiQuestionSink};
 use driver::{handle_wake, next_wake, spawn_driver};
 use terminal::{TerminalGuard, block_cursor, set_cursor_style};
 
@@ -97,6 +102,11 @@ pub async fn run(cli: &Cli) -> Result<()> {
     let initial_reasoning = boot.stream_options.reasoning;
 
     let todo_store = TodoStore::new();
+    // 提问通道（ADR-0029）：agent 任务内的 `ask_user_question` 工具经
+    // 发送端把问题推入，事件循环在 `next_wake` 中接收并打开提问弹层
+    let (question_tx, mut question_rx) = mpsc::unbounded_channel::<PendingQuestion>();
+    let question_sink: std::sync::Arc<dyn QuestionSink> =
+        std::sync::Arc::new(TuiQuestionSink::new(question_tx));
     let (agent, mut events) = Agent::builder()
         .model(boot.model.clone())
         .provider(boot.provider)
@@ -104,6 +114,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
         .tools(nomic_tools::default_tools_with_skills(
             boot.skill_resolver,
             todo_store.clone(),
+            question_sink,
         ))
         .messages(boot.history)
         .stream_options(boot.stream_options)
@@ -157,6 +168,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
             &mut spinner_ticker,
             &mut events,
             &mut done_rx,
+            &mut question_rx,
         )
         .await;
         if handle_wake(wake, &mut app, &mut driver, &mut terminal).await || app.should_quit() {

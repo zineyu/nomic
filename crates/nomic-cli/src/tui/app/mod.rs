@@ -10,6 +10,7 @@
 //!   栏各持一份，ADR-0020）
 //! - [`queue`]：统一消息队列与 QUEUE 模式状态（[`Queue`]）
 //! - [`picker`]：选择器状态（[`Picker`]）
+//! - [`question`]：`ask_user_question` 提问弹层状态（[`Question`]，ADR-0029）
 //!
 //! 子模块各自自持状态与方法集；跨模块协调（模式切换、提示语、
 //! [`Effect`] 分发）由本壳完成。
@@ -18,6 +19,7 @@ mod actions;
 mod chat;
 mod input;
 mod picker;
+mod question;
 mod queue;
 mod state;
 
@@ -42,6 +44,7 @@ pub(super) use chat::{Block, Chat, ChatItem, ToolItem, ToolStatus, skill_load_me
 pub(super) use input::Completion;
 pub(super) use input::{CompletionCandidate, Input, MentionCompletion, SkillEntry};
 pub(super) use picker::{PICKER_ROW_CAPACITY, Picker, PickerKind, PickerRow};
+pub(in crate::tui) use question::Question;
 
 use crate::print::brief_args;
 
@@ -393,6 +396,9 @@ pub(super) enum Mode {
     /// 选择器打开（`resume`、`models`、`tree`），接管键位。
     /// 派生态：由 `picker.is_some()` 决定，不入 `App::mode` 字段
     Picker,
+    /// 提问弹层打开（`ask_user_question` 工具），模态接管键位。
+    /// 派生态：由 `question.is_some()` 决定，不入 `App::mode` 字段
+    Question,
 }
 
 /// 语义化按键：与 crossterm 解耦，保持状态层可脱离终端单测。
@@ -474,6 +480,12 @@ pub(super) enum Effect {
     /// `tree` 选择器确认：以所选条目为起点创建分支（恢复该分支上下文，
     /// 后续消息以该条目为父 entry 落库）
     BranchTo(String),
+    /// 提问弹层提交（`ask_user_question` 工具）：事件循环把回答经
+    /// 在途问题的 oneshot 通道回传工具，agent 继续运行
+    SubmitQuestionAnswer(nomic_tools::AskUserAnswer),
+    /// 提问弹层取消（Esc）：事件循环丢弃回答通道，工具侧收到通道
+    /// 关闭转为错误结果回喂模型
+    CancelQuestion,
 }
 
 /// TUI 应用状态：各关注点状态的组合 + 模式路由。
@@ -495,9 +507,12 @@ pub(super) struct App {
     queue: Queue,
     /// 选择器（`resume` / `models` / `tree`，打开时接管键位）
     picker: Option<Picker>,
+    /// 提问弹层（`ask_user_question` 工具，打开时模态接管键位）
+    question: Option<Question>,
     /// 交互模式（ADR-0021）：只取 Insert/Normal/Command/Queue；
-    /// Picker/Help 是派生态（`picker.is_some()` / `help_scroll.is_some()`
-    /// 时 [`Self::mode`] 返回对应值），不入此字段
+    /// Picker/Help/Question 是派生态（`picker.is_some()` /
+    /// `help_scroll.is_some()` / `question.is_some()` 时
+    /// [`Self::mode`] 返回对应值），不入此字段
     mode: Mode,
     /// 序列键首键（QUEUE 的 `d`），等待第二键
     pending_key: Option<char>,

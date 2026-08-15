@@ -1,8 +1,11 @@
 //! 四工具的真实行为集成测试（临时目录 + 真实进程）。
 
-use nomic_core::{AgentTool, ToolUpdateCallback};
+use nomic_core::{AgentTool, ToolError, ToolUpdateCallback};
 use nomic_skills::{ProjectDiscovery, SkillResolver, SkillRoot, SkillScope};
-use nomic_tools::{BashTool, EditTool, ReadTool, WriteTool};
+use nomic_tools::{
+    AskUserAnswer, AskUserQuestion, AskUserQuestionTool, BashTool, CUSTOM_OPTION, EditTool,
+    QuestionSink, ReadTool, WriteTool,
+};
 use tokio_util::sync::CancellationToken;
 
 fn no_update() -> ToolUpdateCallback {
@@ -644,4 +647,131 @@ async fn find_limit_and_no_match() {
     }))
     .await;
     assert!(out.starts_with("No files found"), "{out}");
+}
+
+// ── ask_user_question ──────────────────────────────────────────────────────
+
+/// 记录收到的问题（断言工具侧契约）并按预设回答回传。
+struct RecordingSink {
+    received: std::sync::Mutex<Vec<AskUserQuestion>>,
+    preset: std::sync::Mutex<Option<AskUserAnswer>>,
+}
+
+#[async_trait::async_trait]
+impl QuestionSink for RecordingSink {
+    async fn ask(
+        &self,
+        question: AskUserQuestion,
+        _cancel: CancellationToken,
+    ) -> Result<AskUserAnswer, ToolError> {
+        self.received.lock().expect("lock").push(question);
+        self.preset
+            .lock()
+            .expect("lock")
+            .take()
+            .ok_or_else(|| ToolError::new("no preset answer"))
+    }
+}
+
+/// 经类型擦除的 [`nomic_core::DynTool`] 全链路执行：JSON 参数反序列化 →
+/// 问题宿收到（含自动追加的自定义选项）→ 回答回喂模型。
+#[tokio::test]
+async fn ask_user_question_flows_through_erased_tool() {
+    let sink = std::sync::Arc::new(RecordingSink {
+        received: std::sync::Mutex::new(Vec::new()),
+        preset: std::sync::Mutex::new(Some(AskUserAnswer {
+            answers: vec!["Rust".to_string()],
+            custom: None,
+        })),
+    });
+    let tool = nomic_core::DynTool::new(AskUserQuestionTool::new(sink.clone()));
+    assert_eq!(tool.name(), "ask_user_question");
+    // 发送给 provider 的工具定义：JSON Schema 含三种类型
+    let schema = tool.definition().parameters.to_string();
+    for kind in ["single_choice", "multiple_choice", "fill_in"] {
+        assert!(schema.contains(kind), "schema 缺 {kind}: {schema}");
+    }
+
+    let result = tool
+        .execute(
+            serde_json::json!({
+                "question": "语言？",
+                "kind": "single_choice",
+                "options": ["Rust", "Go"],
+            }),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .expect("answer");
+    let nomic_ai::UserContent::Text(text) = &result.content[0] else {
+        panic!("expected text")
+    };
+    assert!(
+        text.text.contains("User answered (single_choice): Rust"),
+        "{}",
+        text.text
+    );
+    // 问题宿收到完整问题：末尾自动追加自定义选项
+    let received = sink.received.lock().expect("lock");
+    assert_eq!(received.len(), 1);
+    assert_eq!(
+        received[0].options.last().map(String::as_str),
+        Some(CUSTOM_OPTION)
+    );
+    assert_eq!(received[0].options.len(), 3);
+    drop(received);
+}
+
+/// 参数校验：单选/多选缺 options 时报错（错误文本回喂模型）。
+#[tokio::test]
+async fn ask_user_question_choice_requires_options() {
+    let tool = nomic_core::DynTool::new(AskUserQuestionTool::new(std::sync::Arc::new(
+        RecordingSink {
+            received: std::sync::Mutex::new(Vec::new()),
+            preset: std::sync::Mutex::new(None),
+        },
+    )));
+    let error = tool
+        .execute(
+            serde_json::json!({"question": "语言？", "kind": "single_choice"}),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("options are required"),
+        "{error}"
+    );
+}
+
+/// 填空问题：options 被忽略，问题宿收到空选项列表。
+#[tokio::test]
+async fn ask_user_question_fill_in_ignores_options() {
+    let sink = std::sync::Arc::new(RecordingSink {
+        received: std::sync::Mutex::new(Vec::new()),
+        preset: std::sync::Mutex::new(Some(AskUserAnswer {
+            answers: vec!["a@b.c".to_string()],
+            custom: Some("a@b.c".to_string()),
+        })),
+    });
+    let tool = nomic_core::DynTool::new(AskUserQuestionTool::new(sink.clone()));
+    let result = tool
+        .execute(
+            serde_json::json!({
+                "question": "邮箱？",
+                "kind": "fill_in",
+                "options": ["a@b.c"],
+            }),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .expect("answer");
+    let received = sink.received.lock().expect("lock");
+    assert!(received[0].options.is_empty(), "填空忽略 options");
+    drop(received);
+    let details = result.details.expect("details");
+    assert_eq!(details["custom"], "a@b.c");
 }

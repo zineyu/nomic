@@ -21,6 +21,7 @@ impl App {
             command,
             queue: Queue::default(),
             picker: None,
+            question: None,
             mode: Mode::Insert,
             pending_key: None,
             history: Vec::new(),
@@ -178,8 +179,11 @@ impl App {
 
     /// 当前交互模式（渲染光标/徽标与外部查询用）：picker/帮助弹层
     /// 打开时派生为对应模式，否则为字段值（Insert/Normal）。
+    /// 提问弹层是阻塞交互：优先级最高，先于 picker/help 派生。
     pub const fn mode(&self) -> Mode {
-        if self.picker.is_some() {
+        if self.question.is_some() {
+            Mode::Question
+        } else if self.picker.is_some() {
             Mode::Picker
         } else if self.help_scroll.is_some() {
             Mode::Help
@@ -201,6 +205,8 @@ impl App {
             Mode::Insert => self.press_insert(key),
             Mode::Command => self.press_command(key),
             Mode::Queue => self.press_queue(key),
+            // 提问弹层模态接管（运行中；Esc 取消、作答后自动关闭）
+            Mode::Question => self.press_question(key),
         }
     }
 
@@ -524,10 +530,11 @@ impl App {
 
     /// NORMAL `q`：中断本轮运行，永不退出程序（ADR-0021 修订）。退出
     /// 统一走命令：COMMAND 模式 `quit`（或各模式 `Ctrl+C` 硬退出）。
-    /// 空闲按 q 置一次性提示，指引退出路径。
+    /// 空闲按 q 置一次性提示，指引退出路径。提问弹层随中断关闭。
     pub fn cancel_run(&mut self) -> Vec<Effect> {
         if self.running {
             self.notice = Some("已中断本轮".to_string());
+            self.close_question();
             return vec![Effect::Cancel];
         }
         self.notice = Some("退出：按 : 执行 quit（或 Ctrl+C）".to_string());
@@ -535,9 +542,10 @@ impl App {
     }
 
     /// 退出 TUI（COMMAND `quit`、各模式 `Ctrl+C`/`Ctrl+D`）：运行中先
-    /// 中断本轮再退出。
+    /// 中断本轮再退出。提问弹层随退出关闭。
     pub fn quit(&mut self) -> Vec<Effect> {
         self.should_quit = true;
+        self.close_question();
         if self.running {
             return vec![Effect::Cancel];
         }

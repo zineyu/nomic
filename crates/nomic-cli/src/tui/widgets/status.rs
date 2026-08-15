@@ -38,6 +38,7 @@ impl Widget for StatusBar<'_> {
             Mode::Insert => Span::styled(" INSERT ", theme::accent()),
             Mode::Picker => Span::styled(" PICKER ", theme::accent()),
             Mode::Help => Span::styled(" HELP ", theme::accent()),
+            Mode::Question => Span::styled(" 提问 ", theme::accent()),
         };
         let mut left = vec![
             mode_badge,
@@ -65,6 +66,7 @@ impl Widget for StatusBar<'_> {
             Mode::Picker => "输入过滤 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ",
             Mode::Help => "j/k 滚动 · g/G 顶/底 · Esc 关闭 ",
             Mode::Insert => "Enter 发送 · ^G 编辑器 · Esc 浏览 ",
+            Mode::Question => "↑/↓ 选择 · Enter 提交 · 空格 勾选 · Esc 取消 ",
             Mode::Queue => {
                 if app.queue().is_editing() {
                     "Enter/Esc 保存 · Shift+Enter 换行 "

@@ -8,9 +8,11 @@
 use std::io::Write as _;
 
 use anyhow::{Context as _, Result, bail};
+use async_trait::async_trait;
 use nomic_ai::{AssistantEvent, Message, StopReason};
-use nomic_core::{Agent, AgentEvent};
+use nomic_core::{Agent, AgentEvent, ToolError};
 use nomic_session::SessionRecorder;
+use nomic_tools::{AskUserAnswer, AskUserQuestion, CUSTOM_OPTION, QuestionKind, QuestionSink};
 use tokio_util::sync::CancellationToken;
 
 use crate::{Cli, bootstrap};
@@ -38,6 +40,7 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
         .tools(nomic_tools::default_tools_with_skills(
             boot.skill_resolver,
             nomic_tools::TodoStore::new(),
+            std::sync::Arc::new(StdinQuestionSink),
         ))
         .messages(boot.history)
         .stream_options(boot.stream_options)
@@ -74,6 +77,113 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
         bail!("{error}");
     }
     Ok(())
+}
+
+/// [`QuestionSink`] 的 print 模式实现：问题渲染到 stderr（stdout 保持
+/// 流式输出纯净，管道可用），回答从 stdin 读取。
+///
+/// 单选/多选按编号选择；自定义选项（末位）选中后二次输入文本；
+/// 直接输入非编号文本也视为自定义答案。stdin 关闭（EOF）时报错。
+struct StdinQuestionSink;
+
+#[async_trait]
+impl QuestionSink for StdinQuestionSink {
+    async fn ask(
+        &self,
+        question: AskUserQuestion,
+        cancel: CancellationToken,
+    ) -> Result<AskUserAnswer, ToolError> {
+        tokio::select! {
+            () = cancel.cancelled() => Err(ToolError::new("question cancelled (run aborted)")),
+            answer = tokio::task::spawn_blocking(move || prompt_stdin(&question)) => {
+                match answer {
+                    Ok(answer) => answer,
+                    Err(join) => Err(ToolError::new(format!("reading stdin failed: {join}"))),
+                }
+            }
+        }
+    }
+}
+
+/// 交互式提问的阻塞实现（spawn_blocking 内运行）：打印问题与编号选项，
+/// 读取一行回答并解析为 [`AskUserAnswer`]。
+fn prompt_stdin(question: &AskUserQuestion) -> Result<AskUserAnswer, ToolError> {
+    use std::io::BufRead as _;
+
+    let kind_label = match question.kind {
+        QuestionKind::SingleChoice => "single choice",
+        QuestionKind::MultipleChoice => "multiple choice",
+        QuestionKind::FillIn => "fill in",
+    };
+    let mut prompt = format!("\n❓ {} ({kind_label})\n", question.question);
+    for (index, option) in question.options.iter().enumerate() {
+        use std::fmt::Write as _;
+        let _ = writeln!(prompt, "   {}. {option}", index + 1);
+    }
+    eprint!("{prompt}");
+    let _ = std::io::stderr().flush();
+
+    let stdin = std::io::stdin();
+    let mut lines = stdin.lock().lines();
+    let mut read_line = || -> Result<String, ToolError> {
+        lines
+            .next()
+            .transpose()
+            .map_err(|error| ToolError::new(format!("reading answer failed: {error}")))?
+            .ok_or_else(|| ToolError::new("stdin closed before the question was answered"))
+    };
+
+    match question.kind {
+        QuestionKind::FillIn => {
+            let text = read_line()?;
+            let text = text.trim().to_string();
+            Ok(AskUserAnswer {
+                answers: vec![text.clone()],
+                custom: Some(text),
+            })
+        }
+        QuestionKind::SingleChoice | QuestionKind::MultipleChoice => {
+            let input = read_line()?;
+            let mut answers = Vec::new();
+            let mut custom = None;
+            for token in input.split(|c: char| c == ',' || c.is_whitespace()) {
+                if token.is_empty() {
+                    continue;
+                }
+                if let Ok(number) = token.parse::<usize>()
+                    && (1..=question.options.len()).contains(&number)
+                {
+                    let option = question.options[number - 1].clone();
+                    if option == CUSTOM_OPTION {
+                        // 自定义选项：二次输入文本（多选只取一次）
+                        if custom.is_none() {
+                            let text = read_line()?;
+                            let text = text.trim().to_string();
+                            if !text.is_empty() {
+                                custom = Some(text.clone());
+                                answers.push(text);
+                            }
+                        }
+                    } else if !answers.contains(&option) {
+                        answers.push(option);
+                    }
+                } else if !answers.iter().any(|answer| answer == token) {
+                    // 非编号文本：视为自定义答案
+                    custom = Some(token.to_string());
+                    answers.push(token.to_string());
+                }
+            }
+            if answers.is_empty() {
+                return Err(ToolError::new(
+                    "no answer given: enter an option number (or free text)",
+                ));
+            }
+            if question.kind == QuestionKind::SingleChoice && answers.len() > 1 {
+                return Err(ToolError::new("single choice accepts exactly one answer"));
+            }
+            Ok(AskUserAnswer { answers, custom })
+        }
+    }
 }
 
 /// 加载全部 `--image` 附件；任一失败则整体中止（prompt 未发送）。
@@ -170,6 +280,7 @@ pub fn brief_args(tool_name: &str, args: &serde_json::Value) -> String {
         "bash" => args.get("command").and_then(|v| v.as_str()),
         "read" | "write" | "edit" => args.get("path").and_then(|v| v.as_str()),
         "grep" | "find" => args.get("pattern").and_then(|v| v.as_str()),
+        "ask_user_question" => args.get("question").and_then(|v| v.as_str()),
         _ => None,
     };
     let text = match (tool_name, key_field) {

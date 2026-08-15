@@ -2,8 +2,8 @@
 
 use super::{
     App, CommandAction, Effect, HALF_PAGE_SCROLL, Key, Message, Mode, PAGE_SCROLL,
-    PICKER_PAGE_SCROLL, Picker, PickerKind, PickerRow, SPINNER_FRAMES, SkillEntry, TurnMessage,
-    help_text, line_count_of, skill_list_text,
+    PICKER_PAGE_SCROLL, Picker, PickerKind, PickerRow, Question, SPINNER_FRAMES, SkillEntry,
+    TurnMessage, help_text, line_count_of, skill_list_text,
 };
 
 impl App {
@@ -444,9 +444,12 @@ impl App {
     // ── 运行生命周期 ────────────────────────────────────────────────────────
 
     /// 一轮运行（prompt/压缩）结束：回到空闲态，按需置状态栏告警。
+    /// 提问弹层随运行结束关闭（工具已因取消/作答离开阻塞，弹层不再
+    /// 有效——未作答被中断时回答通道由事件循环丢弃）。
     pub fn finish_run(&mut self, notice: Option<String>) {
         self.running = false;
         self.notice = notice;
+        self.close_question();
     }
 
     /// 开始一轮自动运行（goal 模式追问）：与 prompt 提交同一口径
@@ -508,14 +511,28 @@ impl App {
     pub fn paste_text(&mut self, text: &str) {
         // 粘贴的意图是编辑：命令栏单行，换行折叠为空格后粘贴进命令
         // 缓冲（留在 COMMAND）；QUEUE 导航下先进入就地编辑（粘贴即修改
-        // 游标槽位）；其余（NORMAL 等）先回 INSERT 编辑草稿（草稿保留）
-        match self.mode {
+        // 游标槽位）；提问弹层的自定义输入阶段直接粘贴进自定义缓冲，
+        // 列表阶段忽略（模态接管）；其余（NORMAL 等）先回 INSERT 编辑
+        // 草稿（草稿保留）
+        match self.mode() {
             Mode::Command => {
                 self.command.paste(&text.replace(['\r', '\n'], " "));
                 return;
             }
             Mode::Queue if !self.queue.is_editing() => self.queue_begin_edit(),
-            Mode::Queue => {}
+            Mode::Question
+                if self
+                    .question
+                    .as_ref()
+                    .is_some_and(Question::is_custom_input) =>
+            {
+                if let Some(question) = &mut self.question {
+                    question.custom.paste(text);
+                }
+                return;
+            }
+            // 模态接管且非键入阶段（QUEUE 就地编辑中 / 提问选项列表）：忽略粘贴
+            Mode::Queue | Mode::Question => {}
             _ => self.mode = Mode::Insert,
         }
         self.input.paste(text);

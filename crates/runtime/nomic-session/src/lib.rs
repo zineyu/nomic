@@ -268,7 +268,11 @@ impl SessionStore {
         timestamp: u64,
         payload: String,
     ) -> Result<String, SessionError> {
-        let mut tx = self.pool.begin().await?;
+        // `BEGIN IMMEDIATE` 在事务一开始就取得写锁，避免 WAL 模式下「先读后写」
+        // 升级写锁时因另一连接已提交而产生的 SQLITE_BUSY_SNAPSHOT（code 517）：
+        // 该错误不会被 busy_timeout 重试，只能靠预先取写锁规避。多实例并发写入
+        // 时此竞争必然触发，见 `tests/concurrency.rs::concurrent_writers_across_pools`。
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
 
         if !session_exists(&mut tx, session_id).await? {
             return Err(SessionError::SessionNotFound(session_id.to_string()));

@@ -1,7 +1,7 @@
 # AGENTS.md
 
-> A Rust coding agent (a Rust reimplementation of pi-coding-agent): ratatui full-screen TUI plus a
-> non-interactive print mode, unified streaming provider abstraction, event-driven agent loop,
+> A ADE (ai development environment): ratatui full-screen TUI plus a
+> unified streaming provider abstraction, event-driven agent loop,
 > SQLite-backed persistent sessions, and a skills system. Architecture decisions live in `docs/adr/`.
 
 ## Build & Check

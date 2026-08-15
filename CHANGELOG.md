@@ -6,6 +6,101 @@
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，
 由 [git-cliff](https://git-cliff.org) 从 conventional commits 自动生成。
 
+## [0.2.0] - 2026-08-15
+
+### 修复
+
+- **(tui)** Reserve arrow for visual selection
+- **(tui)** Resume/tree 恢复后消息游标失效
+- Allow CopyMenu can view all messages
+- **(session)** 并发写入改用 BEGIN IMMEDIATE，消除 WAL 写锁竞态
+
+### 文档
+
+- **(adr)** ADR-0018 BROWSE 默认态与输入框内嵌 edtui
+- **(nomic-cli)** Prompt/注入文案说明子资源与 skill 根目录
+- README + ADR-0003 修订记录子资源与可见性语义
+- **(adr)** ADR-0021 单字母动作层交互设计（重设计快捷键）
+- README 键位章节对齐 ADR-0021
+- **(adr)** ADR-0022 agent 使用方式改为 actor 模型
+- **(adr)** ADR-0023 落库策略收进 SessionRecorder
+- **(adr)** ADR-0024 driver 状态按关注点下沉，模型切换收进显式状态机
+- **(adr)** ADR-0025 聊天区几何上移状态层，渲染回写通道删除
+- **(adr)** ADR-0027 steering 队列上移到 TUI，core 只保留注入点
+- 完善 AGENTS.md 开发指引
+- ADR-0021 修订与 README 键位表同步 Esc/q 新语义
+- ADR-0020 修订与 README 同步浮层命令栏、无前缀命令语法
+- ADR-0028 agent hooks 并入事件拦截
+
+### 新功能
+
+- Remove embend vim like editor (#15)
+- **(tui)** NORMAL `?` 打开键位帮助弹层
+- **(nomic-skills)** Skill:// 子路径资源解析与穿越防护
+- **(nomic-tools)** Read 支持 skill://<name>/<path> 与目录清单
+- **(nomic-skills)** Frontmatter 支持 enabled/hide
+- **(nomic-cli)** 启动时输出 skill 加载诊断
+- **(nomic-cli)** /skill:<name> 支持附带 args
+- **(tui)** 专门的命令输入框（COMMAND 模式，ADR-0020）
+- **(tui)** 消息游标与 VISUAL 选择区改为整行背景高亮
+- **(tui)** NORMAL 进入 VISUAL 的快捷键由 Shift+V 改为 v
+- **(tui)** VISUAL 模式条目折叠为单行摘要（oil.nvim 式），复制仍取全文
+- **(tui)** NORMAL 单字母动作层（y 复制菜单、Space 条目折叠、r 重试，移除 VISUAL 与序列键）
+- **(tui)** S 会话菜单 overlay（恢复/新建/分支树合一入口）
+- **(tui)** INSERT Esc 回 NORMAL、Ctrl+C/D 清草稿/退出、↑/↓ 输入历史召回
+- **(tui)** 会话快捷键分离——NORMAL `s`/`b`/`c` 直达恢复/分支/新建
+- **(cli)** Add --cwd to set working directory
+- **(core)** Agent actor 封装——AgentHandle 命令邮箱（ADR-0022）
+- **(session)** SessionRecorder——落库策略收进 AgentEvent 流之后
+- **(tui)** 取消运行快捷键收归 NORMAL q，Ctrl+C 统一为退出
+- **(tui)** 草稿 @ mention 补全（skill/file），聊天区折叠展示
+- **(tui)** [**breaking**] Esc 纯化为层回退、q 收敛为带守卫的退出
+- **(tui)** [**breaking**] NORMAL q 纯化为中断键，退出收敛到 /quit 命令
+- **(tui)** [**breaking**] 命令收敛到浮层命令栏，语法去 / 前缀
+- 使用continue命令替换retry命令
+- **(core)** Agent hooks 并入事件拦截（AgentInterceptor 多拦截器）
+- **(tools)** Ask_user_question 工具（单选/多选/填空 + TUI 提问弹层）
+
+### 杂项
+
+- 增加函数长度与文件行数限制
+- Edit AGENTS.md
+
+### 重构
+
+- **(tui)** 按关注点拆分 app 状态层为子模块
+- **(tui)** 按 Effect 族拆分执行逻辑为 effects 子模块
+- **(cli)** 拆出 model.rs 模型解析模块，bootstrap 只留启动装配
+- **(tui)** 叠加层 g 单键到顶（help/queue），统一 less 式键位
+- **(tui)** 渲染层改为自定义 ratatui Widget（ui.rs → widgets/ 模块）
+- 拆分超 800 行文件以满足行数门禁，移除基线豁免
+- **(cli)** TUI driver 改用 core actor（AgentHandle）
+- **(cli)** Print 模式改用 core actor（AgentHandle）
+- **(cli)** Print 与 TUI 落库改用 SessionRecorder（ADR-0023）
+- **(core)** Context_tokens 单一权威——事件携带权威值，App 只抄不算
+- **(tui)** Session 落库状态收进 effects::session 的 SessionBinding
+- **(tui)** 两步模型切换收进 ModelSwitcher 状态机（ADR-0024）
+- **(tui)** Goal 追问状态收进 GoalNudger（ADR-0024）
+- **(tui)** Driver 字段全部降为私有——结构体对外只是不透明句柄
+- **(picker)** 抽选择内核（selected/offset/window + 可选过滤），两处各留薄 adapter
+- **(tui)** 聊天区几何上移状态层——渲染前按视口主动计算，删除渲染回写通道
+- [**breaking**] 引入 dirs 替换手写 XDG 目录解析
+- **(tui)** NORMAL 纯浏览化，移除消息游标与内容操作
+- **(core)** Steering 队列上移到 TUI，core 只保留 TurnInjection 注入点
+- **(ai)** 收敛两个 provider 的 empty_output 与截断 JSON 修复
+- **(ai)** Openai reasoning 字段回退链收敛为 first_non_empty
+- **(ai)** 抽出两个 provider 共用的带重试流式骨架
+- **(session)** Append_message/append_compaction 收敛到共用 append_entry
+- **(session)** Fetch_titles 用 slice::from_ref 避免临时 Vec
+- **(cli)** Parse_slash 的命令参数尾巴解析收敛为 command_tail
+- **(cli)** Collapse_mention_blocks 用枚举替代字符串 kind
+- **(cli)** Print 模式两处小清理
+- **(cli)** --model spec 的 provider 段解析收敛为 cli_model_provider
+- **(core)** 工具调用预备结果用 PreparedToolCall 枚举替代 Result 控制流
+- **(tui)** 命令相关标识符去 slash 命名
+- **(tui)** 选择器弹层改为居中浮层（resume/models/tree/思考级别），不再贴输入框
+- Crate 目录按 runtime/app 分层
+- 具体工具实现移到 app 层，runtime 仅保留工具抽象
 ## [0.1.3] - 2026-08-11
 
 ### CI

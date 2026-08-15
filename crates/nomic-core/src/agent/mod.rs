@@ -33,8 +33,10 @@ use crate::compaction::{
     CompactRequest, Compaction, CompactionError, CompactionSettings, compact_messages,
     estimate_context_tokens, should_compact,
 };
-use crate::hooks::{AfterToolCall, AgentHooks, BeforeToolCall, ToolCallDecision};
 use crate::injection::{TurnInjection, TurnMessage};
+use crate::interception::{
+    AgentInterceptor, ToolCallDecision, ToolExecutionEnd, ToolExecutionStart,
+};
 use crate::tool::{DynTool, ExecutionMode, ToolResult, ToolUpdate};
 
 /// loop 配置（crate 内部；外部经 [`Agent::builder`] 组装）。
@@ -47,8 +49,8 @@ pub struct AgentConfig {
     pub provider: Arc<dyn Provider>,
     /// 流式请求选项
     pub stream_options: StreamOptions,
-    /// 生命周期 hooks
-    pub hooks: Arc<dyn AgentHooks>,
+    /// 生命周期事件拦截器
+    pub interceptors: Vec<Arc<dyn AgentInterceptor>>,
     /// 默认工具执行模式（默认 parallel）
     pub tool_execution: ExecutionMode,
     /// 上下文压缩配置（`enabled` 只控制自动触发，手动 [`Agent::compact`] 不受限）
@@ -422,8 +424,7 @@ impl Agent {
                         })
                         .collect()
                 } else {
-                    self.execute_tool_calls(&message, &tool_calls, &cancel)
-                        .await
+                    self.execute_tool_calls(&tool_calls, &cancel).await
                 };
 
                 terminate = !finalized.is_empty() && finalized.iter().all(|f| f.result.terminate);
@@ -563,7 +564,6 @@ impl Agent {
     /// 执行一批工具调用（按配置与工具声明选择 parallel / sequential）。
     async fn execute_tool_calls(
         &self,
-        message: &AssistantMessage,
         tool_calls: &[ToolCall],
         cancel: &CancellationToken,
     ) -> Vec<FinalizedToolCall> {
@@ -574,7 +574,7 @@ impl Agent {
                 })
             });
 
-        // 预备阶段（串行）：查找工具 + hooks 门控；拒绝转为即时错误结果
+        // 预备阶段（串行）：查找工具 + 拦截器门控；拒绝转为即时错误结果
         let mut prepared = Vec::new();
         for call in tool_calls {
             self.emit(AgentEvent::ToolExecutionStart {
@@ -582,13 +582,13 @@ impl Agent {
                 tool_name: call.name.clone(),
                 args: call.arguments.clone(),
             });
-            prepared.push(self.prepare_tool_call(message, call).await);
+            prepared.push(self.prepare_tool_call(call).await);
         }
 
         if sequential {
             let mut finalized = Vec::new();
             for entry in prepared {
-                finalized.push(self.finalize_prepared(message, entry, cancel).await);
+                finalized.push(self.finalize_prepared(entry, cancel).await);
                 if cancel.is_cancelled() {
                     break;
                 }
@@ -598,7 +598,7 @@ impl Agent {
 
         let futures: Vec<_> = prepared
             .into_iter()
-            .map(|entry| self.finalize_prepared(message, entry, cancel))
+            .map(|entry| self.finalize_prepared(entry, cancel))
             .collect();
         futures::future::join_all(futures).await
     }
@@ -606,24 +606,20 @@ impl Agent {
     /// 执行（或采纳门控拒绝的即时失败结果）一个已预备的工具调用。
     async fn finalize_prepared(
         &self,
-        message: &AssistantMessage,
         entry: PreparedToolCall<'_>,
         cancel: &CancellationToken,
     ) -> FinalizedToolCall {
         match entry {
             PreparedToolCall::Rejected(immediate) => immediate,
             PreparedToolCall::Ready(call, tool) => {
-                self.execute_and_finalize(message, call, tool, cancel).await
+                self.execute_and_finalize(call, tool, cancel).await
             }
         }
     }
 
-    /// 预备一个工具调用：找到工具、过 `before_tool_call` 门控。
-    async fn prepare_tool_call<'a>(
-        &self,
-        message: &AssistantMessage,
-        call: &'a ToolCall,
-    ) -> PreparedToolCall<'a> {
+    /// 预备一个工具调用：找到工具、过 `on_tool_execution_start` 门控
+    /// （多拦截器按插入序，首个 `Block` 短路）。
+    async fn prepare_tool_call<'a>(&self, call: &'a ToolCall) -> PreparedToolCall<'a> {
         let Some(tool) = self.tools.iter().find(|t| t.name() == call.name).cloned() else {
             tracing::warn!(tool = %call.name, "tool not found");
             return PreparedToolCall::Rejected(FinalizedToolCall {
@@ -632,30 +628,31 @@ impl Agent {
                 is_error: true,
             });
         };
-        let decision = self
-            .config
-            .hooks
-            .before_tool_call(&BeforeToolCall {
-                assistant_message: message,
-                tool_call: call,
-            })
-            .await;
-        if let ToolCallDecision::Block { reason } = decision {
-            tracing::warn!(tool = %call.name, %reason, "tool call blocked by hook");
-            return PreparedToolCall::Rejected(FinalizedToolCall {
-                tool_call: call.clone(),
-                result: ToolResult::text(reason),
-                is_error: true,
-            });
+        for interceptor in &self.config.interceptors {
+            let event = ToolExecutionStart {
+                tool_call_id: &call.id,
+                tool_name: &call.name,
+                args: &call.arguments,
+            };
+            if let ToolCallDecision::Block { reason } =
+                interceptor.on_tool_execution_start(&event).await
+            {
+                tracing::warn!(tool = %call.name, %reason, "tool call blocked by interceptor");
+                return PreparedToolCall::Rejected(FinalizedToolCall {
+                    tool_call: call.clone(),
+                    result: ToolResult::text(reason),
+                    is_error: true,
+                });
+            }
         }
         PreparedToolCall::Ready(call, tool)
     }
 
-    /// 执行单个工具调用并过 `after_tool_call` 改写。
+    /// 执行单个工具调用并过 `on_tool_execution_end` 改写（pipeline：多拦截器
+    /// 依次看到累积结果）。
     #[tracing::instrument(name = "tool_execution", skip_all, fields(tool = %call.name, id = %call.id))]
     async fn execute_and_finalize(
         &self,
-        message: &AssistantMessage,
         call: &ToolCall,
         tool: DynTool,
         cancel: &CancellationToken,
@@ -684,28 +681,26 @@ impl Agent {
             }
         };
 
-        if let Some(over) = self
-            .config
-            .hooks
-            .after_tool_call(&AfterToolCall {
-                assistant_message: message,
-                tool_call: call,
+        for interceptor in &self.config.interceptors {
+            let event = ToolExecutionEnd {
+                tool_call_id: &call.id,
+                tool_name: &call.name,
                 result: &result,
                 is_error,
-            })
-            .await
-        {
-            if let Some(content) = over.content {
-                result.content = content;
-            }
-            if let Some(details) = over.details {
-                result.details = Some(details);
-            }
-            if let Some(flag) = over.is_error {
-                is_error = flag;
-            }
-            if let Some(terminate) = over.terminate {
-                result.terminate = terminate;
+            };
+            if let Some(over) = interceptor.on_tool_execution_end(&event).await {
+                if let Some(content) = over.content {
+                    result.content = content;
+                }
+                if let Some(details) = over.details {
+                    result.details = Some(details);
+                }
+                if let Some(flag) = over.is_error {
+                    is_error = flag;
+                }
+                if let Some(terminate) = over.terminate {
+                    result.terminate = terminate;
+                }
             }
         }
 

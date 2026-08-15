@@ -7,8 +7,8 @@
 //! 类型错误即规格。三个标记相互独立，必填项设置顺序自由。
 //!
 //! 其余创建项带默认值（与旧调用点手写值一致）：tools/messages 为空、
-//! stream_options 为 [`StreamOptions::default`]、hooks 为 [`NoopHooks`]、
-//! tool_execution 为 [`ExecutionMode::Parallel`]、compaction 为
+//! stream_options 为 [`StreamOptions::default`]、拦截器为空（等价
+//! [`crate::interception::NoopInterceptor`]）、tool_execution 为 [`ExecutionMode::Parallel`]、compaction 为
 //! [`CompactionSettings::default`]。
 //!
 //! ```
@@ -33,8 +33,8 @@ use tokio::sync::mpsc;
 use crate::AgentEvent;
 use crate::agent::{Agent, AgentConfig};
 use crate::compaction::CompactionSettings;
-use crate::hooks::{AgentHooks, NoopHooks};
 use crate::injection::TurnInjection;
+use crate::interception::AgentInterceptor;
 use crate::tool::{DynTool, ExecutionMode};
 
 /// 类型状态标记：必填项已设置。
@@ -61,7 +61,7 @@ pub struct AgentBuilder<M = Unset, P = Unset, S = Unset> {
     tools: Vec<DynTool>,
     messages: Vec<Message>,
     stream_options: StreamOptions,
-    hooks: Arc<dyn AgentHooks>,
+    interceptors: Vec<Arc<dyn AgentInterceptor>>,
     tool_execution: ExecutionMode,
     compaction: CompactionSettings,
     injection: Option<Arc<dyn TurnInjection>>,
@@ -86,7 +86,7 @@ impl AgentBuilder<Unset, Unset, Unset> {
             tools: Vec::new(),
             messages: Vec::new(),
             stream_options: StreamOptions::default(),
-            hooks: Arc::new(NoopHooks),
+            interceptors: Vec::new(),
             tool_execution: ExecutionMode::Parallel,
             compaction: CompactionSettings::default(),
             injection: None,
@@ -105,7 +105,7 @@ impl<M, P, S> AgentBuilder<M, P, S> {
             tools: self.tools,
             messages: self.messages,
             stream_options: self.stream_options,
-            hooks: self.hooks,
+            interceptors: self.interceptors,
             tool_execution: self.tool_execution,
             compaction: self.compaction,
             injection: self.injection,
@@ -122,7 +122,7 @@ impl<M, P, S> AgentBuilder<M, P, S> {
             tools: self.tools,
             messages: self.messages,
             stream_options: self.stream_options,
-            hooks: self.hooks,
+            interceptors: self.interceptors,
             tool_execution: self.tool_execution,
             compaction: self.compaction,
             injection: self.injection,
@@ -139,7 +139,7 @@ impl<M, P, S> AgentBuilder<M, P, S> {
             tools: self.tools,
             messages: self.messages,
             stream_options: self.stream_options,
-            hooks: self.hooks,
+            interceptors: self.interceptors,
             tool_execution: self.tool_execution,
             compaction: self.compaction,
             injection: self.injection,
@@ -168,9 +168,10 @@ impl<M, P, S> AgentBuilder<M, P, S> {
         self
     }
 
-    /// 设置生命周期 hooks（默认 [`NoopHooks`]）。
-    pub fn hooks(mut self, hooks: Arc<dyn AgentHooks>) -> Self {
-        self.hooks = hooks;
+    /// 追加一个生命周期事件拦截器（默认无；按追加顺序执行，
+    /// 见 [`AgentInterceptor`]）。
+    pub fn interceptor(mut self, interceptor: Arc<dyn AgentInterceptor>) -> Self {
+        self.interceptors.push(interceptor);
         self
     }
 
@@ -205,7 +206,7 @@ impl AgentBuilder<Set, Set, Set> {
             model: self.model.expect("typestate 保证 model 已设置"),
             provider: self.provider.expect("typestate 保证 provider 已设置"),
             stream_options: self.stream_options,
-            hooks: self.hooks,
+            interceptors: self.interceptors,
             tool_execution: self.tool_execution,
             compaction: self.compaction,
         };
@@ -228,6 +229,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
+    use crate::interception::NoopInterceptor;
 
     fn model() -> Model {
         Model {
@@ -347,7 +349,7 @@ mod tests {
             .compaction(compaction)
             .tools(Vec::new())
             .stream_options(StreamOptions::default())
-            .hooks(Arc::new(NoopHooks))
+            .interceptor(Arc::new(NoopInterceptor))
             .build();
         assert!(agent.messages().is_empty());
     }

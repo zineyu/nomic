@@ -20,7 +20,7 @@ pub(super) struct FinalizedToolCall {
 pub(super) enum PreparedToolCall<'a> {
     /// 待执行（工具调用 + 已解析的工具实现）
     Ready(&'a ToolCall, DynTool),
-    /// 门控拒绝（工具不存在 / hooks 拦截）的即时失败结果
+    /// 门控拒绝（工具不存在 / 拦截器拦截）的即时失败结果
     Rejected(FinalizedToolCall),
 }
 

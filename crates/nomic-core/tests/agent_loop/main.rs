@@ -1,16 +1,14 @@
 //! agent loop 集成测试：用脚本化 mock provider 验证 loop 行为。
 
 mod injection;
+mod interception;
 mod support;
 
-use std::sync::Arc;
-
-use async_trait::async_trait;
 use nomic_ai::{
     AssistantContent, AssistantEvent, AssistantMessage, Message, StopReason, TextContent,
     ThinkingLevel, ToolCall, Usage, now_millis,
 };
-use nomic_core::{Agent, AgentEvent, AgentHooks, BeforeToolCall, DynTool, ToolCallDecision};
+use nomic_core::{Agent, AgentEvent, DynTool};
 use support::*;
 use tokio_util::sync::CancellationToken;
 
@@ -613,52 +611,6 @@ async fn length_stop_fails_all_tool_calls() {
     );
     // loop 继续第二 turn 并恢复
     assert!(matches!(&new_messages[3], Message::Assistant(m) if m.stop_reason == StopReason::Stop));
-}
-
-struct BlockAllHooks;
-
-#[async_trait]
-impl AgentHooks for BlockAllHooks {
-    async fn before_tool_call(&self, _ctx: &BeforeToolCall<'_>) -> ToolCallDecision {
-        ToolCallDecision::Block {
-            reason: "blocked by policy".to_string(),
-        }
-    }
-}
-
-#[tokio::test]
-async fn hook_block_produces_error_result_without_executing() {
-    let provider = MockProvider::new(vec![
-        tool_call_done("c1", "echo", serde_json::json!({"text": "x"})),
-        text_done("ok"),
-    ]);
-    let (mut agent, rx) = Agent::builder()
-        .model(model())
-        .provider(provider)
-        .system_prompt("sys")
-        .tools(vec![DynTool::new(EchoTool)])
-        .hooks(Arc::new(BlockAllHooks))
-        .compaction(nomic_core::CompactionSettings {
-            enabled: false,
-            ..Default::default()
-        })
-        .build();
-
-    let collector = tokio::spawn(collect_events(rx));
-    let new_messages = agent
-        .prompt("hi", CancellationToken::new())
-        .await
-        .expect("prompt");
-    collector.await.expect("collector");
-
-    let Message::ToolResult(result) = &new_messages[2] else {
-        panic!("expected tool result")
-    };
-    assert!(result.is_error);
-    let nomic_ai::UserContent::Text(text) = &result.content[0] else {
-        panic!("expected text")
-    };
-    assert_eq!(text.text, "blocked by policy");
 }
 
 #[tokio::test]

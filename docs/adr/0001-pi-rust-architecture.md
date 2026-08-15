@@ -252,17 +252,18 @@ crates/
   runtime/    # 可复用 agent harness（零 nomic 品牌概念）
     nomic-ai
     nomic-core
-    nomic-tools
     nomic-session
   app/        # nomic 产品
     nomic-cli
+    nomic-tools
     nomic-skills
     nomic-prompts
 ```
 
-依赖方向仍单向：`app → runtime`；runtime 内部 `tools → core → ai`、
+依赖方向仍单向：`app → runtime`；runtime 内部 `core → ai`、
 `session → core/ai`。
 
-> 已知例外：`nomic-tools` 的 `ReadTool` 仍直接依赖 `nomic-skills` 的具体类型
-> （`skill://` 读取），使 runtime 层在编译上仍依赖 app 层。该跨层依赖计划后续以
-> trait 反转（framework 定义 `SkillResolver` 契约，`nomic-skills` 实现）打破。
+> 工具抽象（`AgentTool` / `DynTool` / `ToolResult` 等）留在 runtime 的
+> `nomic-core`，具体工具实现（read/write/edit/bash/grep/find/todo/ask）
+> 属于 nomic 产品层，落在 app 的 `nomic-tools`。由此 `nomic-tools` 依赖
+> `nomic-skills`（`skill://` 读取）不再是跨层依赖（app → app）。

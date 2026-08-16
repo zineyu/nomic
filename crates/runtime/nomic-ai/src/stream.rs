@@ -14,7 +14,7 @@ use crate::types::{AssistantMessage, Context, Model, ThinkingLevel, ToolCall};
 /// 事件序列契约：`Start` → 任意数量的内容块事件
 /// （`XxxStart` → `XxxDelta`* → `XxxEnd`，按内容块交错）→ 恰一个终止事件
 /// （`Done` 或 `Error`）。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum AssistantEvent {
     /// 流建立，响应开始
     Start,

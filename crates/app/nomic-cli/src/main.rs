@@ -19,6 +19,7 @@ mod picker;
 mod print;
 mod sessions;
 mod tui;
+mod web;
 
 use std::path::{Path, PathBuf};
 
@@ -32,8 +33,25 @@ use crate::logging::LogTarget;
 #[command(name = "nomic", version, about)]
 pub(crate) struct Cli {
     /// 要发送的 prompt（print 模式，非交互；缺省进入交互 TUI）
-    #[arg(short, long, value_name = "TEXT")]
+    #[arg(short, long, value_name = "TEXT", conflicts_with = "web")]
     pub(crate) print: Option<String>,
+
+    /// 启动内置 Web UI 服务（REST + SSE + 前端静态伺服；缺省绑定 127.0.0.1:3333）
+    #[arg(long)]
+    pub(crate) web: bool,
+
+    /// Web 服务监听端口（`--web` 时生效，缺省 3333）
+    #[arg(long, default_value_t = 3333)]
+    pub(crate) port: u16,
+
+    /// Web 服务监听地址（`--web` 时生效，缺省 127.0.0.1；跨机访问自担风险）
+    #[arg(long)]
+    pub(crate) host: Option<String>,
+
+    /// 前端静态产物目录（`--web` 时生效；缺省取环境变量 NOMIC_WEB_DIST，
+    /// 都没有时用进程 cwd 下的 web/dist）
+    #[arg(long, value_name = "DIR")]
+    pub(crate) web_dist: Option<PathBuf>,
 
     /// 工作目录：session 隔离、AGENTS.md 与 skills/prompts 发现、工具相对路径
     /// 均基于它；指定后其余相对路径参数（如 --image）也按该目录解析
@@ -155,11 +173,13 @@ async fn main() -> Result<()> {
     }
 }
 
-/// 无子命令时的常规对话分发：print 模式或交互 TUI。
+/// 无子命令时的常规对话分发：print 模式、Web UI 或交互 TUI。
 // future 非 Send 的原因与安全性见 tui/mod.rs 的模块级说明（同上）
 #[allow(clippy::future_not_send)]
 pub(crate) async fn dispatch(cli: &Cli) -> Result<()> {
-    if let Some(prompt) = &cli.print {
+    if cli.web {
+        web::run(cli).await
+    } else if let Some(prompt) = &cli.print {
         print::run(cli, prompt).await
     } else {
         tui::run(cli).await

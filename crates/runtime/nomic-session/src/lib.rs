@@ -79,7 +79,8 @@ pub enum SessionError {
 ///
 /// `id` 为内部标识（UUID v7），不对用户展示；用户可见的名称是
 /// [`Self::title`]（首条 user 消息的首行摘要）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 派生 serde（web 模式经 REST 列表给前端会话侧栏）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SessionSummary {
     /// session id（UUID v7；内部标识，不展示给用户）
     pub id: String,

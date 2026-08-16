@@ -5,7 +5,10 @@ use nomic_ai::{AssistantEvent, AssistantMessage, Message, ToolResultMessage, Usa
 use crate::tool::{ToolResult, ToolUpdate};
 
 /// agent 生命周期事件。
-#[derive(Debug, Clone, PartialEq)]
+///
+/// 派生 serde（web 模式经 SSE 序列化给前端重建消息流）；
+/// 字段负载（`Message` / `ToolResult` / `AssistantEvent`）均已可序列化。
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum AgentEvent {
     /// 一次 prompt 运行开始
     AgentStart,

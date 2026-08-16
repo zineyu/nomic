@@ -50,7 +50,8 @@ pub fn cli_model_provider(cli: &Cli) -> Option<String> {
 pub const CONFIG_KEY_MODEL: &str = "model";
 
 /// 模型选择项：`<provider>/<模型id>` 格式（sqlite 配置与 `/models` 命令共用）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 派生 serde（web 模式经 REST 返回当前选择）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ModelSelection {
     /// provider 名（anthropic / openai，或配置表定义的自定义名）
     pub provider: String,
@@ -238,7 +239,8 @@ const fn neutral_preset(api: ApiKind) -> Preset {
 }
 
 /// `/models` 选择器的一行候选：`<provider, 模型id>` + 解析后的展示信息。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 派生 serde（web 模式经 REST 列表给前端模型选择器）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ModelChoice {
     /// provider 名
     pub provider: String,

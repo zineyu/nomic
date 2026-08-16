@@ -14,6 +14,7 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 - **多 provider**：Anthropic Messages 与 OpenAI Completions 兼容端点（DeepSeek、各类网关代理等），
   模型规格分层解析（配置 > [models.dev](https://models.dev) > 中性兜底）
 - **双运行模式**：ratatui 全屏交互 TUI（单字母动作层，[ADR-0021](docs/adr/0021-single-letter-action-layer.md)）+ 非交互 print 模式（管道可用）
+- **Web UI**：`--web` 内置 HTTP 服务（REST + SSE 流式 + 前端静态伺服，[ADR-0030](docs/adr/0030-web-ui.md)）；前端为 React + Vite + TailwindCSS + shadcn/ui（Vitest 单测 + Storybook 组件开发）
 - **排队输入**：运行中 `Enter` 把消息排入统一消息队列（当前步骤完成后注入本轮运行，
   未清空则持续续行；运行被取消或失败时队列保留，恢复后按序作为下一轮发送）；
   oil.nvim 式 QUEUE 模式编辑队列（就地编辑/删除/换位），设计见
@@ -103,6 +104,11 @@ nomic --model anthropic/claude-sonnet-4-5
 # print 模式（非交互，流式输出到 stdout，管道可用）
 nomic -p "列出当前目录的文件"
 
+# Web UI（内置服务器：REST + SSE + 前端静态伺服，缺省绑定 127.0.0.1:3333）
+nomic --web
+# 指定端口 / 监听地址（跨机访问自担风险）/ 前端产物目录
+nomic --web --port 8080 --host 127.0.0.1 --web-dist ./web/dist
+
 # OpenAI 兼容端点（DeepSeek、代理网关等）
 nomic -p "..." --provider openai --base-url https://your.gateway/v1 --model deepseek-chat
 
@@ -172,6 +178,27 @@ nomic --cwd /path/to/project
 运行中本地命令（`help`、`copy` 等）照常可用，不被工具调用阻塞。
 运行中输入的普通消息按 `Enter` 排入统一消息队列（见上「排队输入」）；
 命令栏提交的模板调用同样入队；会话命令（`compact`、`continue`、`models` 等）仍须等本轮结束。
+
+### Web UI（`--web`）
+
+`nomic --web` 启动内置 HTTP 服务（缺省 `127.0.0.1:3333`），浏览器访问即用：
+
+- **流式聊天**：markdown 渲染、thinking 折叠、工具执行卡片（点击展开参数与结果）；
+  运行中发送的消息进入统一队列，当前轮完成后按序续跑（与 TUI 同一语义）
+- **会话管理**：侧栏列出历史 session，新建 / 恢复（复用 SQLite 存储，与 TUI/print 共用）
+- **模型选择**：跨 provider 候选列表 + 思考级别；切换结果落库，与 TUI `/models` 同一口径
+- **提问**：`ask_user_question` 以弹层呈现（单选/多选/填空 + 自定义填写）
+
+```bash
+nomic --web [--port N] [--host H] [--web-dist DIR]
+```
+
+- `--host` 缺省 `127.0.0.1`（本服务能执行 bash，跨机访问自担风险）；
+  POST 请求校验 `Origin`（CSRF 防护），不开放 CORS
+- `--web-dist` 缺省取环境变量 `NOMIC_WEB_DIST`，都没有时用进程 cwd 下的 `web/dist`；
+  未构建前端时服务只提供 API，访问根路径提示先构建
+
+设计见 [docs/adr/0030](docs/adr/0030-web-ui.md)。
 
 ### 会话恢复与分支
 
@@ -458,10 +485,14 @@ direnv allow        # 或使用 direnv 自动进入
 
 ```bash
 check               # 与 CI 等价的全部检查：fmt / clippy / nextest / doc / deny / machete / taplo / typos
+                    # 末尾追加 web/ 前端检查（npm ci → lint → typecheck → build → vitest）
 ```
 
 每个 commit 必须通过 `check`（见 [AGENTS.md](AGENTS.md)）；CI 与本地共用
 同一份 devenv 环境与检查脚本。
+
+Web 侧也可单独执行：`web-check`（完整）、`web-dev`（vite dev server，
+`/api` 代理到 `nomic --web`）、`web-build`、`web-test`、`web-storybook`。
 
 ### 项目结构
 
@@ -474,8 +505,9 @@ check               # 与 CI 等价的全部检查：fmt / clippy / nextest / do
 - `crates/app/nomic-skills`：skill 发现、frontmatter 元数据、覆盖规则与显式激活
 - `crates/app/nomic-prompts`：prompt template 发现、frontmatter 元数据、覆盖规则与参数展开
 - `crates/app/nomic-tools`：内建工具——`read` / `write` / `edit` / `bash`（截断、模糊匹配、BOM/CRLF 保留、文件变更队列、超时强杀进程组）、`grep` / `find`（ripgrep/fd 语义，纯库实现）、`todo_read` / `todo_write`（父子嵌套任务列表）
-- `crates/app/nomic-cli`：`nomic` 二进制（print 模式 + ratatui 交互 TUI + resume/sessions 子命令 + tracing 日志）
-- `docs/adr/`：架构决策记录（0001–0029）
+- `crates/app/nomic-cli`：`nomic` 二进制（print 模式 + ratatui 交互 TUI + `--web` 内置服务 + resume/sessions 子命令 + tracing 日志）
+- `web/`：Web UI 前端（React + Vite + TypeScript + TailwindCSS + shadcn/ui；Vitest 单测、Storybook 组件开发；`npm run build` 产物由 `nomic --web` 伺服）
+- `docs/adr/`：架构决策记录（0001–0030）
 
 ### 新增 crate
 

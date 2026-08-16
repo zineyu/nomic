@@ -24,6 +24,7 @@
     typos # 拼写检查
     ripgrep # 快速文本搜索（rg）
     fd # 快速文件查找
+    nodejs # Web UI（web/）：vite 构建 / vitest / storybook
 
     # 常见原生依赖，按需取消注释：
     # pkg-config
@@ -46,6 +47,31 @@
     echo "== machete =="   && cargo-machete --with-metadata
     echo "== taplo =="     && taplo fmt --check
     echo "== typos =="     && typos
+    echo "== web =="       && web-check
+  '';
+
+  # ── Web UI（web/）─────────────────────────────────────────────────────
+  scripts.web-dev.exec = ''
+    cd web && npm run dev
+  '';
+  scripts.web-build.exec = ''
+    cd web && npm run build
+  '';
+  scripts.web-test.exec = ''
+    cd web && npm run test
+  '';
+  scripts.web-storybook.exec = ''
+    cd web && npm run storybook
+  '';
+  # Web 侧与 check 等价的完整检查：安装 → lint → 类型检查 → 构建 → 单测
+  scripts.web-check.exec = ''
+    set -e
+    cd web
+    echo "== web:install =="  && npm ci
+    echo "== web:lint =="     && npm run lint
+    echo "== web:typecheck ==" && npm run typecheck
+    echo "== web:build =="    && npm run build
+    echo "== web:test =="     && npm run test
   '';
 
   # ── 版本发布 ─────────────────────────────────────────────────────────────
@@ -149,6 +175,7 @@
     echo "🦀 nomic dev shell"
     echo "  rustc: $(rustc --version)"
     echo "  cargo: $(cargo --version)"
-    echo "  运行 \`check\` 执行与 CI 等价的全部本地检查"
+    echo "  node: $(node --version)"
+    echo "  运行 \`check\` 执行与 CI 等价的全部本地检查（含 web/ 前端）"
   '';
 }

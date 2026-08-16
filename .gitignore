@@ -2,6 +2,13 @@
 /target
 **/*.rs.bk
 
+# Web UI（web/）
+web/node_modules/
+web/dist/
+web/storybook-static/
+web/coverage/
+web/*.tsbuildinfo
+
 # devenv
 .devenv/
 devenv.local.nix

@@ -7,6 +7,12 @@ extend-exclude = [
   "Cargo.lock",
   "*.svg",
   "*.min.*",
+  # Web UI 构建产物与依赖（node_modules 体量巨大且拼写不受控）
+  "web/node_modules/**",
+  "web/dist/**",
+  "web/storybook-static/**",
+  "web/coverage/**",
+  "web/package-lock.json",
 ]
 
 # 项目专有词汇白名单（被误报时追加）

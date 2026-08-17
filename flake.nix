@@ -43,12 +43,17 @@
           craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
 
           # cleanCargoSource 只保留 Cargo 相关文件，会误删 sqlx migrate! 宏
-          # 编译期内嵌的 migrations/*.sql，需显式放行
+          # 编译期内嵌的 migrations/*.sql，需显式放行；web/dist（前端产物，
+          # rust-embed 编译期内嵌）同样放行——`nix build` 前需先在 web/ 下
+          # `npm run build`，产物缺失时编译报错（有意的前后端同版本耦合）
           src = nixpkgs.lib.cleanSourceWith {
             src = ./.;
             filter =
               path: type:
-              (builtins.match ".*\\.sql$" path != null) || (craneLib.filterCargoSources path type);
+              (builtins.match ".*\\.sql$" path != null)
+              || (craneLib.filterCargoSources path type)
+              || (builtins.match ".*/web/dist$" path != null)
+              || (builtins.match ".*/web/dist/.*" path != null);
           };
 
           commonArgs = {

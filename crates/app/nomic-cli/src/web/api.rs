@@ -6,11 +6,10 @@
 //! 开发期前端经 Vite 代理 `/api` 同源访问（见 `docs/adr/0030-web-ui.md`）。
 
 use std::convert::Infallible;
-use std::path::Path;
 
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, State};
-use axum::http::{HeaderValue, Method, StatusCode, header};
+use axum::http::{HeaderValue, Method, StatusCode, Uri, header};
 use axum::middleware::{Next, from_fn};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -20,15 +19,14 @@ use nomic_ai::{Message, Model, ThinkingLevel};
 use nomic_session::SessionSummary;
 use nomic_tools::{AskUserAnswer, AskUserQuestion};
 use serde::{Deserialize, Serialize};
-use tower_http::services::{ServeDir, ServeFile};
 
 use crate::model::ModelChoice;
-use crate::web::{AppState, ServerEvent, Snapshot};
+use crate::web::{AppState, ServerEvent, Snapshot, assets};
 
-/// 组装路由：REST + SSE + 静态前端（产物存在时挂 `ServeDir`，SPA 回退
-/// `index.html`；未构建时 fallback 返回提示文本）。
-pub fn router(state: AppState, web_dist: &Path) -> Router {
-    let mut app = Router::new()
+/// 组装路由：REST + SSE + 静态前端（内嵌 `web/dist`，见 [`assets`]；
+/// 未命中路径 SPA 回退 `index.html`）。
+pub fn router(state: AppState) -> Router {
+    let app = Router::new()
         .route("/api/state", get(handle_state))
         .route("/api/stream", get(handle_stream))
         .route(
@@ -43,20 +41,8 @@ pub fn router(state: AppState, web_dist: &Path) -> Router {
         .route("/api/prompt", post(handle_prompt))
         .route("/api/cancel", post(handle_cancel))
         .route("/api/question/{id}", post(handle_question_answer))
-        .route_layer(from_fn(reject_foreign_origin));
-
-    if crate::web::has_frontend(web_dist) {
-        let serve_dir =
-            ServeDir::new(web_dist).not_found_service(ServeFile::new(web_dist.join("index.html")));
-        app = app.fallback_service(serve_dir);
-    } else {
-        app = app.fallback(|| async {
-            (
-                StatusCode::NOT_FOUND,
-                "前端产物未构建：在 web/ 下运行 `npm run build`（或用 --web-dist 指定目录）",
-            )
-        });
-    }
+        .route_layer(from_fn(reject_foreign_origin))
+        .fallback(|uri: Uri| async move { assets::serve(uri.path()) });
     app.with_state(state)
 }
 

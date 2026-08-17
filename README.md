@@ -106,8 +106,8 @@ nomic -p "列出当前目录的文件"
 
 # Web UI（内置服务器：REST + SSE + 前端静态伺服，缺省绑定 127.0.0.1:3333）
 nomic --web
-# 指定端口 / 监听地址（跨机访问自担风险）/ 前端产物目录
-nomic --web --port 8080 --host 127.0.0.1 --web-dist ./web/dist
+# 指定端口 / 监听地址（跨机访问自担风险）
+nomic --web --port 8080 --host 127.0.0.1
 
 # OpenAI 兼容端点（DeepSeek、代理网关等）
 nomic -p "..." --provider openai --base-url https://your.gateway/v1 --model deepseek-chat
@@ -190,13 +190,15 @@ nomic --cwd /path/to/project
 - **提问**：`ask_user_question` 以弹层呈现（单选/多选/填空 + 自定义填写）
 
 ```bash
-nomic --web [--port N] [--host H] [--web-dist DIR]
+nomic --web [--port N] [--host H]
 ```
 
 - `--host` 缺省 `127.0.0.1`（本服务能执行 bash，跨机访问自担风险）；
   POST 请求校验 `Origin`（CSRF 防护），不开放 CORS
-- `--web-dist` 缺省取环境变量 `NOMIC_WEB_DIST`，都没有时用进程 cwd 下的 `web/dist`；
-  未构建前端时服务只提供 API，访问根路径提示先构建
+- 前端产物（`web/dist`）编译期内嵌进二进制（rust-embed）：构建 nomic 前需先
+  在 `web/` 下 `npm run build`（`check`/`web-build` 已保证顺序），发行包无需
+  单独携带前端；开发期用 `npm run dev`（Vite dev server 代理 `/api` 到
+  `nomic --web`）
 
 设计见 [docs/adr/0030](docs/adr/0030-web-ui.md)。
 
@@ -484,8 +486,9 @@ direnv allow        # 或使用 direnv 自动进入
 ### 本地检查
 
 ```bash
-check               # 与 CI 等价的全部检查：fmt / clippy / nextest / doc / deny / machete / taplo / typos
-                    # 末尾追加 web/ 前端检查（npm ci → lint → typecheck → build → vitest）
+check               # 与 CI 等价的全部检查：web/ 前端（npm ci → lint → typecheck →
+                    # build → vitest）先构建（产物编译期内嵌，cargo 步骤依赖它）;
+                    # 其余：fmt / clippy / nextest / doc / deny / machete / taplo / typos
 ```
 
 每个 commit 必须通过 `check`（见 [AGENTS.md](AGENTS.md)）；CI 与本地共用

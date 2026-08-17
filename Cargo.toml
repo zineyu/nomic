@@ -45,9 +45,10 @@ reqwest = { version = "0.13", default-features = false, features = [
   "system-proxy",
 ] }
 eventsource-stream = "0.2"
-# Web 服务（nomic-cli `--web`）：REST + SSE + 静态文件伺服
+# Web 服务（nomic-cli `--web`）：REST + SSE 静态伺服
 axum = { version = "0.8" }
-tower-http = { version = "0.6", features = ["fs", "trace"] }
+# 前端产物编译期内嵌（`--web` 静态伺服；构建前需先 `npm run build`）
+rust-embed = { version = "8.12", features = ["mime-guess"] }
 
 # ── 序列化与 schema ─────────────────────────────────────────────────────────
 serde = { version = "1.0", features = ["derive"] }

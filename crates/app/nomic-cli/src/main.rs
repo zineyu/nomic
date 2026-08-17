@@ -48,11 +48,6 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) host: Option<String>,
 
-    /// 前端静态产物目录（`--web` 时生效；缺省取环境变量 NOMIC_WEB_DIST，
-    /// 都没有时用进程 cwd 下的 web/dist）
-    #[arg(long, value_name = "DIR")]
-    pub(crate) web_dist: Option<PathBuf>,
-
     /// 工作目录：session 隔离、AGENTS.md 与 skills/prompts 发现、工具相对路径
     /// 均基于它；指定后其余相对路径参数（如 --image）也按该目录解析
     #[arg(short = 'C', long, value_name = "DIR")]

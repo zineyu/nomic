@@ -9,10 +9,11 @@
 //! 复位」收在同一把锁下，杜绝空队列与复位之间的丢单竞态）。
 
 mod api;
+mod assets;
 mod question;
 
 use std::collections::{HashMap, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -158,10 +159,9 @@ pub struct AppState {
 /// 起 HTTP 服务（REST + SSE + 静态前端）。
 pub async fn run(cli: &Cli) -> Result<()> {
     let boot = bootstrap::bootstrap(cli).await?;
-    let web_dist = resolve_web_dist(cli);
     let state = build_app_state(boot);
 
-    let app = api::router(state.clone(), &web_dist);
+    let app = api::router(state.clone());
     let host = cli.host.as_deref().unwrap_or(DEFAULT_HOST);
     let listener = tokio::net::TcpListener::bind((host, cli.port))
         .await
@@ -169,17 +169,12 @@ pub async fn run(cli: &Cli) -> Result<()> {
     let local = listener.local_addr().context("读取监听地址失败")?;
     println!("\x1b[36m▸ nomic web UI: http://{local}\x1b[0m");
     println!(
-        "\x1b[2m  cwd: {} · 模型: {} · 前端: {}\x1b[0m",
+        "\x1b[2m  cwd: {} · 模型: {} · 前端: 内嵌（web/dist 编译期打包）\x1b[0m",
         std::env::current_dir().map_or_else(|_| "?".into(), |p| p.display().to_string()),
         state.handle.model().await.map_or_else(
             |_| "?".to_string(),
             |model| format!("{}/{}", model.provider, model.id),
         ),
-        if web_dist.join("index.html").is_file() {
-            web_dist.display().to_string()
-        } else {
-            "未构建（web/ 下 npm run build，或 --web-dist）".to_string()
-        },
     );
     tracing::info!(%local, "nomic web UI 启动");
 
@@ -374,15 +369,6 @@ pub async fn snapshot(state: &AppState) -> Result<Snapshot> {
     })
 }
 
-/// 解析前端静态产物目录：`--web-dist` > 环境变量 `NOMIC_WEB_DIST` >
-/// 进程 cwd 下的 `web/dist`。
-fn resolve_web_dist(cli: &Cli) -> PathBuf {
-    cli.web_dist
-        .clone()
-        .or_else(|| std::env::var_os("NOMIC_WEB_DIST").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("web").join("dist"))
-}
-
 /// 优雅退出：q 或 Ctrl+C 取消当前运行后关闭 HTTP 服务。
 ///
 /// 键盘轮询全程开 raw mode：cooked 模式下按键被 tty 行缓冲，q 需回车才
@@ -454,13 +440,10 @@ impl Drop for RawModeGuard {
     }
 }
 
-/// 判断前端产物目录是否存在（`api::router` 挂静态服务用）。
-pub fn has_frontend(dist: &Path) -> bool {
-    dist.join("index.html").is_file()
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use clap::Parser as _;
 
     use super::*;

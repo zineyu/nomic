@@ -56,5 +56,12 @@ jobs:
 
       - uses: cachix/install-nix-action@v31
 
+      # 前端产物经 rust-embed 编译期内嵌，nix 构建前需先构建 web/dist
+      - name: Build frontend
+        run: |
+          cd web
+          npm ci
+          npm run build
+
       - name: nix flake check
         run: nix flake check --print-build-logs

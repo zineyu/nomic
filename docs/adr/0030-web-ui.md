@@ -28,9 +28,9 @@ shadcn/ui + Vitest + Storybook。
 ### 入口与模式分发
 
 `main.rs` 新增 `--web` 开关（与 `-p` 互斥）与 `--port`（缺省 3333）、
-`--host`（缺省 `127.0.0.1`）、`--web-dist`（前端静态产物目录，缺省相对进程 cwd
-的 `web/dist`，可用环境变量 `NOMIC_WEB_DIST` 覆盖）。有 `--web` 时进入
-`web::run`；`bootstrap` 与 print/TUI 完全复用。
+`--host`（缺省 `127.0.0.1`）。有 `--web` 时进入 `web::run`；`bootstrap` 与
+print/TUI 完全复用。前端产物编译期内嵌进二进制（见下），不再有 `--web-dist`
+/ `NOMIC_WEB_DIST` 磁盘目录伺服。
 
 ### 服务端模型（crates/nomic-cli/src/web/）
 
@@ -84,8 +84,9 @@ shadcn/ui + Vitest + Storybook。
 - `web/src/lib/api.ts`：REST 客户端 + SSE 客户端（fetch stream 解析）。
 - 视图：聊天区（消息流/工具卡片/thinking 折叠）、输入区、侧栏（会话/模型）、
   提问弹层、状态栏。状态由 `useChat` hook 集中管理（快照 + 事件增量合并）。
-- 产物：`web/dist`（`vite build`），由 Rust 服务以 `ServeDir` 伺服（SPA 回退
-  `index.html`）；开发期 `npm run dev` + Vite 代理。
+- 产物：`web/dist`（`vite build`），经 `rust-embed` 编译期内嵌进二进制
+  （`crates/nomic-cli/src/web/assets.rs`），`--web` 直接伺服内嵌资源（SPA
+  回退 `index.html`）；开发期 `npm run dev` + Vite 代理 `/api` 到 `nomic --web`。
 
 ### 工程集成
 
@@ -94,20 +95,22 @@ shadcn/ui + Vitest + Storybook。
   vitest run）。
 - `.gitignore` 排除 `web/node_modules`、`web/dist`、`web/storybook-static`、
   `web/coverage`；`_typos.toml` 排除上述目录。
-- flake 打包（Nix）本次不内嵌前端产物：`nomic --web` 从 `--web-dist` 目录伺服，
-  二进制发行包不携带前端；后续可在 release 流程中把 `web/dist` 一并打进归档。
+- flake 打包（Nix）：crane 源过滤放行 `web/dist`，`nix build` 前需先在
+  `web/` 下 `npm run build`（内嵌目录缺失时编译报错）；发行包单文件，
+  不携带独立前端目录。
 
 ## Non-goals
 
 - 队列的图形化编辑（TUI QUEUE 模式的 web 版）、会话树浏览与分支创建。
 - 图片附件上传、剪贴板粘贴（TUI 已有，web 版后续迭代）。
 - 多用户 / 鉴权 / TLS；本服务定位为本地单用户工具。
-- 前端产物内嵌进二进制（rust-embed 等）——依赖 cargo 构建期 node，破坏
-  crates.io 与 Nix 构建的纯净性，暂不做。
 
 ## Consequences
 
 - workspace 新增 `axum`、`tower-http` 依赖（仅 nomic-cli 使用）。
+- nomic-cli 新增 `rust-embed` 依赖（仅 nomic-cli 使用），`cargo build` 时
+  `web/dist` 必须已存在（`check`/`web-build` 先构建前端）；干净 checkout 直接
+  `cargo build` 会因内嵌目录缺失而编译失败，属于有意的前后端同版本耦合。
 - `nomic-core` 三个类型补 `Serialize` 派生（向后兼容，无行为变化）。
 - `check` 变重（多一步 npm 安装 + 前端构建/测试）；CI 与本地仍共用同一 `check`。
 - Web 模式与 TUI/print 共享 bootstrap、事件落库 seam、模型切换口径，语义不漂移；

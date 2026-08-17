@@ -36,6 +36,8 @@
   # ── 本地一键检查（与 CI 等价）─────────────────────────────────────────────
   scripts.check.exec = ''
     set -e
+    # 前端先构建：web/dist 经 rust-embed 编译期内嵌，cargo 各步骤需要产物已存在
+    echo "== web =="       && web-check
     echo "== fmt =="       && cargo fmt --all -- --check
     echo "== size =="      && scripts/check-file-size.sh
     echo "== clippy =="    && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -47,7 +49,6 @@
     echo "== machete =="   && cargo-machete --with-metadata
     echo "== taplo =="     && taplo fmt --check
     echo "== typos =="     && typos
-    echo "== web =="       && web-check
   '';
 
   # ── Web UI（web/）─────────────────────────────────────────────────────

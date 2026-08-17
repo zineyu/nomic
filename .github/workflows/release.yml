@@ -67,6 +67,13 @@ jobs:
 
       - uses: cachix/install-nix-action@v31
 
+      # 前端产物经 rust-embed 编译期内嵌，nix 构建前需先构建 web/dist
+      - name: Build frontend
+        run: |
+          cd web
+          npm ci
+          npm run build
+
       - name: nix flake check
         run: nix flake check --print-build-logs
 
@@ -95,6 +102,13 @@ jobs:
       # runner 预装 rustup，`rustup show` 按 rust-toolchain.toml 自动安装固定工具链
       - name: Install toolchain
         run: rustup show
+
+      # 前端产物经 rust-embed 编译期内嵌，cargo build 前需先构建 web/dist
+      - name: Build frontend
+        run: |
+          cd web
+          npm ci
+          npm run build
 
       - name: Build
         run: cargo build --release --locked --package nomic-cli --target ${{ matrix.target }}

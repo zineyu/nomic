@@ -1,35 +1,34 @@
-// 状态栏：模型/思考级别、上下文 token、运行状态、会话标题。
+// 状态栏：上下文 token 用量 + 会话标题。
 
-import { Loader2 } from 'lucide-react'
-
-import { Badge } from '@/components/ui/badge'
+import { cn } from '@/lib/utils'
 
 interface StatusBarProps {
-  model: string | null
   contextTokens: number
-  running: boolean
-  queued: number
+  contextWindow: number | null
   sessionTitle: string | null
 }
 
-export function StatusBar({ model, contextTokens, running, queued, sessionTitle }: StatusBarProps) {
+export function StatusBar({ contextTokens, contextWindow, sessionTitle }: StatusBarProps) {
+  const usage = contextWindow && contextWindow > 0 ? contextTokens / contextWindow : null
+  const pct = usage !== null ? Math.min(usage * 100, 100) : null
+
   return (
-    <div className="flex h-8 shrink-0 items-center gap-3 border-t bg-muted/30 px-4 text-[11px] text-muted-foreground">
-      {running ? (
-        <span className="flex items-center gap-1.5 text-primary">
-          <Loader2 className="size-3 animate-spin" />
-          运行中
-        </span>
-      ) : (
-        <span className="text-muted-foreground/70">空闲</span>
-      )}
-      {queued > 0 && <Badge variant="secondary">队列 {queued}</Badge>}
-      {model && (
-        <span className="max-w-56 truncate" title={model}>
-          模型：{model}
-        </span>
-      )}
+    <div className="flex h-8 shrink-0 items-center gap-3 border-t bg-muted/30 px-4 text-xs text-muted-foreground">
       <span>上下文：{contextTokens.toLocaleString()} tokens</span>
+      {pct !== null && (
+        <div className="flex items-center gap-1.5">
+          <div className="h-1 w-16 overflow-hidden rounded-full bg-muted">
+            <div
+              className={cn(
+                'h-full rounded-full transition-all',
+                pct > 80 ? 'bg-destructive' : 'bg-primary',
+              )}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <span className="tabular-nums">{pct.toFixed(0)}%</span>
+        </div>
+      )}
       {sessionTitle && (
         <span className="ml-auto max-w-64 truncate" title={sessionTitle}>
           {sessionTitle}

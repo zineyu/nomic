@@ -1,10 +1,11 @@
 // Markdown 渲染：react-markdown + GFM，自定义代码块/链接/列表样式。
-// 不做语法高亮（保持轻量；后续可按需接 shiki）。
+// 代码块通过 CodeBlock 组件接入 shiki 语法高亮 + 复制按钮。
 
-import type { ComponentProps } from 'react'
+import { isValidElement, memo, type ComponentProps } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
+import { CodeBlock } from '@/components/CodeBlock'
 import { cn } from '@/lib/utils'
 
 type CodeProps = ComponentProps<'code'> & { node?: unknown }
@@ -28,7 +29,25 @@ function Code({ className, children, ...props }: CodeProps) {
   )
 }
 
+/** 从 code 子元素提取语言和原始文本 */
+function extractCodeBlock(children: unknown): { lang: string; code: string } | null {
+  if (!isValidElement(children)) return null
+  const props = children.props as { className?: string; children?: unknown }
+  const className = props.className ?? ''
+  const match = className.match(/language-(\S+)/)
+  if (!match) return null
+  const lang = match[1]
+  // children 是字符串（react-markdown 对 fenced code block 的行为）
+  const code = typeof props.children === 'string' ? props.children.trimEnd() : ''
+  if (!code) return null
+  return { lang, code }
+}
+
 function Pre({ children }: ComponentProps<'pre'>) {
+  const block = extractCodeBlock(children)
+  if (block) {
+    return <CodeBlock lang={block.lang} code={block.code} />
+  }
   return (
     <pre className="my-3 overflow-x-auto rounded-lg border bg-muted/50 p-3 text-xs leading-relaxed">
       {children}
@@ -87,7 +106,7 @@ function TableCell({
   )
 }
 
-export function Markdown({
+function MarkdownImpl({
   children,
   className,
 }: {
@@ -130,3 +149,6 @@ export function Markdown({
     </div>
   )
 }
+
+// memo：流式期间文本经 useThrottledValue 节流，children 稳定时跳过重解析。
+export const Markdown = memo(MarkdownImpl)

@@ -72,22 +72,26 @@ export function ModelPicker({ currentSpec, reasoning, onChanged }: ModelPickerPr
   }
 
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex w-full items-center gap-1">
       <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs font-normal">
-            <Cpu className="size-3.5" />
-            <span className="max-w-40 truncate">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 flex-1 min-w-0 justify-start gap-1.5 px-1.5 text-xs font-normal"
+          >
+            <Cpu className="size-3.5 shrink-0 opacity-70" />
+            <span className="min-w-0 flex-1 truncate text-left">
               {currentSpec ?? '选择模型'}
             </span>
-            <ChevronsUpDown className="size-3 opacity-60" />
+            <ChevronsUpDown className="size-3 shrink-0 opacity-60" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="max-h-96 w-72 overflow-y-auto">
           {[...groups.entries()].map(([provider, choices], i) => (
             <div key={provider}>
               {i > 0 && <DropdownMenuSeparator />}
-              <DropdownMenuLabel className="text-[11px] text-muted-foreground">
+              <DropdownMenuLabel className="text-xs text-muted-foreground">
                 {provider}
               </DropdownMenuLabel>
               {choices.map((choice) => (
@@ -118,7 +122,11 @@ export function ModelPicker({ currentSpec, reasoning, onChanged }: ModelPickerPr
       {currentSupportsReasoning && (
         <DropdownMenu open={levelOpen} onOpenChange={setLevelOpen}>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px] font-normal text-muted-foreground">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 px-2 text-xs font-normal text-muted-foreground"
+            >
               {reasoning ?? 'off'}
             </Button>
           </DropdownMenuTrigger>

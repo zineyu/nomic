@@ -1,9 +1,10 @@
 // ask_user_question 提问弹层：单选 / 多选 / 填空；单选多选自动带
 // 「自定义填写」选项（末位），选中后展开文本输入。回答经 REST 回填服务端。
+// 支持最小化为右下角浮动 pill。
 
 import { useState } from 'react'
 
-import { Check, PencilLine } from 'lucide-react'
+import { Check, Minimize2, PencilLine } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -24,9 +25,10 @@ interface QuestionModalProps {
   id: string
   question: AskUserQuestion
   onAnswer: (id: string, answer: AskUserAnswer) => void
+  onMinimize?: () => void
 }
 
-export function QuestionModal({ id, question, onAnswer }: QuestionModalProps) {
+export function QuestionModal({ id, question, onAnswer, onMinimize }: QuestionModalProps) {
   const [selected, setSelected] = useState<string[]>([])
   const [custom, setCustom] = useState('')
   const [fillIn, setFillIn] = useState('')
@@ -69,6 +71,17 @@ export function QuestionModal({ id, question, onAnswer }: QuestionModalProps) {
           <DialogTitle className="flex items-center gap-2 text-base">
             <PencilLine className="size-4 text-primary" />
             nomic 提问
+            {onMinimize && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="ml-auto size-6"
+                onClick={onMinimize}
+                title="最小化"
+              >
+                <Minimize2 className="size-3.5" />
+              </Button>
+            )}
           </DialogTitle>
         </DialogHeader>
         <div className="text-sm leading-relaxed">{question.question}</div>

@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context as _, Result};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use nomic_ai::{ImageContent, Message, Model, ThinkingLevel};
 use nomic_core::{Agent, AgentEvent};
 use nomic_session::SessionRecorder;
@@ -127,6 +128,9 @@ pub struct Runtime {
     gate: RunGate,
     /// 当前轮的取消令牌（`POST /api/cancel` 取消用）
     cancel: Mutex<Option<CancellationToken>>,
+    /// 服务停机令牌：退出时取消，结束全部 SSE 长连接（graceful shutdown
+    /// 会等所有在途连接结束，SSE 不主动断的话 serve 永不返回）
+    shutdown: CancellationToken,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -138,6 +142,7 @@ impl std::fmt::Debug for Runtime {
             .field("questions", &self.questions)
             .field("gate", &self.gate)
             .field("cancel", &self.cancel)
+            .field("shutdown", &self.shutdown)
             .finish_non_exhaustive()
     }
 }
@@ -204,6 +209,7 @@ fn build_app_state(boot: Bootstrap) -> AppState {
             running: AtomicBool::new(false),
         },
         cancel: Mutex::new(None),
+        shutdown: CancellationToken::new(),
     });
 
     let sink = Arc::new(WebQuestionSink {
@@ -377,11 +383,74 @@ fn resolve_web_dist(cli: &Cli) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("web").join("dist"))
 }
 
-/// 优雅退出：Ctrl+C 取消当前运行后关闭 HTTP 服务。
+/// 优雅退出：q 或 Ctrl+C 取消当前运行后关闭 HTTP 服务。
+///
+/// 键盘轮询全程开 raw mode：cooked 模式下按键被 tty 行缓冲，q 需回车才
+/// 送达进程；raw mode 同时关闭 ISIG，Ctrl+C 不再产生 SIGINT，而是以
+/// `Char('c') + CONTROL` 按键事件送达（见 [`is_quit_key`]）。轮询任务退出
+/// 时恢复 cooked 模式。`tokio::signal::ctrl_c` 保留：raw mode 开启失败
+/// （stdin 非 tty）或外部直接发 SIGINT 时兜底。
 async fn shutdown_signal(state: AppState) {
-    if tokio::signal::ctrl_c().await.is_ok() {
-        tracing::info!("收到 Ctrl+C，取消运行并关闭服务");
-        let _ = cancel_run(&state).await;
+    let (quit_tx, mut quit_rx) = oneshot::channel::<()>();
+
+    // 退出令牌：停机时停掉轮询任务并等它恢复终端；spawn_blocking 任务
+    // 不退出的话 runtime 关闭会一直等它，进程挂住退不出来。
+    let stop = CancellationToken::new();
+    let stop_keyboard = stop.clone();
+    let keyboard = tokio::task::spawn_blocking(move || {
+        let _raw_guard = RawModeGuard::enter();
+        loop {
+            if stop_keyboard.is_cancelled() {
+                break;
+            }
+            if event::poll(std::time::Duration::from_millis(200)).unwrap_or(false)
+                && let Ok(Event::Key(key)) = event::read()
+                && is_quit_key(key)
+            {
+                let _ = quit_tx.send(());
+                break;
+            }
+        }
+    });
+
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            if result.is_ok() {
+                tracing::info!("收到 Ctrl+C，取消运行并关闭服务");
+                let _ = cancel_run(&state).await;
+            }
+        }
+        _ = &mut quit_rx => {
+            tracing::info!("收到退出键，取消运行并关闭服务");
+            let _ = cancel_run(&state).await;
+        }
+    }
+    // 断掉全部 SSE 长连接：graceful shutdown 会等所有在途连接结束，SSE 流
+    // 由前端持续持有，不主动结束的话 serve 永不返回、进程挂住。
+    state.inner.shutdown.cancel();
+    stop.cancel();
+    let _ = keyboard.await;
+}
+
+/// 退出键：q，或 Ctrl+C（raw mode 下 ISIG 关闭，Ctrl+C 以按键事件送达）。
+fn is_quit_key(key: event::KeyEvent) -> bool {
+    key.code == KeyCode::Char('q')
+        || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+}
+
+/// 退出时恢复 cooked 模式，把 tty 还给 shell（任务 panic 也经 Drop 恢复）。
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enter() -> Self {
+        let _ = crossterm::terminal::enable_raw_mode();
+        Self
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
     }
 }
 
@@ -397,7 +466,7 @@ mod tests {
     use super::*;
 
     /// 构建一个最小 AppState（内存 session 库 + 空 agent 构建）。
-    async fn test_state() -> AppState {
+    pub(super) async fn test_state() -> AppState {
         let store = nomic_session::SessionStore::in_memory()
             .await
             .expect("store");
@@ -418,6 +487,7 @@ mod tests {
                 running: AtomicBool::new(false),
             },
             cancel: Mutex::new(None),
+            shutdown: CancellationToken::new(),
         });
         let sink = Arc::new(WebQuestionSink {
             runtime: runtime.clone(),
@@ -524,6 +594,16 @@ mod tests {
             "重复回答应失败"
         );
         assert!(!answer_question(&state, "missing", answer).await);
+    }
+
+    #[test]
+    fn is_quit_key_matches_q_and_ctrl_c() {
+        let key = |code, modifiers| event::KeyEvent::new(code, modifiers);
+        assert!(is_quit_key(key(KeyCode::Char('q'), KeyModifiers::NONE)));
+        assert!(is_quit_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL)));
+        assert!(!is_quit_key(key(KeyCode::Char('c'), KeyModifiers::NONE)));
+        assert!(!is_quit_key(key(KeyCode::Char('Q'), KeyModifiers::NONE)));
+        assert!(!is_quit_key(key(KeyCode::Enter, KeyModifiers::NONE)));
     }
 
     #[tokio::test]

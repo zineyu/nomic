@@ -290,19 +290,23 @@ fn state_response(snapshot: Snapshot) -> StateResponse {
 /// `refresh` 事件，前端重新拉取快照补齐。
 async fn handle_stream(State(state): State<AppState>) -> Response {
     let rx = state.inner.events.subscribe();
-    let stream = futures::stream::unfold(rx, |mut rx| async move {
-        match rx.recv().await {
-            Ok(event) => Some((Ok::<_, Infallible>(server_event_to_sse(&event)), rx)),
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                tracing::warn!(%skipped, "SSE 客户端落后，发送刷新提示");
-                Some((
-                    Ok::<_, Infallible>(
-                        Event::default().event("refresh").data(skipped.to_string()),
-                    ),
-                    rx,
-                ))
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
+    let shutdown = state.inner.shutdown.clone();
+    let stream = futures::stream::unfold((rx, shutdown), |(mut rx, shutdown)| async move {
+        tokio::select! {
+            () = shutdown.clone().cancelled_owned() => None,
+            result = rx.recv() => match result {
+                Ok(event) => Some((Ok::<_, Infallible>(server_event_to_sse(&event)), (rx, shutdown))),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(%skipped, "SSE 客户端落后，发送刷新提示");
+                    Some((
+                        Ok::<_, Infallible>(
+                            Event::default().event("refresh").data(skipped.to_string()),
+                        ),
+                        (rx, shutdown),
+                    ))
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
+            },
         }
     });
     let mut response = Sse::new(stream)
@@ -500,7 +504,22 @@ fn strip_port(host: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::origin_allowed;
+    use axum::extract::State;
+
+    use super::{handle_stream, origin_allowed};
+
+    /// 停机令牌取消后 SSE 流必须自行结束：graceful shutdown 等所有在途连接
+    /// 收尾，流不结束的话退出键按下后进程挂住（回归测试）。
+    #[tokio::test]
+    async fn stream_ends_when_shutdown_cancelled() {
+        let state = crate::web::tests::test_state().await;
+        let response = handle_stream(State(state.clone())).await;
+        state.inner.shutdown.cancel();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert!(bytes.is_empty(), "停机后 SSE 流应立即结束");
+    }
 
     #[test]
     fn origin_allowed_accepts_loopback_and_same_host() {

@@ -1,11 +1,18 @@
 // useChat：聊天状态的单一入口——挂载时取快照 + 订阅 SSE，事件增量合并到
 // 消息项列表；对外暴露 send / stop / newSession / resumeSession / answerQuestion。
+// 会话列表在此集中管理（侧栏只做展示），并在 run_finished 时刷新以捕获标题。
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { api, createStreamClient } from '@/lib/api'
 import { applyServerEvent, messagesToItems, type ChatItem } from '@/lib/chat'
-import type { AskUserAnswer, AskUserQuestion, Model, ServerEvent } from '@/lib/types'
+import type {
+  AskUserAnswer,
+  AskUserQuestion,
+  Model,
+  ServerEvent,
+  SessionSummary,
+} from '@/lib/types'
 
 export interface QuestionState {
   id: string
@@ -14,6 +21,7 @@ export interface QuestionState {
 
 export interface ChatState {
   items: ChatItem[]
+  sessions: SessionSummary[]
   running: boolean
   queued: number
   model: Model | null
@@ -27,6 +35,7 @@ export interface ChatState {
 
 const initialState: ChatState = {
   items: [],
+  sessions: [],
   running: false,
   queued: 0,
   model: null,
@@ -40,8 +49,6 @@ const initialState: ChatState = {
 
 export function useChat() {
   const [state, setState] = useState<ChatState>(initialState)
-  const stateRef = useRef(state)
-  stateRef.current = state
 
   // 服务端事件的统一入口（快照刷新与 SSE 共用）
   const applyEvent = useCallback((event: ServerEvent) => {
@@ -95,48 +102,48 @@ export function useChat() {
     }
   }, [])
 
+  const refreshSessions = useCallback(async () => {
+    try {
+      const sessions = await api.sessions()
+      setState((prev) => ({ ...prev, sessions }))
+    } catch {
+      // 会话列表加载失败不阻塞主流程（侧栏显示空态）
+    }
+  }, [])
+
   useEffect(() => {
     void refreshSnapshot()
+    void refreshSessions()
     const client = createStreamClient()
     const disconnect = client.connect((event) => {
       if (event.type === 'refresh') {
         // 落后于事件流：重新拉取快照补齐
         void refreshSnapshot()
+        void refreshSessions()
       } else {
         applyEvent(event)
+        // 首条消息后标题会变化，run 结束刷新会话列表
+        if (event.type === 'run_finished') void refreshSessions()
       }
     })
     return disconnect
-  }, [applyEvent, refreshSnapshot])
+  }, [applyEvent, refreshSnapshot, refreshSessions])
 
-  // 会话标题在首条消息后变化：run_finished 时刷新 session 列表（侧栏）
-  const refreshSessions = useCallback(async () => {
+  const send = useCallback(async (text: string) => {
+    const trimmed = text.trim()
+    if (!trimmed) return
     try {
-      const sessions = await api.sessions()
-      return sessions
-    } catch {
-      return []
+      const result = await api.prompt(trimmed)
+      if (result.status === 'queued') {
+        setState((prev) => ({ ...prev, queued: prev.queued + 1 }))
+      }
+    } catch (error) {
+      setState((prev) => ({
+        ...prev,
+        error: error instanceof Error ? error.message : String(error),
+      }))
     }
   }, [])
-
-  const send = useCallback(
-    async (text: string) => {
-      const trimmed = text.trim()
-      if (!trimmed) return
-      try {
-        const result = await api.prompt(trimmed)
-        if (result.status === 'queued') {
-          setState((prev) => ({ ...prev, queued: prev.queued + 1 }))
-        }
-      } catch (error) {
-        setState((prev) => ({
-          ...prev,
-          error: error instanceof Error ? error.message : String(error),
-        }))
-      }
-    },
-    [],
-  )
 
   const stop = useCallback(async () => {
     try {
@@ -201,7 +208,6 @@ export function useChat() {
     newSession,
     resumeSession,
     answerQuestion,
-    refreshSessions,
     refreshSnapshot,
     dismissError,
   }

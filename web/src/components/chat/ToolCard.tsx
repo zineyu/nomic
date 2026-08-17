@@ -1,31 +1,44 @@
-// 工具执行卡片：名称 + 参数摘要 + 状态（执行中/成功/失败），点击展开
-// 完整参数与结果预览。
+// 工具执行卡片：终端图标 + 工具名 + 参数摘要 + 状态徽章（✓ 完成 /
+// ● 运行中 / ✗ 失败），点击展开完整参数与结果预览。
 
 import { memo, useState } from 'react'
-import { CheckCircle2, ChevronDown, Loader2, XCircle } from 'lucide-react'
+import { ChevronDown, Loader2, Terminal } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { briefArgs } from '@/lib/toolArgs'
 import type { ToolItem } from '@/lib/chat'
 
+function StatusBadge({ item }: { item: ToolItem }) {
+  if (item.status === 'running') {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs text-muted-foreground">
+        <Loader2 className="size-2.5 animate-spin" />
+        运行中
+      </span>
+    )
+  }
+  if (item.status === 'error') {
+    return (
+      <span className="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-2.5 py-0.5 text-xs text-destructive">
+        ✗ 失败
+      </span>
+    )
+  }
+  return (
+    <span className="shrink-0 rounded-full border border-success/40 bg-success/10 px-2.5 py-0.5 text-xs text-success">
+      ✓ 完成
+    </span>
+  )
+}
+
 function ToolCardImpl({ item }: { item: ToolItem }) {
   const [expanded, setExpanded] = useState(false)
-
-  const icon =
-    item.status === 'running' ? (
-      <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
-    ) : item.status === 'error' ? (
-      <XCircle className="size-3.5 text-destructive" />
-    ) : (
-      <CheckCircle2 className="size-3.5 text-success" />
-    )
-
   const hasDetail = Object.keys(item.args).length > 0 || item.resultPreview !== ''
 
   return (
     <div
       className={cn(
-        'mx-auto max-w-3xl overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm',
+        'max-w-[640px] overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm',
         item.isError && 'border-destructive/50',
       )}
     >
@@ -34,35 +47,36 @@ function ToolCardImpl({ item }: { item: ToolItem }) {
         onClick={() => setExpanded((v) => !v)}
         disabled={!hasDetail}
         className={cn(
-          'flex w-full items-center gap-2 px-3 py-2.5 text-left text-xs',
+          'flex w-full items-center gap-2.5 px-4 py-2.5 text-left',
           hasDetail ? 'cursor-pointer hover:bg-accent/60' : 'cursor-default',
         )}
       >
-        {icon}
-        <span className="font-mono font-medium">{item.name}</span>
-        <span className="min-w-0 flex-1 truncate text-muted-foreground">
+        <Terminal className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="shrink-0 font-mono text-xs font-semibold text-muted-foreground">
+          {item.name}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
           {briefArgs(item.name, item.args)}
         </span>
-        {item.status === 'running' ? (
-          <span className="shrink-0 text-muted-foreground">执行中…</span>
-        ) : hasDetail ? (
+        <StatusBadge item={item} />
+        {hasDetail && (
           <ChevronDown
             className={cn(
               'size-3.5 shrink-0 text-muted-foreground transition-transform',
               expanded && 'rotate-180',
             )}
           />
-        ) : null}
+        )}
       </button>
       {expanded && (
-        <div className="space-y-2 border-t px-3 py-2">
+        <div className="space-y-2 border-t px-4 py-2.5">
           {Object.keys(item.args).length > 0 && (
-            <pre className="max-h-56 overflow-auto rounded-lg bg-muted/50 p-2 font-mono text-xs leading-relaxed">
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/50 p-2.5 font-mono text-xs leading-relaxed text-muted-foreground break-all">
               {JSON.stringify(item.args, null, 2)}
             </pre>
           )}
           {item.resultPreview !== '' && (
-            <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/50 p-2 font-mono text-xs leading-relaxed text-muted-foreground">
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/50 p-2.5 font-mono text-xs leading-relaxed text-muted-foreground/80">
               {item.resultPreview}
             </pre>
           )}

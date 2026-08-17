@@ -46,7 +46,7 @@ describe('ToolCard', () => {
     render(<ToolCard item={makeTool()} />)
     expect(screen.getByText('bash')).toBeInTheDocument()
     expect(screen.getByText('cargo test')).toBeInTheDocument()
-    expect(screen.getByText('执行中…')).toBeInTheDocument()
+    expect(screen.getByText('运行中')).toBeInTheDocument()
   })
 
   it('执行完成后点击展开显示结果', async () => {

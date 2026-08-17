@@ -1,10 +1,12 @@
-// 应用布局：侧栏（会话/模型）+ 聊天主区 + 状态栏 + 提问弹层。
+// 应用布局：顶栏（面包屑/主题）+ 图标导航栏 + 侧栏（会话）+
+// 聊天主区。参考 Kimi 布局：上下文用量并入侧栏底部，不再有独立状态栏。
 
 import { useCallback, useEffect, useState } from 'react'
 
 import { ChatView } from '@/components/chat/ChatView'
+import { Rail } from '@/components/Rail'
 import { Sidebar } from '@/components/Sidebar'
-import { StatusBar } from '@/components/StatusBar'
+import { Topbar } from '@/components/Topbar'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useChat } from '@/hooks/useChat'
 
@@ -38,7 +40,10 @@ export default function App() {
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex h-dvh flex-col bg-background text-foreground">
+        <Topbar />
         <div className="flex min-h-0 flex-1">
+          {/* 图标导航栏（桌面端） */}
+          <Rail />
           {/* 移动端遮罩 */}
           {sidebarOpen && (
             <div
@@ -50,19 +55,19 @@ export default function App() {
           <div
             className={
               sidebarOpen
-                ? 'fixed inset-y-0 left-0 z-50 md:static md:z-auto'
+                ? 'fixed inset-y-0 left-0 z-50 w-64 md:static md:z-auto'
                 : 'hidden'
             }
           >
             <Sidebar
               sessions={chat.sessions}
               currentSessionId={chat.session?.id ?? null}
-              modelSpec={chat.model ? `${chat.model.provider}/${chat.model.id}` : null}
-              reasoning={chat.reasoning}
               cwd={chat.cwd}
+              contextTokens={chat.contextTokens}
+              contextWindow={chat.model?.context_window ?? null}
+              running={chat.running}
               onNewSession={() => void chat.newSession()}
               onResume={handleResume}
-              onModelChanged={() => void chat.refreshSnapshot()}
             />
           </div>
           <ChatView
@@ -71,11 +76,6 @@ export default function App() {
             onToggleSidebar={() => setSidebarOpen((v) => !v)}
           />
         </div>
-        <StatusBar
-          contextTokens={chat.contextTokens}
-          contextWindow={chat.model?.context_window ?? null}
-          sessionTitle={chat.session?.title ?? null}
-        />
       </div>
     </TooltipProvider>
   )

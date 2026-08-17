@@ -43,8 +43,9 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+/* 半径基准与 DESIGN.md rounded 对齐：sm 4px / md 6px / lg 8px / xl 12px */
 :root {
-  --radius: 0.625rem;
+  --radius: 0.5rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.21 0.006 285.885);
   --card: oklch(1 0 0);
@@ -122,6 +123,7 @@
   }
   body {
     @apply bg-background text-foreground antialiased;
+    font-family: Inter, system-ui, sans-serif;
   }
 }
 
@@ -132,4 +134,31 @@
 }
 .dark .shiki {
   background-color: var(--shiki-dark-bg) !important;
+}
+
+/* 流式输出光标 */
+@keyframes nomic-blink {
+  50% {
+    opacity: 0;
+  }
+}
+.caret {
+  color: var(--ring);
+  animation: nomic-blink 1s steps(1) infinite;
+}
+
+/* 细滚动条（侧栏 / 消息流） */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--ring);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
 }

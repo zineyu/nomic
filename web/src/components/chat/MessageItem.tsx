@@ -1,15 +1,24 @@
-// 单条消息渲染：user（右侧气泡）/ assistant（markdown + thinking 折叠 +
-// 工具调用块）/ tool（执行卡片）/ system（居中提示）。
+// 单条消息渲染：user（右侧气泡 + 时间元信息）/ assistant（回合头部 nomic
+// 头像 + 思考胶囊 + markdown 正文 + 流式光标）/ tool（执行卡片，独立渲染）/
+// system（居中提示）。参考 Kimi 布局：助手回合左对齐、正文优先。
 
 import { memo, useCallback, useState } from 'react'
-import { AlertTriangle, Check, ChevronRight, Copy, Cpu, Loader2 } from 'lucide-react'
+import { AlertTriangle, Check, ChevronRight, Copy, Loader2 } from 'lucide-react'
 
 import { Markdown } from '@/components/Markdown'
-import { ToolCard } from '@/components/chat/ToolCard'
 import { useThrottledValue } from '@/hooks/useThrottledValue'
-import { briefArgs } from '@/lib/toolArgs'
 import { cn } from '@/lib/utils'
 import type { AssistantItem, ChatItem, ToolItem, UserItem } from '@/lib/chat'
+import { ToolCard } from './ToolCard'
+
+function formatMessageTime(millis: number): string {
+  const date = new Date(millis)
+  const now = new Date()
+  const sameDay = date.toDateString() === now.toDateString()
+  const time = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  if (sameDay) return time
+  return `${date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })} ${time}`
+}
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -35,8 +44,8 @@ function CopyButton({ text }: { text: string }) {
 
 function UserMessage({ item }: { item: UserItem }) {
   return (
-    <div className="flex justify-end">
-      <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-sm text-primary-foreground shadow-sm">
+    <div className="flex flex-col items-end gap-1.5">
+      <div className="max-w-[70%] rounded-[14px] rounded-br-md bg-primary px-4 py-2.5 text-sm leading-relaxed text-primary-foreground shadow-sm">
         {item.images.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {item.images.map((image, i) => (
@@ -49,55 +58,34 @@ function UserMessage({ item }: { item: UserItem }) {
             ))}
           </div>
         )}
-        <div className="whitespace-pre-wrap leading-relaxed">{item.text}</div>
+        <div className="whitespace-pre-wrap">{item.text}</div>
+      </div>
+      <div className="pr-1 text-xs text-muted-foreground">
+        {item.timestamp ? `${formatMessageTime(item.timestamp)} · ` : ''}你
       </div>
     </div>
   )
 }
 
-function ThinkingBlock({ thinking, streaming }: { thinking: string; streaming: boolean }) {
+function ThinkingPill({ thinking, streaming }: { thinking: string; streaming: boolean }) {
   const [open, setOpen] = useState(false)
   if (!thinking) return null
   return (
-    <div className="mb-3 overflow-hidden rounded-xl border border-dashed bg-muted/30">
+    <div className="flex w-fit flex-col gap-1.5">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent/50"
+        className="flex w-fit items-center gap-2 rounded-full border bg-card px-3.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent/60"
       >
-        <ChevronRight className={cn('size-3.5 transition-transform', open && 'rotate-90')} />
+        <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
         {streaming && <Loader2 className="size-3 animate-spin" />}
-        <span className="font-medium">思考</span>
-        <span className="flex-1 truncate text-xs italic">{thinking.split('\n')[0]}</span>
+        <span className="font-medium">{streaming ? '思考中…' : '思考完成'}</span>
       </button>
       {open && (
-        <div className="border-t bg-muted/30 px-3 py-2 text-xs italic leading-relaxed text-muted-foreground">
+        <div className="rounded-xl border bg-card px-3.5 py-2.5 text-xs leading-relaxed text-muted-foreground">
           <div className="whitespace-pre-wrap">{thinking}</div>
         </div>
       )}
-    </div>
-  )
-}
-
-function ToolCallChips({ blocks }: { blocks: AssistantItem['blocks'] }) {
-  const calls = blocks.filter((block) => block.type === 'tool_call')
-  if (calls.length === 0) return null
-  return (
-    <div className="mb-3 flex flex-wrap gap-1.5">
-      {calls.map((call) => (
-          <span
-          key={call.id}
-          className="inline-flex items-center gap-1 rounded-lg bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground"
-        >
-          <Cpu className="size-3" />
-          {call.name}
-          {call.arguments && (
-            <span className="opacity-70">
-              ({briefArgs(call.name ?? '', call.arguments ?? {})})
-            </span>
-          )}
-        </span>
-      ))}
     </div>
   )
 }
@@ -107,42 +95,48 @@ function AssistantMessage({ item }: { item: AssistantItem }) {
   // 流式期间节流文本，避免每个字符触发一次 markdown 解析；定稿后立即冲刷。
   const displayText = useThrottledValue(item.text, item.streaming ? 80 : 0)
   return (
-    <div className="flex justify-start">
-      <div className="max-w-[90%] px-1 py-1">
-        <ThinkingBlock thinking={item.thinking} streaming={item.streaming} />
-        <ToolCallChips blocks={item.blocks} />
-        {failed ? (
-          <div className="flex items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/5 p-3 text-sm">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
-            <div>
-              <div className="font-medium text-destructive">
-                {item.stopReason === 'aborted' ? '已中止' : '响应失败'}
-              </div>
-              {item.errorMessage && (
-                <div className="mt-1 text-xs text-muted-foreground">{item.errorMessage}</div>
-              )}
-            </div>
-          </div>
-        ) : item.text ? (
-          <Markdown>{displayText}</Markdown>
-        ) : item.streaming ? (
-          <div className="flex items-center gap-2 py-1 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" />
-            思考中…
-          </div>
-        ) : null}
-        {item.model && !item.streaming && (
-          <div className="mt-2 flex items-center gap-1 text-xs text-muted-foreground/80">
-            <span className="flex-1">
-              {item.model}
-              {item.usage && item.usage.total_tokens > 0
-                ? ` · ${item.usage.total_tokens.toLocaleString()} tokens`
-                : ''}
-            </span>
-            {item.text && <CopyButton text={item.text} />}
-          </div>
-        )}
+    <div className="flex flex-col gap-2.5">
+      {/* 回合头部：头像 + 名称 + 模型 */}
+      <div className="flex items-center gap-2">
+        <span className="flex size-[22px] shrink-0 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground">
+          n
+        </span>
+        <span className="text-sm font-semibold">nomic</span>
+        {item.model && <span className="text-xs text-muted-foreground">{item.model}</span>}
       </div>
+
+      <ThinkingPill thinking={item.thinking} streaming={item.streaming} />
+
+      {failed ? (
+        <div className="flex max-w-[720px] items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/5 p-3 text-sm">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
+          <div>
+            <div className="font-medium text-destructive">
+              {item.stopReason === 'aborted' ? '已中止' : '响应失败'}
+            </div>
+            {item.errorMessage && (
+              <div className="mt-1 text-xs text-muted-foreground">{item.errorMessage}</div>
+            )}
+          </div>
+        </div>
+      ) : item.text ? (
+        <div className="max-w-[720px]">
+          <Markdown>{displayText}</Markdown>
+          {item.streaming && <span className="caret">▍</span>}
+        </div>
+      ) : item.streaming ? (
+        <div className="flex items-center gap-2 py-1 text-xs text-muted-foreground">
+          <Loader2 className="size-3 animate-spin" />
+          正在生成回复…
+        </div>
+      ) : null}
+
+      {item.usage && !item.streaming && (
+        <div className="flex max-w-[720px] items-center gap-1 text-xs text-muted-foreground/80">
+          <span className="flex-1">{item.usage.total_tokens.toLocaleString()} tokens</span>
+          {item.text && <CopyButton text={item.text} />}
+        </div>
+      )}
     </div>
   )
 }

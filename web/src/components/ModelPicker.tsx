@@ -1,5 +1,6 @@
 // 模型选择器：跨 provider 候选列表（dropdown-menu 分组）；推理模型附
 // 思考级别选择。切换复用服务端同一分层口径并落库（与 TUI /models 一致）。
+// 输入区圆角胶囊形态：收缩到内容宽度，不抢占输入框剩余空间。
 
 import { useEffect, useMemo, useState } from 'react'
 import { Check, ChevronsUpDown, Cpu } from 'lucide-react'
@@ -25,14 +26,18 @@ interface ModelPickerProps {
   onChanged: () => void
 }
 
-export function ModelPicker({ currentSpec, reasoning, onChanged }: ModelPickerProps) {
+export function ModelPicker({
+  currentSpec,
+  reasoning,
+  onChanged,
+}: ModelPickerProps) {
   const [data, setData] = useState<ModelsResponse | null>(null)
   const [open, setOpen] = useState(false)
   const [levelOpen, setLevelOpen] = useState(false)
 
   useEffect(() => {
     void api.models().then(setData).catch(() => {})
-  }, [open])
+  }, [open, levelOpen])
 
   const groups = useMemo(() => {
     if (!data) return new Map<string, ModelChoice[]>()
@@ -72,15 +77,15 @@ export function ModelPicker({ currentSpec, reasoning, onChanged }: ModelPickerPr
   }
 
   return (
-    <div className="flex w-full items-center gap-1">
+    <div className="flex shrink-0 items-center gap-1">
       <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 flex-1 min-w-0 justify-start gap-1.5 px-1.5 text-xs font-normal"
+            className="h-7 min-w-0 shrink-0 justify-start gap-1.5 rounded-full border border-border bg-background px-3 text-xs font-normal hover:bg-accent"
           >
-            <Cpu className="size-3.5 shrink-0 opacity-70" />
+            <Cpu className="size-3 shrink-0 opacity-70" />
             <span className="min-w-0 flex-1 truncate text-left">
               {currentSpec ?? '选择模型'}
             </span>
@@ -125,7 +130,7 @@ export function ModelPicker({ currentSpec, reasoning, onChanged }: ModelPickerPr
             <Button
               variant="ghost"
               size="sm"
-              className="h-7 shrink-0 px-2 text-xs font-normal text-muted-foreground"
+              className="h-7 shrink-0 rounded-full px-1 text-xs font-normal text-muted-foreground"
             >
               {reasoning ?? 'off'}
             </Button>

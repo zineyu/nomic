@@ -22,6 +22,7 @@ export const UserMessage: Story = {
       id: '1',
       text: '用 Rust 写一个快速排序，并解释复杂度。',
       images: [],
+      timestamp: Date.now(),
     } satisfies ChatItem,
   },
 }

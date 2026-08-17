@@ -53,6 +53,8 @@ export interface UserItem {
   id: string
   text: string
   images: ImageContent[]
+  /** 消息时间戳（毫秒），用于渲染时间元信息 */
+  timestamp: number
 }
 
 export interface SystemItem {
@@ -101,7 +103,13 @@ export function messagesToItems(messages: Message[]): ChatItem[] {
     switch (message.role) {
       case 'user': {
         const { text, images } = userContent(message)
-        items.push({ type: 'user', id: nextId(), text, images })
+        items.push({
+          type: 'user',
+          id: nextId(),
+          text,
+          images,
+          timestamp: message.timestamp,
+        })
         break
       }
       case 'assistant': {
@@ -210,7 +218,13 @@ export function applyAgentEvent(items: ChatItem[], event: AgentEvent): ChatItem[
       switch (message.role) {
         case 'user': {
           const { text, images } = userContent(message)
-          return appendItem(items, { type: 'user', id: nextId(), text, images })
+          return appendItem(items, {
+            type: 'user',
+            id: nextId(),
+            text,
+            images,
+            timestamp: message.timestamp,
+          })
         }
         case 'assistant':
           return appendItem(items, {

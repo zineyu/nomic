@@ -1,25 +1,30 @@
-// 侧栏：会话列表（新建/恢复）+ 模型选择器 + 工作目录。会话列表由 useChat 提供。
+// 侧栏：会话列表（按今天/本周/更早分组）+ 底部工作目录与
+// 上下文用量。布局参考 Kimi 风格：头部计数、分组标签、活动项左侧色条。
 
-import { Folder, MessageSquarePlus, MessagesSquare, Moon, Monitor, Sun } from 'lucide-react'
+import { Folder, MessageSquarePlus, MessagesSquare } from 'lucide-react'
 
-import { ModelPicker } from '@/components/ModelPicker'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Separator } from '@/components/ui/separator'
-import { useTheme } from '@/hooks/useTheme'
 import type { SessionSummary } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 interface SidebarProps {
   sessions: SessionSummary[]
   currentSessionId: string | null
-  modelSpec: string | null
-  reasoning: string | null
   cwd: string
+  contextTokens: number
+  contextWindow: number | null
+  running: boolean
   onNewSession: () => void
   onResume: (id: string) => void
-  onModelChanged: () => void
+}
+
+const DAY = 24 * 60 * 60 * 1000
+
+function startOfDay(millis: number): number {
+  const d = new Date(millis)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
 }
 
 function formatTime(millis: number | null): string {
@@ -29,14 +34,14 @@ function formatTime(millis: number | null): string {
   const diffMs = now.getTime() - millis
   const minute = 60_000
   const hour = 60 * minute
-  const day = 24 * hour
   if (diffMs < minute) return '刚刚'
   if (diffMs < hour) return `${Math.floor(diffMs / minute)} 分钟前`
-  if (date.toDateString() === now.toDateString()) {
+  if (startOfDay(now.getTime()) === startOfDay(millis)) {
     return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
   }
-  const yesterday = new Date(now.getTime() - day)
-  if (date.toDateString() === yesterday.toDateString()) return '昨天'
+  if (diffMs < 7 * DAY) {
+    return `周${'日一二三四五六'[date.getDay()]}`
+  }
   if (date.getFullYear() === now.getFullYear()) {
     return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
   }
@@ -47,125 +52,117 @@ function formatTime(millis: number | null): string {
   })
 }
 
+/** 按时间分组：今天 / 本周 / 更早（sessions 已按 last_message_at 降序）。 */
+function groupSessions(sessions: SessionSummary[]): { label: string; items: SessionSummary[] }[] {
+  const groups: { label: string; items: SessionSummary[] }[] = []
+  for (const session of sessions) {
+    const at = session.last_message_at ?? Date.now()
+    let label = '更早'
+    if (startOfDay(at) === startOfDay(Date.now())) {
+      label = '今天'
+    } else if (Date.now() - at < 7 * DAY) {
+      label = '本周'
+    }
+    let group = groups[groups.length - 1]
+    if (!group || group.label !== label) {
+      group = { label, items: [] }
+      groups.push(group)
+    }
+    group.items.push(session)
+  }
+  return groups
+}
+
 export function Sidebar({
   sessions,
   currentSessionId,
-  modelSpec,
-  reasoning,
   cwd,
+  contextTokens,
+  contextWindow,
+  running,
   onNewSession,
   onResume,
-  onModelChanged,
 }: SidebarProps) {
-  const { theme, cycle } = useTheme()
-
-  const ThemeIcon = theme === 'dark' ? Moon : theme === 'light' ? Sun : Monitor
+  const groups = groupSessions(sessions)
+  const usage = contextWindow && contextWindow > 0 ? contextTokens / contextWindow : null
+  const pct = usage !== null ? Math.min(usage * 100, 100) : null
 
   return (
-    <div className="flex h-full w-64 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground">
-      <div className="flex items-center gap-2.5 px-4 py-3">
-        <img
-          src="/favicon.svg"
-          alt="nomic"
-          className="size-7 shrink-0 rounded-lg shadow-sm"
-        />
-        <span className="text-sm font-semibold tracking-tight">nomic</span>
-        <Badge variant="secondary" className="h-5 px-1.5 text-xs font-medium">
-          web
-        </Badge>
-      </div>
-
-      <div className="px-3 pb-1.5">
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-8 w-full justify-start gap-2 rounded-lg border-sidebar-border bg-transparent text-xs font-medium hover:bg-sidebar-accent"
-          onClick={onNewSession}
-        >
-          <MessageSquarePlus className="size-3.5" />
-          新对话
-        </Button>
-      </div>
-
-      <Separator />
-
-      <div className="px-4 py-2">
-        <div className="mb-1.5 text-xs font-medium text-muted-foreground">模型</div>
-        <ModelPicker
-          currentSpec={modelSpec}
-          reasoning={reasoning}
-          onChanged={onModelChanged}
-        />
-      </div>
-
-      <Separator />
-
-      <div className="flex items-center justify-between px-4 pb-1.5 pt-2.5">
-        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-          <MessagesSquare className="size-3" />
-          会话
-        </div>
+    <div className="flex h-full w-64 shrink-0 flex-col bg-sidebar text-sidebar-foreground">
+      {/* 头部：标题 + 会话计数 */}
+      <div className="flex items-center gap-2 px-4 pt-4 pb-1">
+        <h1 className="text-sm font-semibold">会话</h1>
         {sessions.length > 0 && (
-          <span className="text-xs tabular-nums text-muted-foreground">
+          <span className="rounded-full border border-sidebar-border bg-background px-2 py-px text-xs tabular-nums text-muted-foreground">
             {sessions.length}
           </span>
         )}
       </div>
 
+      <div className="px-3 py-3">
+        <Button
+          variant="outline"
+          className="h-8 w-full justify-start gap-2 rounded-lg border-sidebar-border bg-transparent px-3.5 text-xs font-normal hover:border-sidebar-ring hover:bg-sidebar-accent"
+          onClick={onNewSession}
+        >
+          <MessageSquarePlus className="size-3" />
+          新对话
+        </Button>
+      </div>
+
+      {/* 会话列表（按时间分组） */}
       <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-0.5 px-2 pb-2">
-          {sessions.map((session) => {
-            const active = session.id === currentSessionId
-            return (
-              <button
-                key={session.id}
-                type="button"
-                onClick={() => onResume(session.id)}
-                aria-current={active ? 'page' : undefined}
-                className={cn(
-                  'relative flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors',
-                  active ? 'bg-accent text-accent-foreground' : 'hover:bg-sidebar-accent/70',
-                )}
-              >
-                {active && (
-                  <span className="absolute top-1/2 left-0 h-4 w-[3px] -translate-y-1/2 rounded-r-full bg-current opacity-90" />
-                )}
-                <MessagesSquare
-                  className={cn('size-3.5 shrink-0', active ? 'opacity-80' : 'opacity-50')}
-                />
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-baseline justify-between gap-2">
-                    <span
+        <div className="space-y-3 px-2 pb-2">
+          {groups.map((group) => (
+            <div key={group.label}>
+              <div className="mb-1 px-2.5 text-xs font-medium tracking-[0.1em] text-muted-foreground">
+                {group.label}
+              </div>
+              <div className="space-y-1">
+                {group.items.map((session) => {
+                  const active = session.id === currentSessionId
+                  const meta = active
+                    ? `${session.message_count} 条消息 · ${contextTokens.toLocaleString()} tokens`
+                    : `${session.message_count} 条消息 · ${formatTime(session.last_message_at)}`
+                  return (
+                    <button
+                      key={session.id}
+                      type="button"
+                      onClick={() => onResume(session.id)}
+                      aria-current={active ? 'page' : undefined}
                       className={cn(
-                        'truncate text-xs',
-                        active ? 'font-semibold' : 'font-medium',
+                        'relative flex w-full flex-col gap-1 rounded-lg border border-transparent px-3.5 py-2.5 text-left transition-colors',
+                        active
+                          ? 'border-sidebar-border bg-sidebar-accent'
+                          : 'hover:bg-sidebar-accent/60',
                       )}
                     >
-                      {session.title ?? '新会话'}
-                    </span>
-                    <span
-                      className={cn(
-                        'shrink-0 text-xs tabular-nums',
-                        active ? 'opacity-70' : 'text-muted-foreground',
+                      {active && (
+                        <span className="absolute top-1.5 bottom-1.5 left-0 w-[3px] rounded-r-full bg-sidebar-ring" />
                       )}
-                    >
-                      {formatTime(session.last_message_at)}
-                    </span>
-                  </span>
-                  {session.message_count > 0 && (
-                    <span
-                      className={cn(
-                        'block text-xs',
-                        active ? 'opacity-70' : 'text-muted-foreground',
+                      <span
+                        className={cn(
+                          'truncate text-sm',
+                          active ? 'font-semibold text-sidebar-foreground' : 'text-muted-foreground',
+                        )}
+                      >
+                        {session.title ?? '新会话'}
+                      </span>
+                      <span className="text-xs text-muted-foreground">{meta}</span>
+                      {active && running && (
+                        <span
+                          className="absolute top-1/2 right-3.5 flex size-3.5 -translate-y-1/2 items-center justify-center rounded-full border border-success/50"
+                          title="运行中"
+                        >
+                          <span className="size-1.5 rounded-full bg-success" />
+                        </span>
                       )}
-                    >
-                      {session.message_count} 条消息
-                    </span>
-                  )}
-                </span>
-              </button>
-            )
-          })}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
           {sessions.length === 0 && (
             <div className="flex flex-col items-center gap-2 px-3 py-8 text-muted-foreground">
               <MessagesSquare className="size-5 opacity-40" />
@@ -175,21 +172,34 @@ export function Sidebar({
         </div>
       </ScrollArea>
 
-      <Separator />
-      <div className="flex items-center gap-2 px-4 py-2.5 text-xs text-muted-foreground">
-        <Folder className="size-3.5 shrink-0 opacity-70" />
-        <span className="min-w-0 flex-1 truncate" title={cwd}>
-          {cwd || '—'}
-        </span>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-6 shrink-0"
-          onClick={cycle}
-          title={`主题：${theme === 'light' ? '浅色' : theme === 'dark' ? '深色' : '跟随系统'}`}
+      {/* 底部：工作目录 + 上下文用量 */}
+      <div className="border-t border-sidebar-border px-4 py-3">
+        <div
+          className="mb-2.5 flex items-center gap-1.5 font-mono text-xs text-muted-foreground"
+          title={cwd}
         >
-          <ThemeIcon className="size-3.5" />
-        </Button>
+          <Folder className="size-3 shrink-0 opacity-70" />
+          <span className="truncate">{cwd || '—'}</span>
+        </div>
+        <div className="flex items-baseline font-mono text-xs text-muted-foreground">
+          <span>上下文：{contextTokens.toLocaleString()} tokens</span>
+          {pct !== null && (
+            <span className="ml-auto font-medium text-sidebar-foreground">
+              {pct.toFixed(0)}%
+            </span>
+          )}
+        </div>
+        {pct !== null && (
+          <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-sidebar-border">
+            <div
+              className={cn(
+                'h-full rounded-full transition-all',
+                pct > 80 ? 'bg-destructive' : 'bg-sidebar-primary',
+              )}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        )}
       </div>
     </div>
   )

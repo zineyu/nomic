@@ -46,6 +46,45 @@ ratchet gate).
   (`cargo audit`), and no unused deps (`cargo-machete`); prefer existing dependencies and isolate
   core third-party calls behind thin adapters
 
+## Design System
+
+The project uses [DESIGN.md](https://github.com/google-labs-code/design.md) to describe the visual identity to coding agents.
+
+- **File**: `DESIGN.md` in project root
+- **Format**: YAML front matter (tokens) + Markdown body (rationale)
+- **CLI**: `npx @google/design.md` (no local install needed)
+
+### Commands
+
+```bash
+# Validate DESIGN.md
+npx @google/design.md lint DESIGN.md
+
+# Export to Tailwind v4 CSS theme
+npx @google/design.md export --format css-tailwind DESIGN.md > web/src/theme.css
+
+# Export to Tailwind v3 JSON config
+npx @google/design.md export --format json-tailwind DESIGN.md > tailwind.theme.json
+
+# Export to W3C Design Token Format
+npx @google/design.md export --format dtcg DESIGN.md > tokens.json
+```
+
+### NPM Scripts (in `web/`)
+
+```bash
+npm run design:lint
+npm run design:export-tailwind
+npm run design:export-css
+```
+
+### Guidelines
+
+- Keep `DESIGN.md` tokens in sync with `web/src/index.css` CSS variables
+- Run `design:lint` before committing design changes
+- Use token references (`{colors.primary}`) in component definitions
+- See [spec](https://github.com/google-labs-code/design.md/blob/main/docs/spec.md) for full format reference
+
 ## After Coding
 
 Every commit must pass the `check` command defined in `devenv.nix`.

@@ -12,7 +12,10 @@
     "test:watch": "vitest",
     "lint": "eslint .",
     "storybook": "storybook dev -p 6006",
-    "build-storybook": "storybook build"
+    "build-storybook": "storybook build",
+    "design:lint": "npx @google/design.md lint ../DESIGN.md",
+    "design:export-tailwind": "npx @google/design.md export --format json-tailwind ../DESIGN.md",
+    "design:export-css": "npx @google/design.md export --format css-tailwind ../DESIGN.md"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

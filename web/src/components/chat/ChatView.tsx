@@ -1,4 +1,4 @@
-// 聊天主视图：会话头（标题 + 模型元信息 + 分隔线）+ 消息流 + 输入区 +
+// 聊天主视图：会话头（标题 + 分隔线）+ 消息流 + 输入区 +
 // 提问弹层 + 错误提示。列宽 920px 居中，与参考设计一致。
 
 import { useEffect, useState } from 'react'
@@ -29,7 +29,6 @@ export function ChatView({
     session,
     model,
     reasoning,
-    contextTokens,
     send,
     stop,
     answerQuestion,
@@ -55,7 +54,7 @@ export function ChatView({
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col bg-background">
-      {/* 会话头：标题 + 模型/上下文元信息 */}
+      {/* 会话头：标题 + 分隔线 */}
       <div className="mx-auto w-full max-w-[920px] px-7 pt-3">
         <div className="flex items-center gap-2">
           <Button
@@ -77,11 +76,6 @@ export function ChatView({
             </span>
           )}
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {modelSpec ?? '未选择模型'}
-          {reasoning ? ` · ${reasoning}` : ''}
-          {contextTokens > 0 ? ` · 上下文 ${contextTokens.toLocaleString()} tokens` : ''}
-        </p>
         <hr className="mt-3 border-border" />
       </div>
 

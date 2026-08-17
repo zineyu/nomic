@@ -133,9 +133,39 @@ export function messagesToItems(messages: Message[]): ChatItem[] {
           model: message.model,
           usage: message.usage,
         })
+        // 从历史 assistant 消息中的 tool_call 块恢复工具调用参数，
+        // 确保 resume 后工具卡片仍能显示参数。
+        for (const block of message.content) {
+          if (block.type !== 'tool_call') continue
+          const toolCallId = block.id ?? ''
+          if (findToolIndex(items, toolCallId) >= 0) continue
+          items.push({
+            type: 'tool',
+            id: nextId(),
+            toolCallId,
+            name: block.name ?? '',
+            args: block.arguments ?? {},
+            status: 'running',
+            resultPreview: '',
+            isError: false,
+          })
+        }
         break
       }
       case 'tool_result': {
+        const index = findToolIndex(items, message.tool_call_id)
+        if (index >= 0) {
+          const existing = items[index]
+          if (existing.type === 'tool') {
+            items[index] = {
+              ...existing,
+              status: message.is_error ? 'error' : 'done',
+              resultPreview: contentText(message.content),
+              isError: message.is_error,
+            }
+            break
+          }
+        }
         items.push({
           type: 'tool',
           id: nextId(),
@@ -304,6 +334,17 @@ export function applyAgentEvent(items: ChatItem[], event: AgentEvent): ChatItem[
         args: Record<string, unknown>
       }
       const index = findToolIndex(items, detail.tool_call_id)
+      if (index >= 0) {
+        const existing = items[index]
+        if (existing.type === 'tool') {
+          return items.with(index, {
+            ...existing,
+            name: detail.tool_name,
+            args: detail.args,
+            status: 'running',
+          })
+        }
+      }
       const tool: ChatItem = {
         type: 'tool',
         id: nextId(),
@@ -314,7 +355,6 @@ export function applyAgentEvent(items: ChatItem[], event: AgentEvent): ChatItem[
         resultPreview: '',
         isError: false,
       }
-      if (index >= 0) return items.with(index, tool)
       return appendItem(items, tool)
     }
 
@@ -383,6 +423,18 @@ export function applyAgentEvent(items: ChatItem[], event: AgentEvent): ChatItem[
 /** 工具结果消息 → 工具项（按 tool_call_id 去重 upsert，兼容 live 与 resume）。 */
 function upsertToolResult(items: ChatItem[], message: ToolResultMessage): ChatItem[] {
   const index = findToolIndex(items, message.tool_call_id)
+  if (index >= 0) {
+    const existing = items[index]
+    if (existing.type === 'tool') {
+      return items.with(index, {
+        ...existing,
+        name: message.tool_name,
+        status: message.is_error ? 'error' : 'done',
+        resultPreview: contentText(message.content),
+        isError: message.is_error,
+      })
+    }
+  }
   const tool: ChatItem = {
     type: 'tool',
     id: nextId(),
@@ -393,6 +445,5 @@ function upsertToolResult(items: ChatItem[], message: ToolResultMessage): ChatIt
     resultPreview: contentText(message.content),
     isError: message.is_error,
   }
-  if (index >= 0) return items.with(index, tool)
   return appendItem(items, tool)
 }

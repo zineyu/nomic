@@ -71,22 +71,24 @@ function ThinkingPill({ thinking, streaming }: { thinking: string; streaming: bo
   const [open, setOpen] = useState(false)
   if (!thinking) return null
   return (
-    <div className="flex w-fit flex-col gap-1.5">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-fit items-center gap-2 rounded-full border bg-card px-3.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent/60"
-      >
-        <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
-        {streaming && <Loader2 className="size-3 animate-spin" />}
-        <span className="font-medium">{streaming ? '思考中…' : '思考完成'}</span>
-      </button>
-      {open && (
-        <div className="rounded-xl border bg-card px-3.5 py-2.5 text-xs leading-relaxed text-muted-foreground">
+    <button
+      type="button"
+      onClick={() => setOpen((v) => !v)}
+      className={cn(
+        'w-fit max-w-[700px] rounded-lg border bg-card px-4 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/60',
+        open ? 'min-h-8 py-2' : 'h-8',
+      )}
+    >
+      <div className="flex h-full items-center gap-2">
+        <ChevronRight
+          className={cn('size-3.5 shrink-0 transition-transform', open && 'rotate-90')}
+        />
+        {streaming && <Loader2 className="size-3.5 shrink-0 animate-spin" />}
+        <div className={cn('leading-none', !open && 'line-clamp-1')}>
           <div className="whitespace-pre-wrap">{thinking}</div>
         </div>
-      )}
-    </div>
+      </div>
+    </button>
   )
 }
 
@@ -108,7 +110,7 @@ function AssistantMessage({ item }: { item: AssistantItem }) {
       <ThinkingPill thinking={item.thinking} streaming={item.streaming} />
 
       {failed ? (
-        <div className="flex max-w-[720px] items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/5 p-3 text-sm">
+        <div className="flex max-w-[700px] items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/5 p-3 text-sm">
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
           <div>
             <div className="font-medium text-destructive">
@@ -120,7 +122,7 @@ function AssistantMessage({ item }: { item: AssistantItem }) {
           </div>
         </div>
       ) : item.text ? (
-        <div className="max-w-[720px]">
+        <div className="max-w-[700px]">
           <Markdown>{displayText}</Markdown>
           {item.streaming && <span className="caret">▍</span>}
         </div>
@@ -131,10 +133,9 @@ function AssistantMessage({ item }: { item: AssistantItem }) {
         </div>
       ) : null}
 
-      {item.usage && !item.streaming && (
-        <div className="flex max-w-[720px] items-center gap-1 text-xs text-muted-foreground/80">
-          <span className="flex-1">{item.usage.total_tokens.toLocaleString()} tokens</span>
-          {item.text && <CopyButton text={item.text} />}
+      {item.text && !item.streaming && (
+        <div className="flex max-w-[700px] justify-end">
+          <CopyButton text={item.text} />
         </div>
       )}
     </div>

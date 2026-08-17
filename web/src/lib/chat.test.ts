@@ -87,6 +87,22 @@ describe('messagesToItems', () => {
       expect(tool.resultPreview).toBe('ok')
     }
   })
+
+  it('从历史 assistant 的 tool_call 块恢复工具参数', () => {
+    const assistantWithTool = assistantMessage('调用工具') as Extract<Message, { role: 'assistant' }>
+    assistantWithTool.content = [
+      { type: 'text', text: '调用工具' },
+      { type: 'tool_call', id: 't1', name: 'bash', arguments: { command: 'ls -la' } },
+    ]
+    const items = messagesToItems([assistantWithTool, toolResult('t1', 'bash', 'ok')])
+    expect(items.map((i) => i.type)).toEqual(['assistant', 'tool'])
+    const tool = items[1]
+    if (tool.type === 'tool') {
+      expect(tool.args).toEqual({ command: 'ls -la' })
+      expect(tool.status).toBe('done')
+      expect(tool.resultPreview).toBe('ok')
+    }
+  })
 })
 
 describe('applyAgentEvent / applyServerEvent', () => {
@@ -180,6 +196,39 @@ describe('applyAgentEvent / applyServerEvent', () => {
     if (tool.type === 'tool') {
       expect(tool.status).toBe('done')
       expect(tool.resultPreview).toBe('done')
+    }
+  })
+
+  it('ToolExecutionStart 合并已有工具项并保留结果预览', () => {
+    const assistantWithTool = assistantMessage('调用') as Extract<Message, { role: 'assistant' }>
+    assistantWithTool.content = [
+      { type: 'tool_call', id: 't1', name: 'read', arguments: { path: 'a.rs' } },
+    ]
+    let items = messagesToItems([assistantWithTool])
+    items = applyAgentEvent(items, {
+      ToolExecutionStart: { tool_call_id: 't1', tool_name: 'read', args: { path: 'b.rs' } },
+    })
+    const tool = items[0]
+    if (tool.type === 'tool') {
+      expect(tool.args).toEqual({ path: 'b.rs' })
+      expect(tool.status).toBe('running')
+    }
+  })
+
+  it('MessageEnd 的 tool_result 保留已有工具参数', () => {
+    const assistantWithTool = assistantMessage('调用') as Extract<Message, { role: 'assistant' }>
+    assistantWithTool.content = [
+      { type: 'tool_call', id: 't1', name: 'bash', arguments: { command: 'ls' } },
+    ]
+    let items = messagesToItems([assistantWithTool])
+    items = applyAgentEvent(items, {
+      MessageEnd: { message: toolResult('t1', 'bash', 'ok'), context_tokens: 0 },
+    })
+    const tool = items[0]
+    if (tool.type === 'tool') {
+      expect(tool.args).toEqual({ command: 'ls' })
+      expect(tool.status).toBe('done')
+      expect(tool.resultPreview).toBe('ok')
     }
   })
 

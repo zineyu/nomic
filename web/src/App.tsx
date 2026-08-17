@@ -6,7 +6,6 @@ import { useCallback, useEffect, useState } from 'react'
 import { ChatView } from '@/components/chat/ChatView'
 import { Rail } from '@/components/Rail'
 import { Sidebar } from '@/components/Sidebar'
-import { Topbar } from '@/components/Topbar'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useChat } from '@/hooks/useChat'
 
@@ -40,7 +39,6 @@ export default function App() {
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex h-dvh flex-col bg-background text-foreground">
-        <Topbar />
         <div className="flex min-h-0 flex-1">
           {/* 图标导航栏（桌面端） */}
           <Rail />

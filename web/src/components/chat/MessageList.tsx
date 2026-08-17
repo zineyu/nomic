@@ -21,11 +21,11 @@ const MAX_VISIBLE_TOOLS = 2
 function ToolGroup({ tools }: { tools: ToolItem[] }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className="flex max-w-[640px] flex-col gap-2">
+    <div className="flex max-w-[700px] flex-col gap-2">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 rounded-lg border bg-card px-4 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent/60"
+        className="flex h-8 w-full items-center gap-2 rounded-lg border bg-card px-4 text-xs text-muted-foreground transition-colors hover:bg-accent/60"
       >
         <Layers className="size-3.5 shrink-0" />
         <span className="flex-1 text-left">
@@ -129,8 +129,8 @@ export function MessageList({
   return (
     <div className="relative h-full">
       <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
-        <div className="mx-auto flex max-w-[920px] flex-col gap-3.5 px-7 py-5">
-          {renderRows(items)}
+        <div className="mx-auto w-full max-w-[920px] px-7 py-5">
+          <div className="flex flex-col gap-3.5">{renderRows(items)}</div>
         </div>
       </div>
       {showJump && (

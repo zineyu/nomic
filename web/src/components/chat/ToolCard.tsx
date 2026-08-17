@@ -11,7 +11,7 @@ import type { ToolItem } from '@/lib/chat'
 function StatusBadge({ item }: { item: ToolItem }) {
   if (item.status === 'running') {
     return (
-      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs text-muted-foreground">
+      <span className="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full border border-border bg-muted px-2 text-[10px] text-muted-foreground">
         <Loader2 className="size-2.5 animate-spin" />
         运行中
       </span>
@@ -19,13 +19,13 @@ function StatusBadge({ item }: { item: ToolItem }) {
   }
   if (item.status === 'error') {
     return (
-      <span className="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-2.5 py-0.5 text-xs text-destructive">
+      <span className="flex h-5 shrink-0 items-center rounded-full border border-destructive/40 bg-destructive/10 px-2 text-[10px] text-destructive">
         ✗ 失败
       </span>
     )
   }
   return (
-    <span className="shrink-0 rounded-full border border-success/40 bg-success/10 px-2.5 py-0.5 text-xs text-success">
+    <span className="flex h-5 shrink-0 items-center rounded-full border border-success/40 bg-success/10 px-2 text-[10px] text-success">
       ✓ 完成
     </span>
   )
@@ -38,7 +38,7 @@ function ToolCardImpl({ item }: { item: ToolItem }) {
   return (
     <div
       className={cn(
-        'max-w-[640px] overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm',
+        'max-w-[700px] overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm',
         item.isError && 'border-destructive/50',
       )}
     >
@@ -47,7 +47,7 @@ function ToolCardImpl({ item }: { item: ToolItem }) {
         onClick={() => setExpanded((v) => !v)}
         disabled={!hasDetail}
         className={cn(
-          'flex w-full items-center gap-2.5 px-4 py-2.5 text-left',
+          'flex h-8 w-full items-center gap-2 px-4 text-left text-xs',
           hasDetail ? 'cursor-pointer hover:bg-accent/60' : 'cursor-default',
         )}
       >

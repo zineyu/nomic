@@ -1,10 +1,11 @@
-// 侧栏：会话列表（按今天/本周/更早分组）+ 底部工作目录与
-// 上下文用量。布局参考 Kimi 风格：头部计数、分组标签、活动项左侧色条。
+// 侧栏：简洁胶囊风格会话列表。
+//
+// 参考截图：每个 session 用一个圆角胶囊展示标题；当前项用主色背景高亮，
+// 非当前项透明背景悬停变色；只展示标题，不展示时间/消息数分组。
 
-import { Folder, MessageSquarePlus, MessagesSquare } from 'lucide-react'
+import { Folder, MessageSquarePlus } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import type { SessionSummary } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -19,60 +20,6 @@ interface SidebarProps {
   onResume: (id: string) => void
 }
 
-const DAY = 24 * 60 * 60 * 1000
-
-function startOfDay(millis: number): number {
-  const d = new Date(millis)
-  d.setHours(0, 0, 0, 0)
-  return d.getTime()
-}
-
-function formatTime(millis: number | null): string {
-  if (!millis) return ''
-  const date = new Date(millis)
-  const now = new Date()
-  const diffMs = now.getTime() - millis
-  const minute = 60_000
-  const hour = 60 * minute
-  if (diffMs < minute) return '刚刚'
-  if (diffMs < hour) return `${Math.floor(diffMs / minute)} 分钟前`
-  if (startOfDay(now.getTime()) === startOfDay(millis)) {
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-  }
-  if (diffMs < 7 * DAY) {
-    return `周${'日一二三四五六'[date.getDay()]}`
-  }
-  if (date.getFullYear() === now.getFullYear()) {
-    return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
-  }
-  return date.toLocaleDateString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  })
-}
-
-/** 按时间分组：今天 / 本周 / 更早（sessions 已按 last_message_at 降序）。 */
-function groupSessions(sessions: SessionSummary[]): { label: string; items: SessionSummary[] }[] {
-  const groups: { label: string; items: SessionSummary[] }[] = []
-  for (const session of sessions) {
-    const at = session.last_message_at ?? Date.now()
-    let label = '更早'
-    if (startOfDay(at) === startOfDay(Date.now())) {
-      label = '今天'
-    } else if (Date.now() - at < 7 * DAY) {
-      label = '本周'
-    }
-    let group = groups[groups.length - 1]
-    if (!group || group.label !== label) {
-      group = { label, items: [] }
-      groups.push(group)
-    }
-    group.items.push(session)
-  }
-  return groups
-}
-
 export function Sidebar({
   sessions,
   currentSessionId,
@@ -83,94 +30,67 @@ export function Sidebar({
   onNewSession,
   onResume,
 }: SidebarProps) {
-  const groups = groupSessions(sessions)
   const usage = contextWindow && contextWindow > 0 ? contextTokens / contextWindow : null
   const pct = usage !== null ? Math.min(usage * 100, 100) : null
 
   return (
-    <div className="flex h-full w-64 shrink-0 flex-col bg-sidebar text-sidebar-foreground">
-      {/* 头部：标题 + 会话计数 */}
-      <div className="flex items-center gap-2 px-4 pt-4 pb-1">
+    <div className="flex h-full w-80 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
+      {/* 头部：标题 + 新对话 */}
+      <div className="flex items-center justify-between px-4 pt-4 pb-2">
         <h1 className="text-sm font-semibold">会话</h1>
-        {sessions.length > 0 && (
-          <span className="rounded-full border border-sidebar-border bg-background px-2 py-px text-xs tabular-nums text-muted-foreground">
-            {sessions.length}
-          </span>
-        )}
-      </div>
-
-      <div className="px-3 py-3">
         <Button
-          variant="outline"
-          className="h-8 w-full justify-start gap-2 rounded-lg border-sidebar-border bg-transparent px-3.5 text-xs font-normal hover:border-sidebar-ring hover:bg-sidebar-accent"
+          variant="ghost"
+          size="icon"
+          className="size-7 rounded-lg text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
           onClick={onNewSession}
+          title="新对话"
         >
-          <MessageSquarePlus className="size-3" />
-          新对话
+          <MessageSquarePlus className="size-4" />
         </Button>
       </div>
 
-      {/* 会话列表（按时间分组） */}
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-3 px-2 pb-2">
-          {groups.map((group) => (
-            <div key={group.label}>
-              <div className="mb-1 px-2.5 text-xs font-medium tracking-[0.1em] text-muted-foreground">
-                {group.label}
-              </div>
-              <div className="space-y-1">
-                {group.items.map((session) => {
-                  const active = session.id === currentSessionId
-                  const meta = active
-                    ? `${session.message_count} 条消息 · ${contextTokens.toLocaleString()} tokens`
-                    : `${session.message_count} 条消息 · ${formatTime(session.last_message_at)}`
-                  return (
-                    <button
-                      key={session.id}
-                      type="button"
-                      onClick={() => onResume(session.id)}
-                      aria-current={active ? 'page' : undefined}
-                      className={cn(
-                        'relative flex w-full flex-col gap-1 rounded-lg border border-transparent px-3.5 py-2.5 text-left transition-colors',
-                        active
-                          ? 'border-sidebar-border bg-sidebar-accent'
-                          : 'hover:bg-sidebar-accent/60',
-                      )}
-                    >
-                      {active && (
-                        <span className="absolute top-1.5 bottom-1.5 left-0 w-[3px] rounded-r-full bg-sidebar-ring" />
-                      )}
-                      <span
-                        className={cn(
-                          'truncate text-sm',
-                          active ? 'font-semibold text-sidebar-foreground' : 'text-muted-foreground',
-                        )}
-                      >
-                        {session.title ?? '新会话'}
-                      </span>
-                      <span className="text-xs text-muted-foreground">{meta}</span>
-                      {active && running && (
-                        <span
-                          className="absolute top-1/2 right-3.5 flex size-3.5 -translate-y-1/2 items-center justify-center rounded-full border border-success/50"
-                          title="运行中"
-                        >
-                          <span className="size-1.5 rounded-full bg-success" />
-                        </span>
-                      )}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          ))}
+      {/* 会话列表：胶囊风格 */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="space-y-2 px-3 pb-3">
+          {sessions.map((session) => {
+            const active = session.id === currentSessionId
+            const title = session.title ?? '新会话'
+            return (
+              <button
+                key={session.id}
+                type="button"
+                onClick={() => onResume(session.id)}
+                aria-current={active ? 'page' : undefined}
+                title={title}
+                className={cn(
+                  'flex w-full min-w-0 items-center gap-2 rounded-2xl px-3.5 py-2.5 text-left text-sm transition-colors',
+                  active
+                    ? 'bg-sidebar-primary font-medium text-sidebar-primary-foreground'
+                    : 'bg-muted text-sidebar-foreground hover:bg-sidebar-accent',
+                )}
+              >
+                <span
+                  className="block min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap"
+                  title={title}
+                >
+                  {title}
+                </span>
+                {active && running && (
+                  <span className="relative flex size-2 shrink-0" aria-hidden="true">
+                    <span className="absolute inline-flex size-full animate-ping rounded-full bg-sidebar-primary-foreground/70 opacity-75" />
+                    <span className="relative inline-flex size-2 rounded-full bg-sidebar-primary-foreground" />
+                  </span>
+                )}
+              </button>
+            )
+          })}
           {sessions.length === 0 && (
-            <div className="flex flex-col items-center gap-2 px-3 py-8 text-muted-foreground">
-              <MessagesSquare className="size-5 opacity-40" />
-              <span className="text-xs">还没有会话记录</span>
+            <div className="px-3 py-8 text-center text-xs text-muted-foreground">
+              还没有会话记录
             </div>
           )}
         </div>
-      </ScrollArea>
+      </div>
 
       {/* 底部：工作目录 + 上下文用量 */}
       <div className="border-t border-sidebar-border px-4 py-3">

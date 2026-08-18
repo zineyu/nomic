@@ -403,30 +403,30 @@ mod tests {
         );
     }
 
-    /// thinking 块套用 gutter 组件：无标题，`▌` 竖条正文，颜色区别于其他条目。
-    /// 默认折叠（仅占位行），`thinking` 命令展开后逐行渲染正文。
+    /// thinking 块套用 gutter 组件：带标题与树形前缀，默认折叠（仅占位行），
+    /// `thinking` 命令展开后逐行渲染正文。
     #[test]
     fn renders_thinking_block_with_gutter() {
         let mut app = thinking_app();
 
-        // 默认折叠：不渲染正文行，只渲染一行占位提示
+        // 默认折叠：不渲染正文行，只渲染标题与折叠提示
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
         let compact = compact_text(&terminal);
         assert!(!compact.contains("推理第一行"), "{compact}");
         assert!(!compact.contains("推理第二行"), "{compact}");
-        assert!(compact.contains("▌思考过程（2行，已折叠"), "{compact}");
+        assert!(compact.contains("▌思考（2行，已折叠）"), "{compact}");
 
-        // `thinking` 命令（命令栏，ADR-0020）展开后渲染正文行
+        // `thinking` 命令（命令栏，ADR-0020）展开后渲染标题与正文行
         app.press(super::super::app::Key::Esc);
         app.press(super::super::app::Key::Char(':'));
         app.paste_text("thinking");
         app.press(super::super::app::Key::Enter);
         terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
         let compact = compact_text(&terminal);
-        assert!(!compact.contains("Thinking"), "{compact}");
-        assert!(compact.contains("▌推理第一行"), "{compact}");
+        assert!(compact.contains("▌思考"), "{compact}");
+        assert!(compact.contains("▌⎿推理第一行"), "{compact}");
         assert!(compact.contains("▌推理第二行"), "{compact}");
     }
 

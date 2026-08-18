@@ -41,6 +41,11 @@ pub(super) const fn thinking() -> Style {
     Style::new().fg(THINKING).add_modifier(Modifier::ITALIC)
 }
 
+/// thinking 块标题：语义色 + 加粗，与正文斜体区分。
+pub(super) const fn thinking_bold() -> Style {
+    Style::new().fg(THINKING).add_modifier(Modifier::BOLD)
+}
+
 /// thinking 块 gutter（`│` 竖线）：比正文暗一档，形成块引用层次。
 pub(super) const fn thinking_marker() -> Style {
     dim()

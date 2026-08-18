@@ -71,25 +71,9 @@ fn item_blocks(
                         blocks.push(message.render(width));
                     }
                     Block::Thinking(thinking) => {
-                        // 同一消息块组件，暗色竖条 + 斜体正文与 assistant 输出区分，
-                        // 不加标题行，思考内容直接以 gutter 竖条表达；
-                        // 折叠时只渲染一行占位（`thinking` 命令切换）
-                        let mut message = MessageBlock::new(theme::thinking_marker());
-                        if thinking_collapsed {
-                            let count = thinking.lines().count();
-                            message.push(Line::from(Span::styled(
-                                format!("思考过程（{count} 行，已折叠；thinking 展开）"),
-                                theme::thinking(),
-                            )));
-                        } else {
-                            for line in thinking.lines() {
-                                message.push(Line::from(Span::styled(
-                                    line.to_string(),
-                                    theme::thinking(),
-                                )));
-                            }
-                        }
-                        blocks.push(message.render(width));
+                        // 模仿工具调用样式：标题行 + 树形前缀内容行，
+                        // 折叠时仅渲染标题与行数提示。
+                        blocks.push(thinking_block(thinking, thinking_collapsed).render(width));
                     }
                 }
             }
@@ -148,6 +132,32 @@ fn tool_block(tool: &ToolItem, spinner: &str) -> MessageBlock {
             block.push(Line::from(Span::styled(
                 format!("{prefix}{detail}"),
                 detail_style,
+            )));
+        }
+    }
+    block
+}
+
+/// thinking 块组件：gutter 竖条取 thinking 色，标题加粗 + 暗色折叠提示，
+/// 内容行首行 `⎿` 引导、后续行对齐缩进，与工具调用保持一致的树形层次。
+fn thinking_block(thinking: &str, thinking_collapsed: bool) -> MessageBlock {
+    let mut block = MessageBlock::new(theme::thinking_marker());
+    let count = thinking.lines().count();
+    if thinking_collapsed {
+        block.push(Line::from(vec![
+            Span::styled("思考".to_string(), theme::thinking_bold()),
+            Span::styled(format!("（{count} 行，已折叠）"), theme::dim()),
+        ]));
+    } else {
+        block.push(Line::from(Span::styled(
+            "思考".to_string(),
+            theme::thinking_bold(),
+        )));
+        for (index, line) in thinking.lines().enumerate() {
+            let prefix = if index == 0 { "⎿ " } else { "  " };
+            block.push(Line::from(Span::styled(
+                format!("{prefix}{line}"),
+                theme::thinking(),
             )));
         }
     }

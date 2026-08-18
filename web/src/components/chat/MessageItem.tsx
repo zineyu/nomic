@@ -3,7 +3,7 @@
 // system（居中提示）。参考 Kimi 布局：助手回合左对齐、正文优先。
 
 import { memo, useCallback, useState } from 'react'
-import { AlertTriangle, Check, ChevronRight, Copy, Loader2 } from 'lucide-react'
+import { AlertTriangle, Brain, Check, ChevronDown, Copy, Loader2 } from 'lucide-react'
 
 import { Markdown } from '@/components/Markdown'
 import { useThrottledValue } from '@/hooks/useThrottledValue'
@@ -70,25 +70,37 @@ function UserMessage({ item }: { item: UserItem }) {
 function ThinkingPill({ thinking, streaming }: { thinking: string; streaming: boolean }) {
   const [open, setOpen] = useState(false)
   if (!thinking) return null
+
+  const lineCount = thinking.split('\n').filter((line) => line.trim() !== '').length
+
   return (
-    <button
-      type="button"
-      onClick={() => setOpen((v) => !v)}
-      className={cn(
-        'w-fit max-w-[700px] rounded-lg border bg-card px-4 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/60',
-        open ? 'min-h-8 py-2' : 'h-8',
-      )}
-    >
-      <div className="flex h-full items-center gap-2">
-        <ChevronRight
-          className={cn('size-3.5 shrink-0 transition-transform', open && 'rotate-90')}
+    <div className="max-w-[700px] overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex h-8 w-full items-center gap-2 px-4 text-left text-xs hover:bg-accent/60"
+      >
+        <Brain className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="shrink-0 font-semibold text-muted-foreground">思考</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+          {streaming ? '思考中…' : `共 ${lineCount} 行`}
+        </span>
+        {streaming && <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />}
+        <ChevronDown
+          className={cn(
+            'size-3.5 shrink-0 text-muted-foreground transition-transform',
+            open && 'rotate-180',
+          )}
         />
-        {streaming && <Loader2 className="size-3.5 shrink-0 animate-spin" />}
-        <div className={cn('leading-none', !open && 'line-clamp-1')}>
-          <div className="whitespace-pre-wrap">{thinking}</div>
+      </button>
+      {open && (
+        <div className="border-t px-4 py-2.5">
+          <div className="max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/50 p-2.5 text-xs leading-relaxed text-muted-foreground">
+            {thinking}
+          </div>
         </div>
-      </div>
-    </button>
+      )}
+    </div>
   )
 }
 

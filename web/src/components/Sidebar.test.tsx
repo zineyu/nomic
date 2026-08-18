@@ -21,9 +21,6 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
     <Sidebar
       sessions={sessions}
       currentSessionId="a"
-      cwd="/tmp"
-      contextTokens={18_432}
-      contextWindow={262_144}
       running={false}
       onNewSession={vi.fn()}
       onResume={vi.fn()}
@@ -63,5 +60,12 @@ describe('Sidebar', () => {
     renderSidebar({ running: true })
     const active = screen.getByRole('button', { name: new RegExp(LONG_TITLE) })
     expect(active.querySelector('span[aria-hidden="true"]')).not.toBeNull()
+  })
+
+  it('不再展示工作目录与上下文用量', () => {
+    renderSidebar()
+    expect(screen.queryByText('/tmp')).not.toBeInTheDocument()
+    expect(screen.queryByText(/上下文/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/tokens/)).not.toBeInTheDocument()
   })
 })

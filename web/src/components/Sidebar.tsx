@@ -3,7 +3,7 @@
 // 参考截图：每个 session 用一个圆角胶囊展示标题；当前项用主色背景高亮，
 // 非当前项透明背景悬停变色；只展示标题，不展示时间/消息数分组。
 
-import { Folder, MessageSquarePlus } from 'lucide-react'
+import { MessageSquarePlus } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import type { SessionSummary } from '@/lib/types'
@@ -12,9 +12,6 @@ import { cn } from '@/lib/utils'
 interface SidebarProps {
   sessions: SessionSummary[]
   currentSessionId: string | null
-  cwd: string
-  contextTokens: number
-  contextWindow: number | null
   running: boolean
   onNewSession: () => void
   onResume: (id: string) => void
@@ -23,16 +20,10 @@ interface SidebarProps {
 export function Sidebar({
   sessions,
   currentSessionId,
-  cwd,
-  contextTokens,
-  contextWindow,
   running,
   onNewSession,
   onResume,
 }: SidebarProps) {
-  const usage = contextWindow && contextWindow > 0 ? contextTokens / contextWindow : null
-  const pct = usage !== null ? Math.min(usage * 100, 100) : null
-
   return (
     <div className="flex h-full w-80 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
       {/* 头部：标题 + 新对话 */}
@@ -90,36 +81,6 @@ export function Sidebar({
             </div>
           )}
         </div>
-      </div>
-
-      {/* 底部：工作目录 + 上下文用量 */}
-      <div className="border-t border-sidebar-border px-4 py-3">
-        <div
-          className="mb-2.5 flex items-center gap-1.5 font-mono text-xs text-muted-foreground"
-          title={cwd}
-        >
-          <Folder className="size-3 shrink-0 opacity-70" />
-          <span className="truncate">{cwd || '—'}</span>
-        </div>
-        <div className="flex items-baseline font-mono text-xs text-muted-foreground">
-          <span>上下文：{contextTokens.toLocaleString()} tokens</span>
-          {pct !== null && (
-            <span className="ml-auto font-medium text-sidebar-foreground">
-              {pct.toFixed(0)}%
-            </span>
-          )}
-        </div>
-        {pct !== null && (
-          <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-sidebar-border">
-            <div
-              className={cn(
-                'h-full rounded-full transition-all',
-                pct > 80 ? 'bg-destructive' : 'bg-sidebar-primary',
-              )}
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-        )}
       </div>
     </div>
   )

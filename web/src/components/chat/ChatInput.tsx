@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { SendHorizontal, Square } from 'lucide-react'
 
+import { ContextRing } from '@/components/chat/ContextRing'
 import { ModelPicker } from '@/components/ModelPicker'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -18,6 +19,8 @@ interface ChatInputProps {
   queued: number
   modelSpec?: string | null
   reasoning?: string | null
+  contextTokens?: number
+  contextWindow?: number | null
   onModelChanged?: () => void
   onSend: (text: string) => void
   onStop: () => void
@@ -28,6 +31,8 @@ export function ChatInput({
   queued,
   modelSpec,
   reasoning,
+  contextTokens = 0,
+  contextWindow = null,
   onModelChanged,
   onSend,
   onStop,
@@ -89,6 +94,7 @@ export function ChatInput({
               onChanged={onModelChanged}
             />
           )}
+          <ContextRing tokens={contextTokens} window={contextWindow} />
           {running ? (
             <Button
               type="button"

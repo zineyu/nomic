@@ -29,6 +29,7 @@ export function ChatView({
     session,
     model,
     reasoning,
+    contextTokens,
     send,
     stop,
     answerQuestion,
@@ -106,6 +107,8 @@ export function ChatView({
         queued={queued}
         modelSpec={modelSpec}
         reasoning={reasoning}
+        contextTokens={contextTokens}
+        contextWindow={model?.context_window ?? null}
         onSend={send}
         onStop={stop}
         onModelChanged={() => void refreshSnapshot()}

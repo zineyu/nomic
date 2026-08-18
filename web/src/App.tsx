@@ -60,9 +60,6 @@ export default function App() {
             <Sidebar
               sessions={chat.sessions}
               currentSessionId={chat.session?.id ?? null}
-              cwd={chat.cwd}
-              contextTokens={chat.contextTokens}
-              contextWindow={chat.model?.context_window ?? null}
               running={chat.running}
               onNewSession={() => void chat.newSession()}
               onResume={handleResume}

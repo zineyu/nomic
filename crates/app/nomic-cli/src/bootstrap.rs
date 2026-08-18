@@ -17,7 +17,7 @@ use crate::config::Config;
 use crate::context_files::{ContextFile, discover_agents_files};
 use crate::model::{
     ModelResolver, api_key_env, build_provider, cli_model_provider, db_model_history,
-    load_catalog_unless_complete, resolve_api_key, select_startup_model,
+    db_reasoning_level, load_catalog_unless_complete, resolve_api_key, select_startup_model,
 };
 
 /// 初始化完成的运行时上下文：构建 agent 所需的全部零件 + 持久化句柄与恢复历史。
@@ -83,6 +83,15 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
         models.config().and_then(|c| c.api_key.as_deref()),
     );
     let provider = build_provider(model.api, api_key.clone());
+    // 思考级别恢复链：CLI > config.toml > sqlite 配置表
+    let db_reasoning = db_reasoning_level(store.as_ref()).await;
+    let reasoning = cli
+        .reasoning
+        .as_deref()
+        .or_else(|| models.config().and_then(|c| c.reasoning.as_deref()))
+        .map(parse_reasoning)
+        .transpose()?
+        .or(db_reasoning);
     let stream_options = StreamOptions {
         temperature: cli
             .temperature
@@ -90,12 +99,7 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
         max_tokens: cli
             .max_tokens
             .or_else(|| models.config().and_then(|c| c.max_tokens)),
-        reasoning: cli
-            .reasoning
-            .as_deref()
-            .or_else(|| models.config().and_then(|c| c.reasoning.as_deref()))
-            .map(parse_reasoning)
-            .transpose()?,
+        reasoning,
         api_key,
         headers: Vec::new(),
         timeout_ms: None,

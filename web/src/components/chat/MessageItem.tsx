@@ -2,8 +2,8 @@
 // 头像 + 思考胶囊 + markdown 正文 + 流式光标）/ tool（执行卡片，独立渲染）/
 // system（居中提示）。参考 Kimi 布局：助手回合左对齐、正文优先。
 
-import { memo, useCallback, useState } from 'react'
-import { AlertTriangle, Brain, Check, ChevronDown, Copy, Loader2 } from 'lucide-react'
+import { memo, useState } from 'react'
+import { AlertTriangle, Brain, ChevronDown, Loader2 } from 'lucide-react'
 
 import { Markdown } from '@/components/Markdown'
 import { useThrottledValue } from '@/hooks/useThrottledValue'
@@ -18,28 +18,6 @@ function formatMessageTime(millis: number): string {
   const time = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
   if (sameDay) return time
   return `${date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })} ${time}`
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false)
-  const onCopy = useCallback(() => {
-    void navigator.clipboard.writeText(text).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    })
-  }, [text])
-
-  return (
-    <button
-      type="button"
-      onClick={onCopy}
-      className="flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
-      aria-label={copied ? '已复制' : '复制消息'}
-      title={copied ? '已复制' : '复制消息'}
-    >
-      {copied ? <Check className="size-3 text-success" /> : <Copy className="size-3" />}
-    </button>
-  )
 }
 
 function UserMessage({ item }: { item: UserItem }) {
@@ -76,11 +54,11 @@ function ThinkingPill({ thinking, streaming }: { thinking: string; streaming: bo
   const brief = firstLine.length > 80 ? firstLine.slice(0, 80) + '…' : firstLine
 
   return (
-    <div className="max-w-[920px] text-gray-500">
+    <div className="text-gray-500">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex h-6 w-full items-center gap-1.5 px-3 text-left text-xs cursor-pointer hover:bg-accent/60"
+        className="flex h-6 w-full items-center gap-1.5 text-left text-xs cursor-pointer hover:bg-accent/60"
       >
         <Brain className="size-3 shrink-0 text-gray-500" />
         <span className="shrink-0 font-semibold text-gray-500">Think</span>
@@ -96,7 +74,7 @@ function ThinkingPill({ thinking, streaming }: { thinking: string; streaming: bo
         />
       </button>
       {expanded && (
-        <div className="px-3 py-1.5">
+        <div className="py-1.5">
           <div className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 text-xs leading-relaxed text-gray-500">
             {thinking}
           </div>
@@ -116,7 +94,7 @@ function AssistantMessage({ item }: { item: AssistantItem }) {
       <ThinkingPill thinking={item.thinking} streaming={item.streaming} />
 
       {failed ? (
-        <div className="flex max-w-[920px] items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/5 p-3 text-sm">
+        <div className="flex items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/5 p-3 text-sm">
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
           <div>
             <div className="font-medium text-destructive">
@@ -128,7 +106,7 @@ function AssistantMessage({ item }: { item: AssistantItem }) {
           </div>
         </div>
       ) : item.text ? (
-        <div className="max-w-[920px]">
+        <div>
           <Markdown>{displayText}</Markdown>
           {item.streaming && <span className="caret">▍</span>}
         </div>
@@ -138,12 +116,6 @@ function AssistantMessage({ item }: { item: AssistantItem }) {
           正在生成回复…
         </div>
       ) : null}
-
-      {item.text && !item.streaming && (
-        <div className="flex max-w-[920px] justify-end">
-          <CopyButton text={item.text} />
-        </div>
-      )}
     </div>
   )
 }

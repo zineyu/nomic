@@ -210,6 +210,27 @@ async fn handle_switch_model(
             .handle
             .set_reasoning(level)
             .map_err(|_| ApiError::Internal("agent actor 已退出".to_string()))?;
+        // 思考级别落库（与模型选择同口径）；失败仅告警不阻断切换
+        let recorder = state.inner.recorder.lock().await;
+        if let Some(recorder) = recorder.as_ref() {
+            let value = match level {
+                Some(ThinkingLevel::Minimal) => "minimal",
+                Some(ThinkingLevel::Low) => "low",
+                Some(ThinkingLevel::Medium) => "medium",
+                Some(ThinkingLevel::High) => "high",
+                _ => "off",
+            };
+            if let Err(error) = recorder
+                .store()
+                .set_config(
+                    crate::model::CONFIG_KEY_REASONING,
+                    &serde_json::Value::String(value.to_string()),
+                )
+                .await
+            {
+                tracing::warn!(%error, "思考级别落库失败");
+            }
+        }
     }
 
     // 选择落库（与 TUI 同一口径）；失败仅告警不阻断切换

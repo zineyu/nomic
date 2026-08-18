@@ -42,7 +42,7 @@ function ToolCardImpl({ item }: { item: ToolItem }) {
         onClick={() => setExpanded((v) => !v)}
         disabled={!hasDetail}
         className={cn(
-          'flex h-6 w-full items-center gap-1.5 px-3 text-left text-xs',
+          'flex h-6 w-full items-center gap-1.5 text-left text-xs',
           hasDetail ? 'cursor-pointer hover:bg-accent/60' : 'cursor-default',
         )}
       >
@@ -64,7 +64,7 @@ function ToolCardImpl({ item }: { item: ToolItem }) {
         )}
       </button>
       {expanded && (
-        <div className="space-y-1 px-3 py-1.5">
+        <div className="space-y-1 py-1.5">
           {Object.keys(item.args).length > 0 && (
             <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 font-mono text-xs leading-relaxed text-gray-500 break-all">
               {JSON.stringify(item.args, null, 2)}

@@ -83,6 +83,7 @@ pub(in crate::tui) fn set_reasoning(
                 persist_model_selection(session, spec);
                 update_badge(app, switcher);
             }
+            persist_reasoning(session, setting.level());
             app.chat_mut().push_system(notice);
         }
         Confirm::Failed(warn) => app.warn(warn),
@@ -116,6 +117,31 @@ fn persist_model_selection(session: &SessionBinding, spec: String) {
             .await
         {
             tracing::warn!(error = %error, "模型选择落库失败");
+        }
+    });
+}
+
+/// 思考级别落库（config 表 append-only，最新行即下次启动的恢复源）。
+fn persist_reasoning(session: &SessionBinding, level: Option<ThinkingLevel>) {
+    let Some(store) = session.store() else {
+        return;
+    };
+    let value = match level {
+        Some(ThinkingLevel::Minimal) => "minimal",
+        Some(ThinkingLevel::Low) => "low",
+        Some(ThinkingLevel::Medium) => "medium",
+        Some(ThinkingLevel::High) => "high",
+        _ => "off",
+    };
+    tokio::spawn(async move {
+        if let Err(error) = store
+            .set_config(
+                model::CONFIG_KEY_REASONING,
+                &serde_json::Value::String(value.to_string()),
+            )
+            .await
+        {
+            tracing::warn!(error = %error, "思考级别落库失败");
         }
     });
 }

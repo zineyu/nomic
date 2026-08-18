@@ -3,7 +3,7 @@
 // 输入区圆角胶囊形态：收缩到内容宽度，不抢占输入框剩余空间。
 
 import { useEffect, useMemo, useState } from 'react'
-import { Check, ChevronsUpDown, Cpu } from 'lucide-react'
+import { Check, ChevronsUpDown, Cpu, Brain } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -130,9 +130,16 @@ export function ModelPicker({
             <Button
               variant="ghost"
               size="sm"
-              className="h-7 shrink-0 rounded-full px-1 text-xs font-normal text-muted-foreground"
+              className={cn(
+                'h-7 shrink-0 gap-1.5 rounded-full px-2 text-xs font-normal',
+                reasoning && reasoning !== 'off'
+                  ? 'border border-primary/30 bg-primary/10 text-primary'
+                  : 'text-muted-foreground',
+              )}
+              title={reasoning && reasoning !== 'off' ? `推理强度: ${reasoning}` : '推理强度: 关闭'}
             >
-              {reasoning ?? 'off'}
+              <Brain className="size-3 shrink-0" />
+              <span>{reasoning && reasoning !== 'off' ? reasoning : 'off'}</span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
@@ -142,7 +149,10 @@ export function ModelPicker({
                 onSelect={() => void setLevel(level)}
                 className={cn('justify-between gap-4', reasoning === level && 'font-medium')}
               >
-                {level}
+                <span className="flex items-center gap-2">
+                  <Brain className="size-3" />
+                  {level}
+                </span>
                 {reasoning === level && <Check className="size-3.5 text-primary" />}
               </DropdownMenuItem>
             ))}

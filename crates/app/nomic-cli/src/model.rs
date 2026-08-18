@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
 use nomic_ai::{
-    ApiKind, Catalog, Model, ModelSpec, Provider,
+    ApiKind, Catalog, Model, ModelSpec, Provider, ThinkingLevel,
     providers::{AnthropicProvider, OpenAiCompat, OpenAiProvider},
 };
 use nomic_session::SessionStore;
@@ -48,6 +48,9 @@ pub fn cli_model_provider(cli: &Cli) -> Option<String> {
 
 /// sqlite 配置表中模型选择的配置键。
 pub const CONFIG_KEY_MODEL: &str = "model";
+
+/// sqlite 配置表中思考级别的配置键。
+pub const CONFIG_KEY_REASONING: &str = "reasoning";
 
 /// 模型选择项：`<provider>/<模型id>` 格式（sqlite 配置与 `/models` 命令共用）。
 /// 派生 serde（web 模式经 REST 返回当前选择）。
@@ -121,6 +124,27 @@ pub async fn db_model_history(store: Option<&SessionStore>) -> Vec<ModelSelectio
             }
         })
         .collect()
+}
+
+/// 从 sqlite 配置表读取上次保存的思考级别。
+///
+/// 库不可用或读取失败返回 `None`（降级为 config.toml / CLI 默认）。
+pub async fn db_reasoning_level(store: Option<&SessionStore>) -> Option<ThinkingLevel> {
+    let store = store?;
+    let value = store
+        .config_history(CONFIG_KEY_REASONING)
+        .await
+        .ok()?
+        .into_iter()
+        .next()?;
+    let word = value.as_str()?;
+    match word {
+        "minimal" => Some(ThinkingLevel::Minimal),
+        "low" => Some(ThinkingLevel::Low),
+        "medium" => Some(ThinkingLevel::Medium),
+        "high" => Some(ThinkingLevel::High),
+        _ => None,
+    }
 }
 
 /// 启动模型选择：CLI 参数 > sqlite 配置回退链（feedback）；两层都没有时报错。

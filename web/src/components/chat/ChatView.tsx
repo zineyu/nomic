@@ -1,5 +1,4 @@
-// 聊天主视图：会话头（标题 + 分隔线）+ 消息流 + 输入区 +
-// 提问弹层 + 错误提示。列宽 920px 居中，与参考设计一致。
+// 聊天主视图：顶栏（标题）+ 消息流 + 输入区 + 提问弹层 + 错误提示。列宽 920px 居中。
 
 import { useEffect, useState } from 'react'
 import { AlertTriangle, Loader2, MessageCircleQuestion, PanelLeft, X } from 'lucide-react'
@@ -55,29 +54,29 @@ export function ChatView({
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col bg-background">
-      {/* 会话头：标题 + 分隔线 */}
-      <div className="mx-auto w-full max-w-[920px] px-7 pt-3">
+      {/* 顶栏：标题 */}
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8 shrink-0 md:hidden"
+          onClick={onToggleSidebar}
+          title={sidebarOpen ? '收起侧栏' : '展开侧栏'}
+        >
+          <PanelLeft className="size-4" />
+        </Button>
+
         <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8 shrink-0 md:hidden"
-            onClick={onToggleSidebar}
-            title={sidebarOpen ? '收起侧栏' : '展开侧栏'}
-          >
-            <PanelLeft className="size-4" />
-          </Button>
-          <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={title}>
+          {/* 标题 */}
+          <h2 className="truncate text-base font-semibold" title={title}>
             {title}
           </h2>
           {running && (
-            <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
-              <Loader2 className="size-3 animate-spin" />
-              运行中
-            </span>
+            <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
           )}
         </div>
-        <hr className="mt-3 border-border" />
+
+        <div className="flex-1" />
       </div>
 
       <div className="min-h-0 flex-1">

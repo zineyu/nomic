@@ -1,12 +1,15 @@
-// 图标导航栏：logo + 会话入口（当前唯一视图）。桌面端固定展示。
+// 图标导航栏：模仿 DeepSeek Harness 左侧导航。
+// 顶部 logo + 会话入口。
 
 import { MessagesSquare } from 'lucide-react'
 
 export function Rail() {
   return (
     <nav className="hidden w-14 shrink-0 flex-col items-center border-r bg-sidebar py-4 md:flex">
-      <div className="mb-5 flex size-8 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">
-        n
+      <div className="mb-5 flex items-center gap-1.5">
+        <div className="flex size-8 items-center justify-center rounded-lg bg-foreground text-sm font-bold text-background">
+          <span className="text-xs">deep</span>
+        </div>
       </div>
       <button
         type="button"

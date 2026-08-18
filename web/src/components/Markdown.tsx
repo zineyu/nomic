@@ -70,10 +70,10 @@ function Link({ href, children }: ComponentProps<'a'>) {
 
 function Heading({ level, children }: ComponentProps<'h1'> & { level?: number }) {
   const sizes: Record<number, string> = {
-    1: 'mb-3 mt-4 text-lg font-semibold',
-    2: 'mb-2 mt-4 text-base font-semibold',
-    3: 'mb-2 mt-3 text-sm font-semibold',
-    4: 'mb-1 mt-2 text-sm font-medium',
+    1: 'mb-3 mt-4 text-xl font-semibold',
+    2: 'mb-2 mt-4 text-lg font-semibold',
+    3: 'mb-2 mt-3 text-base font-semibold',
+    4: 'mb-1 mt-2 text-base font-medium',
   }
   const Tag = `h${Math.min(Math.max(level ?? 2, 1), 4)}` as 'h1' | 'h2' | 'h3' | 'h4'
   return <Tag className={cn('text-foreground', sizes[level ?? 2])}>{children}</Tag>
@@ -114,7 +114,7 @@ function MarkdownImpl({
   className?: string
 }) {
   return (
-    <div className={cn('space-y-1 break-words text-sm leading-relaxed', className)}>
+    <div className={cn('space-y-1 break-words text-base leading-relaxed', className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

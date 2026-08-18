@@ -13,7 +13,7 @@ mod injection;
 mod interception;
 mod tool;
 
-pub use agent::{ActorError, Agent, AgentError, AgentEvent, AgentHandle};
+pub use agent::{ActorError, Agent, AgentError, AgentEvent, AgentHandle, SessionStats};
 pub use builder::{AgentBuilder, Set, Unset};
 pub use compaction::{
     CompactRequest, Compaction, CompactionError, CompactionSettings, estimate_context_tokens,

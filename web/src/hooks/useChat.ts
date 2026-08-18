@@ -11,6 +11,7 @@ import type {
   AskUserQuestion,
   Model,
   ServerEvent,
+  SessionStats,
   SessionSummary,
 } from '@/lib/types'
 
@@ -31,6 +32,20 @@ export interface ChatState {
   cwd: string
   question: QuestionState | null
   error: string | null
+  stats: SessionStats
+}
+
+const defaultStats: SessionStats = {
+  rounds: 0,
+  total_steps: 0,
+  llm_time_ms: 0,
+  tool_time_ms: 0,
+  avg_first_token_ms: 0,
+  output_token_rate: 0,
+  cache_hit_ratio: 0,
+  input_tokens: 0,
+  output_tokens: 0,
+  subagent_count: 0,
 }
 
 const initialState: ChatState = {
@@ -45,6 +60,7 @@ const initialState: ChatState = {
   cwd: '',
   question: null,
   error: null,
+  stats: defaultStats,
 }
 
 export function useChat() {
@@ -93,6 +109,18 @@ export function useChat() {
         question:
           snap.pending_question ?? (prev.question?.id ? prev.question : null),
         error: null,
+        stats: {
+          rounds: snap.rounds ?? 0,
+          total_steps: snap.total_steps ?? 0,
+          llm_time_ms: snap.llm_time_ms ?? 0,
+          tool_time_ms: snap.tool_time_ms ?? 0,
+          avg_first_token_ms: snap.avg_first_token_ms ?? 0,
+          output_token_rate: snap.output_token_rate ?? 0,
+          cache_hit_ratio: snap.cache_hit_ratio ?? 0,
+          input_tokens: snap.input_tokens ?? 0,
+          output_tokens: snap.output_tokens ?? 0,
+          subagent_count: snap.subagent_count ?? 0,
+        },
       }))
     } catch (error) {
       setState((prev) => ({

@@ -216,6 +216,20 @@ export interface SessionSummary {
   message_count: number
 }
 
+/** 会话统计信息（从后端 /api/state 返回） */
+export interface SessionStats {
+  rounds: number
+  total_steps: number
+  llm_time_ms: number
+  tool_time_ms: number
+  avg_first_token_ms: number
+  output_token_rate: number
+  cache_hit_ratio: number
+  input_tokens: number
+  output_tokens: number
+  subagent_count: number
+}
+
 export interface StateResponse {
   messages: Message[]
   model: Model
@@ -226,6 +240,17 @@ export interface StateResponse {
   session: { id: string; title: string | null } | null
   pending_question: { id: string; question: AskUserQuestion } | null
   cwd: string
+  /** 会话统计信息 */
+  rounds: number
+  total_steps: number
+  llm_time_ms: number
+  tool_time_ms: number
+  avg_first_token_ms: number
+  output_token_rate: number
+  cache_hit_ratio: number
+  input_tokens: number
+  output_tokens: number
+  subagent_count: number
 }
 
 export interface ModelsResponse {

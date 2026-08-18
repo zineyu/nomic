@@ -21,20 +21,21 @@ function makeAssistant(overrides: Partial<AssistantItem> = {}): AssistantItem {
 }
 
 describe('MessageItem assistant', () => {
-  it('thinking 默认折叠，点击展开显示完整内容', async () => {
+  it('thinking 默认折叠（显示首行摘要），点击展开显示完整内容', async () => {
     const user = userEvent.setup()
     const item = makeAssistant({
       thinking: '第一行推理\n第二行推理',
     })
     render(<MessageItem item={item} />)
 
-    expect(screen.getByText('思考')).toBeInTheDocument()
-    expect(screen.queryByText('第一行推理')).not.toBeInTheDocument()
-    expect(screen.getByText('共 2 行')).toBeInTheDocument()
+    // 折叠态：胶囊标题 + 首行摘要，其余行不可见
+    expect(screen.getByText('Think')).toBeInTheDocument()
+    expect(screen.getByText('第一行推理')).toBeInTheDocument()
+    expect(screen.queryByText(/第二行推理/)).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button'))
 
-    expect(screen.getByText(/第一行推理/)).toBeInTheDocument()
+    // 展开态：完整推理内容可见（第二行仅存在于展开区）
     expect(screen.getByText(/第二行推理/)).toBeInTheDocument()
   })
 

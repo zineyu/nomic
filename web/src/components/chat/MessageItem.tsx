@@ -44,8 +44,8 @@ function CopyButton({ text }: { text: string }) {
 
 function UserMessage({ item }: { item: UserItem }) {
   return (
-    <div className="flex flex-col items-end gap-1.5">
-      <div className="max-w-[70%] rounded-[14px] rounded-br-md bg-primary px-4 py-2.5 text-sm leading-relaxed text-primary-foreground shadow-sm">
+    <div className="flex flex-col items-end gap-1">
+      <div className="max-w-[70%] rounded-[14px] rounded-br-md bg-primary px-4 py-2.5 text-base leading-relaxed text-primary-foreground shadow-sm">
         {item.images.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {item.images.map((image, i) => (
@@ -60,7 +60,7 @@ function UserMessage({ item }: { item: UserItem }) {
         )}
         <div className="whitespace-pre-wrap">{item.text}</div>
       </div>
-      <div className="pr-1 text-xs text-muted-foreground">
+      <div className="pr-1 text-[11px] text-muted-foreground">
         {item.timestamp ? `${formatMessageTime(item.timestamp)} · ` : ''}你
       </div>
     </div>
@@ -68,34 +68,36 @@ function UserMessage({ item }: { item: UserItem }) {
 }
 
 function ThinkingPill({ thinking, streaming }: { thinking: string; streaming: boolean }) {
-  const [open, setOpen] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   if (!thinking) return null
 
-  const lineCount = thinking.split('\n').filter((line) => line.trim() !== '').length
+  // 取第一行非空内容作为摘要
+  const firstLine = thinking.split('\n').find((line) => line.trim() !== '') ?? thinking
+  const brief = firstLine.length > 80 ? firstLine.slice(0, 80) + '…' : firstLine
 
   return (
-    <div className="max-w-[700px] overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm">
+    <div className="max-w-[920px] text-gray-500">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex h-8 w-full items-center gap-2 px-4 text-left text-xs hover:bg-accent/60"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex h-6 w-full items-center gap-1.5 px-3 text-left text-xs cursor-pointer hover:bg-accent/60"
       >
-        <Brain className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="shrink-0 font-semibold text-muted-foreground">思考</span>
-        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-          {streaming ? '思考中…' : `共 ${lineCount} 行`}
+        <Brain className="size-3 shrink-0 text-gray-500" />
+        <span className="shrink-0 font-semibold text-gray-500">Think</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-gray-500">
+          {streaming ? '思考中…' : brief}
         </span>
-        {streaming && <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />}
+        {streaming && <Loader2 className="size-3 shrink-0 animate-spin text-gray-500" />}
         <ChevronDown
           className={cn(
-            'size-3.5 shrink-0 text-muted-foreground transition-transform',
-            open && 'rotate-180',
+            'size-3 shrink-0 text-gray-500 transition-transform',
+            expanded && 'rotate-180',
           )}
         />
       </button>
-      {open && (
-        <div className="border-t px-4 py-2.5">
-          <div className="max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/50 p-2.5 text-xs leading-relaxed text-muted-foreground">
+      {expanded && (
+        <div className="px-3 py-1.5">
+          <div className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 text-xs leading-relaxed text-gray-500">
             {thinking}
           </div>
         </div>
@@ -109,20 +111,12 @@ function AssistantMessage({ item }: { item: AssistantItem }) {
   // 流式期间节流文本，避免每个字符触发一次 markdown 解析；定稿后立即冲刷。
   const displayText = useThrottledValue(item.text, item.streaming ? 80 : 0)
   return (
-    <div className="flex flex-col gap-2.5">
-      {/* 回合头部：头像 + 名称 + 模型 */}
-      <div className="flex items-center gap-2">
-        <span className="flex size-[22px] shrink-0 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground">
-          n
-        </span>
-        <span className="text-sm font-semibold">nomic</span>
-        {item.model && <span className="text-xs text-muted-foreground">{item.model}</span>}
-      </div>
+    <div className="flex flex-col gap-1.5">
 
       <ThinkingPill thinking={item.thinking} streaming={item.streaming} />
 
       {failed ? (
-        <div className="flex max-w-[700px] items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/5 p-3 text-sm">
+        <div className="flex max-w-[920px] items-start gap-2 rounded-xl border border-destructive/40 bg-destructive/5 p-3 text-sm">
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
           <div>
             <div className="font-medium text-destructive">
@@ -134,7 +128,7 @@ function AssistantMessage({ item }: { item: AssistantItem }) {
           </div>
         </div>
       ) : item.text ? (
-        <div className="max-w-[700px]">
+        <div className="max-w-[920px]">
           <Markdown>{displayText}</Markdown>
           {item.streaming && <span className="caret">▍</span>}
         </div>
@@ -146,7 +140,7 @@ function AssistantMessage({ item }: { item: AssistantItem }) {
       ) : null}
 
       {item.text && !item.streaming && (
-        <div className="flex max-w-[700px] justify-end">
+        <div className="flex max-w-[920px] justify-end">
           <CopyButton text={item.text} />
         </div>
       )}

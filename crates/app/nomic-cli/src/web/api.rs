@@ -108,6 +108,9 @@ pub struct StateResponse {
     pub session: Option<SessionInfo>,
     pub pending_question: Option<QuestionView>,
     pub cwd: String,
+    /// 会话统计信息（前端状态栏展示用）
+    #[serde(flatten)]
+    pub stats: nomic_core::SessionStats,
 }
 
 /// 当前 session 信息。
@@ -268,6 +271,7 @@ fn state_response(snapshot: Snapshot) -> StateResponse {
         running: snapshot.running,
         queued: snapshot.queued,
         cwd: snapshot.cwd.display().to_string(),
+        stats: snapshot.stats,
     }
 }
 

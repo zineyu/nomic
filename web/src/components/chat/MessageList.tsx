@@ -21,7 +21,7 @@ const MAX_VISIBLE_TOOLS = 2
 function ToolGroup({ tools }: { tools: ToolItem[] }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className="flex max-w-[700px] flex-col gap-2">
+    <div className="flex max-w-[920px] flex-col gap-2">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -129,8 +129,8 @@ export function MessageList({
   return (
     <div className="relative h-full">
       <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
-        <div className="mx-auto w-full max-w-[920px] px-7 py-5">
-          <div className="flex flex-col gap-3.5">{renderRows(items)}</div>
+        <div className="mx-auto w-full max-w-[920px] px-7 py-3">
+          <div className="flex flex-col gap-2">{renderRows(items)}</div>
         </div>
       </div>
       {showJump && (

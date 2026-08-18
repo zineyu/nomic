@@ -20,7 +20,7 @@ use nomic_ai::{ImageContent, Message, Model, Provider, ThinkingLevel};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::{Agent, AgentError};
+use crate::agent::{Agent, AgentError, SessionStats};
 use crate::compaction::{Compaction, CompactionError, estimate_context_tokens};
 
 /// actor 调用错误：actor 任务已退出，或 loop / 压缩本身失败。
@@ -81,6 +81,8 @@ enum AgentCommand {
     Model(oneshot::Sender<Model>),
     /// 查询当前思考级别
     Reasoning(oneshot::Sender<Option<ThinkingLevel>>),
+    /// 查询当前会话统计信息
+    Stats(oneshot::Sender<SessionStats>),
 }
 
 /// agent actor 句柄：可克隆、可在任意时机调用，命令经邮箱串行执行。
@@ -207,6 +209,11 @@ impl AgentHandle {
         self.call(AgentCommand::Reasoning).await
     }
 
+    /// 查询当前会话统计信息（前端状态栏展示用）。
+    pub async fn stats(&self) -> Result<SessionStats, ActorError> {
+        self.call(AgentCommand::Stats).await
+    }
+
     /// 发送一条 fire-and-forget 命令；邮箱关闭（actor 已退出）时报错。
     fn send(&self, command: AgentCommand) -> Result<(), ActorError> {
         self.cmd_tx.send(command).map_err(|_| ActorError::Gone)
@@ -273,6 +280,9 @@ impl Agent {
                     }
                     AgentCommand::Reasoning(reply) => {
                         let _ = reply.send(agent.reasoning());
+                    }
+                    AgentCommand::Stats(reply) => {
+                        let _ = reply.send(agent.stats().clone());
                     }
                 }
             }

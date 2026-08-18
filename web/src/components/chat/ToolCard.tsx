@@ -11,7 +11,7 @@ import type { ToolItem } from '@/lib/chat'
 function StatusBadge({ item }: { item: ToolItem }) {
   if (item.status === 'running') {
     return (
-      <span className="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full border border-border bg-muted px-2 text-[10px] text-muted-foreground">
+      <span className="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full border border-border bg-muted px-2 text-[11px] text-muted-foreground">
         <Loader2 className="size-2.5 animate-spin" />
         运行中
       </span>
@@ -19,13 +19,13 @@ function StatusBadge({ item }: { item: ToolItem }) {
   }
   if (item.status === 'error') {
     return (
-      <span className="flex h-5 shrink-0 items-center rounded-full border border-destructive/40 bg-destructive/10 px-2 text-[10px] text-destructive">
+      <span className="flex h-5 shrink-0 items-center rounded-full border border-destructive/40 bg-destructive/10 px-2 text-[11px] text-destructive">
         ✗ 失败
       </span>
     )
   }
   return (
-    <span className="flex h-5 shrink-0 items-center rounded-full border border-success/40 bg-success/10 px-2 text-[10px] text-success">
+    <span className="flex h-5 shrink-0 items-center rounded-full border border-success/40 bg-success/10 px-2 text-[11px] text-success">
       ✓ 完成
     </span>
   )
@@ -36,47 +36,42 @@ function ToolCardImpl({ item }: { item: ToolItem }) {
   const hasDetail = Object.keys(item.args).length > 0 || item.resultPreview !== ''
 
   return (
-    <div
-      className={cn(
-        'max-w-[700px] overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm',
-        item.isError && 'border-destructive/50',
-      )}
-    >
+    <div className="max-w-[920px] text-gray-500">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
         disabled={!hasDetail}
         className={cn(
-          'flex h-8 w-full items-center gap-2 px-4 text-left text-xs',
+          'flex h-6 w-full items-center gap-1.5 px-3 text-left text-xs',
           hasDetail ? 'cursor-pointer hover:bg-accent/60' : 'cursor-default',
         )}
       >
-        <Terminal className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="shrink-0 font-mono text-xs font-semibold text-muted-foreground">
+        <Terminal className="size-3 shrink-0 text-gray-500" />
+        <span className="shrink-0 font-mono text-xs font-semibold text-gray-500">
           {item.name}
         </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-gray-500">
           {briefArgs(item.name, item.args)}
         </span>
         <StatusBadge item={item} />
         {hasDetail && (
           <ChevronDown
             className={cn(
-              'size-3.5 shrink-0 text-muted-foreground transition-transform',
+              'size-3 shrink-0 text-gray-500 transition-transform',
               expanded && 'rotate-180',
             )}
           />
         )}
       </button>
       {expanded && (
-        <div className="space-y-2 border-t px-4 py-2.5">
+        <div className="space-y-1 px-3 py-1.5">
           {Object.keys(item.args).length > 0 && (
-            <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/50 p-2.5 font-mono text-xs leading-relaxed text-muted-foreground break-all">
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 font-mono text-xs leading-relaxed text-gray-500 break-all">
               {JSON.stringify(item.args, null, 2)}
             </pre>
           )}
           {item.resultPreview !== '' && (
-            <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/50 p-2.5 font-mono text-xs leading-relaxed text-muted-foreground/80">
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 font-mono text-xs leading-relaxed text-gray-500/80">
               {item.resultPreview}
             </pre>
           )}

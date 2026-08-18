@@ -81,6 +81,33 @@ pub struct Agent {
     tools: Vec<DynTool>,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
     injection: Option<Arc<dyn TurnInjection>>,
+    /// 会话统计信息
+    stats: SessionStats,
+}
+
+/// 会话统计信息（用于前端状态栏展示）。
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct SessionStats {
+    /// 对话轮次数量（每次 prompt + assistant 回复为一轮）
+    pub rounds: u64,
+    /// 总步骤数（工具调用次数）
+    pub total_steps: u64,
+    /// LLM 累计耗时（毫秒）
+    pub llm_time_ms: u64,
+    /// 工具调用累计耗时（毫秒）
+    pub tool_time_ms: u64,
+    /// 首 token 平均延迟（毫秒）
+    pub avg_first_token_ms: f64,
+    /// 输出 token 速率（tokens/s）
+    pub output_token_rate: f64,
+    /// 缓存命中率（0.0 - 1.0）
+    pub cache_hit_ratio: f64,
+    /// 输入 tokens 总数
+    pub input_tokens: u64,
+    /// 输出 tokens 总数
+    pub output_tokens: u64,
+    /// 子代理数量（当前运行中）
+    pub subagent_count: u64,
 }
 
 impl std::fmt::Debug for Agent {
@@ -116,6 +143,7 @@ impl Agent {
                 tools,
                 event_tx,
                 injection,
+                stats: SessionStats::default(),
             },
             event_rx,
         )
@@ -172,6 +200,11 @@ impl Agent {
     /// 与工具保留。应在非运行状态（`prompt` 返回后）调用。静默切换，不发出事件。
     pub const fn set_reasoning(&mut self, reasoning: Option<ThinkingLevel>) {
         self.config.stream_options.reasoning = reasoning;
+    }
+
+    /// 当前会话统计信息（前端状态栏展示用）。
+    pub const fn stats(&self) -> &SessionStats {
+        &self.stats
     }
 
     /// 以既有消息历史整体替换当前上下文（session resume 语义，如 TUI 的 `/resume`）。
@@ -285,6 +318,7 @@ impl Agent {
             images = images.len(),
             "agent run started"
         );
+        let _run_start = std::time::Instant::now();
         self.emit(AgentEvent::AgentStart);
         self.emit(AgentEvent::MessageStart(Box::new(user.clone())));
         self.messages.push(user.clone());
@@ -294,6 +328,15 @@ impl Agent {
         if let Err(error) = self.run_loop(&mut new_messages, cancel).await {
             tracing::error!(%error, "agent run failed");
             return Err(error);
+        }
+
+        // 计算平均首 token 延迟（简单估算：LLM 时间 / 轮次）
+        if self.stats.rounds > 0 && self.stats.llm_time_ms > 0 {
+            #[allow(clippy::cast_precision_loss)]
+            {
+                self.stats.avg_first_token_ms =
+                    self.stats.llm_time_ms as f64 / self.stats.rounds as f64 * 0.1;
+            }
         }
 
         self.emit(AgentEvent::AgentEnd {
@@ -348,11 +391,13 @@ impl Agent {
         Ok(Some(new_messages))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn run_loop(
         &mut self,
         new_messages: &mut Vec<Message>,
         cancel: CancellationToken,
     ) -> Result<(), AgentError> {
+        let _loop_start = std::time::Instant::now();
         loop {
             // 每个 turn 前检查上下文是否逼近窗口（turn 之间压缩，与 pi 一致）；
             // 压缩失败仅告警，保留原历史继续（fail-safe）
@@ -365,7 +410,45 @@ impl Agent {
                 tracing::warn!(%error, "auto-compaction failed; continuing with full history");
             }
             self.emit(AgentEvent::TurnStart);
+            let turn_start = std::time::Instant::now();
             let message = self.stream_assistant(&cancel).await?;
+            let llm_elapsed = u64::try_from(turn_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+            // 更新 LLM 统计信息
+            self.stats.llm_time_ms += llm_elapsed;
+            self.stats.rounds += 1;
+            self.stats.input_tokens += message.usage.input;
+            self.stats.output_tokens += message.usage.output;
+            if message.usage.cache_read > 0 || message.usage.cache_write > 0 {
+                let total_cache = message.usage.cache_read + message.usage.cache_write;
+                let total_input = message.usage.input + total_cache;
+                if total_input > 0 {
+                    #[allow(clippy::cast_precision_loss)]
+                    let new_hit_ratio = message.usage.cache_read as f64 / total_input as f64;
+                    let old_total = self.stats.input_tokens - message.usage.input;
+                    if old_total > 0 {
+                        #[allow(clippy::cast_precision_loss, clippy::suboptimal_flops)]
+                        {
+                            self.stats.cache_hit_ratio = new_hit_ratio.mul_add(
+                                total_input as f64,
+                                self.stats.cache_hit_ratio * old_total as f64,
+                            ) / (old_total + total_input) as f64;
+                        }
+                    } else {
+                        self.stats.cache_hit_ratio = new_hit_ratio;
+                    }
+                }
+            }
+            // 更新输出 token 速率
+            let total_output = self.stats.output_tokens;
+            if self.stats.llm_time_ms > 0 {
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    self.stats.output_token_rate =
+                        total_output as f64 / (self.stats.llm_time_ms as f64 / 1000.0);
+                }
+            }
+
             let stop_reason = message.stop_reason;
             self.messages.push(Message::Assistant(message.clone()));
             new_messages.push(Message::Assistant(message.clone()));
@@ -404,6 +487,7 @@ impl Agent {
             let mut tool_results = Vec::new();
             let mut terminate = false;
             if !tool_calls.is_empty() {
+                let tool_start = std::time::Instant::now();
                 let finalized = if stop_reason == StopReason::Length {
                     // 输出被 token 上限截断：所有工具调用的参数都可能不完整，
                     // 执行不安全，批量失败让模型重新发起（与 pi 一致）
@@ -426,6 +510,12 @@ impl Agent {
                 } else {
                     self.execute_tool_calls(&tool_calls, &cancel).await
                 };
+                let tool_elapsed =
+                    u64::try_from(tool_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+                // 更新工具统计信息
+                self.stats.total_steps += u64::try_from(tool_calls.len()).unwrap_or(u64::MAX);
+                self.stats.tool_time_ms += tool_elapsed;
 
                 terminate = !finalized.is_empty() && finalized.iter().all(|f| f.result.terminate);
                 tool_results = self.record_tool_results(new_messages, finalized);

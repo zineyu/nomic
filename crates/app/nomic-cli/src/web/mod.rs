@@ -331,6 +331,8 @@ pub struct Snapshot {
     pub session: Option<(String, Option<String>)>,
     pub pending_question: Option<(String, AskUserQuestion)>,
     pub cwd: PathBuf,
+    /// 会话统计信息
+    pub stats: nomic_core::SessionStats,
 }
 
 /// 收集当前状态快照：agent 查询（经 actor 邮箱）+ 运行时可变状态。
@@ -339,6 +341,7 @@ pub async fn snapshot(state: &AppState) -> Result<Snapshot> {
     let model = state.handle.model().await?;
     let reasoning = state.handle.reasoning().await?;
     let context_tokens = state.handle.context_tokens().await?;
+    let session_stats = state.handle.stats().await?;
     let (running, queued) = (state.inner.gate.running(), state.inner.gate.len().await);
     let session = {
         let recorder = state.inner.recorder.lock().await;
@@ -366,6 +369,7 @@ pub async fn snapshot(state: &AppState) -> Result<Snapshot> {
         session,
         pending_question,
         cwd,
+        stats: session_stats,
     })
 }
 

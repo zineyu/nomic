@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { ChatView } from '@/components/chat/ChatView'
 import { Rail } from '@/components/Rail'
 import { Sidebar } from '@/components/Sidebar'
+import { StatusBar } from '@/components/StatusBar'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useChat } from '@/hooks/useChat'
 
@@ -60,16 +61,20 @@ export default function App() {
             <Sidebar
               sessions={chat.sessions}
               currentSessionId={chat.session?.id ?? null}
+              cwd={chat.cwd}
               running={chat.running}
               onNewSession={() => void chat.newSession()}
               onResume={handleResume}
             />
           </div>
-          <ChatView
-            {...chat}
-            sidebarOpen={sidebarOpen}
-            onToggleSidebar={() => setSidebarOpen((v) => !v)}
-          />
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <ChatView
+              {...chat}
+              sidebarOpen={sidebarOpen}
+              onToggleSidebar={() => setSidebarOpen((v) => !v)}
+            />
+            <StatusBar stats={chat.stats} running={chat.running} />
+          </div>
         </div>
       </div>
     </TooltipProvider>

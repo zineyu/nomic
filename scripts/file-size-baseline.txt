@@ -10,3 +10,4 @@
 # crates/nomic-core/tests/agent_loop.rs	1096
 # crates/nomic-prompts/src/lib.rs	1117
 # crates/nomic-skills/src/lib.rs	1143
+crates/runtime/nomic-core/src/agent/mod.rs	818

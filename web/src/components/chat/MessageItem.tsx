@@ -75,7 +75,7 @@ function ThinkingPill({ thinking, streaming }: { thinking: string; streaming: bo
       </button>
       {expanded && (
         <div className="py-1.5">
-          <div className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 text-xs leading-relaxed text-muted-foreground">
+          <div className="max-h-48 max-w-[72ch] overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 text-xs leading-relaxed text-muted-foreground">
             {thinking}
           </div>
         </div>
@@ -160,7 +160,8 @@ function AssistantMessage({
           )}
         </div>
       ) : item.text ? (
-        <div>
+        // 正文约束可读宽度（约 72 字符/行），避免铺满整列影响长文阅读
+        <div className="max-w-[72ch]">
           <Markdown>{displayText}</Markdown>
           {item.streaming && (
             <span className="caret" aria-hidden="true">

@@ -84,14 +84,11 @@ function ThinkingPill({ thinking, streaming }: { thinking: string; streaming: bo
   )
 }
 
-/** 助手消息底部操作条：复制整条回复。hover 显示（与代码块复制按钮一致）。 */
+/** 助手消息复制按钮：悬浮于正文右下角（与代码块复制按钮一致），不占布局空间。 */
 function MessageActions({ item }: { item: AssistantItem }) {
   const [copied, setCopied] = useState(false)
 
-  if (item.streaming) return null
-
   const onCopy = () => {
-    if (!item.text) return
     void navigator.clipboard.writeText(item.text).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
@@ -99,12 +96,11 @@ function MessageActions({ item }: { item: AssistantItem }) {
   }
 
   return (
-    <div className="flex items-center gap-0.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+    <div className="absolute right-0 bottom-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
       <button
         type="button"
         onClick={onCopy}
-        disabled={!item.text}
-        className="flex size-6 items-center justify-center rounded-md transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-40"
+        className="flex size-6 items-center justify-center rounded-md border bg-background/80 text-muted-foreground backdrop-blur transition-colors hover:text-foreground"
         title={copied ? '已复制' : '复制回复'}
         aria-label={copied ? '已复制' : '复制回复'}
       >
@@ -161,13 +157,14 @@ function AssistantMessage({
         </div>
       ) : item.text ? (
         // 正文约束可读宽度（约 72 字符/行），避免铺满整列影响长文阅读
-        <div className="max-w-[72ch]">
+        <div className="relative max-w-[72ch]">
           <Markdown>{displayText}</Markdown>
           {item.streaming && (
             <span className="caret" aria-hidden="true">
               ▍
             </span>
           )}
+          {!item.streaming && <MessageActions item={item} />}
         </div>
       ) : item.streaming ? (
         <div className="flex items-center gap-2 py-1 text-xs text-muted-foreground">
@@ -175,9 +172,6 @@ function AssistantMessage({
           正在生成回复…
         </div>
       ) : null}
-
-      {/* 仅在有可复制的正文时显示操作条（失败态由错误横幅+重试接管） */}
-      {!failed && !item.streaming && item.text !== '' && <MessageActions item={item} />}
     </div>
   )
 }

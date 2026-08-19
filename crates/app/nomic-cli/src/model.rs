@@ -481,6 +481,18 @@ impl ModelResolver {
         }
         choices
     }
+
+    /// 所有可用模型的完整 [`Model`] 列表（子 agent 模型选择用）。
+    ///
+    /// 基于 [`Self::candidates`] 枚举每个候选，逐个经 [`Self::resolve`]
+    /// 解析为完整 Model（含 base_url / cost 等字段）。解析失败的候选
+    /// 跳过（告警），不阻断其余模型。
+    pub fn all_models(&self, current: &ModelSelection) -> Vec<Model> {
+        self.candidates(current)
+            .into_iter()
+            .filter_map(|choice| self.resolve(&choice.provider, &choice.id).ok())
+            .collect()
+    }
 }
 
 /// 解析启动模型（[`ModelResolver`] 的启动路径包装，仅测试使用）。

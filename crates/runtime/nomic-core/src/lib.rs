@@ -11,6 +11,7 @@ mod builder;
 mod compaction;
 mod injection;
 mod interception;
+mod supervisor;
 mod tool;
 
 pub use agent::{ActorError, Agent, AgentError, AgentEvent, AgentHandle, SessionStats};
@@ -23,6 +24,10 @@ pub use injection::{TurnInjection, TurnMessage};
 pub use interception::{
     AgentInterceptor, NoopInterceptor, ToolCallDecision, ToolExecutionEnd, ToolExecutionOverride,
     ToolExecutionStart,
+};
+pub use supervisor::{
+    AgentId, AgentStatus, AgentSupervisor, CreateAgentRequest, SupervisorConfig,
+    SupervisorError,
 };
 pub use tool::{
     AgentTool, DynTool, ExecutionMode, ToolError, ToolResult, ToolUpdate, ToolUpdateCallback,

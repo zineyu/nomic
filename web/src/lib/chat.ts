@@ -1,6 +1,6 @@
 // 聊天状态模型：把 agent 事件流（含历史快照）规整为可渲染的消息项列表。
 //
-// 消息列表是唯一事实源：历史快照（/api/state 的 messages）直接渲染；
+// 消息列表是唯一事实源：历史快照（会话快照的 messages）直接渲染；
 // 运行中的增量事件驱动「流式项」更新，MessageEnd 定稿后用完整消息替换。
 // 工具卡片由 ToolExecution* 事件驱动（live），历史中的 ToolResult 消息
 // 直接渲染（resume 后无事件可回放，两者统一展示形态）。
@@ -96,7 +96,7 @@ export function userContent(message: { role: 'user'; content: string | { type: '
   return { text, images }
 }
 
-/** 历史消息 → 消息项（/api/state 快照与 resume 用）。 */
+/** 历史消息 → 消息项（会话快照与 resume 用）。 */
 export function messagesToItems(messages: Message[]): ChatItem[] {
   const items: ChatItem[] = []
   for (const message of messages) {

@@ -70,6 +70,7 @@ use crate::{Cli, bootstrap};
 type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
 /// 运行交互 TUI。
+#[allow(clippy::too_many_lines)]
 pub async fn run(cli: &Cli) -> Result<()> {
     let boot = bootstrap::bootstrap(cli).await?;
 
@@ -109,13 +110,33 @@ pub async fn run(cli: &Cli) -> Result<()> {
         std::sync::Arc::new(TuiQuestionSink::new(question_tx));
     let (agent, mut events) = Agent::builder()
         .model(boot.model.clone())
-        .provider(boot.provider)
+        .provider(boot.provider.clone())
         .system_prompt(boot.system_prompt)
-        .tools(nomic_tools::default_tools_with_skills(
-            boot.skill_resolver,
-            todo_store.clone(),
-            question_sink,
-        ))
+        .tools({
+            // 子 agent 可用的工具池（基础工具，不含管理工具本身）
+            let child_tools = nomic_tools::default_tools_with_skills(
+                boot.skill_resolver.clone(),
+                todo_store.clone(),
+                question_sink.clone(),
+            );
+            // supervisor 管理子 agent 生命周期
+            let supervisor = std::sync::Arc::new(nomic_core::AgentSupervisor::new(
+                boot.provider.clone(),
+                boot.available_models,
+                nomic_core::SupervisorConfig::default(),
+            ));
+            // 主 agent 工具 = 基础工具 + 多 agent 管理工具
+            let mut tools = nomic_tools::default_tools_with_skills(
+                boot.skill_resolver,
+                todo_store.clone(),
+                question_sink,
+            );
+            tools.extend(nomic_tools::multi_agent::multi_agent_tools(
+                supervisor,
+                child_tools,
+            ));
+            tools
+        })
         .messages(boot.history)
         .stream_options(boot.stream_options)
         .compaction(boot.compaction)

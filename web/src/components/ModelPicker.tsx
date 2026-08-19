@@ -23,13 +23,13 @@ const LEVELS = ['off', 'minimal', 'low', 'medium', 'high'] as const
 interface ModelPickerProps {
   currentSpec: string | null
   reasoning: string | null
-  onChanged: () => void
+  onSwitch: (spec: string, reasoning?: string) => void
 }
 
 export function ModelPicker({
   currentSpec,
   reasoning,
-  onChanged,
+  onSwitch,
 }: ModelPickerProps) {
   const [data, setData] = useState<ModelsResponse | null>(null)
   const [open, setOpen] = useState(false)
@@ -57,23 +57,13 @@ export function ModelPicker({
 
   const switchTo = async (spec: string) => {
     setOpen(false)
-    try {
-      await api.switchModel(spec)
-      onChanged()
-    } catch (error) {
-      console.error('切换模型失败', error)
-    }
+    onSwitch(spec)
   }
 
   const setLevel = async (level: string) => {
     setLevelOpen(false)
     if (!currentSpec) return
-    try {
-      await api.switchModel(currentSpec, level)
-      onChanged()
-    } catch (error) {
-      console.error('设置思考级别失败', error)
-    }
+    onSwitch(currentSpec, level)
   }
 
   return (

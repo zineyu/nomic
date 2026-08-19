@@ -1,5 +1,9 @@
 //! web 模式的 HTTP 层（axum）：REST 接口 + SSE 事件流 + 静态前端伺服。
 //!
+//! 多 session 并行：会话操作按路径参数 `session_id` 路由到对应
+//! [`SessionRuntime`][crate::web::SessionRuntime]；模型选择 / prompt / 取消 /
+//! 提问 / SSE 均为会话级，各会话独立运行互不阻塞。
+//!
 //! 安全：缺省只绑定 `127.0.0.1`（`--host` 显式覆盖）；POST 请求校验
 //! `Origin` 头——非空且 host 不在本机集合、也不等于请求 `Host` 时拒绝
 //! （DNS rebinding / 跨站请求防护，本服务能执行 bash）。不开放 CORS，
@@ -27,26 +31,28 @@ use crate::web::{AppState, ServerEvent, Snapshot, assets};
 /// 未命中路径 SPA 回退 `index.html`）。
 pub fn router(state: AppState) -> Router {
     let app = Router::new()
-        .route("/api/state", get(handle_state))
-        .route("/api/stream", get(handle_stream))
+        .route("/api/session", get(handle_default_session))
         .route(
             "/api/sessions",
             get(handle_list_sessions).post(handle_create_session),
         )
-        .route("/api/sessions/resume", post(handle_resume_session))
+        .route("/api/models", get(handle_list_models))
+        .route("/api/sessions/{id}/state", get(handle_state))
+        .route("/api/sessions/{id}/stream", get(handle_stream))
+        .route("/api/sessions/{id}/prompt", post(handle_prompt))
+        .route("/api/sessions/{id}/cancel", post(handle_cancel))
+        .route("/api/sessions/{id}/models", post(handle_switch_model))
         .route(
-            "/api/models",
-            get(handle_list_models).post(handle_switch_model),
+            "/api/sessions/{id}/question/{qid}",
+            post(handle_question_answer),
         )
-        .route("/api/prompt", post(handle_prompt))
-        .route("/api/cancel", post(handle_cancel))
-        .route("/api/question/{id}", post(handle_question_answer))
         .route_layer(from_fn(reject_foreign_origin))
         .fallback(|uri: Uri| async move { assets::serve(uri.path()) });
     app.with_state(state)
 }
 
 /// API 错误：统一转 HTTP 状态码 + `{"error": ...}` JSON。
+#[derive(Debug)]
 pub enum ApiError {
     /// 内部错误（actor 退出、快照收集失败等）
     Internal(String),
@@ -54,7 +60,7 @@ pub enum ApiError {
     Session(nomic_session::SessionError),
     /// session 库不可用（启动时已降级为不持久化）
     StoreUnavailable,
-    /// 资源不存在（提问已过期等）
+    /// 资源不存在（session / 提问已过期等）
     NotFound(String),
     /// 请求非法（空 prompt、模型不存在等）
     BadRequest(String),
@@ -96,7 +102,20 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// `GET /api/state`：当前快照（消息/模型/运行状态/待回答问题）。
+/// 从路径参数打开（或惰性构建）目标 session。
+async fn open_session(
+    state: &AppState,
+    id: &str,
+) -> Result<std::sync::Arc<crate::web::SessionRuntime>, ApiError> {
+    state.inner.open_session(id).await
+}
+
+/// `GET /api/session`：启动时的默认 session id（前端挂载时确定初始会话）。
+async fn handle_default_session(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "id": state.inner.default_session_id }))
+}
+
+/// `GET /api/sessions/{id}/state`（会话级）：当前会话快照（消息/模型/运行状态/待回答问题）。
 #[derive(Serialize)]
 pub struct StateResponse {
     pub messages: Vec<Message>,
@@ -127,31 +146,28 @@ pub struct QuestionView {
     pub question: AskUserQuestion,
 }
 
-/// `GET /api/models`：候选列表 + 当前选择。
+/// `GET /api/models`：候选列表（跨 provider；当前选择由会话快照携带）。
 #[derive(Serialize)]
 pub struct ModelsResponse {
-    pub current: crate::model::ModelSelection,
     pub candidates: Vec<ModelChoice>,
 }
 
 /// `GET /api/models` 处理。
-async fn handle_list_models(
-    State(state): State<AppState>,
-) -> Result<Json<ModelsResponse>, ApiError> {
-    let current = state.handle.model().await?;
-    let current_selection = crate::model::ModelSelection {
-        provider: current.provider,
-        model: current.id,
+async fn handle_list_models(State(state): State<AppState>) -> Json<ModelsResponse> {
+    // 候选列表不含「当前」：当前模型属于会话态，由会话快照携带（多 session
+    // 各自的模型独立）。以全局默认模型兜底 provider 列表补全，保证候选稳定。
+    let default_model = state.inner.factory.default_model.clone();
+    let current = crate::model::ModelSelection {
+        provider: default_model.provider,
+        model: default_model.id,
     };
-    let candidates = state.inner.models.candidates(&current_selection);
-    Ok(Json(ModelsResponse {
-        current: current_selection,
-        candidates,
-    }))
+    let candidates = state.inner.models.candidates(&current);
+    Json(ModelsResponse { candidates })
 }
 
-/// `POST /api/models`：切换模型（跨 provider 时按启动同一口径构造新连接并
-/// 分层 api_key，与 TUI `/models` 一致）；选择结果落库（config 表 append-only）。
+/// `POST /api/sessions/{id}/models`：切换会话模型（跨 provider 时按启动同一
+/// 口径构造新连接并分层 api_key，与 TUI `/models` 一致）；选择结果落库到
+/// 会话级 config（append-only，按 session 隔离）。
 #[derive(Deserialize)]
 pub struct ModelSwitchRequest {
     /// `<provider>/<模型id>` 全形式（无 `/` 时按当前 provider 解析）
@@ -161,12 +177,14 @@ pub struct ModelSwitchRequest {
     pub reasoning: Option<String>,
 }
 
-/// `POST /api/models` 处理。
+/// `POST /api/sessions/{id}/models` 处理。
 async fn handle_switch_model(
     State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
     Json(request): Json<ModelSwitchRequest>,
 ) -> Result<Json<ModelChoice>, ApiError> {
-    let current = state.handle.model().await?;
+    let session = open_session(&state, &id).await?;
+    let current = session.handle.model().await?;
     let selection = crate::model::ModelSelection::parse(&request.spec, Some(&current.provider))
         .map_err(|error| ApiError::BadRequest(format!("{error:#}")))?;
     let model = state
@@ -192,7 +210,7 @@ async fn handle_switch_model(
                 .config()
                 .and_then(|c| c.api_key.as_deref()),
         );
-        state
+        session
             .handle
             .set_provider(
                 crate::model::build_provider(model.api, api_key.clone()),
@@ -200,53 +218,22 @@ async fn handle_switch_model(
             )
             .map_err(|_| ApiError::Internal("agent actor 已退出".to_string()))?;
     }
-    state
+    session
         .handle
         .set_model(model.clone())
         .map_err(|_| ApiError::Internal("agent actor 已退出".to_string()))?;
+
     if let Some(level) = request.reasoning.as_deref() {
         let level = parse_thinking_level(level)?;
-        state
+        session
             .handle
             .set_reasoning(level)
             .map_err(|_| ApiError::Internal("agent actor 已退出".to_string()))?;
-        // 思考级别落库（与模型选择同口径）；失败仅告警不阻断切换
-        let recorder = state.inner.recorder.lock().await;
-        if let Some(recorder) = recorder.as_ref() {
-            let value = match level {
-                Some(ThinkingLevel::Minimal) => "minimal",
-                Some(ThinkingLevel::Low) => "low",
-                Some(ThinkingLevel::Medium) => "medium",
-                Some(ThinkingLevel::High) => "high",
-                _ => "off",
-            };
-            if let Err(error) = recorder
-                .store()
-                .set_config(
-                    crate::model::CONFIG_KEY_REASONING,
-                    &serde_json::Value::String(value.to_string()),
-                )
-                .await
-            {
-                tracing::warn!(%error, "思考级别落库失败");
-            }
-        }
+        persist_session_reasoning(&state, &id, level).await;
     }
 
-    // 选择落库（与 TUI 同一口径）；失败仅告警不阻断切换
-    let recorder = state.inner.recorder.lock().await;
-    if let Some(recorder) = recorder.as_ref()
-        && let Err(error) = recorder
-            .store()
-            .set_config(
-                crate::model::CONFIG_KEY_MODEL,
-                &serde_json::Value::String(selection.spec()),
-            )
-            .await
-    {
-        tracing::warn!(%error, "模型选择落库失败");
-    }
-    drop(recorder);
+    // 选择落库（会话级 config，与 TUI 同 append-only 口径）；失败仅告警
+    persist_session_model(&state, &id, &selection.spec()).await;
 
     Ok(Json(ModelChoice {
         provider: model.provider,
@@ -255,6 +242,51 @@ async fn handle_switch_model(
         context_window: model.context_window,
         reasoning: model.reasoning,
     }))
+}
+
+/// 会话级模型选择落库；库不可用或写失败仅告警不阻断切换。
+async fn persist_session_model(state: &AppState, session_id: &str, spec: &str) {
+    let Some(store) = &state.inner.store else {
+        return;
+    };
+    if let Err(error) = store
+        .set_session_config(
+            session_id,
+            crate::model::CONFIG_KEY_MODEL,
+            &serde_json::Value::String(spec.to_string()),
+        )
+        .await
+    {
+        tracing::warn!(%error, "会话级模型选择落库失败");
+    }
+}
+
+/// 会话级思考级别落库；库不可用或写失败仅告警不阻断切换。
+async fn persist_session_reasoning(
+    state: &AppState,
+    session_id: &str,
+    level: Option<ThinkingLevel>,
+) {
+    let Some(store) = &state.inner.store else {
+        return;
+    };
+    let value = match level {
+        Some(ThinkingLevel::Minimal) => "minimal",
+        Some(ThinkingLevel::Low) => "low",
+        Some(ThinkingLevel::Medium) => "medium",
+        Some(ThinkingLevel::High) => "high",
+        _ => "off",
+    };
+    if let Err(error) = store
+        .set_session_config(
+            session_id,
+            crate::model::CONFIG_KEY_REASONING,
+            &serde_json::Value::String(value.to_string()),
+        )
+        .await
+    {
+        tracing::warn!(%error, "会话级思考级别落库失败");
+    }
 }
 
 /// 解析思考级别请求值；`off` → `None`（关闭）。
@@ -271,9 +303,13 @@ fn parse_thinking_level(level: &str) -> Result<Option<ThinkingLevel>, ApiError> 
     }
 }
 
-/// `GET /api/state` 处理。
-async fn handle_state(State(state): State<AppState>) -> Result<Json<StateResponse>, ApiError> {
-    let snapshot = crate::web::snapshot(&state).await?;
+/// `GET /api/sessions/{id}/state` 处理。
+async fn handle_state(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<StateResponse>, ApiError> {
+    let session = open_session(&state, &id).await?;
+    let snapshot = crate::web::snapshot(&session).await?;
     Ok(Json(state_response(snapshot)))
 }
 
@@ -296,11 +332,15 @@ fn state_response(snapshot: Snapshot) -> StateResponse {
     }
 }
 
-/// `GET /api/stream`：SSE 事件流。客户端先取快照再订阅；事件负载为
-/// [`ServerEvent`] JSON。订阅者落后（broadcast 淘汰旧事件）时收到
+/// `GET /api/sessions/{id}/stream`：会话级 SSE 事件流。客户端先取快照再订阅；
+/// 事件负载为 [`ServerEvent`] JSON。订阅者落后（broadcast 淘汰旧事件）时收到
 /// `refresh` 事件，前端重新拉取快照补齐。
-async fn handle_stream(State(state): State<AppState>) -> Response {
-    let rx = state.inner.events.subscribe();
+async fn handle_stream(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Response, ApiError> {
+    let session = open_session(&state, &id).await?;
+    let rx = session.events.subscribe();
     let shutdown = state.inner.shutdown.clone();
     let stream = futures::stream::unfold((rx, shutdown), |(mut rx, shutdown)| async move {
         tokio::select! {
@@ -326,7 +366,7 @@ async fn handle_stream(State(state): State<AppState>) -> Response {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    response
+    Ok(response)
 }
 
 /// [`ServerEvent`] → SSE `data:` 负载（JSON）。
@@ -342,76 +382,21 @@ fn server_event_to_sse(event: &ServerEvent) -> Event {
 async fn handle_list_sessions(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<SessionSummary>>, ApiError> {
-    let sessions = {
-        let guard = state.inner.recorder.lock().await;
-        let Some(recorder) = guard.as_ref() else {
-            return Err(ApiError::StoreUnavailable);
-        };
-        let sessions = recorder.store().list_sessions().await?;
-        drop(guard);
-        sessions
-    };
-    Ok(Json(sessions))
+    Ok(Json(state.inner.list_sessions().await?))
 }
 
-/// `POST /api/sessions`：新建 session（新对话语义，清空 agent 上下文）。
+/// `POST /api/sessions`：新建 session（新对话语义，默认模型）。
 async fn handle_create_session(
     State(state): State<AppState>,
 ) -> Result<Json<SessionInfo>, ApiError> {
-    let cwd = std::env::current_dir()
-        .map_err(|error| ApiError::BadRequest(format!("获取 cwd 失败: {error}")))?;
-    let id = {
-        let mut guard = state.inner.recorder.lock().await;
-        let Some(recorder) = guard.as_mut() else {
-            return Err(ApiError::StoreUnavailable);
-        };
-        let id = recorder.store().create_session(&cwd).await?;
-        recorder.switch(id.clone(), None);
-        drop(guard);
-        id
-    };
-    // 清空 agent 上下文（fire-and-forget；随后的快照查询经邮箱 FIFO 必见）
-    state
-        .handle
-        .clear_messages()
-        .map_err(|_| ApiError::Internal("agent actor 已退出".to_string()))?;
-    Ok(Json(SessionInfo { id, title: None }))
-}
-
-/// `POST /api/sessions/resume`：恢复指定 session（替换上下文并切换落库目标）。
-#[derive(Deserialize)]
-pub struct ResumeRequest {
-    pub id: String,
-}
-
-/// `POST /api/sessions/resume` 处理。
-async fn handle_resume_session(
-    State(state): State<AppState>,
-    Json(request): Json<ResumeRequest>,
-) -> Result<Json<SessionInfo>, ApiError> {
-    let (history, title) = {
-        let mut guard = state.inner.recorder.lock().await;
-        let Some(recorder) = guard.as_mut() else {
-            return Err(ApiError::StoreUnavailable);
-        };
-        let history = recorder.store().load_messages(&request.id).await?;
-        let title = nomic_session::session_title(&history);
-        let tip = recorder.store().latest_entry_id(&request.id).await?;
-        recorder.switch(request.id.clone(), tip);
-        drop(guard);
-        (history, title)
-    };
-    state
-        .handle
-        .restore_messages(history)
-        .map_err(|_| ApiError::Internal("agent actor 已退出".to_string()))?;
+    let session = state.inner.create_session().await?;
     Ok(Json(SessionInfo {
-        id: request.id,
-        title,
+        id: session.id.clone(),
+        title: None,
     }))
 }
 
-/// `POST /api/prompt`：提交 prompt（空闲即跑，运行中入队）。
+/// `POST /api/sessions/{id}/prompt`：提交 prompt（空闲即跑，运行中入队）。
 #[derive(Deserialize)]
 pub struct PromptRequest {
     pub text: String,
@@ -420,28 +405,36 @@ pub struct PromptRequest {
     pub images: Vec<nomic_ai::ImageContent>,
 }
 
-/// `POST /api/prompt` 处理。
+/// `POST /api/sessions/{id}/prompt` 处理。
 async fn handle_prompt(
     State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
     Json(request): Json<PromptRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     if request.text.trim().is_empty() {
         return Err(ApiError::BadRequest("prompt 为空".to_string()));
     }
-    let was_running = state.inner.gate.running();
-    let started = crate::web::submit_prompt(&state, request.text, request.images).await;
+    let session = open_session(&state, &id).await?;
+    let was_running = session.gate.running();
+    let started = session.submit_prompt(request.text, request.images).await;
     Ok(Json(serde_json::json!({
         "status": if was_running || !started { "queued" } else { "started" }
     })))
 }
 
-/// `POST /api/cancel`：取消当前轮运行。
-async fn handle_cancel(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let cancelled = crate::web::cancel_run(&state).await;
+/// `POST /api/sessions/{id}/cancel`：取消当前轮运行。
+async fn handle_cancel(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Json<serde_json::Value> {
+    let cancelled = match open_session(&state, &id).await {
+        Ok(session) => session.cancel_run().await,
+        Err(_) => false,
+    };
     Json(serde_json::json!({ "cancelled": cancelled }))
 }
 
-/// `POST /api/question/{id}`：提交提问回答。
+/// `POST /api/sessions/{id}/question/{qid}`：提交提问回答。
 #[derive(Deserialize)]
 pub struct QuestionAnswerRequest {
     pub answers: Vec<String>,
@@ -449,21 +442,22 @@ pub struct QuestionAnswerRequest {
     pub custom: Option<String>,
 }
 
-/// `POST /api/question/{id}` 处理。
+/// `POST /api/sessions/{id}/question/{qid}` 处理。
 async fn handle_question_answer(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
+    AxumPath((id, qid)): AxumPath<(String, String)>,
     Json(request): Json<QuestionAnswerRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let session = open_session(&state, &id).await?;
     let answer = AskUserAnswer {
         answers: request.answers,
         custom: request.custom,
     };
-    if crate::web::answer_question(&state, &id, answer).await {
+    if session.answer_question(&qid, answer).await {
         Ok(Json(serde_json::json!({ "ok": true })))
     } else {
         Err(ApiError::NotFound(format!(
-            "question {id} 不存在或已被回答"
+            "question {qid} 不存在或已被回答"
         )))
     }
 }
@@ -524,7 +518,10 @@ mod tests {
     #[tokio::test]
     async fn stream_ends_when_shutdown_cancelled() {
         let state = crate::web::tests::test_state().await;
-        let response = handle_stream(State(state.clone())).await;
+        let id = state.inner.default_session_id.clone();
+        let response = handle_stream(State(state.clone()), axum::extract::Path(id))
+            .await
+            .expect("stream");
         state.inner.shutdown.cancel();
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await

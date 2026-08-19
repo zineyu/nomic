@@ -60,7 +60,7 @@ export default function App() {
           >
             <Sidebar
               sessions={chat.sessions}
-              currentSessionId={chat.session?.id ?? null}
+              currentSessionId={chat.sessionId}
               cwd={chat.cwd}
               running={chat.running}
               onNewSession={() => void chat.newSession()}

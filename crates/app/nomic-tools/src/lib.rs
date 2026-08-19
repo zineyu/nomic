@@ -13,6 +13,7 @@ mod bash;
 mod edit;
 mod find;
 mod grep;
+pub mod multi_agent;
 mod mutation_queue;
 mod read;
 mod todo;

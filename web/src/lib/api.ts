@@ -4,6 +4,9 @@
 // nomic 服务（见 vite.config.ts 的 proxy）。SSE 用 fetch + ReadableStream
 // 手动解析：可控制断线退避重连与自定义 event 处理（EventSource 不支持
 // 自定义 header，且重连语义不可控）。
+//
+// 多 session：会话操作（状态 / 流 / prompt / 取消 / 模型 / 提问）按路径参数
+// `sessionId` 路由到对应会话；候选模型列表为进程级（无需会话 id）。
 
 import type {
   AskUserAnswer,
@@ -34,28 +37,26 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  state: () => request<StateResponse>('/state'),
+  currentSession: () => request<{ id: string }>('/session'),
   sessions: () => request<SessionSummary[]>('/sessions'),
-  createSession: () => request<{ id: string; title: string | null }>('/sessions', { method: 'POST' }),
-  resumeSession: (id: string) =>
-    request<{ id: string; title: string | null }>('/sessions/resume', {
-      method: 'POST',
-      body: JSON.stringify({ id }),
-    }),
+  createSession: () =>
+    request<{ id: string; title: string | null }>('/sessions', { method: 'POST' }),
+  state: (sessionId: string) => request<StateResponse>(`/sessions/${sessionId}/state`),
   models: () => request<ModelsResponse>('/models'),
-  switchModel: (spec: string, reasoning?: string) =>
-    request<unknown>('/models', {
+  switchModel: (sessionId: string, spec: string, reasoning?: string) =>
+    request<unknown>(`/sessions/${sessionId}/models`, {
       method: 'POST',
       body: JSON.stringify({ spec, reasoning: reasoning ?? null }),
     }),
-  prompt: (text: string) =>
-    request<{ status: 'started' | 'queued' }>('/prompt', {
+  prompt: (sessionId: string, text: string) =>
+    request<{ status: 'started' | 'queued' }>(`/sessions/${sessionId}/prompt`, {
       method: 'POST',
       body: JSON.stringify({ text }),
     }),
-  cancel: () => request<{ cancelled: boolean }>('/cancel', { method: 'POST' }),
-  answerQuestion: (id: string, answer: AskUserAnswer) =>
-    request<{ ok: boolean }>(`/question/${id}`, {
+  cancel: (sessionId: string) =>
+    request<{ cancelled: boolean }>(`/sessions/${sessionId}/cancel`, { method: 'POST' }),
+  answerQuestion: (sessionId: string, id: string, answer: AskUserAnswer) =>
+    request<{ ok: boolean }>(`/sessions/${sessionId}/question/${id}`, {
       method: 'POST',
       body: JSON.stringify(answer),
     }),
@@ -64,8 +65,8 @@ export const api = {
 export type StreamEvent = ServerEvent | { type: 'refresh' }
 
 export interface StreamClient {
-  /** 连接事件流；返回断开函数。断线自动退避重连。 */
-  connect(onEvent: (event: StreamEvent) => void): () => void
+  /** 连接指定 session 的事件流；返回断开函数。断线自动退避重连。 */
+  connect(sessionId: string, onEvent: (event: StreamEvent) => void): () => void
 }
 
 /** 解析一个 SSE 块（空行分隔）为 `{ event, data }`；无 data 时返回 `null`。 */
@@ -82,7 +83,7 @@ function parseSseBlock(block: string): { event: string; data: string } | null {
 
 export function createStreamClient(): StreamClient {
   return {
-    connect(onEvent) {
+    connect(sessionId, onEvent) {
       let closed = false
       let retry = 0
       let controller: AbortController | null = null
@@ -91,7 +92,7 @@ export function createStreamClient(): StreamClient {
         if (closed) return
         controller = new AbortController()
         try {
-          const response = await fetch(`${API_BASE}/stream`, {
+          const response = await fetch(`${API_BASE}/sessions/${sessionId}/stream`, {
             signal: controller.signal,
             headers: { Accept: 'text/event-stream' },
           })

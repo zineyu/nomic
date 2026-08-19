@@ -33,7 +33,7 @@ export function ChatView({
     stop,
     answerQuestion,
     dismissError,
-    refreshSnapshot,
+    switchModel,
   } = chat
 
   const [minimizedId, setMinimizedId] = useState<string | null>(null)
@@ -110,7 +110,7 @@ export function ChatView({
         contextWindow={model?.context_window ?? null}
         onSend={send}
         onStop={stop}
-        onModelChanged={() => void refreshSnapshot()}
+        onSwitchModel={switchModel}
       />
 
       {question && !isMinimized && (

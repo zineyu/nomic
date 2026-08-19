@@ -21,7 +21,7 @@ interface ChatInputProps {
   reasoning?: string | null
   contextTokens?: number
   contextWindow?: number | null
-  onModelChanged?: () => void
+  onSwitchModel?: (spec: string, reasoning?: string) => void
   onSend: (text: string) => void
   onStop: () => void
 }
@@ -33,7 +33,7 @@ export function ChatInput({
   reasoning,
   contextTokens = 0,
   contextWindow = null,
-  onModelChanged,
+  onSwitchModel,
   onSend,
   onStop,
 }: ChatInputProps) {
@@ -91,11 +91,11 @@ export function ChatInput({
           <div className="flex-1" />
 
           {/* 模型选择器 */}
-          {modelSpec && onModelChanged && (
+          {modelSpec && onSwitchModel && (
             <ModelPicker
               currentSpec={modelSpec}
               reasoning={reasoning ?? null}
-              onChanged={onModelChanged}
+              onSwitch={onSwitchModel}
             />
           )}
 

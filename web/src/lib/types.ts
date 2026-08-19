@@ -216,7 +216,7 @@ export interface SessionSummary {
   message_count: number
 }
 
-/** 会话统计信息（从后端 /api/state 返回） */
+/** 会话统计信息（从会话快照返回） */
 export interface SessionStats {
   rounds: number
   total_steps: number
@@ -254,7 +254,6 @@ export interface StateResponse {
 }
 
 export interface ModelsResponse {
-  current: { provider: string; model: string }
   candidates: ModelChoice[]
 }
 

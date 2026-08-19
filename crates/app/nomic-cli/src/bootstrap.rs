@@ -38,6 +38,8 @@ pub struct Bootstrap {
     pub skill_resolver: SkillResolver,
     /// 可用的 prompt templates（`/name` 调用展开用，已按覆盖规则去重）
     pub prompt_templates: Vec<PromptTemplate>,
+    /// 所有可用模型列表（子 agent 模型选择用）
+    pub available_models: Vec<Model>,
 }
 
 /// 按 CLI 参数与环境初始化运行时上下文。
@@ -45,6 +47,7 @@ pub struct Bootstrap {
 /// provider/model 的选择按 CLI 参数 > sqlite 配置（回退链）解析，两层都没有时
 /// 报错（无内置默认模型）；其余可配置项按 CLI 参数 > 环境变量 > 配置文件 >
 /// 协议默认 的优先级解析；配置文件存在但非法时硬报错（见 [`config`][crate::config]）。
+#[allow(clippy::too_many_lines)]
 pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
     let config = crate::config::load()?;
     let env_openai_base_url = std::env::var("OPENAI_BASE_URL").ok();
@@ -135,6 +138,12 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
         .map(|init| init.history.clone())
         .unwrap_or_default();
     let compaction = compaction_settings(models.config());
+    // 所有可用模型列表（子 agent 模型选择用）
+    let current_selection = crate::model::ModelSelection {
+        provider: model.provider.clone(),
+        model: model.id.clone(),
+    };
+    let available_models = models.all_models(&current_selection);
     Ok(Bootstrap {
         model,
         models,
@@ -146,6 +155,7 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
         history,
         skill_resolver,
         prompt_templates,
+        available_models,
     })
 }
 

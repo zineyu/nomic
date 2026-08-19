@@ -22,8 +22,8 @@ function formatMessageTime(millis: number): string {
 
 function UserMessage({ item }: { item: UserItem }) {
   return (
-    // 与正文阅读列（72ch）同宽并右对齐：用户气泡右侧与 agent 输出/工具卡片/思考内容对齐
-    <div className="ml-auto flex max-w-[72ch] flex-col items-end gap-1">
+    // 与正文阅读列同宽并右对齐（max-w-reading）：用户气泡右侧与 agent 输出/工具卡片/思考内容对齐
+    <div className="ml-auto flex max-w-reading flex-col items-end gap-1">
       <div className="max-w-[70%] rounded-xl rounded-br-md bg-primary px-4 py-2.5 text-base leading-relaxed text-primary-foreground shadow-sm">
         {item.images.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
@@ -55,8 +55,8 @@ function ThinkingPill({ thinking, streaming }: { thinking: string; streaming: bo
   const brief = firstLine.length > 80 ? firstLine.slice(0, 80) + '…' : firstLine
 
   return (
-    // 折叠行与展开区统一收进阅读列（72ch），右侧与用户气泡/正文对齐
-    <div className="max-w-[72ch] text-muted-foreground">
+    // 折叠行与展开区统一收进阅读列（max-w-reading），右侧与用户气泡/正文对齐
+    <div className="max-w-reading text-muted-foreground">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
@@ -158,8 +158,8 @@ function AssistantMessage({
           )}
         </div>
       ) : item.text ? (
-        // 正文约束可读宽度（约 72 字符/行），避免铺满整列影响长文阅读
-        <div className="relative max-w-[72ch]">
+        // 正文约束为阅读列宽（max-w-reading），避免铺满整列影响长文阅读
+        <div className="relative max-w-reading">
           <Markdown>{displayText}</Markdown>
           {item.streaming && (
             <span className="caret" aria-hidden="true">

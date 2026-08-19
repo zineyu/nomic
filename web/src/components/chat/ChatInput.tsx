@@ -63,7 +63,7 @@ export function ChatInput({
   }
 
   return (
-    <div className="mx-auto w-full max-w-[920px] px-7 pb-2 pt-1.5">
+    <div className="mx-auto w-full max-w-page px-7 pb-2 pt-1.5">
       {queued > 0 && (
         <div className="mb-2 text-center text-xs text-muted-foreground">
           已排队 {queued} 条，当前轮完成后按序发送

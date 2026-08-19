@@ -1,4 +1,4 @@
-// 聊天主视图：顶栏（标题）+ 消息流 + 输入区 + 提问弹层 + 错误提示。列宽 920px 居中。
+// 聊天主视图：顶栏（标题）+ 消息流 + 输入区 + 提问弹层 + 错误提示。页面列 max-w-page 居中。
 
 import { useEffect, useState } from 'react'
 import { AlertTriangle, Loader2, MessageCircleQuestion, PanelLeft, X } from 'lucide-react'
@@ -86,7 +86,7 @@ export function ChatView({
       {error && (
         <div
           role="alert"
-          className="mx-auto mb-2 flex w-full max-w-[920px] items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+          className="mx-auto mb-2 flex w-full max-w-page items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
         >
           <AlertTriangle className="size-4 shrink-0" />
           <span className="min-w-0 flex-1 break-words">{error}</span>

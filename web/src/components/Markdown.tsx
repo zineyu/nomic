@@ -69,11 +69,12 @@ function Link({ href, children }: ComponentProps<'a'>) {
 }
 
 function Heading({ level, children }: ComponentProps<'h1'> & { level?: number }) {
+  // 对齐 DESIGN.md 排版比例：h1/h2/h3 精确映射，h4+ 回落到 body。
   const sizes: Record<number, string> = {
-    1: 'mb-3 mt-4 text-xl font-semibold',
-    2: 'mb-2 mt-4 text-lg font-semibold',
-    3: 'mb-2 mt-3 text-base font-semibold',
-    4: 'mb-1 mt-2 text-base font-medium',
+    1: 'mb-3 mt-4 text-h1',
+    2: 'mb-2 mt-4 text-h2',
+    3: 'mb-2 mt-3 text-h3',
+    4: 'mb-1 mt-2 text-body font-medium',
   }
   const Tag = `h${Math.min(Math.max(level ?? 2, 1), 4)}` as 'h1' | 'h2' | 'h3' | 'h4'
   return <Tag className={cn('text-foreground', sizes[level ?? 2])}>{children}</Tag>

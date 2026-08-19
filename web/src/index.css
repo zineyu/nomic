@@ -43,6 +43,30 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+/* DESIGN.md 排版比例：h1 2.25rem/700/1.2，h2 1.875rem/600/1.3，h3 1.5rem/600/1.4，
+   body 1rem/400/1.5，body-sm 0.875rem/400/1.5，caption 0.75rem/400/1.5 */
+@theme {
+  --font-sans: 'Inter Variable', Inter, system-ui, sans-serif;
+  --text-h1: 2.25rem;
+  --text-h1--line-height: 1.2;
+  --text-h1--font-weight: 700;
+  --text-h2: 1.875rem;
+  --text-h2--line-height: 1.3;
+  --text-h2--font-weight: 600;
+  --text-h3: 1.5rem;
+  --text-h3--line-height: 1.4;
+  --text-h3--font-weight: 600;
+  --text-body: 1rem;
+  --text-body--line-height: 1.5;
+  --text-body--font-weight: 400;
+  --text-body-sm: 0.875rem;
+  --text-body-sm--line-height: 1.5;
+  --text-body-sm--font-weight: 400;
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1.5;
+  --text-caption--font-weight: 400;
+}
+
 /* 半径基准与 DESIGN.md rounded 对齐：sm 4px / md 6px / lg 8px / xl 12px */
 :root {
   --radius: 0.5rem;
@@ -123,7 +147,7 @@
   }
   body {
     @apply bg-background text-foreground antialiased;
-    font-family: Inter, system-ui, sans-serif;
+    font-family: var(--font-sans);
   }
 }
 

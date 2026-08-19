@@ -100,10 +100,10 @@ export function MessageList({
     return (
       <div className="flex h-full items-center justify-center px-7">
         <div className="max-w-md text-center">
-          <div className="mb-4 inline-flex size-14 items-center justify-center rounded-2xl bg-primary shadow-sm">
-            <span className="text-xl font-bold text-primary-foreground">n</span>
+          <div className="mb-4 inline-flex size-14 items-center justify-center rounded-xl bg-primary shadow-sm">
+            <span className="text-h3 font-bold text-primary-foreground">n</span>
           </div>
-          <h2 className="mb-1 text-lg font-semibold tracking-tight">向 nomic 提问</h2>
+          <h2 className="mb-1 text-h2 tracking-tight">向 nomic 提问</h2>
           <p className="mb-6 text-sm text-muted-foreground">
             可调用工具、读写文件、运行命令的 AI 编程助手
           </p>

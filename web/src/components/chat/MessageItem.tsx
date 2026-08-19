@@ -23,7 +23,7 @@ function formatMessageTime(millis: number): string {
 function UserMessage({ item }: { item: UserItem }) {
   return (
     <div className="flex flex-col items-end gap-1">
-      <div className="max-w-[70%] rounded-[14px] rounded-br-md bg-primary px-4 py-2.5 text-base leading-relaxed text-primary-foreground shadow-sm">
+      <div className="max-w-[70%] rounded-xl rounded-br-md bg-primary px-4 py-2.5 text-base leading-relaxed text-primary-foreground shadow-sm">
         {item.images.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {item.images.map((image, i) => (
@@ -38,7 +38,7 @@ function UserMessage({ item }: { item: UserItem }) {
         )}
         <div className="whitespace-pre-wrap">{item.text}</div>
       </div>
-      <div className="pr-1 text-[11px] text-muted-foreground">
+      <div className="pr-1 text-xs text-muted-foreground">
         {item.timestamp ? `${formatMessageTime(item.timestamp)} · ` : ''}你
       </div>
     </div>
@@ -54,28 +54,28 @@ function ThinkingPill({ thinking, streaming }: { thinking: string; streaming: bo
   const brief = firstLine.length > 80 ? firstLine.slice(0, 80) + '…' : firstLine
 
   return (
-    <div className="text-gray-500">
+    <div className="text-muted-foreground">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
         className="flex h-6 w-full items-center gap-1.5 text-left text-xs cursor-pointer hover:bg-accent/60"
       >
-        <Brain className="size-3 shrink-0 text-gray-500" />
-        <span className="shrink-0 font-semibold text-gray-500">Think</span>
-        <span className="min-w-0 flex-1 truncate text-xs text-gray-500">
+        <Brain className="size-3 shrink-0 text-muted-foreground" />
+        <span className="shrink-0 font-semibold text-muted-foreground">Think</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
           {streaming ? '思考中…' : brief}
         </span>
-        {streaming && <Loader2 className="size-3 shrink-0 animate-spin text-gray-500" />}
+        {streaming && <Loader2 className="size-3 shrink-0 animate-spin text-muted-foreground" />}
         <ChevronDown
           className={cn(
-            'size-3 shrink-0 text-gray-500 transition-transform',
+            'size-3 shrink-0 text-muted-foreground transition-transform',
             expanded && 'rotate-180',
           )}
         />
       </button>
       {expanded && (
         <div className="py-1.5">
-          <div className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 text-xs leading-relaxed text-gray-500">
+          <div className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 text-xs leading-relaxed text-muted-foreground">
             {thinking}
           </div>
         </div>

@@ -8,7 +8,7 @@ export function Rail() {
     <nav className="hidden w-14 shrink-0 flex-col items-center border-r bg-sidebar py-4 md:flex">
       <div className="mb-5 flex items-center gap-1.5">
         <div className="flex size-8 items-center justify-center rounded-lg bg-foreground text-sm font-bold text-background">
-          <span className="text-xs">deep</span>
+          <span className="text-xs">nom</span>
         </div>
       </div>
       <button

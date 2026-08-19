@@ -69,12 +69,7 @@ export function ChatInput({
           已排队 {queued} 条，当前轮完成后按序发送
         </div>
       )}
-      <div
-        className={cn(
-          'rounded-[14px] border bg-card shadow-sm',
-          'focus-within:ring-1 focus-within:ring-ring/40',
-        )}
-      >
+      <div className={cn('rounded-xl border bg-card shadow-sm', 'focus-within:ring-1 focus-within:ring-ring/40')}>
         {/* 输入区主体 */}
         <div className="flex items-start gap-2 px-3.5 pt-2">
           {/* 输入框 */}

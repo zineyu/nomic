@@ -11,7 +11,7 @@ import type { ToolItem } from '@/lib/chat'
 function StatusBadge({ item }: { item: ToolItem }) {
   if (item.status === 'running') {
     return (
-      <span className="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full border border-border bg-muted px-2 text-[11px] text-muted-foreground">
+      <span className="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full border border-border bg-muted px-2 text-xs text-muted-foreground">
         <Loader2 className="size-2.5 animate-spin" />
         运行中
       </span>
@@ -19,13 +19,13 @@ function StatusBadge({ item }: { item: ToolItem }) {
   }
   if (item.status === 'error') {
     return (
-      <span className="flex h-5 shrink-0 items-center rounded-full border border-destructive/40 bg-destructive/10 px-2 text-[11px] text-destructive">
+      <span className="flex h-5 shrink-0 items-center rounded-full border border-destructive/40 bg-destructive/10 px-2 text-xs text-destructive">
         ✗ 失败
       </span>
     )
   }
   return (
-    <span className="flex h-5 shrink-0 items-center rounded-full border border-success/40 bg-success/10 px-2 text-[11px] text-success">
+    <span className="flex h-5 shrink-0 items-center rounded-full border border-success/40 bg-success/10 px-2 text-xs text-success">
       ✓ 完成
     </span>
   )
@@ -36,7 +36,7 @@ function ToolCardImpl({ item }: { item: ToolItem }) {
   const hasDetail = Object.keys(item.args).length > 0 || item.resultPreview !== ''
 
   return (
-    <div className="max-w-[920px] text-gray-500">
+    <div className="max-w-[920px] text-muted-foreground">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
@@ -46,18 +46,18 @@ function ToolCardImpl({ item }: { item: ToolItem }) {
           hasDetail ? 'cursor-pointer hover:bg-accent/60' : 'cursor-default',
         )}
       >
-        <Terminal className="size-3 shrink-0 text-gray-500" />
-        <span className="shrink-0 font-mono text-xs font-semibold text-gray-500">
+        <Terminal className="size-3 shrink-0 text-muted-foreground" />
+        <span className="shrink-0 font-mono text-xs font-semibold text-muted-foreground">
           {item.name}
         </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-gray-500">
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
           {briefArgs(item.name, item.args)}
         </span>
         <StatusBadge item={item} />
         {hasDetail && (
           <ChevronDown
             className={cn(
-              'size-3 shrink-0 text-gray-500 transition-transform',
+              'size-3 shrink-0 text-muted-foreground transition-transform',
               expanded && 'rotate-180',
             )}
           />
@@ -66,12 +66,12 @@ function ToolCardImpl({ item }: { item: ToolItem }) {
       {expanded && (
         <div className="space-y-1 py-1.5">
           {Object.keys(item.args).length > 0 && (
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 font-mono text-xs leading-relaxed text-gray-500 break-all">
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 font-mono text-xs leading-relaxed text-muted-foreground break-all">
               {JSON.stringify(item.args, null, 2)}
             </pre>
           )}
           {item.resultPreview !== '' && (
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 font-mono text-xs leading-relaxed text-gray-500/80">
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 font-mono text-xs leading-relaxed text-muted-foreground/80">
               {item.resultPreview}
             </pre>
           )}

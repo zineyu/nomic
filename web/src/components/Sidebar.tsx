@@ -46,7 +46,7 @@ export function Sidebar({
       {/* 工作区区域 */}
       <div className="px-3 pt-2 pb-1">
         <div className="flex items-center justify-between px-1 pb-1.5">
-          <span className="text-[10px] font-medium text-muted-foreground">工作区</span>
+          <span className="text-xs font-medium text-muted-foreground">工作区</span>
           <div className="flex items-center gap-0.5">
             <button
               type="button"

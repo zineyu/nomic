@@ -34,32 +34,32 @@ colors:
   sidebar-ring: "oklch(0.552 0.016 285.938)"
 typography:
   h1:
-    fontFamily: "Inter Variable, Inter, system-ui, sans-serif"
+    fontFamily: "Maple Mono, system-ui, sans-serif"
     fontSize: "2.25rem"
     fontWeight: "700"
     lineHeight: "1.2"
   h2:
-    fontFamily: "Inter Variable, Inter, system-ui, sans-serif"
+    fontFamily: "Maple Mono, system-ui, sans-serif"
     fontSize: "1.875rem"
     fontWeight: "600"
     lineHeight: "1.3"
   h3:
-    fontFamily: "Inter Variable, Inter, system-ui, sans-serif"
+    fontFamily: "Maple Mono, system-ui, sans-serif"
     fontSize: "1.5rem"
     fontWeight: "600"
     lineHeight: "1.4"
   body:
-    fontFamily: "Inter Variable, Inter, system-ui, sans-serif"
+    fontFamily: "Maple Mono, system-ui, sans-serif"
     fontSize: "1rem"
     fontWeight: "400"
     lineHeight: "1.5"
   body-sm:
-    fontFamily: "Inter Variable, Inter, system-ui, sans-serif"
+    fontFamily: "Maple Mono, system-ui, sans-serif"
     fontSize: "0.875rem"
     fontWeight: "400"
     lineHeight: "1.5"
   caption:
-    fontFamily: "Inter Variable, Inter, system-ui, sans-serif"
+    fontFamily: "Maple Mono, system-ui, sans-serif"
     fontSize: "0.75rem"
     fontWeight: "400"
     lineHeight: "1.5"
@@ -171,7 +171,7 @@ These values are kept in sync with the `.dark` block in `web/src/index.css`.
 
 ## Typography
 
-Uses Inter (delivered as the locally bundled **Inter Variable** font via `@fontsource-variable/inter`, so no runtime network fetch is needed) as the primary font family with system-ui fallbacks. Font sizes follow a modular scale from caption (0.75rem) to h1 (2.25rem): h1 = 2.25rem/700, h2 = 1.875rem/600, h3 = 1.5rem/600, body = 1rem/400, body-sm = 0.875rem/400, caption = 0.75rem/400.
+Uses **Maple Mono** as the default font family (locally bundled via `@fontsource/maple-mono`, so no runtime network fetch is needed), with system-ui fallbacks for glyphs it doesn't cover (e.g. CJK). Code and UI share the same default; code blocks may also use the `font-mono` stack which resolves to Maple Mono first. Font sizes follow a modular scale from caption (0.75rem) to h1 (2.25rem): h1 = 2.25rem/700, h2 = 1.875rem/600, h3 = 1.5rem/600, body = 1rem/400, body-sm = 0.875rem/400, caption = 0.75rem/400.
 
 ## Components
 

@@ -175,12 +175,37 @@ export interface AskUserAnswer {
 }
 
 export type ServerEvent =
+  // ── 生命周期事件（agent 运行驱动）
   | { type: 'agent'; event: AgentEvent }
   | { type: 'question'; id: string; question: AskUserQuestion }
   | { type: 'question_cancelled'; id: string }
   | { type: 'run_started' }
   | { type: 'run_finished' }
-  | { type: 'error'; message: string }
+  | { type: 'error'; request_id?: string; message: string }
+  | { type: 'refresh' }
+  // ── 查询响应事件（携带 request_id）
+  | { type: 'state_snapshot'; request_id: string; snapshot: SnapshotView }
+  | { type: 'models_list'; request_id: string; candidates: ModelChoice[] }
+  | { type: 'sessions_list'; request_id: string; sessions: SessionSummary[] }
+  // ── 命令 ack 事件
+  | { type: 'prompt_ack'; queued: boolean }
+  | { type: 'cancel_ack' }
+  | { type: 'answer_ack' }
+  | { type: 'switch_model_ack'; choice: ModelChoice }
+  | { type: 'session_created'; id: string; title: string | null }
+
+/** 客户端发送给服务端的事件（纯事件驱动，无 REST） */
+export type ClientEvent =
+  // ── 查询类（携带 request_id，响应也带同一 request_id）
+  | { type: 'get_state'; request_id: string }
+  | { type: 'list_models'; request_id: string }
+  | { type: 'list_sessions'; request_id: string }
+  // ── 命令类（fire-and-forget，由后续 ServerEvent 驱动状态）
+  | { type: 'prompt'; text: string; images?: ImageContent[] }
+  | { type: 'cancel' }
+  | { type: 'answer_question'; id: string; answers: string[]; custom?: string | null }
+  | { type: 'switch_model'; spec: string; reasoning?: string | null }
+  | { type: 'create_session' }
 
 // ── REST 响应（nomic-cli web::api）────────────────────────────────────────
 
@@ -252,6 +277,9 @@ export interface StateResponse {
   output_tokens: number
   subagent_count: number
 }
+
+/** WebSocket 会话快照响应（与 StateResponse 同构） */
+export type SnapshotView = StateResponse
 
 export interface ModelsResponse {
   candidates: ModelChoice[]

@@ -50,3 +50,4 @@ uuid.workspace = true
 nomic-ai.workspace = true
 nomic-session.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true

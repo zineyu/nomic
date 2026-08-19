@@ -1,4 +1,4 @@
-//! `ask_user_question` 工具的 web 实现：问题经 SSE 推给前端弹层，回答经
+//! `ask_user_question` 工具的 web 实现：问题经 WebSocket 推给前端弹层，回答经
 //! REST（`POST /api/sessions/{id}/question/{qid}`）回填 oneshot，再回喂模型。
 //!
 //! 与 print 模式的 stdin、TUI 的弹层同一契约（[`QuestionSink`]）；`cancel`
@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::web::{PendingQuestion, ServerEvent};
 
-/// web 模式的问题宿：问题广播到本 session 的 SSE，等待前端回答。
+/// web 模式的问题宿：问题广播到本 session 的 WebSocket，等待前端回答。
 #[derive(Debug)]
 pub struct WebQuestionSink {
     pub events: broadcast::Sender<ServerEvent>,

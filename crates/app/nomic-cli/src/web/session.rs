@@ -177,7 +177,7 @@ impl SessionFactory {
 }
 
 /// 事件转发任务：消费 agent 事件流，先经 [`SessionRecorder`] 落库（定稿点，
-/// 失败仅告警，与 print/TUI 同一口径），再广播给本 session 的 SSE 客户端。
+/// 失败仅告警，与 print/TUI 同一口径），再广播给本 session 的 WebSocket 客户端。
 async fn forward_events(
     session: Arc<SessionRuntime>,
     mut events: mpsc::UnboundedReceiver<AgentEvent>,
@@ -216,6 +216,7 @@ pub async fn run_loop(session: &Arc<SessionRuntime>) {
         if let Err(error) = result {
             tracing::error!(%error, "agent run failed");
             let _ = session.events.send(ServerEvent::Error {
+                request_id: None,
                 message: format!("{error:#}"),
             });
             // agent loop 整体失败时无 AgentEnd 事件（见 forward_events），

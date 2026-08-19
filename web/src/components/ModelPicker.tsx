@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { api } from '@/lib/api'
-import type { ModelChoice, ModelsResponse } from '@/lib/types'
+import type { ModelChoice } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const LEVELS = ['off', 'minimal', 'low', 'medium', 'high'] as const
@@ -24,33 +24,39 @@ interface ModelPickerProps {
   currentSpec: string | null
   reasoning: string | null
   onSwitch: (spec: string, reasoning?: string) => void
+  /** 候选模型列表（由父组件通过事件流获取并传入） */
+  models?: ModelChoice[]
 }
 
 export function ModelPicker({
   currentSpec,
   reasoning,
   onSwitch,
+  models: modelsProp,
 }: ModelPickerProps) {
-  const [data, setData] = useState<ModelsResponse | null>(null)
+  const [candidates, setCandidates] = useState<ModelChoice[]>([])
   const [open, setOpen] = useState(false)
   const [levelOpen, setLevelOpen] = useState(false)
 
   useEffect(() => {
-    void api.models().then(setData).catch(() => {})
-  }, [open, levelOpen])
+    if (modelsProp) {
+      setCandidates(modelsProp)
+    } else {
+      void api.models().then(setCandidates).catch(() => {})
+    }
+  }, [open, levelOpen, modelsProp])
 
   const groups = useMemo(() => {
-    if (!data) return new Map<string, ModelChoice[]>()
     const map = new Map<string, ModelChoice[]>()
-    for (const choice of data.candidates) {
+    for (const choice of candidates) {
       const list = map.get(choice.provider) ?? []
       list.push(choice)
       map.set(choice.provider, list)
     }
     return map
-  }, [data])
+  }, [candidates])
 
-  const currentModel = data?.candidates.find(
+  const currentModel = candidates.find(
     (c) => `${c.provider}/${c.id}` === currentSpec,
   )
   const currentSupportsReasoning = currentModel?.reasoning ?? false
@@ -106,7 +112,7 @@ export function ModelPicker({
               ))}
             </div>
           ))}
-          {data?.candidates.length === 0 && (
+          {candidates.length === 0 && (
             <div className="px-3 py-2 text-xs text-muted-foreground">
               没有可用模型（检查 config.toml 的 [providers]）
             </div>

@@ -1,8 +1,16 @@
-//! web 模式（`--web`）：内置 HTTP 服务（axum）+ SSE 事件流 + 前端静态伺服。
+//! web 模式（`--web`）：内置 HTTP 服务（axum）+ 纯 WebSocket 事件驱动 + 前端静态伺服。
 //!
 //! 架构见 `docs/adr/0030-web-ui.md`。复用 `bootstrap` 运行时与 print/TUI 的
 //! 事件落库 seam（[`SessionRecorder`] 一行接线）；agent actor（ADR-0022）经
 //! [`nomic_core::AgentHandle`] 驱动。
+//!
+//! 前端↔后端通信全部通过 `ws://{host}/ws/{session_id}` 双向事件流：
+//! - 客户端→服务端：[`api::ClientEvent`]（`type` 字段区分事件种类）
+//! - 服务端→客户端：[`ServerEvent`]（`type` 字段区分事件种类）
+//!
+//! 查询类事件（`get_state` / `list_models` / `list_sessions`）通过 `request_id`
+//! 实现请求-响应关联；命令类事件（`prompt` / `cancel`）为 fire-and-forget，
+//! 由服务端后续生命周期事件驱动前端状态。REST 接口已全部移除。
 //!
 //! 多 session 并行：进程级 [`Runtime`] 持有一个 session 注册表
 //! （`id → SessionRuntime`），每个 [`SessionRuntime`] 自持一个 agent actor、
@@ -36,16 +44,23 @@ use session::{ResolvedSessionModel, SessionFactory};
 
 pub use session::{Snapshot, snapshot};
 
-/// 服务端推送给前端的事件（SSE 负载；`type` 字段区分事件种类）。
+/// 服务端推送给前端的事件（WebSocket text frame 负载；`type` 字段区分事件种类）。
+///
+/// 分为两类：
+/// - **生命周期事件**（`Agent` / `RunStarted` / `RunFinished` 等）：由 agent 运行驱动，
+///   经 broadcast 分发给所有客户端。
+/// - **响应事件**（`StateSnapshot` / `ModelsList` 等）：由客户端查询请求触发，
+///   携带 `request_id` 供客户端关联。命令类操作（`Prompt` / `Cancel`）返回 ack。
 ///
 /// 事件经每个 session 各自的 broadcast 分发（见 [`SessionRuntime::events`]），
 /// 客户端按 session 订阅，故负载无需再带 session id。
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEvent {
+    // ── 生命周期事件（agent 运行驱动）────────────────────────────────
     /// agent 生命周期事件（原样透传，前端按既有事件协议重建消息流）
     Agent { event: AgentEvent },
-    /// `ask_user_question` 提问（前端弹层展示，回答经 REST 回填）
+    /// `ask_user_question` 提问（前端弹层展示，回答经事件回填）
     Question {
         id: String,
         question: AskUserQuestion,
@@ -57,7 +72,45 @@ pub enum ServerEvent {
     /// 一轮 run 结束（队列清空或出错）
     RunFinished,
     /// 运行期错误（agent loop 失败等）
-    Error { message: String },
+    Error {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        message: String,
+    },
+    /// 客户端落后于事件流，应重新拉取快照
+    Refresh,
+
+    // ── 查询响应事件（携带 request_id）───────────────────────────────
+    /// 会话快照响应（`get_state` 查询的回复）
+    StateSnapshot {
+        request_id: String,
+        snapshot: api::SnapshotView,
+    },
+    /// 候选模型列表响应（`list_models` 查询的回复）
+    ModelsList {
+        request_id: String,
+        candidates: Vec<crate::model::ModelChoice>,
+    },
+    /// 全部 session 摘要响应（`list_sessions` 查询的回复）
+    SessionsList {
+        request_id: String,
+        sessions: Vec<nomic_session::SessionSummary>,
+    },
+
+    // ── 命令 ack 事件 ──────────────────────────────────────────────
+    /// prompt 提交确认（`queued: true` 表示排队，`false` 表示立即运行）
+    PromptAck { queued: bool },
+    /// 取消确认
+    CancelAck,
+    /// 提问回答确认
+    AnswerAck,
+    /// 模型切换确认
+    SwitchModelAck { choice: crate::model::ModelChoice },
+    /// 新建 session 确认
+    SessionCreated {
+        id: String,
+        title: Option<String>,
+    },
 }
 
 /// 待发送的 prompt（文本 + 图片附件）。
@@ -408,8 +461,8 @@ async fn shutdown_signal(state: AppState) {
             cancel_all(&state).await;
         }
     }
-    // 断掉全部 SSE 长连接：graceful shutdown 会等所有在途连接结束，SSE 流
-    // 由前端持续持有，不主动结束的话 serve 永不返回、进程挂住。
+    // 断掉全部 WebSocket 长连接：graceful shutdown 会等所有在途连接结束，WebSocket
+    // 由前端持续持有，不主动关闭的话 serve 永不返回、进程挂住。
     state.inner.shutdown.cancel();
     stop.cancel();
     let _ = keyboard.await;

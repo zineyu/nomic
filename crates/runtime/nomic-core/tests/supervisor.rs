@@ -7,12 +7,9 @@ mod support;
 use std::sync::Arc;
 
 use nomic_ai::Message;
-use nomic_core::{
-    AgentSupervisor, CreateAgentRequest, SupervisorConfig, SupervisorError,
-};
+use nomic_core::{AgentSupervisor, CreateAgentRequest, SupervisorConfig, SupervisorError};
 use support::{MockProvider, model, text_done};
 use tokio_util::sync::CancellationToken;
-
 
 /// 创建 supervisor（使用 mock provider）。
 fn supervisor(max_agents: usize) -> Arc<AgentSupervisor> {
@@ -90,14 +87,17 @@ async fn create_respects_max_agents_limit() {
     let sup = supervisor(2);
     create_child(&sup).await;
     create_child(&sup).await;
-    let err = sup.create(CreateAgentRequest {
-        id: None,
-        system_prompt: "test".to_string(),
-        tools: vec![],
-        model: model(),
-        provider: None,
-        stream_options: None,
-    }).await.unwrap_err();
+    let err = sup
+        .create(CreateAgentRequest {
+            id: None,
+            system_prompt: "test".to_string(),
+            tools: vec![],
+            model: model(),
+            provider: None,
+            stream_options: None,
+        })
+        .await
+        .unwrap_err();
     assert!(matches!(err, SupervisorError::MaxAgentsReached(2)));
 }
 

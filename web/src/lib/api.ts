@@ -1,146 +1,259 @@
-// REST 客户端 + SSE 客户端。
+// 纯 WebSocket 事件驱动通信客户端（单例）。
 //
-// 生产（nomic --web 伺服 dist）同源访问 /api；开发期经 Vite 代理转发到
-// nomic 服务（见 vite.config.ts 的 proxy）。SSE 用 fetch + ReadableStream
-// 手动解析：可控制断线退避重连与自定义 event 处理（EventSource 不支持
-// 自定义 header，且重连语义不可控）。
+// 所有前端↔后端通信通过 `ws://{host}/ws/{session_id}` 双向事件流：
+// - **查询类**（`get_state` / `list_models` / `list_sessions`）：携带 `request_id`，
+//   服务端响应事件带同一 `request_id` 供关联。
+// - **命令类**（`prompt` / `cancel` / `answer_question` / `switch_model` / `create_session`）：
+//   fire-and-forget，由服务端后续生命周期事件（`run_started` / `run_finished` / `error`）
+//   驱动前端状态更新。
 //
-// 多 session：会话操作（状态 / 流 / prompt / 取消 / 模型 / 提问）按路径参数
-// `sessionId` 路由到对应会话；候选模型列表为进程级（无需会话 id）。
+// 连接生命周期：`setSession` 切换会话时自动断开旧连接并建立新连接；
+// 断线自动退避重连（指数退避上限 15s）；请求超时 30s 自动拒绝。
 
 import type {
   AskUserAnswer,
-  ModelsResponse,
+  ClientEvent,
+  ImageContent,
+  ModelChoice,
   ServerEvent,
   SessionSummary,
   StateResponse,
 } from './types'
 
-const API_BASE = '/api'
+type EventHandler = (event: ServerEvent) => void
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
-  })
-  if (!response.ok) {
-    let detail = response.statusText
-    try {
-      const body = (await response.json()) as { error?: string }
-      detail = body.error ?? detail
-    } catch {
-      // 非 JSON 错误体，保留 statusText
+class WsClient {
+  private sessionId: string | null = null
+  private ws: WebSocket | null = null
+  private pending = new Map<
+    string,
+    {
+      resolve: (v: unknown) => void
+      reject: (e: Error) => void
+      timer: ReturnType<typeof setTimeout>
     }
-    throw new Error(`API ${init?.method ?? 'GET'} ${path}: ${response.status} ${detail}`)
+  >()
+  private eventHandlers = new Set<EventHandler>()
+  private retry = 0
+  private retryTimer: ReturnType<typeof setTimeout> | null = null
+  private requestId = 0
+  private connectResolvers: Array<() => void> = []
+
+  /** 注册事件监听（生命周期与调用方一致，需手动退订）。 */
+  subscribe(handler: EventHandler): () => void {
+    this.eventHandlers.add(handler)
+    return () => {
+      this.eventHandlers.delete(handler)
+    }
   }
-  return (await response.json()) as T
+
+  /** 切换目标会话：断开旧连接，建立新连接，连接就绪后 resolve。 */
+  setSession(id: string): Promise<void> {
+    if (this.sessionId === id && this.ws?.readyState === WebSocket.OPEN) {
+      return Promise.resolve()
+    }
+    this.sessionId = id
+    this.disconnect()
+    return new Promise<void>((resolve) => {
+      this.connectResolvers.push(resolve)
+      this.connect()
+    })
+  }
+
+  /** 发送客户端事件（连接未就绪时静默丢弃）。 */
+  send(event: ClientEvent): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(event))
+    }
+  }
+
+  /** 发送查询事件并等待响应（通过 request_id 关联，30s 超时）。 */
+  request<T>(event: { type: string; request_id?: string }): Promise<T> {
+    const id = `r${++this.requestId}`
+    const fullEvent = { ...event, request_id: id } as ClientEvent
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        reject(new Error(`请求超时: ${event.type}`))
+      }, 30_000)
+      this.pending.set(id, {
+        resolve: resolve as (v: unknown) => void,
+        reject,
+        timer,
+      })
+      this.send(fullEvent)
+    })
+  }
+
+  /** 清理：关闭连接、拒绝所有待处理请求。 */
+  destroy(): void {
+    this.disconnect()
+    this.eventHandlers.clear()
+  }
+
+  // ── 连接管理 ──────────────────────────────────────────────────────
+
+  private connect(): void {
+    const id = this.sessionId
+    if (!id) return
+
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws/${id}`)
+    this.ws = ws
+
+    ws.onopen = () => {
+      this.retry = 0
+      // 通知所有等待连接就绪的 caller
+      for (const resolve of this.connectResolvers) resolve()
+      this.connectResolvers = []
+    }
+
+    ws.onmessage = (event: MessageEvent) => {
+      if (typeof event.data !== 'string' || !event.data) return
+      try {
+        const msg = JSON.parse(event.data) as ServerEvent
+        // 带 request_id 的响应事件 → 关联到 pending 请求
+        if ('request_id' in msg && msg.request_id) {
+          const entry = this.pending.get(msg.request_id)
+          if (entry) {
+            this.pending.delete(msg.request_id)
+            clearTimeout(entry.timer)
+            if (msg.type === 'error') {
+              entry.reject(new Error(msg.message))
+            } else {
+              entry.resolve(msg)
+            }
+            return
+          }
+        }
+        // 广播给所有事件监听器
+        for (const handler of this.eventHandlers) {
+          handler(msg)
+        }
+      } catch {
+        // 忽略无法解析的消息
+      }
+    }
+
+    ws.onerror = () => {
+      // onclose 会在 onerror 之后触发，在那里处理重连
+    }
+
+    ws.onclose = () => {
+      this.ws = null
+      this.rejectAllPending('连接已断开')
+      this.scheduleReconnect()
+    }
+  }
+
+  private disconnect(): void {
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer)
+      this.retryTimer = null
+    }
+    if (this.ws !== null) {
+      this.ws.onclose = null // 阻止 onclose 触发重连
+      this.ws.close()
+      this.ws = null
+    }
+    this.rejectAllPending('连接已断开')
+    this.connectResolvers = []
+  }
+
+  private scheduleReconnect(): void {
+    if (!this.sessionId) return
+    this.retry += 1
+    const delay = Math.min(1000 * 2 ** this.retry, 15_000)
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null
+      this.connect()
+    }, delay)
+  }
+
+  private rejectAllPending(reason: string): void {
+    for (const [, entry] of this.pending) {
+      clearTimeout(entry.timer)
+      entry.reject(new Error(reason))
+    }
+    this.pending.clear()
+  }
 }
+
+// ── 单例导出 ─────────────────────────────────────────────────────────
+
+const client = new WsClient()
 
 export const api = {
-  currentSession: () => request<{ id: string }>('/session'),
-  sessions: () => request<SessionSummary[]>('/sessions'),
-  createSession: () =>
-    request<{ id: string; title: string | null }>('/sessions', { method: 'POST' }),
-  state: (sessionId: string) => request<StateResponse>(`/sessions/${sessionId}/state`),
-  models: () => request<ModelsResponse>('/models'),
-  switchModel: (sessionId: string, spec: string, reasoning?: string) =>
-    request<unknown>(`/sessions/${sessionId}/models`, {
-      method: 'POST',
-      body: JSON.stringify({ spec, reasoning: reasoning ?? null }),
-    }),
-  prompt: (sessionId: string, text: string) =>
-    request<{ status: 'started' | 'queued' }>(`/sessions/${sessionId}/prompt`, {
-      method: 'POST',
-      body: JSON.stringify({ text }),
-    }),
-  cancel: (sessionId: string) =>
-    request<{ cancelled: boolean }>(`/sessions/${sessionId}/cancel`, { method: 'POST' }),
-  answerQuestion: (sessionId: string, id: string, answer: AskUserAnswer) =>
-    request<{ ok: boolean }>(`/sessions/${sessionId}/question/${id}`, {
-      method: 'POST',
-      body: JSON.stringify(answer),
-    }),
-}
+  /** 注册事件监听（组件生命周期内有效，需退订）。 */
+  subscribe: (handler: EventHandler) => client.subscribe(handler),
 
-export type StreamEvent = ServerEvent | { type: 'refresh' }
+  /** 切换目标会话（断开旧连接，建立新连接，就绪后 resolve）。 */
+  setSession: (id: string) => client.setSession(id),
 
-export interface StreamClient {
-  /** 连接指定 session 的事件流；返回断开函数。断线自动退避重连。 */
-  connect(sessionId: string, onEvent: (event: StreamEvent) => void): () => void
-}
+  /** 获取会话快照（查询类，通过连接路径确定目标 session）。 */
+  state: () =>
+    client.request<StateResponse>({ type: 'get_state' }),
 
-/** 解析一个 SSE 块（空行分隔）为 `{ event, data }`；无 data 时返回 `null`。 */
-function parseSseBlock(block: string): { event: string; data: string } | null {
-  let event = 'message'
-  let data = ''
-  for (const line of block.split('\n')) {
-    if (line.startsWith('event:')) event = line.slice(6).trim()
-    else if (line.startsWith('data:')) data += line.slice(5).trimStart()
-  }
-  if (!data) return null
-  return { event, data }
-}
+  /** 列出全部 session 摘要。 */
+  sessions: () =>
+    client.request<{ sessions: SessionSummary[] }>({ type: 'list_sessions' }).then(
+      (r) => r.sessions,
+    ),
 
-export function createStreamClient(): StreamClient {
-  return {
-    connect(sessionId, onEvent) {
-      let closed = false
-      let retry = 0
-      let controller: AbortController | null = null
-
-      const connectOnce = async () => {
-        if (closed) return
-        controller = new AbortController()
-        try {
-          const response = await fetch(`${API_BASE}/sessions/${sessionId}/stream`, {
-            signal: controller.signal,
-            headers: { Accept: 'text/event-stream' },
-          })
-          if (!response.ok || !response.body) {
-            throw new Error(`stream: ${response.status} ${response.statusText}`)
-          }
-          retry = 0
-          const reader = response.body.getReader()
-          const decoder = new TextDecoder()
-          let buffer = ''
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            buffer += decoder.decode(value, { stream: true })
-            const blocks = buffer.split('\n\n')
-            buffer = blocks.pop() ?? ''
-            for (const block of blocks) {
-              const parsed = parseSseBlock(block)
-              if (!parsed) continue
-              if (parsed.event === 'refresh') {
-                onEvent({ type: 'refresh' })
-                continue
-              }
-              try {
-                onEvent(JSON.parse(parsed.data) as ServerEvent)
-              } catch {
-                // 忽略无法解析的行
-              }
-            }
-          }
-        } catch (error) {
-          if (closed || (error instanceof DOMException && error.name === 'AbortError')) return
-          console.warn('SSE 断开，准备重连', error)
-        } finally {
-          controller = null
+  /** 新建 session（命令类，等待 session_created 事件确认）。 */
+  createSession: (): Promise<{ id: string; title: string | null }> => {
+    client.send({ type: 'create_session' })
+    return new Promise((resolve) => {
+      const unsub = client.subscribe((event) => {
+        if (event.type === 'session_created') {
+          unsub()
+          resolve({ id: event.id, title: event.title })
         }
-        if (!closed) {
-          retry += 1
-          const delay = Math.min(1000 * 2 ** retry, 15_000)
-          setTimeout(connectOnce, delay)
-        }
-      }
+      })
+    })
+  },
 
-      void connectOnce()
-      return () => {
-        closed = true
-        controller?.abort()
-      }
-    },
-  }
+  /** 候选模型列表。 */
+  models: () =>
+    client.request<{ candidates: ModelChoice[] }>({ type: 'list_models' }).then(
+      (r) => r.candidates,
+    ),
+
+  /** 切换会话模型（命令类）。 */
+  switchModel: (spec: string, reasoning?: string | null) => {
+    client.send({ type: 'switch_model', spec, reasoning: reasoning ?? null })
+  },
+
+  /** 提交 prompt（命令类，等待 prompt_ack 确认）。 */
+  prompt: (text: string, images?: ImageContent[]): Promise<{ status: 'started' | 'queued' }> => {
+    client.send({ type: 'prompt', text, images: images ?? [] })
+    return new Promise((resolve) => {
+      const unsub = client.subscribe((event) => {
+        if (event.type === 'prompt_ack') {
+          unsub()
+          resolve({ status: event.queued ? 'queued' : 'started' })
+        }
+      })
+      // 超时兜底（防止 ack 丢失时 Promise 悬挂）
+      setTimeout(() => {
+        unsub()
+        resolve({ status: 'started' })
+      }, 5_000)
+    })
+  },
+
+  /** 取消当前轮运行（命令类）。 */
+  cancel: () => {
+    client.send({ type: 'cancel' })
+  },
+
+  /** 回答提问（命令类）。 */
+  answerQuestion: (id: string, answer: AskUserAnswer) => {
+    client.send({
+      type: 'answer_question',
+      id,
+      answers: answer.answers,
+      custom: answer.custom,
+    })
+  },
 }

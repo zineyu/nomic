@@ -26,8 +26,7 @@ pub use interception::{
     ToolExecutionStart,
 };
 pub use supervisor::{
-    AgentId, AgentStatus, AgentSupervisor, CreateAgentRequest, SupervisorConfig,
-    SupervisorError,
+    AgentId, AgentStatus, AgentSupervisor, CreateAgentRequest, SupervisorConfig, SupervisorError,
 };
 pub use tool::{
     AgentTool, DynTool, ExecutionMode, ToolError, ToolResult, ToolUpdate, ToolUpdateCallback,

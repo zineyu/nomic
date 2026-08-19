@@ -203,12 +203,10 @@ impl AgentSupervisor {
         }
         drop(agents);
 
-        let id = request
-            .id
-            .map_or_else(
-                || AgentId(uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)).to_string()),
-                AgentId,
-            );
+        let id = request.id.map_or_else(
+            || AgentId(uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)).to_string()),
+            AgentId,
+        );
 
         let model_id = request.model.id.clone();
         let system_prompt = request.system_prompt.clone();
@@ -258,7 +256,9 @@ impl AgentSupervisor {
         cancel: CancellationToken,
     ) -> Result<(), SupervisorError> {
         let mut agents = self.agents.write().await;
-        let child = agents.get_mut(id).ok_or_else(|| SupervisorError::NotFound(id.clone()))?;
+        let child = agents
+            .get_mut(id)
+            .ok_or_else(|| SupervisorError::NotFound(id.clone()))?;
 
         if child.prompt_task.is_some() {
             return Err(SupervisorError::AlreadyRunning(id.clone()));
@@ -282,13 +282,12 @@ impl AgentSupervisor {
     ///
     /// 取走并 await 子 agent 的 prompt `JoinHandle`。如果该 agent 没有
     /// 正在执行的任务，返回 [`SupervisorError::NotRunning`]。
-    pub async fn wait_result(
-        &self,
-        id: &AgentId,
-    ) -> Result<Vec<Message>, SupervisorError> {
+    pub async fn wait_result(&self, id: &AgentId) -> Result<Vec<Message>, SupervisorError> {
         let task = {
             let mut agents = self.agents.write().await;
-            let child = agents.get_mut(id).ok_or_else(|| SupervisorError::NotFound(id.clone()))?;
+            let child = agents
+                .get_mut(id)
+                .ok_or_else(|| SupervisorError::NotFound(id.clone()))?;
             let task = child.prompt_task.take();
             drop(agents);
             task
@@ -307,7 +306,10 @@ impl AgentSupervisor {
             }
             Err(join_err) => {
                 if join_err.is_cancelled() {
-                    Err(SupervisorError::TaskPanicked(id.clone(), "cancelled".to_string()))
+                    Err(SupervisorError::TaskPanicked(
+                        id.clone(),
+                        "cancelled".to_string(),
+                    ))
                 } else {
                     Err(SupervisorError::TaskPanicked(
                         id.clone(),
@@ -369,7 +371,9 @@ impl AgentSupervisor {
     pub async fn close(&self, id: &AgentId) -> Result<(), SupervisorError> {
         let child = {
             let mut agents = self.agents.write().await;
-            agents.remove(id).ok_or_else(|| SupervisorError::NotFound(id.clone()))?
+            agents
+                .remove(id)
+                .ok_or_else(|| SupervisorError::NotFound(id.clone()))?
         };
         // 先 abort prompt 任务（如有），再 abort actor 任务
         if let Some(task) = child.prompt_task {
@@ -396,7 +400,9 @@ impl AgentSupervisor {
     pub async fn status(&self, id: &AgentId) -> Result<AgentStatus, SupervisorError> {
         let (is_running, model_id, system_prompt_preview, handle) = {
             let agents = self.agents.read().await;
-            let child = agents.get(id).ok_or_else(|| SupervisorError::NotFound(id.clone()))?;
+            let child = agents
+                .get(id)
+                .ok_or_else(|| SupervisorError::NotFound(id.clone()))?;
             let result = (
                 child.prompt_task.is_some(),
                 child.model_id.clone(),

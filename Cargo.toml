@@ -35,7 +35,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
 async-trait = "0.1"
 
-# ── HTTP / SSE ──────────────────────────────────────────────────────────────
+# ── HTTP / WebSocket ─────────────────────────────────────────────────────────
 reqwest = { version = "0.13", default-features = false, features = [
   "rustls",
   "stream",
@@ -45,8 +45,8 @@ reqwest = { version = "0.13", default-features = false, features = [
   "system-proxy",
 ] }
 eventsource-stream = "0.2"
-# Web 服务（nomic-cli `--web`）：REST + SSE 静态伺服
-axum = { version = "0.8" }
+# Web 服务（nomic-cli `--web`）：REST + WebSocket + 静态伺服
+axum = { version = "0.8", features = ["ws"] }
 # 前端产物编译期内嵌（`--web` 静态伺服；构建前需先 `npm run build`）
 rust-embed = { version = "8.12", features = ["mime-guess"] }
 
@@ -126,6 +126,7 @@ time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
 
 # ── 测试 ────────────────────────────────────────────────────────────────────
 tokio-test = "0.4"
+tokio-tungstenite = "0.29"
 tempfile = "3"
 
 # ── Lint 配置：严格但实用 ────────────────────────────────────────────────────

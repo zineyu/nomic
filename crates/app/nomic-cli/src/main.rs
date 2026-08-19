@@ -36,7 +36,7 @@ pub(crate) struct Cli {
     #[arg(short, long, value_name = "TEXT", conflicts_with = "web")]
     pub(crate) print: Option<String>,
 
-    /// 启动内置 Web UI 服务（REST + SSE + 前端静态伺服；缺省绑定 127.0.0.1:3333）
+    /// 启动内置 Web UI 服务（REST + WebSocket + 前端静态伺服；缺省绑定 127.0.0.1:3333）
     #[arg(long)]
     pub(crate) web: bool,
 

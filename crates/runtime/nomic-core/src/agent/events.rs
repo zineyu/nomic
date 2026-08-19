@@ -6,7 +6,7 @@ use crate::tool::{ToolResult, ToolUpdate};
 
 /// agent 生命周期事件。
 ///
-/// 派生 serde（web 模式经 SSE 序列化给前端重建消息流）；
+/// 派生 serde（web 模式经 WebSocket 序列化给前端重建消息流）；
 /// 字段负载（`Message` / `ToolResult` / `AssistantEvent`）均已可序列化。
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum AgentEvent {

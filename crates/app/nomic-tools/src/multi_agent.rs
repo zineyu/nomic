@@ -435,7 +435,11 @@ impl AgentTool for WaitAllTool {
         _on_update: ToolUpdateCallback,
     ) -> Result<ToolResult, ToolError> {
         use std::fmt::Write as _;
-        let ids: Vec<AgentId> = params.agent_ids.iter().map(|s| AgentId(s.clone())).collect();
+        let ids: Vec<AgentId> = params
+            .agent_ids
+            .iter()
+            .map(|s| AgentId(s.clone()))
+            .collect();
         let results = self
             .supervisor
             .wait_all(&ids)
@@ -631,10 +635,7 @@ pub fn multi_agent_tools(
     available_tools: Vec<DynTool>,
 ) -> Vec<DynTool> {
     vec![
-        DynTool::new(CreateAgentTool::new(
-            supervisor.clone(),
-            available_tools,
-        )),
+        DynTool::new(CreateAgentTool::new(supervisor.clone(), available_tools)),
         DynTool::new(SendMessageTool::new(supervisor.clone())),
         DynTool::new(WaitResultTool::new(supervisor.clone())),
         DynTool::new(WaitAllTool::new(supervisor.clone())),

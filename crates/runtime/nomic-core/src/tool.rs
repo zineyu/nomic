@@ -48,7 +48,7 @@ pub enum ExecutionMode {
 
 /// 工具执行的最终结果。
 ///
-/// 派生 serde（web 模式经 SSE 展示给前端）。
+/// 派生 serde（web 模式经 WebSocket 展示给前端）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ToolResult {
     /// 返回给模型的内容（文本/图片）
@@ -75,7 +75,7 @@ impl ToolResult {
 
 /// 工具执行中的进度更新。
 ///
-/// 派生 serde（web 模式经 SSE 展示给前端）。
+/// 派生 serde（web 模式经 WebSocket 展示给前端）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ToolUpdate {
     /// 当前已产生的部分内容

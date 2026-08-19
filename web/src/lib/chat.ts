@@ -229,6 +229,9 @@ export function applyServerEvent(items: ChatItem[], event: ServerEvent): ChatIte
     case 'error':
       // 运行/提问状态由 hook 持有（见 useChat），不进入消息项列表
       return items
+    default:
+      // 响应事件（state_snapshot / models_list 等）与 ack 事件由 hook 处理
+      return items
   }
 }
 

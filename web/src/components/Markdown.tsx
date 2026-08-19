@@ -115,7 +115,7 @@ function MarkdownImpl({
   className?: string
 }) {
   return (
-    <div className={cn('space-y-1 break-words text-base leading-relaxed', className)}>
+    <div className={cn('space-y-1 break-words text-[0.9375rem] leading-relaxed', className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

@@ -129,8 +129,8 @@ export function MessageList({
   return (
     <div className="relative h-full">
       <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
-        <div className="mx-auto w-full max-w-page px-7 py-3">
-          <div className="flex flex-col gap-2">{renderRows(items)}</div>
+        <div className="mx-auto w-full max-w-page px-7 py-6">
+          <div className="flex flex-col gap-4">{renderRows(items)}</div>
         </div>
       </div>
       {showJump && (

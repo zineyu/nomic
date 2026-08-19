@@ -24,7 +24,7 @@ function UserMessage({ item }: { item: UserItem }) {
   return (
     // 约束到阅读列宽（max-w-reading）并在列内右对齐；不用 ml-auto（那会把右缘推到页面列 864px）
     <div className="flex max-w-reading flex-col items-end gap-1">
-      <div className="max-w-[70%] rounded-xl rounded-br-md bg-primary px-4 py-2.5 text-base leading-relaxed text-primary-foreground shadow-sm">
+      <div className="max-w-[70%] rounded-xl rounded-br-md bg-primary px-4 py-2.5 text-[0.9375rem] leading-relaxed text-primary-foreground shadow-sm">
         {item.images.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {item.images.map((image, i) => (

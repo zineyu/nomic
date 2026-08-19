@@ -22,8 +22,8 @@ function formatMessageTime(millis: number): string {
 
 function UserMessage({ item }: { item: UserItem }) {
   return (
-    // 与正文阅读列同宽并右对齐（max-w-reading）：用户气泡右侧与 agent 输出/工具卡片/思考内容对齐
-    <div className="ml-auto flex max-w-reading flex-col items-end gap-1">
+    // 约束到阅读列宽（max-w-reading）并在列内右对齐；不用 ml-auto（那会把右缘推到页面列 864px）
+    <div className="flex max-w-reading flex-col items-end gap-1">
       <div className="max-w-[70%] rounded-xl rounded-br-md bg-primary px-4 py-2.5 text-base leading-relaxed text-primary-foreground shadow-sm">
         {item.images.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">

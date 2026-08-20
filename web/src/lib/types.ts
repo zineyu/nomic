@@ -236,7 +236,8 @@ export interface ModelChoice {
 export interface SessionSummary {
   id: string
   title: string | null
-  cwd: string
+  workspace_id: string
+  workspace: string
   first_message_at: number | null
   last_message_at: number | null
   message_count: number
@@ -265,7 +266,7 @@ export interface StateResponse {
   queued: number
   session: { id: string; title: string | null } | null
   pending_question: { id: string; question: AskUserQuestion } | null
-  cwd: string
+  workspace: string
   /** 会话统计信息 */
   rounds: number
   total_steps: number

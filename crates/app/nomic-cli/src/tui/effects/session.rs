@@ -1,32 +1,31 @@
 //! 会话管理：`resume` 恢复、`tree` 浏览与分支、`new` 新建。
 //!
 //! 定稿点落库与父指针推进收在 `nomic_session::SessionRecorder`；本模块
-//! 持有会话落库绑定 [`SessionBinding`]（recorder + 创建新 session 用的
-//! cwd），driver 只持有一个实例并转发——事件分支的落库是
-//! `session.record(&event)` 一行，session 切换时的 recorder 换绑收在
-//! 本模块的 effect 函数里。
+//! 持有会话落库绑定 [`SessionBinding`]（recorder + 与工具共享的基准目录
+//! 句柄），driver 只持有一个实例并转发——事件分支的落库是
+//! `session.record(&event)` 一行，session 切换时的 recorder 换绑与基准
+//! 切换收在本模块的 effect 函数里。
 
 use anyhow::{Context as _, Result};
 use nomic_core::AgentEvent;
 use nomic_session::{SessionError, SessionRecorder, SessionStore, TreeEntry};
+use nomic_tools::BaseDir;
 use tokio::sync::mpsc;
 
 use crate::tui::app::{App, PickerRow};
 use crate::tui::driver::DriverJob;
 
-/// 会话落库绑定：recorder（store、目标 session、父指针）与创建新 session
-/// 用的 cwd。`None` recorder 表示本次不持久化。
+/// 会话落库绑定：recorder（store、目标 session、父指针）与当前 session 的
+/// 操作基准（workspace 严格归属；与工具共享同一句柄，`set` 后下一次工具
+/// 执行即用新基准）。`None` recorder 表示本次不持久化。
 pub(in crate::tui) struct SessionBinding {
     recorder: Option<SessionRecorder>,
-    cwd: std::path::PathBuf,
+    base: BaseDir,
 }
 
 impl SessionBinding {
-    pub(in crate::tui) const fn new(
-        recorder: Option<SessionRecorder>,
-        cwd: std::path::PathBuf,
-    ) -> Self {
-        Self { recorder, cwd }
+    pub(in crate::tui) const fn new(recorder: Option<SessionRecorder>, base: BaseDir) -> Self {
+        Self { recorder, base }
     }
 
     /// 可用的 session store（模型选择落库等跨关注点读取用）；未持久化时为 `None`
@@ -36,9 +35,12 @@ impl SessionBinding {
             .map(|recorder| recorder.store().clone())
     }
 
-    /// 创建新 session 用的工作目录（mention 文件路径解析等以它为基准）。
-    pub(in crate::tui) fn cwd(&self) -> &std::path::Path {
-        &self.cwd
+    /// 当前 session 的操作基准（mention 文件路径解析、新建 session 的
+    /// workspace 归属以它为基准）；句柄未设置时退回进程 cwd。
+    pub(in crate::tui) fn base_dir(&self) -> std::path::PathBuf {
+        self.base.snapshot().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        })
     }
 
     /// 事件落库：定稿点落库与父指针推进（与 print 同一实现）；未持久化时无操作。
@@ -75,6 +77,10 @@ pub(in crate::tui) async fn list_sessions(app: &mut App, session: &SessionBindin
 }
 
 /// `new`：driver 串行清空上下文；本地重置聊天区并新建 session。
+///
+/// 新 session 归属当前操作基准的 workspace（严格归属：用户在哪个
+/// workspace 的上下文里操作，新 session 就属于哪个 workspace）；基准
+/// 不变，工具无需切换。
 pub(in crate::tui) async fn new_session(
     app: &mut App,
     session: &mut SessionBinding,
@@ -83,8 +89,10 @@ pub(in crate::tui) async fn new_session(
     // driver 串行处理任务；命令仅在空闲时可提交，无需排队等待
     let _ = job_tx.send(DriverJob::Clear);
     app.start_new_conversation();
+    // 先取基准快照以结束对 session 的借用（await 后要换绑 recorder）
+    let base = session.base_dir();
     if let Some(recorder) = &mut session.recorder {
-        match recorder.store().create_session(&session.cwd).await {
+        match recorder.store().create_session(&base).await {
             Ok(new_id) => {
                 // 换绑新 session：没有任何 entry，父指针重置（自动链最新）
                 recorder.switch(new_id.clone(), None);
@@ -351,16 +359,24 @@ pub(in crate::tui) async fn resume_session(
             .latest_entry_id(&id)
             .await
             .context("读取分支末端失败")?;
-        Ok::<_, anyhow::Error>((store, messages, tip))
+        let workspace = store
+            .session_workspace_path(&id)
+            .await
+            .context("读取 session 的 workspace 失败")?;
+        Ok::<_, anyhow::Error>((store, messages, tip, workspace))
     }
     .await;
     match loaded {
         Err(error) => app.warn(format!("恢复 session 失败：{error:#}")),
-        Ok((store, messages, tip)) => {
+        Ok((store, messages, tip, workspace)) => {
             // driver 串行处理任务：紧随其后的 prompt 一定排在 Restore 之后，
             // 不会出现「新 prompt 跑在旧上下文」的交错
             let _ = job_tx.send(DriverJob::Restore(messages.clone()));
             app.restore_conversation(&messages, id.clone());
+            // workspace 严格归属：操作基准（工具相对路径、mention 展开）切到
+            // 所恢复 session 的 workspace；句柄与工具共享，下一次执行即生效
+            let previous = session.base_dir();
+            session.base.set(workspace.clone());
             match &mut session.recorder {
                 Some(recorder) => recorder.switch(id.clone(), tip),
                 None => {
@@ -373,14 +389,96 @@ pub(in crate::tui) async fn resume_session(
                 "已恢复 session {label}（{} 条消息），后续对话续写该 session。",
                 messages.len()
             ));
+            if workspace != previous {
+                app.chat_mut().push_system(format!(
+                    "操作基准已切换到该 session 的 workspace：{}",
+                    workspace.display()
+                ));
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::tree_rows;
+    use super::{App, BaseDir, SessionBinding, SessionRecorder, SessionStore, tree_rows};
+    use nomic_ai::{Message, UserMessage, UserMessageContent};
     use nomic_session::TreeEntry;
+
+    /// `resume` 跨 workspace：recorder 换绑目标 session，操作基准（工具与
+    /// mention 共用的句柄）切到该 session 的 workspace，并给出可见提示。
+    #[tokio::test]
+    async fn resume_switches_base_dir_to_session_workspace() {
+        let dir_a = tempfile::tempdir().expect("tempdir a");
+        let dir_b = tempfile::tempdir().expect("tempdir b");
+        let store = SessionStore::in_memory().await.expect("store");
+        let session_a = store.create_session(dir_a.path()).await.expect("create a");
+        let session_b = store.create_session(dir_b.path()).await.expect("create b");
+        store
+            .append_message(
+                &session_b,
+                None,
+                &Message::User(UserMessage {
+                    content: UserMessageContent::Text("hello from b".to_string()),
+                    timestamp: 1000,
+                }),
+            )
+            .await
+            .expect("append b");
+
+        let base = BaseDir::new(Some(dir_a.path().to_path_buf()));
+        let mut binding =
+            SessionBinding::new(Some(SessionRecorder::new(store, session_a)), base.clone());
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        let (job_tx, mut job_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        super::resume_session(&mut app, &mut binding, &job_tx, session_b.clone()).await;
+
+        // Restore 任务已排队（driver 串行消费）
+        assert!(job_rx.try_recv().is_ok(), "应发送 Restore job");
+        assert_eq!(
+            binding.recorder.as_ref().expect("recorder").session_id(),
+            session_b,
+            "recorder 应换绑到恢复的 session"
+        );
+        assert_eq!(
+            binding.base_dir(),
+            std::fs::canonicalize(dir_b.path()).expect("canonicalize"),
+            "操作基准应切到所恢复 session 的 workspace"
+        );
+    }
+
+    /// `new` 新建 session 归属当前操作基准的 workspace（基准不变）。
+    #[tokio::test]
+    async fn new_session_binds_current_base_workspace() {
+        let dir_a = tempfile::tempdir().expect("tempdir a");
+        let store = SessionStore::in_memory().await.expect("store");
+        let session_a = store.create_session(dir_a.path()).await.expect("create a");
+
+        let base = BaseDir::new(Some(dir_a.path().to_path_buf()));
+        let mut binding =
+            SessionBinding::new(Some(SessionRecorder::new(store, session_a)), base.clone());
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        let (job_tx, mut job_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        super::new_session(&mut app, &mut binding, &job_tx).await;
+
+        assert!(job_rx.try_recv().is_ok(), "应发送 Clear job");
+        let new_id = binding.recorder.as_ref().expect("recorder").session_id();
+        let workspace = binding
+            .recorder
+            .as_ref()
+            .expect("recorder")
+            .store()
+            .session_workspace_path(new_id)
+            .await
+            .expect("workspace");
+        assert_eq!(
+            workspace,
+            std::fs::canonicalize(dir_a.path()).expect("canonicalize"),
+            "新 session 应归属当前基准的 workspace"
+        );
+    }
 
     /// 会话树选择器行：线性链（含工具调用轮次）平铺不缩进，连续工具条目
     /// 折叠为一行摘要（不可选），当前分支末端带标记。

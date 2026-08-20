@@ -106,6 +106,9 @@ pub(in crate::tui) struct Input {
     completion_enabled: bool,
     /// `@` mention 补全是否启用：聊天草稿启用，命令栏不启用
     mention_enabled: bool,
+    /// `@file:` 补全的路径基准（与工具共享的 session workspace 句柄；
+    /// 未设置时退回进程 cwd）
+    mention_base: Option<nomic_tools::BaseDir>,
 }
 
 impl Input {
@@ -120,7 +123,16 @@ impl Input {
             templates: Vec::new(),
             completion_enabled: true,
             mention_enabled: true,
+            mention_base: None,
         }
+    }
+
+    // ── 快照（补全数据源） ──────────────────────────────────────────────────
+
+    /// 设置 `@file:` 补全的路径基准（与工具共享句柄，session 切换 workspace
+    /// 时自动跟随）。
+    pub(in crate::tui) fn set_mention_base(&mut self, base: &nomic_tools::BaseDir) {
+        self.mention_base = Some(base.clone());
     }
 
     // ── 快照（补全数据源） ──────────────────────────────────────────────────
@@ -610,7 +622,7 @@ impl Input {
             return self.skill_mention_candidates(name);
         }
         if let Some(path) = fragment.strip_prefix(mention::FILE_PREFIX) {
-            return Self::file_mention_candidates(path);
+            return self.file_mention_candidates(path);
         }
         let prefix = fragment.strip_prefix('@')?;
         let mut candidates = Vec::new();
@@ -656,11 +668,15 @@ impl Input {
         })
     }
 
-    /// `@file:` 后的文件路径候选（相对当前工作目录，按前缀匹配）。
-    fn file_mention_candidates(path_fragment: &str) -> Option<MentionCompletion> {
-        let cwd = std::env::current_dir().unwrap_or_default();
+    /// `@file:` 后的文件路径候选（相对 session workspace 基准，按前缀匹配）。
+    fn file_mention_candidates(&self, path_fragment: &str) -> Option<MentionCompletion> {
+        let base = self
+            .mention_base
+            .as_ref()
+            .and_then(nomic_tools::BaseDir::snapshot)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let candidates: Vec<MentionCandidate> =
-            mention::file_mention_candidates(path_fragment, &cwd)
+            mention::file_mention_candidates(path_fragment, &base)
                 .into_iter()
                 .map(|path| MentionCandidate {
                     fragment: format!("@file:{path}"),

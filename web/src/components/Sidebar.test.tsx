@@ -13,8 +13,8 @@ const LONG_TITLE =
   '左侧session列表与右侧会话界面不够清晰明确，session名称被硬遮盖，需要调整布局与对比度让左右两侧边界分明'
 
 const sessions = [
-  { id: 'a', title: LONG_TITLE, cwd: '/tmp', first_message_at: null, last_message_at: 1786960000000, message_count: 101 },
-  { id: 'b', title: null, cwd: '/tmp', first_message_at: null, last_message_at: 1786960000000, message_count: 3 },
+  { id: 'a', title: LONG_TITLE, workspace_id: 'wa', workspace: '/tmp', first_message_at: null, last_message_at: 1786960000000, message_count: 101 },
+  { id: 'b', title: null, workspace_id: 'wb', workspace: '/tmp', first_message_at: null, last_message_at: 1786960000000, message_count: 3 },
 ]
 
 function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
@@ -22,7 +22,7 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
     <Sidebar
       sessions={sessions}
       currentSessionId="a"
-      cwd="/tmp"
+      workspace="/tmp"
       running={false}
       onNewSession={vi.fn()}
       onResume={vi.fn()}

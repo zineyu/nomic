@@ -25,6 +25,7 @@ mod question;
 mod session;
 
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -214,6 +215,9 @@ pub struct SessionRuntime {
     pub cancel: Mutex<Option<CancellationToken>>,
     /// 提问应答表（question id → 回答通道）
     pub questions: Arc<Mutex<HashMap<String, PendingQuestion>>>,
+    /// 本 session 的操作基准（workspace 严格归属）：工具相对路径以它解析，
+    /// 快照展示给用户
+    pub workspace: PathBuf,
 }
 
 impl SessionRuntime {
@@ -307,9 +311,20 @@ impl Runtime {
             .factory
             .resolve_session_model(self.store.as_ref(), id)
             .await;
-        let session =
-            self.factory
-                .build(self.store.clone(), id.to_string(), history, tip, resolved);
+        // workspace 严格归属：工具基准取 session 的 workspace 路径；
+        // store 不可用时退回进程 cwd
+        let workspace = match &self.store {
+            Some(store) => store.session_workspace_path(id).await?,
+            None => std::env::current_dir().context("get cwd")?,
+        };
+        let session = self.factory.build(
+            self.store.clone(),
+            id.to_string(),
+            history,
+            tip,
+            workspace,
+            resolved,
+        );
         let mut sessions = self.sessions.lock().await;
         // 并发 open 同一 id 时只保留先插入者（避免孤儿 agent 任务）
         if let Some(existing) = sessions.get(id) {
@@ -331,9 +346,15 @@ impl Runtime {
             .factory
             .resolve_session_model(self.store.as_ref(), &id)
             .await;
-        let session =
-            self.factory
-                .build(self.store.clone(), id.clone(), Vec::new(), None, resolved);
+        // 新 session 归属于当前目录的 workspace：工具基准即 cwd
+        let session = self.factory.build(
+            self.store.clone(),
+            id.clone(),
+            Vec::new(),
+            None,
+            cwd,
+            resolved,
+        );
         self.sessions
             .lock()
             .await
@@ -421,6 +442,7 @@ async fn build_app_state(boot: Bootstrap) -> AppState {
         default_session_id.clone(),
         boot.history,
         tip,
+        boot.workspace,
         ResolvedSessionModel {
             model: factory.default_model.clone(),
             provider: factory.default_provider.clone(),
@@ -580,6 +602,7 @@ mod tests {
             id.clone(),
             Vec::new(),
             None,
+            std::env::current_dir().expect("cwd"),
             ResolvedSessionModel {
                 model,
                 provider: factory.default_provider.clone(),

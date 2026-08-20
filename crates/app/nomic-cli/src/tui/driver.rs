@@ -4,7 +4,7 @@
 //! 唤醒处理（[`handle_wake`] / [`handle_prompt_done`] / [`next_wake`]）与
 //! 按键映射（[`map_key`]）、Effect 外部资源接线（[`execute_effect`]）也在此。
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use crossterm::event::{
     Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
 };
@@ -84,12 +84,13 @@ pub(super) struct PromptEnd {
 pub(super) fn spawn_driver(
     agent: Agent,
     recorder: Option<SessionRecorder>,
+    base: nomic_tools::BaseDir,
     models: ModelResolver,
     model: Model,
     skill_resolver: SkillResolver,
     reasoning: Option<ThinkingLevel>,
     todos: TodoStore,
-) -> Result<(Driver, mpsc::UnboundedReceiver<DriverDone>)> {
+) -> (Driver, mpsc::UnboundedReceiver<DriverDone>) {
     let (handle, actor_task) = agent.spawn();
     let (job_tx, mut job_rx) = mpsc::unbounded_channel::<DriverJob>();
     let (done_tx, done_rx) = mpsc::unbounded_channel::<DriverDone>();
@@ -174,12 +175,12 @@ pub(super) fn spawn_driver(
         task: Some(actor_task),
         adapter_task: Some(driver_task),
         alive: true,
-        session: SessionBinding::new(recorder, std::env::current_dir().context("get cwd")?),
+        session: SessionBinding::new(recorder, base),
         model: ModelSwitcher::new(models, model, reasoning),
         skill_resolver,
         goal: GoalNudger::new(todos),
     };
-    Ok((driver, done_rx))
+    (driver, done_rx)
 }
 /// 事件循环持有的驱动端资源。字段全私有（ADR-0024）：业务状态按关注点
 /// 收在子结构（[`SessionBinding`] / [`ModelSwitcher`] / [`GoalNudger`]），
@@ -622,7 +623,8 @@ fn submit_prompt(
     driver.goal.reset();
     driver.pending_question = None;
     // 发送前展开有效 `@skill:` / `@file:` mention；无效标记原样保留
-    let text = mention::expand_mentions(text, &driver.skill_resolver, driver.session.cwd());
+    // （`@file:` 相对路径以当前 session 的 workspace 为基准）
+    let text = mention::expand_mentions(text, &driver.skill_resolver, &driver.session.base_dir());
     let token = CancellationToken::new();
     if driver
         .job_tx

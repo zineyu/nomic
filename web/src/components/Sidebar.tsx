@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 interface SidebarProps {
   sessions: SessionSummary[]
   currentSessionId: string | null
-  cwd: string
+  workspace: string
   running: boolean
   onNewSession: () => void
   onResume: (id: string) => void
@@ -20,13 +20,15 @@ interface SidebarProps {
 export function Sidebar({
   sessions,
   currentSessionId,
-  cwd,
+  workspace,
   running,
   onNewSession,
   onResume,
 }: SidebarProps) {
-  // 从 cwd 中提取工作区名称
-  const workspaceName = cwd ? cwd.split('/').filter(Boolean).pop() ?? '工作区' : '工作区'
+  // 从 workspace 路径中提取工作区名称
+  const workspaceName = workspace
+    ? (workspace.split('/').filter(Boolean).pop() ?? '工作区')
+    : '工作区'
 
   return (
     <div className="flex h-full w-80 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">

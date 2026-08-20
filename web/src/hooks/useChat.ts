@@ -39,7 +39,7 @@ export interface ChatState {
   reasoning: string | null
   contextTokens: number
   session: { id: string; title: string | null } | null
-  cwd: string
+  workspace: string
   question: QuestionState | null
   error: string | null
   stats: SessionStats
@@ -68,7 +68,7 @@ const initialState: ChatState = {
   reasoning: null,
   contextTokens: 0,
   session: null,
-  cwd: '',
+  workspace: '',
   question: null,
   error: null,
   stats: defaultStats,
@@ -91,7 +91,7 @@ export function useChat() {
       running: snapshot.running,
       queued: snapshot.queued,
       session: snapshot.session,
-      cwd: snapshot.cwd,
+      workspace: snapshot.workspace,
       question: snapshot.pending_question ?? null,
       error: null,
       stats: {

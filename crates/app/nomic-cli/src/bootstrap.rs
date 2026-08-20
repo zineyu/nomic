@@ -32,6 +32,9 @@ pub struct Bootstrap {
     pub compaction: nomic_core::CompactionSettings,
     /// `Some((store, session_id))` 时开启落库；session 库不可用时降级为 `None`
     pub session: Option<(SessionStore, String)>,
+    /// 当前 session 的操作基准（workspace 严格归属）：持久化时为 session 的
+    /// workspace 路径，未持久化时为规范化进程 cwd。前端以此构建工具基准。
+    pub workspace: PathBuf,
     /// resume 恢复的历史消息（新会话为空）
     pub history: Vec<Message>,
     /// skill 解析器（同时注入 read 工具）
@@ -151,7 +154,10 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
         stream_options,
         system_prompt,
         compaction,
-        session: session.map(|init| (init.store, init.id)),
+        session: session
+            .as_ref()
+            .map(|init| (init.store.clone(), init.id.clone())),
+        workspace: session.map_or_else(|| normalize_path(&cwd), |init| init.workspace),
         history,
         skill_resolver,
         prompt_templates,
@@ -213,6 +219,8 @@ struct SessionInit {
     store: SessionStore,
     id: String,
     history: Vec<Message>,
+    /// session 所属 workspace 的规范化路径（本 session 所有操作的基准）
+    workspace: PathBuf,
 }
 
 /// 初始化 session：按 `--continue`/`--session` 恢复既有会话，否则新建。
@@ -258,21 +266,30 @@ async fn init_session_in(
         // 对话历史带入 B 项目的工具执行环境，是明确的误操作风险。
         let id = latest_session_in(&store, cwd).await?;
         let history = load_history(&store, &id).await?;
-        return Ok(Some(SessionInit { store, id, history }));
+        let workspace = store.session_workspace_path(&id).await?;
+        return Ok(Some(SessionInit {
+            store,
+            id,
+            history,
+            workspace,
+        }));
     }
     if let Some(id) = &cli.session {
         // 显式 --session 尊重用户意图，可跨目录恢复，但跨目录时提示
         warn_if_cross_cwd(&store, id, cwd).await;
         let history = load_history(&store, id).await?;
+        let workspace = store.session_workspace_path(id).await?;
         return Ok(Some(SessionInit {
             store,
             id: id.clone(),
             history,
+            workspace,
         }));
     }
 
     match store.create_session(cwd).await {
         Ok(id) => Ok(Some(SessionInit {
+            workspace: store.session_workspace_path(&id).await?,
             store,
             id,
             history: Vec::new(),
@@ -440,6 +457,11 @@ mod tests {
             .expect("session");
         assert_eq!(init.id, session_b);
         assert_eq!(init.history.len(), 1);
+        assert_eq!(
+            init.workspace,
+            normalize_path(dir_b.path()),
+            "--continue 恢复的 session 以所属 workspace 为操作基准"
+        );
     }
 
     #[tokio::test]
@@ -474,6 +496,11 @@ mod tests {
             .expect("session");
         assert_eq!(init.id, id);
         assert_eq!(init.history.len(), 1);
+        assert_eq!(
+            init.workspace,
+            normalize_path(dir_a.path()),
+            "跨目录恢复：操作基准是 session 的 workspace 而非进程 cwd"
+        );
     }
 
     // ── session：创建 → 落库 → 恢复 roundtrip ────────────────────────────────

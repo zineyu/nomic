@@ -82,6 +82,10 @@ pub async fn run(cli: &Cli) -> Result<()> {
     app.load_history(&boot.history);
     // `--image` 附件在 TUI 模式同样生效：作为首轮消息的暂存附件
     effects::stage_cli_images(&mut app, &cli.image);
+    // 工具基准（workspace 严格归属）：工具、`@file:` 补全与 session 绑定
+    // 共享同一句柄，resume/new 切换 session 时基准经句柄原地更新，
+    // 下一次工具执行/补全即生效
+    let base_dir = nomic_tools::BaseDir::new(Some(boot.workspace.clone()));
     let skill_resolver = boot.skill_resolver.clone();
     let skill_entries: Vec<SkillEntry> = skill_resolver
         .catalog()
@@ -96,6 +100,8 @@ pub async fn run(cli: &Cli) -> Result<()> {
     app.command_mut()
         .set_available_skills(skill_entries.clone());
     app.input_mut().set_available_skills(skill_entries);
+    // `@file:` 补全与工具共享同一基准：resume 切换 workspace 时自动跟随
+    app.input_mut().set_mention_base(&base_dir);
     app.command_mut()
         .set_available_templates(boot.prompt_templates.clone());
     // 启动解析的思考级别（CLI 参数 / 配置文件）在进入 builder 前取出，
@@ -113,8 +119,10 @@ pub async fn run(cli: &Cli) -> Result<()> {
         .provider(boot.provider.clone())
         .system_prompt(boot.system_prompt)
         .tools({
-            // 子 agent 可用的工具池（基础工具，不含管理工具本身）
-            let child_tools = nomic_tools::default_tools_with_skills(
+            // 子 agent 可用的工具池（基础工具，不含管理工具本身；与主 agent
+            // 共享同一基准句柄，随 session workspace 一并切换）
+            let child_tools = nomic_tools::default_tools_with_skills_in_shared(
+                &base_dir,
                 boot.skill_resolver.clone(),
                 todo_store.clone(),
                 question_sink.clone(),
@@ -126,7 +134,8 @@ pub async fn run(cli: &Cli) -> Result<()> {
                 nomic_core::SupervisorConfig::default(),
             ));
             // 主 agent 工具 = 基础工具 + 多 agent 管理工具
-            let mut tools = nomic_tools::default_tools_with_skills(
+            let mut tools = nomic_tools::default_tools_with_skills_in_shared(
+                &base_dir,
                 boot.skill_resolver,
                 todo_store.clone(),
                 question_sink,
@@ -166,12 +175,13 @@ pub async fn run(cli: &Cli) -> Result<()> {
     let (mut driver, mut done_rx) = spawn_driver(
         agent,
         recorder,
+        base_dir,
         boot.models,
         boot.model,
         skill_resolver,
         initial_reasoning,
         todo_store,
-    )?;
+    );
     let mut term_events = EventStream::new();
     // spinner 帧推进：仅运行中需要动画，空闲时分支挂起不唤醒事件循环
     let mut spinner_ticker = tokio::time::interval(std::time::Duration::from_millis(100));

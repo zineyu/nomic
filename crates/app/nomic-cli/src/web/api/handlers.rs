@@ -235,7 +235,8 @@ pub struct SnapshotView {
     pub queued: usize,
     pub session: Option<(String, Option<String>)>,
     pub pending_question: Option<(String, AskUserQuestion)>,
-    pub cwd: String,
+    /// 本 session 的 workspace 路径（操作基准）
+    pub workspace: String,
     /// 会话统计信息（前端状态栏展示用）
     #[serde(flatten)]
     pub stats: nomic_core::SessionStats,
@@ -252,7 +253,7 @@ impl SnapshotView {
             queued: snap.queued,
             session: snap.session,
             pending_question: snap.pending_question,
-            cwd: snap.cwd.display().to_string(),
+            workspace: snap.workspace.display().to_string(),
             stats: snap.stats,
         }
     }

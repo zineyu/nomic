@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use nomic_ai::{Message, Model, Provider, StreamOptions, ThinkingLevel};
 use nomic_core::{Agent, AgentEvent};
 use nomic_session::{SessionRecorder, SessionStore};
@@ -114,12 +114,16 @@ impl SessionFactory {
     }
 
     /// 构建并注册一个 [`SessionRuntime`]（含 agent actor 与事件转发任务）。
+    ///
+    /// `workspace` 是本 session 的操作基准（workspace 严格归属）：工具的
+    /// 相对路径以它解析，快照展示同一值。
     pub fn build(
         &self,
         store: Option<SessionStore>,
         id: String,
         history: Vec<Message>,
         tip: Option<String>,
+        workspace: PathBuf,
         resolved: ResolvedSessionModel,
     ) -> Arc<SessionRuntime> {
         let events_tx = self.events.clone();
@@ -135,8 +139,10 @@ impl SessionFactory {
             .provider(resolved.provider.clone())
             .system_prompt(self.system_prompt.clone())
             .tools({
-                // 子 agent 可用的工具池（基础工具，不含管理工具本身）
-                let child_tools = nomic_tools::default_tools_with_skills(
+                // 子 agent 可用的工具池（基础工具，不含管理工具本身）；
+                // 主/子 agent 工具都以本 session 的 workspace 为基准
+                let child_tools = nomic_tools::default_tools_with_skills_in(
+                    Some(workspace.clone()),
                     self.skill_resolver.clone(),
                     TodoStore::new(),
                     sink.clone(),
@@ -148,7 +154,8 @@ impl SessionFactory {
                     nomic_core::SupervisorConfig::default(),
                 ));
                 // 主 agent 工具 = 基础工具 + 多 agent 管理工具
-                let mut tools = nomic_tools::default_tools_with_skills(
+                let mut tools = nomic_tools::default_tools_with_skills_in(
+                    Some(workspace.clone()),
                     self.skill_resolver.clone(),
                     TodoStore::new(),
                     sink,
@@ -173,6 +180,7 @@ impl SessionFactory {
             gate: super::RunGate::new(),
             cancel: Mutex::new(None),
             questions,
+            workspace,
         });
         tokio::spawn(forward_events(session.clone(), events_rx));
         session
@@ -249,7 +257,8 @@ pub struct Snapshot {
     pub queued: usize,
     pub session: Option<(String, Option<String>)>,
     pub pending_question: Option<(String, AskUserQuestion)>,
-    pub cwd: PathBuf,
+    /// 本 session 的 workspace 路径（操作基准）
+    pub workspace: PathBuf,
     /// 会话统计信息
     pub stats: nomic_core::SessionStats,
 }
@@ -270,7 +279,6 @@ pub async fn snapshot(session: &SessionRuntime) -> Result<Snapshot> {
         .iter()
         .next()
         .map(|(id, pending)| (id.clone(), pending.question.clone()));
-    let cwd = std::env::current_dir().context("get cwd")?;
     Ok(Snapshot {
         messages,
         model,
@@ -280,7 +288,7 @@ pub async fn snapshot(session: &SessionRuntime) -> Result<Snapshot> {
         queued,
         session: Some((session.id.clone(), title)),
         pending_question,
-        cwd,
+        workspace: session.workspace.clone(),
         stats: session_stats,
     })
 }

@@ -38,8 +38,11 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
         .provider(boot.provider.clone())
         .system_prompt(boot.system_prompt)
         .tools({
+            // 工具相对路径以 session 的 workspace 为基准（严格归属）
+            let base = Some(boot.workspace.clone());
             // 子 agent 可用的工具池（基础工具，不含管理工具本身）
-            let child_tools = nomic_tools::default_tools_with_skills(
+            let child_tools = nomic_tools::default_tools_with_skills_in(
+                base.clone(),
                 boot.skill_resolver.clone(),
                 nomic_tools::TodoStore::new(),
                 std::sync::Arc::new(StdinQuestionSink),
@@ -51,7 +54,8 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
                 nomic_core::SupervisorConfig::default(),
             ));
             // 主 agent 工具 = 基础工具 + 多 agent 管理工具
-            let mut tools = nomic_tools::default_tools_with_skills(
+            let mut tools = nomic_tools::default_tools_with_skills_in(
+                base,
                 boot.skill_resolver,
                 nomic_tools::TodoStore::new(),
                 std::sync::Arc::new(StdinQuestionSink),

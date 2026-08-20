@@ -1,6 +1,7 @@
-//! WebSocket 事件 handler：查询类（`get_state` / `list_models` / `list_sessions`）
-//! 与命令类（`prompt` / `cancel` / `answer_question` / `switch_model` /
-//! `create_session`）的具体实现，以及共享类型与辅助函数。
+//! WebSocket 事件 handler：查询类（`get_state` / `list_models` / `list_sessions` /
+//! `list_workspaces`）与命令类（`prompt` / `cancel` / `answer_question` /
+//! `switch_model` / `create_session` / `create_workspace`）的具体实现，以及
+//! 共享类型与辅助函数。
 
 use std::sync::Arc;
 
@@ -53,6 +54,17 @@ pub async fn handle_list_sessions(state: &AppState, request_id: &str) -> ServerE
         Ok(sessions) => ServerEvent::SessionsList {
             request_id: request_id.to_string(),
             sessions,
+        },
+        Err(error) => error.to_ws_response(Some(request_id)),
+    }
+}
+
+/// 列出全部 workspace 摘要。
+pub async fn handle_list_workspaces(state: &AppState, request_id: &str) -> ServerEvent {
+    match state.inner.list_workspaces().await {
+        Ok(workspaces) => ServerEvent::WorkspacesList {
+            request_id: request_id.to_string(),
+            workspaces,
         },
         Err(error) => error.to_ws_response(Some(request_id)),
     }
@@ -211,14 +223,39 @@ pub async fn handle_switch_model(
     }
 }
 
-/// 新建 session（新对话语义，默认模型）。
-pub async fn handle_create_session(state: &AppState) -> ServerEvent {
-    match state.inner.create_session().await {
+/// 新建 session（新对话语义，默认模型）；`workspace` 指定归属目录，
+/// 缺省归属进程 cwd。
+pub async fn handle_create_session(state: &AppState, workspace: Option<String>) -> ServerEvent {
+    let workspace = match workspace.as_deref().map(expand_workspace_dir).transpose() {
+        Ok(workspace) => workspace,
+        Err(error) => return error.to_ws_response(None),
+    };
+    match state.inner.create_session(workspace.as_deref()).await {
         Ok(session) => ServerEvent::SessionCreated {
             id: session.id.clone(),
             title: None,
         },
         Err(error) => error.to_ws_response(None),
+    }
+}
+
+/// 登记新 workspace（按路径查或插，幂等）；响应携带 `request_id` 供客户端关联。
+pub async fn handle_create_workspace(
+    state: &AppState,
+    request_id: &str,
+    path: String,
+) -> ServerEvent {
+    let path = match expand_workspace_dir(&path) {
+        Ok(path) => path,
+        Err(error) => return error.to_ws_response(Some(request_id)),
+    };
+    match state.inner.create_workspace(&path).await {
+        Ok(workspace) => ServerEvent::WorkspaceCreated {
+            request_id: request_id.to_string(),
+            id: workspace.id,
+            path: workspace.path.display().to_string(),
+        },
+        Err(error) => error.to_ws_response(Some(request_id)),
     }
 }
 
@@ -268,6 +305,21 @@ fn resolve_session_id(state: &AppState, session_id: &str) -> String {
     } else {
         session_id.to_string()
     }
+}
+
+/// 展开用户输入的 workspace 目录：去空白、`~/` 展开为家目录。
+/// 空白输入返回 `BadRequest`；目录存在性由 `Runtime` 层校验。
+fn expand_workspace_dir(input: &str) -> Result<std::path::PathBuf, ApiError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::BadRequest("workspace 目录为空".to_string()));
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        let home = dirs::home_dir()
+            .ok_or_else(|| ApiError::Internal("无法定位家目录（~ 展开失败）".to_string()))?;
+        return Ok(home.join(rest));
+    }
+    Ok(std::path::PathBuf::from(trimmed))
 }
 
 /// 从运行时打开（或惰性构建）指定 session（自动解析别名）。

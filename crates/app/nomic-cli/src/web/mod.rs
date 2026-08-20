@@ -23,6 +23,7 @@ mod api;
 mod assets;
 mod question;
 mod session;
+mod workspace;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -105,6 +106,11 @@ pub enum ServerEvent {
         request_id: String,
         sessions: Vec<nomic_session::SessionSummary>,
     },
+    /// 全部 workspace 摘要响应（`list_workspaces` 查询的回复）
+    WorkspacesList {
+        request_id: String,
+        workspaces: Vec<nomic_session::WorkspaceSummary>,
+    },
 
     // ── 命令 ack 事件 ──────────────────────────────────────────────
     /// prompt 提交确认（`queued: true` 表示排队，`false` 表示立即运行）
@@ -120,6 +126,12 @@ pub enum ServerEvent {
     },
     /// 新建 session 确认
     SessionCreated { id: String, title: Option<String> },
+    /// 新建（或复用）workspace 确认（响应 `create_workspace`，携带 request_id）
+    WorkspaceCreated {
+        request_id: String,
+        id: String,
+        path: String,
+    },
 }
 
 /// 待发送的 prompt（文本 + 图片附件）。
@@ -332,33 +344,6 @@ impl Runtime {
         }
         sessions.insert(id.to_string(), session.clone());
         drop(sessions);
-        Ok(session)
-    }
-
-    /// 新建一个 session：落库（可用时）+ 以进程默认模型构建 SessionRuntime。
-    pub(crate) async fn create_session(&self) -> Result<Arc<SessionRuntime>, ApiError> {
-        let cwd = std::env::current_dir().context("get cwd")?;
-        let id = match &self.store {
-            Some(store) => store.create_session(&cwd).await?,
-            None => uuid::Uuid::now_v7().to_string(),
-        };
-        let resolved = self
-            .factory
-            .resolve_session_model(self.store.as_ref(), &id)
-            .await;
-        // 新 session 归属于当前目录的 workspace：工具基准即 cwd
-        let session = self.factory.build(
-            self.store.clone(),
-            id.clone(),
-            Vec::new(),
-            None,
-            cwd,
-            resolved,
-        );
-        self.sessions
-            .lock()
-            .await
-            .insert(id.clone(), session.clone());
         Ok(session)
     }
 
@@ -732,17 +717,5 @@ mod tests {
         assert_eq!(snap.queued, 0);
         assert!(snap.session.is_some(), "内存库 session 应存在");
         assert!(snap.pending_question.is_none());
-    }
-
-    #[tokio::test]
-    async fn create_session_registers_independent_runtime() {
-        let state = test_state().await;
-        let created = state.inner.create_session().await.expect("create session");
-        assert_eq!(
-            state.inner.sessions.lock().await.len(),
-            2,
-            "新 session 应注册进表"
-        );
-        assert!(state.inner.sessions.lock().await.contains_key(&created.id));
     }
 }

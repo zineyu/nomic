@@ -54,6 +54,8 @@ pub enum ClientEvent {
     ListModels { request_id: String },
     /// 列出全部 session 摘要。
     ListSessions { request_id: String },
+    /// 列出全部 workspace 摘要。
+    ListWorkspaces { request_id: String },
     /// 提交 prompt（空闲即跑，运行中入队）。
     Prompt {
         session_id: String,
@@ -79,7 +81,14 @@ pub enum ClientEvent {
         reasoning: Option<String>,
     },
     /// 新建 session（命令类，返回 ack 事件 `session_created`）。
-    CreateSession,
+    /// `workspace` 指定归属目录（不存在则登记新 workspace）；缺省归属进程 cwd。
+    CreateSession {
+        #[serde(default)]
+        workspace: Option<String>,
+    },
+    /// 登记新 workspace（查询式命令：携带 `request_id`，响应 `workspace_created`
+    /// 或 error 事件带同一 `request_id`；按路径查或插，幂等）。
+    CreateWorkspace { request_id: String, path: String },
 }
 
 // ── 组装路由 ──────────────────────────────────────────────────────────────
@@ -253,6 +262,9 @@ async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
         ClientEvent::ListSessions { request_id } => {
             Some(handlers::handle_list_sessions(state, &request_id).await)
         }
+        ClientEvent::ListWorkspaces { request_id } => {
+            Some(handlers::handle_list_workspaces(state, &request_id).await)
+        }
 
         // ── 命令类（fire-and-forget，返回 ack 或由后续事件驱动）──
         ClientEvent::Prompt {
@@ -274,7 +286,12 @@ async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
             spec,
             reasoning,
         } => Some(handlers::handle_switch_model(state, &session_id, spec, reasoning).await),
-        ClientEvent::CreateSession => Some(handlers::handle_create_session(state).await),
+        ClientEvent::CreateSession { workspace } => {
+            Some(handlers::handle_create_session(state, workspace).await)
+        }
+        ClientEvent::CreateWorkspace { request_id, path } => {
+            Some(handlers::handle_create_workspace(state, &request_id, path).await)
+        }
     }
 }
 

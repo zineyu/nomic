@@ -188,12 +188,14 @@ export type ServerEvent =
   | { type: 'state_snapshot'; session_id: string; request_id: string; snapshot: SnapshotView }
   | { type: 'models_list'; request_id: string; candidates: ModelChoice[] }
   | { type: 'sessions_list'; request_id: string; sessions: SessionSummary[] }
+  | { type: 'workspaces_list'; request_id: string; workspaces: WorkspaceSummary[] }
   // ── 命令 ack 事件
   | { type: 'prompt_ack'; session_id: string; queued: boolean }
   | { type: 'cancel_ack'; session_id: string }
   | { type: 'answer_ack'; session_id: string }
   | { type: 'switch_model_ack'; session_id: string; choice: ModelChoice }
   | { type: 'session_created'; id: string; title: string | null }
+  | { type: 'workspace_created'; request_id: string; id: string; path: string }
 
 /** 客户端发送给服务端的事件（纯事件驱动，无 REST） */
 export type ClientEvent =
@@ -201,12 +203,15 @@ export type ClientEvent =
   | { type: 'get_state'; session_id: string; request_id: string }
   | { type: 'list_models'; request_id: string }
   | { type: 'list_sessions'; request_id: string }
+  | { type: 'list_workspaces'; request_id: string }
   // ── 命令类（fire-and-forget，由后续 ServerEvent 驱动状态）
   | { type: 'prompt'; session_id: string; text: string; images?: ImageContent[] }
   | { type: 'cancel'; session_id: string }
   | { type: 'answer_question'; session_id: string; id: string; answers: string[]; custom?: string | null }
   | { type: 'switch_model'; session_id: string; spec: string; reasoning?: string | null }
-  | { type: 'create_session' }
+  | { type: 'create_session'; workspace?: string }
+  // ── 查询式命令（携带 request_id，响应/错误事件带同一 request_id）
+  | { type: 'create_workspace'; request_id: string; path: string }
 
 // ── REST 响应（nomic-cli web::api）────────────────────────────────────────
 
@@ -241,6 +246,14 @@ export interface SessionSummary {
   first_message_at: number | null
   last_message_at: number | null
   message_count: number
+}
+
+/** workspace 摘要（nomic-session WorkspaceSummary；path 为规范化路径） */
+export interface WorkspaceSummary {
+  id: string
+  path: string
+  session_count: number
+  last_active_at: number | null
 }
 
 /** 会话统计信息（从会话快照返回） */

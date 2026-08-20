@@ -60,10 +60,12 @@ export default function App() {
           >
             <Sidebar
               sessions={chat.sessions}
+              workspaces={chat.workspaces}
               currentSessionId={chat.sessionId}
               workspace={chat.workspace}
               running={chat.running}
-              onNewSession={() => void chat.newSession()}
+              onNewSession={(ws) => void chat.newSession(ws)}
+              onAddWorkspace={chat.addWorkspace}
               onResume={handleResume}
             />
           </div>

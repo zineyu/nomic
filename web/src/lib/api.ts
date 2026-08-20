@@ -2,7 +2,8 @@
 //
 // 所有前端↔后端通信通过 `ws://{host}/ws` 双向事件流。服务端维护进程级全局事件
 // 总线，连接后自动接收所有 session 的事件（每个事件携带 `session_id` 供路由）：
-// - **查询类**（`get_state` / `list_models` / `list_sessions`）：携带 `request_id`，
+// - **查询类**（`get_state` / `list_models` / `list_sessions` / `list_workspaces`，
+//   以及查询式命令 `create_workspace`）：携带 `request_id`，
 //   服务端响应事件带同一 `request_id` 供关联。
 // - **命令类**（`prompt` / `cancel` / `answer_question` / `switch_model` /
 //   `create_session`）：携带 `session_id` 指定目标 session，fire-and-forget，
@@ -19,6 +20,7 @@ import type {
   ServerEvent,
   SessionSummary,
   SnapshotView,
+  WorkspaceSummary,
 } from './types'
 
 type EventHandler = (event: ServerEvent) => void
@@ -27,6 +29,8 @@ type QueryEventInput =
   | { type: 'get_state'; session_id: string }
   | { type: 'list_models' }
   | { type: 'list_sessions' }
+  | { type: 'list_workspaces' }
+  | { type: 'create_workspace'; path: string }
 
 class WsClient {
   private ws: WebSocket | null = null
@@ -213,9 +217,20 @@ export const api = {
       (r) => r.sessions,
     ),
 
-  /** 新建 session（命令类，等待 session_created 事件确认）。 */
-  createSession: (): Promise<{ id: string; title: string | null }> => {
-    client.send({ type: 'create_session' })
+  /** 列出全部 workspace 摘要。 */
+  workspaces: () =>
+    client.request<{ workspaces: WorkspaceSummary[] }>({ type: 'list_workspaces' }).then(
+      (r) => r.workspaces,
+    ),
+
+  /** 登记新 workspace（查询式命令；目录不存在时 reject 服务端错误消息）。 */
+  createWorkspace: (path: string) =>
+    client.request<{ id: string; path: string }>({ type: 'create_workspace', path }),
+
+  /** 新建 session（命令类，等待 session_created 事件确认）。
+      `workspace` 指定归属目录（不存在则登记新 workspace）；缺省归属服务端 cwd。 */
+  createSession: (workspace?: string): Promise<{ id: string; title: string | null }> => {
+    client.send({ type: 'create_session', workspace })
     return new Promise((resolve) => {
       const unsub = client.subscribe((event) => {
         if (event.type === 'session_created') {

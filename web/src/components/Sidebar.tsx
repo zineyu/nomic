@@ -1,35 +1,44 @@
 // 侧栏：模仿 DeepSeek Harness 布局。
 // 顶部新会话按钮 + 按 workspace 分组（可折叠）的会话列表，工作区组标题采用卡片样式。
+// 组标题右侧带「新建会话」按钮（在该 workspace 下创建）；「工作区」标题行带
+// 「添加工作区」按钮，展开内联输入框登记新 workspace（可无任何会话）。
 // 展开的会话列表缩进在组标题下方，并带竖向引导线，体现 session 对 workspace 的从属；
 // 折叠组之间保持紧凑间距，展开的组以额外下边距分隔。
 // 上下文用量由输入区环形指示器（ContextRing）展示，侧栏不再重复显示。
 
-import { ChevronRight, FolderOpen, MessageSquarePlus, Search } from 'lucide-react'
+import { ChevronRight, FolderOpen, FolderPlus, MessageSquarePlus, Plus, Search } from 'lucide-react'
 import { useId, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { groupSessionsByWorkspace } from '@/lib/sessions'
-import type { SessionSummary } from '@/lib/types'
+import { groupSessionsWithWorkspaces } from '@/lib/sessions'
+import type { SessionSummary, WorkspaceSummary } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 interface SidebarProps {
   sessions: SessionSummary[]
+  /** 已登记的全部 workspace（含无会话的；为空时分组退化为纯会话视图） */
+  workspaces: WorkspaceSummary[]
   currentSessionId: string | null
   workspace: string
   running: boolean
-  onNewSession: () => void
+  /** 新建会话；`workspace` 指定归属目录，缺省归属服务端 cwd */
+  onNewSession: (workspace?: string) => void
+  /** 登记新 workspace；失败时抛出错误消息（就地展示在输入框下方） */
+  onAddWorkspace: (path: string) => Promise<void>
   onResume: (id: string) => void
 }
 
 export function Sidebar({
   sessions,
+  workspaces,
   currentSessionId,
   workspace,
   running,
   onNewSession,
+  onAddWorkspace,
   onResume,
 }: SidebarProps) {
-  const groups = groupSessionsByWorkspace(sessions)
+  const groups = groupSessionsWithWorkspaces(workspaces, sessions)
   const listIdPrefix = useId()
   // 折叠态为本地 UI 状态：记录被折叠的 workspace，新出现的组默认展开
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
@@ -41,6 +50,31 @@ export function Sidebar({
       return next
     })
 
+  // 「添加工作区」内联输入：展开状态 + 输入值 + 提交中 + 就地错误
+  const [adding, setAdding] = useState(false)
+  const [newPath, setNewPath] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [addError, setAddError] = useState<string | null>(null)
+  const closeAddInput = () => {
+    setAdding(false)
+    setNewPath('')
+    setAddError(null)
+  }
+  const submitWorkspace = async () => {
+    const path = newPath.trim()
+    if (!path || submitting) return
+    setSubmitting(true)
+    setAddError(null)
+    try {
+      await onAddWorkspace(path)
+      closeAddInput()
+    } catch (error) {
+      setAddError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   return (
     <div className="flex h-full w-80 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
       {/* 头部：新会话按钮 */}
@@ -49,7 +83,7 @@ export function Sidebar({
           variant="outline"
           size="sm"
           className="w-full justify-start gap-2 rounded-xl border-dashed text-xs"
-          onClick={onNewSession}
+          onClick={() => onNewSession()}
         >
           <MessageSquarePlus className="size-3.5" />
           新会话
@@ -68,8 +102,43 @@ export function Sidebar({
             >
               <Search className="size-3" />
             </button>
+            <button
+              type="button"
+              aria-label="添加工作区"
+              aria-expanded={adding}
+              className="flex size-5 items-center justify-center rounded text-muted-foreground/60 hover:text-muted-foreground"
+              title="添加工作区"
+              onClick={() => (adding ? closeAddInput() : setAdding(true))}
+            >
+              <FolderPlus className="size-3.5" />
+            </button>
           </div>
         </div>
+        {/* 添加工作区：内联路径输入（回车提交，Esc 取消） */}
+        {adding && (
+          <div className="px-1 pb-1.5">
+            <input
+              type="text"
+              value={newPath}
+              autoFocus
+              disabled={submitting}
+              placeholder="目录路径，如 ~/code/proj"
+              aria-label="工作区路径"
+              aria-invalid={addError !== null}
+              className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs outline-none placeholder:text-muted-foreground/60 focus:border-ring disabled:opacity-60"
+              onChange={(e) => setNewPath(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void submitWorkspace()
+                else if (e.key === 'Escape') closeAddInput()
+              }}
+            />
+            {addError && (
+              <p role="alert" className="mt-1 text-xs text-destructive">
+                {addError}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* 会话列表（按 workspace 分组，组标题点击折叠/展开）
@@ -87,9 +156,9 @@ export function Sidebar({
               <section
                 key={group.workspace}
                 aria-label={group.workspace}
-                className={cn(!isCollapsed && 'mb-2')}
+                className={cn('group', !isCollapsed && 'mb-2')}
               >
-                <h3 className="pb-1 text-xs font-medium text-muted-foreground">
+                <h3 className="flex items-center pb-1 text-xs font-medium text-muted-foreground">
                   <button
                     type="button"
                     aria-expanded={!isCollapsed}
@@ -97,7 +166,7 @@ export function Sidebar({
                     onClick={() => toggleGroup(group.workspace)}
                     title={group.workspace}
                     className={cn(
-                      'flex w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors',
+                      'flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors',
                       isCurrent
                         ? 'bg-sidebar-accent text-sidebar-foreground'
                         : 'bg-sidebar-accent/50 hover:bg-sidebar-accent hover:text-sidebar-foreground',
@@ -124,6 +193,16 @@ export function Sidebar({
                         当前
                       </span>
                     )}
+                  </button>
+                  {/* 在该 workspace 下新建会话（悬停组标题时显现） */}
+                  <button
+                    type="button"
+                    aria-label={`在 ${group.workspace} 下新建会话`}
+                    title={`在 ${group.workspace} 下新建会话`}
+                    onClick={() => onNewSession(group.workspace)}
+                    className="ml-1 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover:opacity-100"
+                  >
+                    <Plus className="size-3" aria-hidden="true" />
                   </button>
                 </h3>
                 {!isCollapsed && (
@@ -163,12 +242,17 @@ export function Sidebar({
                         </button>
                       )
                     })}
+                    {group.sessions.length === 0 && (
+                      <div className="px-2.5 py-1 text-xs text-muted-foreground/60">
+                        暂无会话
+                      </div>
+                    )}
                   </div>
                 )}
               </section>
             )
           })}
-          {sessions.length === 0 && (
+          {groups.length === 0 && (
             <div className="px-3 py-8 text-center text-xs text-muted-foreground">
               还没有会话记录
             </div>

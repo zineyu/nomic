@@ -1,8 +1,9 @@
 // Sidebar 测试：模仿 DeepSeek Harness 布局。
 //
 // 顶部新会话按钮 + 按 workspace 分组（可折叠）的会话列表，工作区组标题为卡片样式。
-// 每个 session 只展示标题，长标题被 CSS 截断但可通过 title 读取全文；
-// 当前会话以主色高亮；侧栏与聊天区之间有右侧分隔边框。
+// 组标题右侧带「新建会话」按钮（在该 workspace 下创建）；「工作区」标题行带
+// 「添加工作区」内联输入。每个 session 只展示标题，长标题被 CSS 截断但可通过
+// title 读取全文；当前会话以主色高亮；侧栏与聊天区之间有右侧分隔边框。
 
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -24,14 +25,20 @@ const groupedSessions = [
   { id: 'a2', title: '项目 A 会话二', workspace_id: 'wa', workspace: '/home/zine/alpha', first_message_at: null, last_message_at: 100, message_count: 1 },
 ]
 
+function workspace(id: string, path: string, sessionCount = 0) {
+  return { id, path, session_count: sessionCount, last_active_at: null }
+}
+
 function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
   return render(
     <Sidebar
       sessions={sessions}
+      workspaces={[]}
       currentSessionId="a"
       workspace="/tmp"
       running={false}
       onNewSession={vi.fn()}
+      onAddWorkspace={vi.fn().mockResolvedValue(undefined)}
       onResume={vi.fn()}
       {...overrides}
     />,
@@ -81,9 +88,15 @@ describe('Sidebar', () => {
     renderSidebar({ sessions: groupedSessions, workspace: '/home/zine/alpha' })
     const alpha = screen.getByRole('heading', { name: /alpha/ })
     const beta = screen.getByRole('heading', { name: /beta/ })
-    // title 完整路径在组标题的折叠按钮上
-    expect(within(alpha).getByRole('button')).toHaveAttribute('title', '/home/zine/alpha')
-    expect(within(beta).getByRole('button')).toHaveAttribute('title', '/home/zine/beta')
+    // title 完整路径在组标题的折叠按钮上（折叠按钮名以组名开头，区别于「新建会话」按钮）
+    expect(within(alpha).getByRole('button', { name: /^alpha/ })).toHaveAttribute(
+      'title',
+      '/home/zine/alpha',
+    )
+    expect(within(beta).getByRole('button', { name: /^beta/ })).toHaveAttribute(
+      'title',
+      '/home/zine/beta',
+    )
 
     // 组顺序：最新会话更活跃的 alpha 组在前；组内保持活跃度排序
     const headings = screen.getAllByRole('heading').map((h) => h.textContent)
@@ -93,10 +106,10 @@ describe('Sidebar', () => {
     // 会话归属到对应分组（section aria-label 为 workspace 路径）
     const alphaGroup = screen.getByRole('region', { name: '/home/zine/alpha' })
     expect(
-      within(alphaGroup).getAllByRole('button', { name: /会话/ }).map((b) => b.textContent),
+      within(alphaGroup).getAllByRole('button', { name: /^项目 A/ }).map((b) => b.textContent),
     ).toEqual(['项目 A 会话一', '项目 A 会话二'])
     const betaGroup = screen.getByRole('region', { name: '/home/zine/beta' })
-    expect(within(betaGroup).getAllByRole('button', { name: /会话/ })).toHaveLength(1)
+    expect(within(betaGroup).getAllByRole('button', { name: /^项目 B/ })).toHaveLength(1)
   })
 
   it('当前 workspace 所在分组带「当前」标记', () => {
@@ -109,8 +122,8 @@ describe('Sidebar', () => {
 
   it('工作区组标题为卡片样式，当前工作区高亮，且不存在额外的固定工作区卡片', () => {
     renderSidebar({ sessions: groupedSessions, workspace: '/home/zine/alpha' })
-    const alphaToggle = screen.getByRole('button', { name: /alpha/ })
-    const betaToggle = screen.getByRole('button', { name: /beta/ })
+    const alphaToggle = screen.getByRole('button', { name: /^alpha/ })
+    const betaToggle = screen.getByRole('button', { name: /^beta/ })
     // 实际工作区采用卡片样式（圆角 + accent 底色）
     expect(alphaToggle.className).toContain('rounded-lg')
     expect(betaToggle.className).toContain('bg-sidebar-accent/50')
@@ -127,8 +140,8 @@ describe('Sidebar', () => {
     const user = userEvent.setup()
     renderSidebar({ sessions: groupedSessions, workspace: '/home/zine/alpha' })
 
-    const alphaToggle = screen.getByRole('button', { name: /alpha/ })
-    const betaToggle = screen.getByRole('button', { name: /beta/ })
+    const alphaToggle = screen.getByRole('button', { name: /^alpha/ })
+    const betaToggle = screen.getByRole('button', { name: /^beta/ })
     // 默认展开
     expect(alphaToggle).toHaveAttribute('aria-expanded', 'true')
     expect(betaToggle).toHaveAttribute('aria-expanded', 'true')
@@ -153,7 +166,7 @@ describe('Sidebar', () => {
       workspace: '/home/zine/alpha',
     })
     const alphaGroup = screen.getByRole('region', { name: '/home/zine/alpha' })
-    const alphaToggle = within(alphaGroup).getByRole('button', { name: /alpha/ })
+    const alphaToggle = within(alphaGroup).getByRole('button', { name: /^alpha/ })
 
     // 展开时无指示点（会话本身可见高亮）
     expect(alphaToggle.querySelector('span.bg-primary[aria-hidden="true"]')).toBeNull()
@@ -184,9 +197,84 @@ describe('Sidebar', () => {
     expect(betaGroup.className).toContain('mb-2')
 
     // 折叠后取消额外下边距，组间仅保留紧凑基础间距
-    await user.click(within(alphaGroup).getByRole('button', { name: /alpha/ }))
-    await user.click(within(betaGroup).getByRole('button', { name: /beta/ }))
+    await user.click(within(alphaGroup).getByRole('button', { name: /^alpha/ }))
+    await user.click(within(betaGroup).getByRole('button', { name: /^beta/ }))
     expect(alphaGroup.className).not.toContain('mb-2')
     expect(betaGroup.className).not.toContain('mb-2')
+  })
+
+  it('顶部新会话按钮不指定 workspace（归属服务端 cwd）', async () => {
+    const user = userEvent.setup()
+    const onNewSession = vi.fn()
+    renderSidebar({ sessions: [], onNewSession })
+    await user.click(screen.getByRole('button', { name: '新会话' }))
+    expect(onNewSession).toHaveBeenCalledWith()
+  })
+
+  it('组标题「新建会话」按钮在该 workspace 下创建会话', async () => {
+    const user = userEvent.setup()
+    const onNewSession = vi.fn()
+    renderSidebar({ sessions: groupedSessions, workspace: '/home/zine/alpha', onNewSession })
+    const alphaGroup = screen.getByRole('region', { name: '/home/zine/alpha' })
+    await user.click(
+      within(alphaGroup).getByRole('button', { name: '在 /home/zine/alpha 下新建会话' }),
+    )
+    expect(onNewSession).toHaveBeenCalledWith('/home/zine/alpha')
+  })
+
+  it('无会话的已登记 workspace 也展示为空组', () => {
+    renderSidebar({
+      sessions: groupedSessions,
+      workspaces: [
+        workspace('wa', '/home/zine/alpha', 2),
+        workspace('wc', '/home/zine/gamma'),
+      ],
+      workspace: '/home/zine/alpha',
+    })
+    // 无会话的 gamma 也成组（顺序跟 workspace 列表）
+    const gammaGroup = screen.getByRole('region', { name: '/home/zine/gamma' })
+    expect(within(gammaGroup).getByText('暂无会话')).toBeInTheDocument()
+    const headings = screen.getAllByRole('heading').map((h) => h.textContent)
+    expect(headings.map((h) => h?.replace(/\d+/g, ''))).toEqual([
+      expect.stringContaining('alpha'),
+      expect.stringContaining('gamma'),
+      expect.stringContaining('beta'),
+    ])
+  })
+
+  it('添加工作区：内联输入回车提交，成功后关闭输入框', async () => {
+    const user = userEvent.setup()
+    const onAddWorkspace = vi.fn().mockResolvedValue(undefined)
+    renderSidebar({ onAddWorkspace })
+
+    await user.click(screen.getByRole('button', { name: '添加工作区' }))
+    const input = screen.getByRole('textbox', { name: '工作区路径' })
+    await user.type(input, '~/code/proj{Enter}')
+    expect(onAddWorkspace).toHaveBeenCalledWith('~/code/proj')
+    // 成功后输入框关闭
+    expect(screen.queryByRole('textbox', { name: '工作区路径' })).not.toBeInTheDocument()
+  })
+
+  it('添加工作区失败时就地展示错误，输入框保留', async () => {
+    const user = userEvent.setup()
+    const onAddWorkspace = vi.fn().mockRejectedValue(new Error('目录不存在：/nope'))
+    renderSidebar({ onAddWorkspace })
+
+    await user.click(screen.getByRole('button', { name: '添加工作区' }))
+    const input = screen.getByRole('textbox', { name: '工作区路径' })
+    await user.type(input, '/nope{Enter}')
+    expect(await screen.findByRole('alert')).toHaveTextContent('目录不存在：/nope')
+    expect(screen.getByRole('textbox', { name: '工作区路径' })).toBeInTheDocument()
+  })
+
+  it('添加工作区输入框 Esc 取消', async () => {
+    const user = userEvent.setup()
+    const onAddWorkspace = vi.fn()
+    renderSidebar({ onAddWorkspace })
+
+    await user.click(screen.getByRole('button', { name: '添加工作区' }))
+    await user.type(screen.getByRole('textbox', { name: '工作区路径' }), '/tmp{Escape}')
+    expect(onAddWorkspace).not.toHaveBeenCalled()
+    expect(screen.queryByRole('textbox', { name: '工作区路径' })).not.toBeInTheDocument()
   })
 })

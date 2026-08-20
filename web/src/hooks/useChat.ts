@@ -21,6 +21,7 @@ import type {
   SessionStats,
   SessionSummary,
   SnapshotView,
+  WorkspaceSummary,
 } from '@/lib/types'
 
 export interface QuestionState {
@@ -40,6 +41,8 @@ export interface ChatState {
   contextTokens: number
   session: { id: string; title: string | null } | null
   workspace: string
+  /** 已登记的全部 workspace（含无会话的；store 不可用时为空，分组退化为纯会话） */
+  workspaces: WorkspaceSummary[]
   question: QuestionState | null
   error: string | null
   stats: SessionStats
@@ -69,6 +72,7 @@ const initialState: ChatState = {
   contextTokens: 0,
   session: null,
   workspace: '',
+  workspaces: [],
   question: null,
   error: null,
   stats: defaultStats,
@@ -166,6 +170,15 @@ export function useChat() {
     }
   }, [])
 
+  const refreshWorkspaces = useCallback(async () => {
+    try {
+      const workspaces = await api.workspaces()
+      setState((prev) => ({ ...prev, workspaces }))
+    } catch {
+      // workspace 列表加载失败不阻塞主流程（分组退化为纯会话视图）
+    }
+  }, [])
+
   // 事件订阅（mount 时注册一次，整个生命周期有效）
   useEffect(() => {
     return api.subscribe((event) => {
@@ -176,16 +189,21 @@ export function useChat() {
           void api.state(sid).then(({ snapshot }) => applySnapshot(snapshot))
         }
         void refreshSessions()
+        void refreshWorkspaces()
       } else if (event.type === 'session_created') {
-        // 新 session 创建：刷新会话列表
+        // 新 session 创建：刷新会话列表（可能伴随新 workspace，一并刷新）
         void refreshSessions()
+        void refreshWorkspaces()
       } else {
         applyEvent(event)
-        // run 结束刷新会话列表
-        if (event.type === 'run_finished') void refreshSessions()
+        // run 结束刷新会话列表（活跃度变化，workspace 排序一并刷新）
+        if (event.type === 'run_finished') {
+          void refreshSessions()
+          void refreshWorkspaces()
+        }
       }
     })
-  }, [applyEvent, applySnapshot, refreshSessions])
+  }, [applyEvent, applySnapshot, refreshSessions, refreshWorkspaces])
 
   // 挂载：确保 WebSocket 连接 → 拉取默认 session 快照（"default" 别名由后端解析）。
   useEffect(() => {
@@ -196,6 +214,7 @@ export function useChat() {
       await loadSession('default')
       if (cancelled) return
       void refreshSessions()
+      void refreshWorkspaces()
     }
     void boot().catch((error) => {
       if (!cancelled) {
@@ -208,7 +227,7 @@ export function useChat() {
     return () => {
       cancelled = true
     }
-  }, [loadSession, refreshSessions])
+  }, [loadSession, refreshSessions, refreshWorkspaces])
 
   const send = useCallback(async (text: string) => {
     const trimmed = text.trim()
@@ -232,19 +251,32 @@ export function useChat() {
     if (sid) api.cancel(sid)
   }, [])
 
-  const newSession = useCallback(async () => {
-    try {
-      const { id } = await api.createSession()
-      // 拉取新 session 快照并切换查看（其事件流已自动并入当前连接）
-      await loadSession(id)
-      await refreshSessions()
-    } catch (error) {
-      setState((prev) => ({
-        ...prev,
-        error: error instanceof Error ? error.message : String(error),
-      }))
-    }
-  }, [loadSession, refreshSessions])
+  const newSession = useCallback(
+    async (workspace?: string) => {
+      try {
+        const { id } = await api.createSession(workspace)
+        // 拉取新 session 快照并切换查看（其事件流已自动并入当前连接）
+        await loadSession(id)
+        await refreshSessions()
+        await refreshWorkspaces()
+      } catch (error) {
+        setState((prev) => ({
+          ...prev,
+          error: error instanceof Error ? error.message : String(error),
+        }))
+      }
+    },
+    [loadSession, refreshSessions, refreshWorkspaces],
+  )
+
+  /** 登记新 workspace；失败时抛出（调用方就地展示错误）。 */
+  const addWorkspace = useCallback(
+    async (path: string) => {
+      await api.createWorkspace(path)
+      await refreshWorkspaces()
+    },
+    [refreshWorkspaces],
+  )
 
   const resumeSession = useCallback(
     async (id: string) => {
@@ -280,6 +312,7 @@ export function useChat() {
     send,
     stop,
     newSession,
+    addWorkspace,
     resumeSession,
     switchModel,
     answerQuestion,

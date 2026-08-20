@@ -1,6 +1,6 @@
 //! web 模式的 HTTP 层（axum）：纯 WebSocket 事件驱动 + 静态前端伺服。
 //!
-//! 所有前端↔后端通信均通过 `ws://{host}/ws/{session_id}` 双向事件流：
+//! 所有前端↔后端通信均通过 `ws://{host}/ws` 双向事件流：
 //! - **客户端→服务端**：`ClientEvent`（JSON text frame，`type` 字段区分事件种类）
 //! - **服务端→客户端**：`ServerEvent`（JSON text frame，`type` 字段区分事件种类）
 //!
@@ -15,7 +15,7 @@
 
 use axum::body::Body;
 use axum::extract::ws::{self, WebSocket};
-use axum::extract::{Path as AxumPath, State, WebSocketUpgrade};
+use axum::extract::{State, WebSocketUpgrade};
 use axum::http::{Method, StatusCode, Uri, header};
 use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse, Response};
@@ -77,7 +77,7 @@ pub enum ClientEvent {
 /// 未命中路径 SPA 回退 `index.html`）。
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/ws/{id}", get(handle_ws))
+        .route("/ws", get(handle_ws))
         .route_layer(from_fn(reject_foreign_origin))
         .fallback(|uri: Uri| async move { assets::serve(uri.path()) })
         .with_state(state)
@@ -149,17 +149,17 @@ impl ApiError {
 
 // ── WebSocket 处理 ────────────────────────────────────────────────────────
 
-/// `GET /ws/{id}`：会话级双向 WebSocket 事件流。
+/// `GET /ws`：会话级双向 WebSocket 事件流。连接时自动使用默认 session。
 ///
 /// 客户端发送 `ClientEvent`（JSON text frame），服务端响应 `ServerEvent`
 /// （JSON text frame）。查询事件通过 `request_id` 关联；命令事件由服务端后续
 /// 生命周期事件（`run_started` / `run_finished` / `error` 等）驱动状态。
 async fn handle_ws(
     State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    let session = open_session(&state, &id).await?;
+    // 使用默认 session（启动时已构建，保证至少一个 session 存在）
+    let session = open_session(&state, &state.inner.default_session_id).await?;
     let rx = session.events.subscribe();
     let shutdown = state.inner.shutdown.clone();
     Ok(ws.on_upgrade(move |socket| ws_session(socket, state, rx, shutdown)))
@@ -617,20 +617,15 @@ mod tests {
     /// 停机令牌取消后 WebSocket 连接必须关闭：graceful shutdown 等所有在途
     /// 连接收尾，不关闭的话退出键按下后进程挂住（回归测试）。
     #[tokio::test]
-    #[allow(
-        clippy::literal_string_with_formatting_args,
-        reason = "axum path params use {id} syntax"
-    )]
     async fn ws_ends_when_shutdown_cancelled() {
         use axum::Router;
         use axum::routing::get;
         use futures::StreamExt;
 
         let state = crate::web::tests::test_state().await;
-        let id = state.inner.default_session_id.clone();
 
         let app = Router::new()
-            .route("/ws/{id}", get(super::handle_ws))
+            .route("/ws", get(super::handle_ws))
             .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -638,7 +633,7 @@ mod tests {
         let addr = listener.local_addr().expect("addr");
         let server = tokio::spawn(axum::serve(listener, app).into_future());
 
-        let url = format!("ws://{addr}/ws/{id}");
+        let url = format!("ws://{addr}/ws");
         let (mut ws_stream, _) = tokio_tungstenite::connect_async(&url)
             .await
             .expect("ws connect");

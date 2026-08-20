@@ -22,7 +22,7 @@ pub struct Workspace {
 }
 
 /// workspace 摘要（`list_workspaces` 返回，列表展示用）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct WorkspaceSummary {
     /// workspace id
     pub id: String,

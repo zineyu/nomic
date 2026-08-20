@@ -22,7 +22,7 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 - **九件工具**：`read` / `write` / `edit` / `bash` / `grep` / `find` / `todo_read` /
   `todo_write` / `ask_user_question`（单选/多选/填空，自动追加自定义填写选项，
   TUI 弹出模态提问框），schemars + serde 即校验，parallel 执行
-- **持久会话**：SQLite 树形存储，支持 resume（按 cwd 隔离）、会话分支浏览与创建、`sessions list`
+- **持久会话**：SQLite 树形存储，session 归属 workspace（文件系统路径的一等实体），工具与 mention 的相对路径以 session 的 workspace 为基准；支持 resume（按 workspace 隔离）、会话分支浏览与创建、`sessions list`
 - **上下文工程**：AGENTS.md 向上发现注入、skills 系统、prompt templates、自动/手动上下文压缩
 - **图片输入**：`--image` 附件、`image` 命令暂存、`Ctrl+V` 剪贴板图片粘贴
 - **外部编辑器**：INSERT 下 `Ctrl+G` 挂起 TUI，用 `$VISUAL`/`$EDITOR`
@@ -205,11 +205,11 @@ nomic --web [--port N] [--host H]
 ### 会话恢复与分支
 
 ```bash
-nomic --continue        # 当前目录下最近的 session（按 cwd 隔离）
+nomic --continue        # 当前目录对应 workspace 下最近的 session（按 workspace 隔离）
 nomic --session <ID>    # 指定 session（可跨目录，会有提示）
 nomic resume            # 交互选择器（↑/↓ 或 j/k 移动，Enter 确认，Esc/q 取消）
 
-# 查看历史 session（标题、最后更新时间、消息数、目录）
+# 查看历史 session（标题、最后更新时间、消息数、所属 workspace）
 nomic sessions list
 ```
 

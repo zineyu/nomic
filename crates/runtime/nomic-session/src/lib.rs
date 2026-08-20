@@ -1,7 +1,8 @@
 //! nomic-session：SQLite session 持久化（M2，替代 pi 的 JSONL session 文件）。
 //!
-//! - 每个 session 一个唯一 id（UUID v7，时间有序），`sessions` 表记录
-//!   首/末消息时间与启动位置（cwd）
+//! - 每个 session 一个唯一 id（UUID v7，时间有序）；session 创建时绑定
+//!   workspace（文件系统路径的一等实体，见 [`Workspace`]），其所有操作以
+//!   workspace 路径为基准
 //! - 消息存 `entries` 表，按 `parent_id` 组织为**树**（顺序会话是树的特例）；
 //!   分支能力：[`SessionStore::list_tree`] 浏览树、[`SessionStore::load_branch`]
 //!   加载指定 entry 所在分支、追加时显式 `parent_id` 即创建分支
@@ -31,7 +32,9 @@ use sqlx::{Row as _, SqlitePool};
 
 mod config;
 mod recorder;
+mod workspace;
 pub use recorder::SessionRecorder;
+pub use workspace::{Workspace, WorkspaceSummary};
 
 /// 内嵌迁移（`crates/runtime/nomic-session/migrations/`）。
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
@@ -68,6 +71,10 @@ pub enum SessionError {
     /// session id 不存在
     #[error("session not found: {0}")]
     SessionNotFound(String),
+    /// workspace 不存在（`get_or_create_workspace` 登记后读取仍缺失，
+    /// 仅在库被并发破坏时可能出现）
+    #[error("workspace not found: {0}")]
+    WorkspaceNotFound(String),
     /// entry id 不存在（或不属于目标 session）
     #[error("entry not found: {0}")]
     EntryNotFound(String),
@@ -76,7 +83,7 @@ pub enum SessionError {
     Corrupt(#[from] serde_json::Error),
 }
 
-/// session 摘要（`list_sessions` 返回）。
+/// session 摘要（`list_sessions` / `list_sessions_in` 返回）。
 ///
 /// `id` 为内部标识（UUID v7），不对用户展示；用户可见的名称是
 /// [`Self::title`]（首条 user 消息的首行摘要）。
@@ -87,8 +94,10 @@ pub struct SessionSummary {
     pub id: String,
     /// 会话标题：首条 user 消息的首行摘要（无消息时为 `None`，展示侧自行回退）
     pub title: Option<String>,
-    /// 启动位置（工作目录）
-    pub cwd: PathBuf,
+    /// 所属 workspace id
+    pub workspace_id: String,
+    /// 所属 workspace 路径（session 操作的基准目录）
+    pub workspace: PathBuf,
     /// 首条消息时间（Unix 毫秒；无消息时为 `None`）
     pub first_message_at: Option<u64>,
     /// 末条消息时间（Unix 毫秒；无消息时为 `None`）
@@ -203,15 +212,15 @@ impl SessionStore {
         Ok(Self { pool })
     }
 
-    /// 创建 session（记录启动位置 cwd），返回 session id（UUID v7 字符串）。
-    pub async fn create_session(&self, cwd: impl AsRef<Path>) -> Result<String, SessionError> {
-        let id = uuid::Uuid::now_v7().to_string();
-        sqlx::query("INSERT INTO sessions (id, cwd) VALUES (?, ?)")
-            .bind(&id)
-            .bind(cwd.as_ref().to_string_lossy().as_ref())
-            .execute(&self.pool)
-            .await?;
-        Ok(id)
+    /// 创建 session：登记（或复用）路径对应的 workspace 并绑定，返回
+    /// session id（UUID v7 字符串）。显式持有 workspace id 的调用方用
+    /// [`Self::create_session_in`]。
+    pub async fn create_session(
+        &self,
+        workspace: impl AsRef<Path>,
+    ) -> Result<String, SessionError> {
+        let workspace = self.get_or_create_workspace(workspace).await?;
+        self.create_session_in(&workspace.id).await
     }
 
     /// 追加一条消息，返回新 entry id。
@@ -310,6 +319,8 @@ impl SessionStore {
         .execute(&mut *tx)
         .await?;
 
+        Self::touch_workspace(&mut tx, session_id, to_u64(timestamp)).await?;
+
         tx.commit().await?;
         Ok(id)
     }
@@ -391,13 +402,32 @@ impl SessionStore {
 
     /// 列出全部 session 摘要（按末条消息时间降序，无消息的排最后）。
     pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>, SessionError> {
+        self.summarize(None).await
+    }
+
+    /// 列出指定 workspace 下的 session 摘要（排序同 [`Self::list_sessions`]）。
+    pub async fn list_sessions_in(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<SessionSummary>, SessionError> {
+        self.summarize(Some(workspace_id)).await
+    }
+
+    /// session 摘要查询内核：可选按 workspace 过滤；标题经分组查询批量补齐。
+    async fn summarize(
+        &self,
+        workspace_id: Option<&str>,
+    ) -> Result<Vec<SessionSummary>, SessionError> {
         let rows = sqlx::query(
-            "SELECT s.id, s.cwd, s.first_message_at, s.last_message_at,
+            "SELECT s.id, s.workspace_id, w.path AS workspace_path,
+                    s.first_message_at, s.last_message_at,
                     (SELECT COUNT(*) FROM entries e
                      WHERE e.session_id = s.id AND e.kind = 'message') AS message_count
-             FROM sessions s
+             FROM sessions s JOIN workspaces w ON w.id = s.workspace_id
+             WHERE (?1 IS NULL OR s.workspace_id = ?1)
              ORDER BY s.last_message_at IS NULL, s.last_message_at DESC",
         )
+        .bind(workspace_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -405,14 +435,15 @@ impl SessionStore {
         let mut summaries = Vec::with_capacity(rows.len());
         for row in &rows {
             let id: String = row.get("id");
-            let cwd: String = row.get("cwd");
+            let workspace_path: String = row.get("workspace_path");
             let first: Option<i64> = row.get("first_message_at");
             let last: Option<i64> = row.get("last_message_at");
             let count: i64 = row.get("message_count");
             summaries.push(SessionSummary {
                 title: titles.get(&id).cloned(),
                 id,
-                cwd: PathBuf::from(cwd),
+                workspace_id: row.get("workspace_id"),
+                workspace: PathBuf::from(workspace_path),
                 first_message_at: first.map(to_u64),
                 last_message_at: last.map(to_u64),
                 message_count: to_u64(count),
@@ -679,12 +710,12 @@ const fn message_timestamp(message: &Message) -> u64 {
 
 /// Unix 毫秒时间戳在可预见的未来不会超出 i64 范围
 #[allow(clippy::cast_possible_wrap)]
-const fn to_i64(timestamp: u64) -> i64 {
+pub(crate) const fn to_i64(timestamp: u64) -> i64 {
     timestamp as i64
 }
 
 /// 库中时间戳/计数均由本 crate 写入，保证非负
 #[allow(clippy::cast_sign_loss)]
-const fn to_u64(value: i64) -> u64 {
+pub(crate) const fn to_u64(value: i64) -> u64 {
     value as u64
 }

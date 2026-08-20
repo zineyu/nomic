@@ -28,6 +28,8 @@ pub struct ReadParams {
 #[derive(Debug, Clone)]
 pub struct ReadTool {
     skill_resolver: Option<SkillResolver>,
+    /// 相对路径的解析基准（workspace 严格归属；空句柄 = 进程 cwd）
+    base: crate::base::BaseDir,
 }
 
 impl Default for ReadTool {
@@ -38,17 +40,34 @@ impl Default for ReadTool {
 
 impl ReadTool {
     /// 创建不支持 `skill://` 的基础 read 工具。
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             skill_resolver: None,
+            base: crate::base::BaseDir::default(),
         }
     }
 
     /// 创建支持 `skill://` 的 read 工具。
-    pub const fn with_skill_resolver(skill_resolver: SkillResolver) -> Self {
+    pub fn with_skill_resolver(skill_resolver: SkillResolver) -> Self {
         Self {
             skill_resolver: Some(skill_resolver),
+            base: crate::base::BaseDir::default(),
         }
+    }
+
+    /// 设置固定基准目录：相对路径以它解析（workspace 严格归属）。
+    #[must_use]
+    pub fn with_base_dir(mut self, base_dir: Option<std::path::PathBuf>) -> Self {
+        self.base = crate::base::BaseDir::new(base_dir);
+        self
+    }
+
+    /// 共享基准目录句柄：句柄更新后本工具的下一次执行即用新基准
+    ///（交互端切换 session 的 workspace 场景）。
+    #[must_use]
+    pub fn with_shared_base_dir(mut self, base: &crate::base::BaseDir) -> Self {
+        self.base = base.clone();
+        self
     }
 
     async fn execute_read(&self, params: ReadParams) -> Result<ToolResult, ToolError> {
@@ -57,8 +76,9 @@ impl ReadTool {
             return self.execute_skill_read(&params, target).await;
         }
 
+        let base = self.base.snapshot();
         read_text_path(
-            Path::new(&params.path),
+            &crate::base::resolve(base.as_deref(), &params.path),
             &params.path,
             None,
             params.offset,

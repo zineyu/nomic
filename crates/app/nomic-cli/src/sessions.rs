@@ -253,7 +253,7 @@ fn clear_picker(stdout: &mut impl Write, printed: u16) -> io::Result<()> {
     )
 }
 
-/// 一行的展示文本：标题、最后更新时间、消息数与启动目录。
+/// 一行的展示文本：标题、最后更新时间、消息数与所属 workspace。
 /// CLI 选择器与 TUI `/resume` 弹层共用；session id 是内部标识，不展示。
 pub fn row_text(summary: &SessionSummary) -> String {
     let title = summary.title.as_deref().unwrap_or("（空 session）");
@@ -262,7 +262,7 @@ pub fn row_text(summary: &SessionSummary) -> String {
         title,
         format_time(summary.last_message_at),
         summary.message_count,
-        summary.cwd.display()
+        summary.workspace.display()
     )
 }
 
@@ -435,7 +435,8 @@ mod tests {
         SessionSummary {
             id: "01999999-aaaa-bbbb-cccc".to_string(),
             title: Some(title.to_string()),
-            cwd: std::path::PathBuf::from("/tmp/project"),
+            workspace_id: "01999999-0000-0000-0000".to_string(),
+            workspace: std::path::PathBuf::from("/tmp/project"),
             first_message_at: Some(1_785_000_000_000),
             last_message_at: Some(1_785_000_000_000),
             message_count: 1,

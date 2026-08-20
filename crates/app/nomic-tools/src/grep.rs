@@ -39,8 +39,33 @@ pub struct GrepParams {
 }
 
 /// `grep` 工具。
-#[derive(Debug, Default, Clone, Copy)]
-pub struct GrepTool;
+#[derive(Debug, Default, Clone)]
+pub struct GrepTool {
+    /// 相对路径的解析基准（workspace 严格归属；空句柄 = 进程 cwd）
+    base: crate::base::BaseDir,
+}
+
+impl GrepTool {
+    /// 创建以进程 cwd 为基准的 grep 工具。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 设置固定基准目录：相对搜索根以它解析（workspace 严格归属）。
+    #[must_use]
+    pub fn with_base_dir(mut self, base_dir: Option<PathBuf>) -> Self {
+        self.base = crate::base::BaseDir::new(base_dir);
+        self
+    }
+
+    /// 共享基准目录句柄：句柄更新后本工具的下一次执行即用新基准
+    ///（交互端切换 session 的 workspace 场景）。
+    #[must_use]
+    pub fn with_shared_base_dir(mut self, base: &crate::base::BaseDir) -> Self {
+        self.base = base.clone();
+        self
+    }
+}
 
 const LABEL: &str = "grep";
 
@@ -90,7 +115,8 @@ impl AgentTool for GrepTool {
             .build(&params.pattern)
             .map_err(|e| ToolError::new(format!("Invalid regex: {e}")))?;
         let glob = params.glob.as_deref().map(build_glob_matcher).transpose()?;
-        let root = PathBuf::from(params.path.as_deref().unwrap_or("."));
+        let root =
+            crate::base::resolve_root(self.base.snapshot().as_deref(), params.path.as_deref());
         let include_hidden = params.include_hidden.unwrap_or(false);
         tracing::debug!(pattern = %params.pattern, root = %root.display(), limit, "grep");
 

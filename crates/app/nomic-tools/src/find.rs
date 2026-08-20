@@ -38,8 +38,33 @@ pub enum FindKind {
 }
 
 /// `find` 工具。
-#[derive(Debug, Default, Clone, Copy)]
-pub struct FindTool;
+#[derive(Debug, Default, Clone)]
+pub struct FindTool {
+    /// 相对路径的解析基准（workspace 严格归属；空句柄 = 进程 cwd）
+    base: crate::base::BaseDir,
+}
+
+impl FindTool {
+    /// 创建以进程 cwd 为基准的 find 工具。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 设置固定基准目录：相对搜索根以它解析（workspace 严格归属）。
+    #[must_use]
+    pub fn with_base_dir(mut self, base_dir: Option<PathBuf>) -> Self {
+        self.base = crate::base::BaseDir::new(base_dir);
+        self
+    }
+
+    /// 共享基准目录句柄：句柄更新后本工具的下一次执行即用新基准
+    ///（交互端切换 session 的 workspace 场景）。
+    #[must_use]
+    pub fn with_shared_base_dir(mut self, base: &crate::base::BaseDir) -> Self {
+        self.base = base.clone();
+        self
+    }
+}
 
 const LABEL: &str = "find";
 
@@ -82,7 +107,8 @@ impl AgentTool for FindTool {
             return Err(ToolError::new("Limit must be at least 1"));
         }
         let matcher = build_matcher(&params.pattern)?;
-        let root = PathBuf::from(params.path.as_deref().unwrap_or("."));
+        let root =
+            crate::base::resolve_root(self.base.snapshot().as_deref(), params.path.as_deref());
         if !root.is_dir() {
             return Err(ToolError::new(format!(
                 "Path is not a directory: {}",

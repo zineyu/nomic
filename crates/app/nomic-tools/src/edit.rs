@@ -4,8 +4,6 @@
 //! - 精确匹配失败时按行模糊匹配（归一化：行尾空白、智能引号、Unicode 破折号/空格）
 //! - 保留 BOM 与 CRLF；返回 unified diff/patch 作为 details
 
-use std::path::Path;
-
 use async_trait::async_trait;
 use nomic_core::{AgentTool, ToolError, ToolResult, ToolUpdateCallback};
 use schemars::JsonSchema;
@@ -40,8 +38,33 @@ pub struct EditParams {
 }
 
 /// `edit` 工具。
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EditTool;
+#[derive(Debug, Default, Clone)]
+pub struct EditTool {
+    /// 相对路径的解析基准（workspace 严格归属；空句柄 = 进程 cwd）
+    base: crate::base::BaseDir,
+}
+
+impl EditTool {
+    /// 创建以进程 cwd 为基准的 edit 工具。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 设置固定基准目录：相对路径以它解析（workspace 严格归属）。
+    #[must_use]
+    pub fn with_base_dir(mut self, base_dir: Option<std::path::PathBuf>) -> Self {
+        self.base = crate::base::BaseDir::new(base_dir);
+        self
+    }
+
+    /// 共享基准目录句柄：句柄更新后本工具的下一次执行即用新基准
+    ///（交互端切换 session 的 workspace 场景）。
+    #[must_use]
+    pub fn with_shared_base_dir(mut self, base: &crate::base::BaseDir) -> Self {
+        self.base = base.clone();
+        self
+    }
+}
 
 const LABEL: &str = "edit";
 
@@ -77,13 +100,14 @@ impl AgentTool for EditTool {
                 "Edit tool input is invalid. edits must contain at least one replacement.",
             ));
         }
-        let path = Path::new(&params.path);
-        let _guard = lock_path(path).await;
+        let base = self.base.snapshot();
+        let path = crate::base::resolve(base.as_deref(), &params.path);
+        let _guard = lock_path(&path).await;
         if cancel.is_cancelled() {
             return Err(ToolError::new("Operation aborted"));
         }
 
-        let raw = tokio::fs::read(path)
+        let raw = tokio::fs::read(&path)
             .await
             .map_err(|e| ToolError::new(format!("Could not edit file: {}. {e}", params.path)))?;
         let raw = String::from_utf8(raw).map_err(|_| {

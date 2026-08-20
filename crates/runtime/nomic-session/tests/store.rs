@@ -88,7 +88,7 @@ async fn open_creates_schema_and_is_idempotent() {
 }
 
 #[tokio::test]
-async fn create_session_records_cwd_and_null_timestamps() {
+async fn create_session_binds_workspace_and_null_timestamps() {
     let store = SessionStore::in_memory().await.unwrap();
     let id_a = store.create_session("/tmp/project-a").await.unwrap();
     let id_b = store.create_session("/tmp/project-b").await.unwrap();
@@ -98,10 +98,22 @@ async fn create_session_records_cwd_and_null_timestamps() {
 
     let summaries = store.list_sessions().await.unwrap();
     let a = summaries.iter().find(|s| s.id == id_a).unwrap();
-    assert_eq!(a.cwd, Path::new("/tmp/project-a"));
+    assert_eq!(a.workspace, Path::new("/tmp/project-a"));
     assert_eq!(a.first_message_at, None);
     assert_eq!(a.last_message_at, None);
     assert_eq!(a.message_count, 0);
+
+    // 同一路径创建第二个 session：复用同一 workspace，不重复登记
+    let id_a2 = store.create_session("/tmp/project-a").await.unwrap();
+    let summaries = store.list_sessions().await.unwrap();
+    let a2 = summaries.iter().find(|s| s.id == id_a2).unwrap();
+    assert_eq!(a2.workspace_id, a.workspace_id);
+    let workspaces = store.list_workspaces().await.unwrap();
+    assert_eq!(workspaces.len(), 2);
+    let wa = workspaces.iter().find(|w| w.id == a.workspace_id).unwrap();
+    assert_eq!(wa.path, Path::new("/tmp/project-a"));
+    assert_eq!(wa.session_count, 2);
+    assert!(wa.last_active_at.is_some(), "创建 session 推进活跃时间");
 }
 
 #[tokio::test]

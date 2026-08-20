@@ -290,7 +290,7 @@ async fn latest_session_in(store: &SessionStore, cwd: &Path) -> Result<String> {
     let sessions = store.list_sessions().await.context("列出 session 失败")?;
     sessions
         .into_iter()
-        .find(|summary| normalize_path(&summary.cwd) == target)
+        .find(|summary| normalize_path(&summary.workspace) == target)
         .map(|summary| summary.id)
         .with_context(|| {
             format!(
@@ -315,11 +315,11 @@ async fn warn_if_cross_cwd(store: &SessionStore, id: &str, cwd: &Path) {
         return;
     };
     if let Some(summary) = sessions.iter().find(|s| s.id == id)
-        && normalize_path(&summary.cwd) != normalize_path(cwd)
+        && normalize_path(&summary.workspace) != normalize_path(cwd)
     {
         eprintln!(
             "\x1b[33m⚠ session 属于 {}，与当前目录不同\x1b[0m",
-            summary.cwd.display()
+            summary.workspace.display()
         );
     }
 }

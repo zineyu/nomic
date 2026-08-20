@@ -25,7 +25,7 @@ fn temp_dir() -> std::path::PathBuf {
 async fn write_creates_parent_dirs() {
     let dir = temp_dir();
     let path = dir.join("a/b/c.txt");
-    let result = WriteTool
+    let result = WriteTool::new()
         .execute(
             serde_json::from_value(
                 serde_json::json!({"path": path.display().to_string(), "content": "hello"}),
@@ -290,7 +290,7 @@ async fn edit_applies_and_returns_diff() {
     )
     .expect("write fixture");
 
-    let result = EditTool
+    let result = EditTool::new()
         .execute(
             serde_json::from_value(serde_json::json!({
                 "path": path.display().to_string(),
@@ -322,7 +322,7 @@ async fn edit_preserves_crlf() {
     let path = dir.join("win.txt");
     std::fs::write(&path, "one\r\ntwo\r\nthree\r\n").expect("write fixture");
 
-    EditTool
+    EditTool::new()
         .execute(
             serde_json::from_value(serde_json::json!({
                 "path": path.display().to_string(),
@@ -346,7 +346,7 @@ async fn edit_non_unique_match_is_error_for_model() {
     let path = dir.join("dup.txt");
     std::fs::write(&path, "x\nx\n").expect("write fixture");
 
-    let err = EditTool
+    let err = EditTool::new()
         .execute(
             serde_json::from_value(serde_json::json!({
                 "path": path.display().to_string(),
@@ -363,7 +363,7 @@ async fn edit_non_unique_match_is_error_for_model() {
 
 #[tokio::test]
 async fn bash_captures_output_and_exit_code() {
-    let result = BashTool
+    let result = BashTool::new()
         .execute(
             serde_json::from_value(serde_json::json!({"command": "echo hello"})).expect("params"),
             CancellationToken::new(),
@@ -376,7 +376,7 @@ async fn bash_captures_output_and_exit_code() {
     };
     assert_eq!(text.text, "hello\n");
 
-    let err = BashTool
+    let err = BashTool::new()
         .execute(
             serde_json::from_value(serde_json::json!({"command": "echo oops && exit 3"}))
                 .expect("params"),
@@ -395,7 +395,7 @@ async fn bash_captures_output_and_exit_code() {
 #[tokio::test]
 async fn bash_timeout_kills_process() {
     let start = std::time::Instant::now();
-    let err = BashTool
+    let err = BashTool::new()
         .execute(
             serde_json::from_value(serde_json::json!({"command": "sleep 30", "timeout": 1}))
                 .expect("params"),
@@ -413,7 +413,7 @@ async fn bash_timeout_kills_process() {
 
 #[tokio::test]
 async fn bash_truncates_long_output_to_temp_file() {
-    let err_or_ok = BashTool
+    let err_or_ok = BashTool::new()
         .execute(
             serde_json::from_value(serde_json::json!({"command": "seq 1 5000"})).expect("params"),
             CancellationToken::new(),
@@ -457,7 +457,7 @@ fn grep_fixture() -> std::path::PathBuf {
 }
 
 async fn run_grep(args: serde_json::Value) -> String {
-    let result = nomic_tools::GrepTool
+    let result = nomic_tools::GrepTool::new()
         .execute(
             serde_json::from_value(args).expect("params"),
             CancellationToken::new(),
@@ -552,7 +552,7 @@ async fn grep_no_match_and_invalid_regex() {
     .await;
     assert!(out.starts_with("No matches found"), "{out}");
 
-    let err = nomic_tools::GrepTool
+    let err = nomic_tools::GrepTool::new()
         .execute(
             serde_json::from_value(
                 serde_json::json!({"pattern": "(", "path": dir.display().to_string()}),
@@ -569,7 +569,7 @@ async fn grep_no_match_and_invalid_regex() {
 // ── find ─────────────────────────────────────────────────────────────────────
 
 async fn run_find(args: serde_json::Value) -> String {
-    let result = nomic_tools::FindTool
+    let result = nomic_tools::FindTool::new()
         .execute(
             serde_json::from_value(args).expect("params"),
             CancellationToken::new(),

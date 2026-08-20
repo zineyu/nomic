@@ -7,6 +7,7 @@
 //! 继续持有输出管道，读取任务永远等不到 EOF，超时形同虚设。
 
 use std::mem;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -41,10 +42,59 @@ pub struct BashParams {
 }
 
 /// `bash` 工具。
-#[derive(Debug, Default, Clone, Copy)]
-pub struct BashTool;
+#[derive(Debug, Default, Clone)]
+pub struct BashTool {
+    /// 命令执行的基准目录（workspace 严格归属；空句柄 = 进程 cwd）
+    base: crate::base::BaseDir,
+}
+
+impl BashTool {
+    /// 创建以进程 cwd 为基准的 bash 工具。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 设置固定基准目录：命令在该目录下执行（workspace 严格归属）。
+    #[must_use]
+    pub fn with_base_dir(mut self, base_dir: Option<PathBuf>) -> Self {
+        self.base = crate::base::BaseDir::new(base_dir);
+        self
+    }
+
+    /// 共享基准目录句柄：句柄更新后本工具的下一次执行即用新基准
+    ///（交互端切换 session 的 workspace 场景）。
+    #[must_use]
+    pub fn with_shared_base_dir(mut self, base: &crate::base::BaseDir) -> Self {
+        self.base = base.clone();
+        self
+    }
+}
 
 const LABEL: &str = "bash";
+
+/// 配置并 spawn bash 子进程：管道输出、`kill_on_drop`、以基准目录为执行
+/// 目录（`None` 时进程 cwd）；子进程自成一个进程组（pgid = pid）：
+/// 超时/取消时按组强杀，命令派生的孙进程一并停止（见模块文档）。
+fn spawn_bash(
+    command_text: &str,
+    base: Option<PathBuf>,
+) -> Result<tokio::process::Child, ToolError> {
+    let mut command = tokio::process::Command::new("bash");
+    command
+        .arg("-c")
+        .arg(command_text)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    if let Some(dir) = base {
+        command.current_dir(dir);
+    }
+    #[cfg(unix)]
+    command.process_group(0);
+    command
+        .spawn()
+        .map_err(|e| ToolError::new(format!("Could not spawn bash: {e}")))
+}
 const DESCRIPTION: &str = "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds (defaults to 60); on timeout the process group is forcibly killed and the output collected so far is returned.";
 
 #[async_trait]
@@ -84,20 +134,7 @@ impl AgentTool for BashTool {
         tracing::debug!(command = %params.command, ?timeout, "bash start");
         let started = Instant::now();
 
-        let mut command = tokio::process::Command::new("bash");
-        command
-            .arg("-c")
-            .arg(&params.command)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        // 子进程自成一个进程组（pgid = pid）：超时/取消时按组强杀，
-        // 命令派生的孙进程一并停止（见模块文档）
-        #[cfg(unix)]
-        command.process_group(0);
-        let mut child = command
-            .spawn()
-            .map_err(|e| ToolError::new(format!("Could not spawn bash: {e}")))?;
+        let mut child = spawn_bash(&params.command, self.base.snapshot())?;
 
         // stdout/stderr 按到达顺序合并到共享缓冲
         let buffer = Arc::new(Mutex::new(String::new()));
@@ -333,7 +370,7 @@ mod tests {
     }
 
     async fn run(command: &str, timeout: Option<f64>) -> Result<ToolResult, ToolError> {
-        BashTool
+        BashTool::new()
             .execute(
                 BashParams {
                     command: command.to_string(),
@@ -407,7 +444,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
             cancel_clone.cancel();
         });
-        let error = BashTool
+        let error = BashTool::new()
             .execute(
                 BashParams {
                     command: "echo partial; sleep 30".to_string(),

@@ -174,37 +174,38 @@ export interface AskUserAnswer {
   custom: string | null
 }
 
+/** 服务端推送事件（所有事件携带 session_id 供前端路由到对应 session） */
 export type ServerEvent =
   // ── 生命周期事件（agent 运行驱动）
-  | { type: 'agent'; event: AgentEvent }
-  | { type: 'question'; id: string; question: AskUserQuestion }
-  | { type: 'question_cancelled'; id: string }
-  | { type: 'run_started' }
-  | { type: 'run_finished' }
-  | { type: 'error'; request_id?: string; message: string }
+  | { type: 'agent'; session_id: string; event: AgentEvent }
+  | { type: 'question'; session_id: string; id: string; question: AskUserQuestion }
+  | { type: 'question_cancelled'; session_id: string; id: string }
+  | { type: 'run_started'; session_id: string }
+  | { type: 'run_finished'; session_id: string }
+  | { type: 'error'; session_id?: string; request_id?: string; message: string }
   | { type: 'refresh' }
   // ── 查询响应事件（携带 request_id）
-  | { type: 'state_snapshot'; request_id: string; snapshot: SnapshotView }
+  | { type: 'state_snapshot'; session_id: string; request_id: string; snapshot: SnapshotView }
   | { type: 'models_list'; request_id: string; candidates: ModelChoice[] }
   | { type: 'sessions_list'; request_id: string; sessions: SessionSummary[] }
   // ── 命令 ack 事件
-  | { type: 'prompt_ack'; queued: boolean }
-  | { type: 'cancel_ack' }
-  | { type: 'answer_ack' }
-  | { type: 'switch_model_ack'; choice: ModelChoice }
+  | { type: 'prompt_ack'; session_id: string; queued: boolean }
+  | { type: 'cancel_ack'; session_id: string }
+  | { type: 'answer_ack'; session_id: string }
+  | { type: 'switch_model_ack'; session_id: string; choice: ModelChoice }
   | { type: 'session_created'; id: string; title: string | null }
 
 /** 客户端发送给服务端的事件（纯事件驱动，无 REST） */
 export type ClientEvent =
   // ── 查询类（携带 request_id，响应也带同一 request_id）
-  | { type: 'get_state'; request_id: string }
+  | { type: 'get_state'; session_id: string; request_id: string }
   | { type: 'list_models'; request_id: string }
   | { type: 'list_sessions'; request_id: string }
   // ── 命令类（fire-and-forget，由后续 ServerEvent 驱动状态）
-  | { type: 'prompt'; text: string; images?: ImageContent[] }
-  | { type: 'cancel' }
-  | { type: 'answer_question'; id: string; answers: string[]; custom?: string | null }
-  | { type: 'switch_model'; spec: string; reasoning?: string | null }
+  | { type: 'prompt'; session_id: string; text: string; images?: ImageContent[] }
+  | { type: 'cancel'; session_id: string }
+  | { type: 'answer_question'; session_id: string; id: string; answers: string[]; custom?: string | null }
+  | { type: 'switch_model'; session_id: string; spec: string; reasoning?: string | null }
   | { type: 'create_session' }
 
 // ── REST 响应（nomic-cli web::api）────────────────────────────────────────

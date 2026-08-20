@@ -1,9 +1,11 @@
-// useChat：聊天状态的单一入口——挂载时确定当前 session，通过 WebSocket
-// 事件流获取快照 + 接收增量事件，事件驱动合并到消息项列表；
+// useChat：聊天状态的单一入口——WebSocket 连接后自动接收全局事件总线上的所有
+// session 事件（每个事件携带 `session_id`），仅当前查看 session 的事件驱动 UI；
 // 对外暴露 send / stop / newSession / resumeSession / switchModel / answerQuestion。
 //
-// 多 session：`sessionId` 是当前会话；切换 / 新建会话即更新 `sessionId`，
-// WebSocket 连接随之重建（后台会话在服务端继续运行，互不阻塞）。
+// 多 session 并行：所有已打开 session 的事件都通过同一连接推送。`sessionId` 为
+// 当前查看的 session；切换查看仅影响 UI 展示，后台 session 的事件流不受影响。
+//
+// 快照获取：`api.state(session_id)` 查询（`"default"` 别名由后端解析为真实 id）。
 //
 // 纯事件驱动：所有前端↔后端通信通过 WebSocket 双向事件流，无 REST。
 
@@ -18,6 +20,7 @@ import type {
   ServerEvent,
   SessionStats,
   SessionSummary,
+  SnapshotView,
 } from '@/lib/types'
 
 export interface QuestionState {
@@ -26,7 +29,7 @@ export interface QuestionState {
 }
 
 export interface ChatState {
-  /** 当前会话 id（切换 / 新建时更新，驱动快照与流重建） */
+  /** 当前查看的 session id（切换时驱动 UI 刷新，不影响事件接收） */
   sessionId: string | null
   items: ChatItem[]
   sessions: SessionSummary[]
@@ -77,8 +80,48 @@ export function useChat() {
   const sessionIdRef = useRef<string | null>(sessionId)
   sessionIdRef.current = sessionId
 
-  // 服务端事件的统一入口（快照刷新与 WebSocket 共用）
+  // 用快照初始化/刷新当前 session 的状态（快照中的 session 字段携带真实 id）
+  const applySnapshot = useCallback((snapshot: SnapshotView) => {
+    setState((prev) => ({
+      ...prev,
+      items: messagesToItems(snapshot.messages),
+      model: snapshot.model,
+      reasoning: snapshot.reasoning,
+      contextTokens: snapshot.context_tokens,
+      running: snapshot.running,
+      queued: snapshot.queued,
+      session: snapshot.session,
+      cwd: snapshot.cwd,
+      question: snapshot.pending_question ?? null,
+      error: null,
+      stats: {
+        rounds: snapshot.rounds ?? 0,
+        total_steps: snapshot.total_steps ?? 0,
+        llm_time_ms: snapshot.llm_time_ms ?? 0,
+        tool_time_ms: snapshot.tool_time_ms ?? 0,
+        avg_first_token_ms: snapshot.avg_first_token_ms ?? 0,
+        output_token_rate: snapshot.output_token_rate ?? 0,
+        cache_hit_ratio: snapshot.cache_hit_ratio ?? 0,
+        input_tokens: snapshot.input_tokens ?? 0,
+        output_tokens: snapshot.output_tokens ?? 0,
+        subagent_count: snapshot.subagent_count ?? 0,
+      },
+    }))
+  }, [])
+
+  // 服务端事件的统一入口（仅当前查看 session 的生命周期事件驱动 UI）
   const applyEvent = useCallback((event: ServerEvent) => {
+    // 跳过不属于当前 session 的生命周期事件（其他 session 在后台运行）
+    const currentSid = sessionIdRef.current
+    if (
+      'session_id' in event &&
+      event.session_id &&
+      currentSid &&
+      event.session_id !== currentSid
+    ) {
+      return
+    }
+
     setState((prev) => {
       const items = applyServerEvent(prev.items, event)
       switch (event.type) {
@@ -95,7 +138,6 @@ export function useChat() {
             question: prev.question?.id === event.id ? null : prev.question,
           }
         case 'error':
-          // agent loop 整体失败时无 run_finished，这里兜底复位运行状态
           return { ...prev, items, running: false, error: event.message }
         case 'agent':
           return { ...prev, items }
@@ -105,42 +147,15 @@ export function useChat() {
     })
   }, [])
 
-  // 快照刷新（挂载 + refresh 事件 + 会话切换后）
-  const refreshSnapshot = useCallback(async () => {
-    try {
-      const snap = await api.state()
-      setState((prev) => ({
-        ...prev,
-        items: messagesToItems(snap.messages),
-        model: snap.model,
-        reasoning: snap.reasoning,
-        contextTokens: snap.context_tokens,
-        running: snap.running,
-        queued: snap.queued,
-        session: snap.session,
-        cwd: snap.cwd,
-        question: snap.pending_question ?? null,
-        error: null,
-        stats: {
-          rounds: snap.rounds ?? 0,
-          total_steps: snap.total_steps ?? 0,
-          llm_time_ms: snap.llm_time_ms ?? 0,
-          tool_time_ms: snap.tool_time_ms ?? 0,
-          avg_first_token_ms: snap.avg_first_token_ms ?? 0,
-          output_token_rate: snap.output_token_rate ?? 0,
-          cache_hit_ratio: snap.cache_hit_ratio ?? 0,
-          input_tokens: snap.input_tokens ?? 0,
-          output_tokens: snap.output_tokens ?? 0,
-          subagent_count: snap.subagent_count ?? 0,
-        },
-      }))
-    } catch (error) {
-      setState((prev) => ({
-        ...prev,
-        error: error instanceof Error ? error.message : String(error),
-      }))
-    }
-  }, [])
+  // 拉取指定 session 的快照并刷新 UI（boot / 切换 / refresh 共用）
+  const loadSession = useCallback(
+    async (id: string) => {
+      const { session_id, snapshot } = await api.state(id)
+      setState((prev) => ({ ...prev, sessionId: session_id }))
+      applySnapshot(snapshot)
+    },
+    [applySnapshot],
+  )
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -155,25 +170,31 @@ export function useChat() {
   useEffect(() => {
     return api.subscribe((event) => {
       if (event.type === 'refresh') {
-        void refreshSnapshot()
+        // 落后/重连：重新拉取当前 session 快照
+        const sid = sessionIdRef.current
+        if (sid) {
+          void api.state(sid).then(({ snapshot }) => applySnapshot(snapshot))
+        }
+        void refreshSessions()
+      } else if (event.type === 'session_created') {
+        // 新 session 创建：刷新会话列表
         void refreshSessions()
       } else {
         applyEvent(event)
-        // 首条消息后标题会变化，run 结束刷新会话列表
+        // run 结束刷新会话列表
         if (event.type === 'run_finished') void refreshSessions()
       }
     })
-  }, [applyEvent, refreshSnapshot, refreshSessions])
+  }, [applyEvent, applySnapshot, refreshSessions])
 
-  // 挂载：确定初始 session（连接 WebSocket → 请求快照 → 初始化）。
+  // 挂载：确保 WebSocket 连接 → 拉取默认 session 快照（"default" 别名由后端解析）。
   useEffect(() => {
     let cancelled = false
     const boot = async () => {
-      // 连接到 session（`/ws/default` 路径由服务端解析为默认 session）
-      await api.setSession('default')
+      await api.connect()
       if (cancelled) return
-      // 请求快照（包含 session id、消息历史、模型等）
-      await refreshSnapshot()
+      await loadSession('default')
+      if (cancelled) return
       void refreshSessions()
     }
     void boot().catch((error) => {
@@ -187,19 +208,14 @@ export function useChat() {
     return () => {
       cancelled = true
     }
-  }, [refreshSnapshot, refreshSessions])
-
-  // 会话切换：重建 WebSocket 连接 + 刷新快照。
-  useEffect(() => {
-    if (!sessionId || sessionId === 'default') return
-    void api.setSession(sessionId).then(() => void refreshSnapshot())
-  }, [sessionId, refreshSnapshot])
+  }, [loadSession, refreshSessions])
 
   const send = useCallback(async (text: string) => {
     const trimmed = text.trim()
-    if (!trimmed) return
+    const sid = sessionIdRef.current
+    if (!trimmed || !sid) return
     try {
-      const result = await api.prompt(trimmed)
+      const result = await api.prompt(sid, trimmed)
       if (result.status === 'queued') {
         setState((prev) => ({ ...prev, queued: prev.queued + 1 }))
       }
@@ -212,13 +228,15 @@ export function useChat() {
   }, [])
 
   const stop = useCallback(async () => {
-    api.cancel()
+    const sid = sessionIdRef.current
+    if (sid) api.cancel(sid)
   }, [])
 
   const newSession = useCallback(async () => {
     try {
       const { id } = await api.createSession()
-      setState((prev) => ({ ...prev, sessionId: id }))
+      // 拉取新 session 快照并切换查看（其事件流已自动并入当前连接）
+      await loadSession(id)
       await refreshSessions()
     } catch (error) {
       setState((prev) => ({
@@ -226,21 +244,30 @@ export function useChat() {
         error: error instanceof Error ? error.message : String(error),
       }))
     }
-  }, [refreshSessions])
+  }, [loadSession, refreshSessions])
 
-  const resumeSession = useCallback(async (id: string) => {
-    // 仅切换当前会话：快照与流连接由 sessionId effect 重建
-    setState((prev) => ({ ...prev, sessionId: id }))
-  }, [])
+  const resumeSession = useCallback(
+    async (id: string) => {
+      try {
+        await loadSession(id)
+      } catch (error) {
+        setState((prev) => ({
+          ...prev,
+          error: error instanceof Error ? error.message : String(error),
+        }))
+      }
+    },
+    [loadSession],
+  )
 
   const switchModel = useCallback(async (spec: string, reasoning?: string) => {
-    api.switchModel(spec, reasoning)
-    // 等待 switch_model_ack 后刷新快照（由事件流驱动）
-    // 快照刷新由 switch_model_ack 事件触发，或由 run_finished 触发
+    const sid = sessionIdRef.current
+    if (sid) api.switchModel(sid, spec, reasoning)
   }, [])
 
   const answerQuestion = useCallback(async (id: string, answer: AskUserAnswer) => {
-    api.answerQuestion(id, answer)
+    const sid = sessionIdRef.current
+    if (sid) api.answerQuestion(sid, id, answer)
     setState((prev) => ({ ...prev, question: null }))
   }, [])
 

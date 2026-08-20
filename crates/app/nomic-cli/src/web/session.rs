@@ -38,6 +38,8 @@ pub struct SessionFactory {
     pub default_reasoning: Option<ThinkingLevel>,
     /// 所有可用模型列表（子 agent 模型选择用）
     pub available_models: Vec<Model>,
+    /// 全局事件总线（所有 session 的事件统一发往此处）
+    pub events: broadcast::Sender<ServerEvent>,
 }
 
 impl SessionFactory {
@@ -120,10 +122,11 @@ impl SessionFactory {
         tip: Option<String>,
         resolved: ResolvedSessionModel,
     ) -> Arc<SessionRuntime> {
-        let (events_tx, _) = broadcast::channel::<ServerEvent>(512);
+        let events_tx = self.events.clone();
         let recorder = store.map(|store| SessionRecorder::with_tip(store, id.clone(), tip));
         let questions = Arc::new(Mutex::new(HashMap::new()));
         let sink = Arc::new(WebQuestionSink {
+            session_id: id.clone(),
             events: events_tx.clone(),
             questions: questions.clone(),
         });
@@ -177,7 +180,7 @@ impl SessionFactory {
 }
 
 /// 事件转发任务：消费 agent 事件流，先经 [`SessionRecorder`] 落库（定稿点，
-/// 失败仅告警，与 print/TUI 同一口径），再广播给本 session 的 WebSocket 客户端。
+/// 失败仅告警，与 print/TUI 同一口径），再发往全局事件总线（携带 `session_id`）。
 async fn forward_events(
     session: Arc<SessionRuntime>,
     mut events: mpsc::UnboundedReceiver<AgentEvent>,
@@ -194,11 +197,18 @@ async fn forward_events(
         // 运行生命周期事件由 AgentStart/AgentEnd 翻译产出：转发任务是广播的
         // 唯一发送方，保证 run 状态与 agent 事件顺序一致。
         if matches!(event, AgentEvent::AgentStart) {
-            let _ = session.events.send(ServerEvent::RunStarted);
+            let _ = session.events.send(ServerEvent::RunStarted {
+                session_id: session.id.clone(),
+            });
         } else if matches!(event, AgentEvent::AgentEnd { .. }) {
-            let _ = session.events.send(ServerEvent::RunFinished);
+            let _ = session.events.send(ServerEvent::RunFinished {
+                session_id: session.id.clone(),
+            });
         }
-        let _ = session.events.send(ServerEvent::Agent { event });
+        let _ = session.events.send(ServerEvent::Agent {
+            session_id: session.id.clone(),
+            event,
+        });
     }
 }
 
@@ -216,12 +226,15 @@ pub async fn run_loop(session: &Arc<SessionRuntime>) {
         if let Err(error) = result {
             tracing::error!(%error, "agent run failed");
             let _ = session.events.send(ServerEvent::Error {
+                session_id: Some(session.id.clone()),
                 request_id: None,
                 message: format!("{error:#}"),
             });
             // agent loop 整体失败时无 AgentEnd 事件（见 forward_events），
             // 补发 RunFinished 避免前端运行状态悬挂
-            let _ = session.events.send(ServerEvent::RunFinished);
+            let _ = session.events.send(ServerEvent::RunFinished {
+                session_id: session.id.clone(),
+            });
         }
     }
 }

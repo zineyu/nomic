@@ -4,13 +4,14 @@
 //! 事件落库 seam（[`SessionRecorder`] 一行接线）；agent actor（ADR-0022）经
 //! [`nomic_core::AgentHandle`] 驱动。
 //!
-//! 前端↔后端通信全部通过 `ws://{host}/ws/{session_id}` 双向事件流：
+//! 前端↔后端通信全部通过 `ws://{host}/ws` 双向事件流：
 //! - 客户端→服务端：[`api::ClientEvent`]（`type` 字段区分事件种类）
 //! - 服务端→客户端：[`ServerEvent`]（`type` 字段区分事件种类）
 //!
-//! 查询类事件（`get_state` / `list_models` / `list_sessions`）通过 `request_id`
-//! 实现请求-响应关联；命令类事件（`prompt` / `cancel`）为 fire-and-forget，
-//! 由服务端后续生命周期事件驱动前端状态。REST 接口已全部移除。
+//! 单个 WebSocket 连接可同时订阅多个 session 的事件流（`SubscribeSession`），
+//! 所有事件携带 `session_id` 供前端路由到对应 session。查询类事件通过
+//! `request_id` 实现请求-响应关联；命令类事件携带 `session_id` 指定目标 session，
+//! 为 fire-and-forget，由服务端后续生命周期事件驱动前端状态。REST 接口已全部移除。
 //!
 //! 多 session 并行：进程级 [`Runtime`] 持有一个 session 注册表
 //! （`id → SessionRuntime`），每个 [`SessionRuntime`] 自持一个 agent actor、
@@ -52,27 +53,33 @@ pub use session::{Snapshot, snapshot};
 /// - **响应事件**（`StateSnapshot` / `ModelsList` 等）：由客户端查询请求触发，
 ///   携带 `request_id` 供客户端关联。命令类操作（`Prompt` / `Cancel`）返回 ack。
 ///
-/// 事件经每个 session 各自的 broadcast 分发（见 [`SessionRuntime::events`]），
-/// 客户端按 session 订阅，故负载无需再带 session id。
+/// 所有事件携带 `session_id`，前端按此字段路由到对应的 session 状态。
+/// 单个 WebSocket 连接自动接收所有已注册 session 的事件流。
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEvent {
     // ── 生命周期事件（agent 运行驱动）────────────────────────────────
     /// agent 生命周期事件（原样透传，前端按既有事件协议重建消息流）
-    Agent { event: AgentEvent },
+    Agent {
+        session_id: String,
+        event: AgentEvent,
+    },
     /// `ask_user_question` 提问（前端弹层展示，回答经事件回填）
     Question {
+        session_id: String,
         id: String,
         question: AskUserQuestion,
     },
     /// 提问被取消（运行中断）
-    QuestionCancelled { id: String },
+    QuestionCancelled { session_id: String, id: String },
     /// 一轮 run 开始（runner 任务启动）
-    RunStarted,
+    RunStarted { session_id: String },
     /// 一轮 run 结束（队列清空或出错）
-    RunFinished,
+    RunFinished { session_id: String },
     /// 运行期错误（agent loop 失败等）
     Error {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
         message: String,
@@ -83,8 +90,9 @@ pub enum ServerEvent {
     // ── 查询响应事件（携带 request_id）───────────────────────────────
     /// 会话快照响应（`get_state` 查询的回复）
     StateSnapshot {
+        session_id: String,
         request_id: String,
-        snapshot: api::SnapshotView,
+        snapshot: Box<api::SnapshotView>,
     },
     /// 候选模型列表响应（`list_models` 查询的回复）
     ModelsList {
@@ -99,18 +107,18 @@ pub enum ServerEvent {
 
     // ── 命令 ack 事件 ──────────────────────────────────────────────
     /// prompt 提交确认（`queued: true` 表示排队，`false` 表示立即运行）
-    PromptAck { queued: bool },
+    PromptAck { session_id: String, queued: bool },
     /// 取消确认
-    CancelAck,
+    CancelAck { session_id: String },
     /// 提问回答确认
-    AnswerAck,
+    AnswerAck { session_id: String },
     /// 模型切换确认
-    SwitchModelAck { choice: crate::model::ModelChoice },
-    /// 新建 session 确认
-    SessionCreated {
-        id: String,
-        title: Option<String>,
+    SwitchModelAck {
+        session_id: String,
+        choice: crate::model::ModelChoice,
     },
+    /// 新建 session 确认
+    SessionCreated { id: String, title: Option<String> },
 }
 
 /// 待发送的 prompt（文本 + 图片附件）。
@@ -198,7 +206,7 @@ pub struct SessionRuntime {
     pub handle: nomic_core::AgentHandle,
     /// 落库槽（store 不可用时为 `None`）
     pub recorder: Mutex<Option<SessionRecorder>>,
-    /// 本 session 的事件广播（前端按 session 订阅）
+    /// 全局事件总线（所有 session 共享；事件携带 `session_id` 区分来源）
     pub events: broadcast::Sender<ServerEvent>,
     /// prompt 队列 + 运行标志
     pub gate: RunGate,
@@ -249,6 +257,8 @@ pub struct Runtime {
     pub(crate) models: Arc<ModelResolver>,
     /// session 注册表（id → 并行运行的 SessionRuntime）
     pub(crate) sessions: Mutex<HashMap<String, Arc<SessionRuntime>>>,
+    /// 全局事件总线：所有 session 的事件统一发往此处，WebSocket 连接订阅一次即可
+    pub(crate) events: broadcast::Sender<ServerEvent>,
     /// 服务停机令牌
     pub(crate) shutdown: CancellationToken,
     /// 构建 SessionRuntime 的工厂（bootstrap 输入）
@@ -273,6 +283,8 @@ impl std::fmt::Debug for Runtime {
 impl Runtime {
     /// 取或惰性打开一个 session：已注册直接返回；否则从 store 加载历史并
     /// 构建 SessionRuntime（服务重启后或其他未打开会话的首访）。
+    ///
+    /// 新 session 插入注册表后通过 `session_added` 通知 WebSocket 连接。
     pub(crate) async fn open_session(&self, id: &str) -> Result<Arc<SessionRuntime>, ApiError> {
         if let Some(session) = self.sessions.lock().await.get(id) {
             return Ok(session.clone());
@@ -298,10 +310,13 @@ impl Runtime {
         let session =
             self.factory
                 .build(self.store.clone(), id.to_string(), history, tip, resolved);
-        self.sessions
-            .lock()
-            .await
-            .insert(id.to_string(), session.clone());
+        let mut sessions = self.sessions.lock().await;
+        // 并发 open 同一 id 时只保留先插入者（避免孤儿 agent 任务）
+        if let Some(existing) = sessions.get(id) {
+            return Ok(existing.clone());
+        }
+        sessions.insert(id.to_string(), session.clone());
+        drop(sessions);
         Ok(session)
     }
 
@@ -319,7 +334,10 @@ impl Runtime {
         let session =
             self.factory
                 .build(self.store.clone(), id.clone(), Vec::new(), None, resolved);
-        self.sessions.lock().await.insert(id, session.clone());
+        self.sessions
+            .lock()
+            .await
+            .insert(id.clone(), session.clone());
         Ok(session)
     }
 
@@ -373,6 +391,7 @@ async fn build_app_state(boot: Bootstrap) -> AppState {
     let models = Arc::new(boot.models);
     let store = boot.session.as_ref().map(|(store, _)| store.clone());
     let default_reasoning = boot.stream_options.reasoning;
+    let (events, _) = broadcast::channel::<ServerEvent>(1024);
     let factory = SessionFactory {
         models: models.clone(),
         system_prompt: boot.system_prompt,
@@ -383,6 +402,7 @@ async fn build_app_state(boot: Bootstrap) -> AppState {
         default_provider: boot.provider,
         default_reasoning,
         available_models: boot.available_models,
+        events,
     };
 
     // 初始 session：bootstrap 已解析默认模型 / provider / 历史；落库 tip 取
@@ -412,6 +432,7 @@ async fn build_app_state(boot: Bootstrap) -> AppState {
         store,
         models,
         sessions: Mutex::new(HashMap::from([(default_session_id.clone(), initial)])),
+        events: factory.events.clone(),
         shutdown: CancellationToken::new(),
         factory,
         default_session_id,
@@ -536,6 +557,7 @@ mod tests {
             nomic_ai::ApiKind::OpenAiCompletions,
             Some("sk-test".into()),
         );
+        let (events, _) = broadcast::channel::<ServerEvent>(64);
         let factory = SessionFactory {
             models: models.clone(),
             system_prompt: "test".to_string(),
@@ -551,6 +573,7 @@ mod tests {
             default_provider: provider,
             default_reasoning: None,
             available_models: vec![model.clone()],
+            events,
         };
         let initial = factory.build(
             Some(store.clone()),
@@ -567,6 +590,7 @@ mod tests {
             store: Some(store),
             models,
             sessions: Mutex::new(HashMap::from([(id.clone(), initial)])),
+            events: factory.events.clone(),
             shutdown: CancellationToken::new(),
             factory,
             default_session_id: id,

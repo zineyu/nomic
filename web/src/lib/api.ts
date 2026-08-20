@@ -1,14 +1,15 @@
 // 纯 WebSocket 事件驱动通信客户端（单例）。
 //
-// 所有前端↔后端通信通过 `ws://{host}/ws/{session_id}` 双向事件流：
+// 所有前端↔后端通信通过 `ws://{host}/ws` 双向事件流。服务端维护进程级全局事件
+// 总线，连接后自动接收所有 session 的事件（每个事件携带 `session_id` 供路由）：
 // - **查询类**（`get_state` / `list_models` / `list_sessions`）：携带 `request_id`，
 //   服务端响应事件带同一 `request_id` 供关联。
-// - **命令类**（`prompt` / `cancel` / `answer_question` / `switch_model` / `create_session`）：
-//   fire-and-forget，由服务端后续生命周期事件（`run_started` / `run_finished` / `error`）
-//   驱动前端状态更新。
+// - **命令类**（`prompt` / `cancel` / `answer_question` / `switch_model` /
+//   `create_session`）：携带 `session_id` 指定目标 session，fire-and-forget，
+//   由服务端后续生命周期事件驱动前端状态更新。
 //
-// 连接生命周期：`setSession` 切换会话时自动断开旧连接并建立新连接；
-// 断线自动退避重连（指数退避上限 15s）；请求超时 30s 自动拒绝。
+// 连接生命周期：断线自动退避重连（指数退避上限 15s）；重连成功后向所有监听器
+// 发送本地 `refresh` 事件（由 useChat 重新拉取快照）；请求超时 30s 自动拒绝。
 
 import type {
   AskUserAnswer,
@@ -17,13 +18,12 @@ import type {
   ModelChoice,
   ServerEvent,
   SessionSummary,
-  StateResponse,
+  SnapshotView,
 } from './types'
 
 type EventHandler = (event: ServerEvent) => void
 
 class WsClient {
-  private sessionId: string | null = null
   private ws: WebSocket | null = null
   private pending = new Map<
     string,
@@ -38,6 +38,7 @@ class WsClient {
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private requestId = 0
   private connectResolvers: Array<() => void> = []
+  private hasConnected = false
 
   /** 注册事件监听（生命周期与调用方一致，需手动退订）。 */
   subscribe(handler: EventHandler): () => void {
@@ -47,16 +48,14 @@ class WsClient {
     }
   }
 
-  /** 切换目标会话：断开旧连接，建立新连接，连接就绪后 resolve。 */
-  setSession(id: string): Promise<void> {
-    if (this.sessionId === id && this.ws?.readyState === WebSocket.OPEN) {
+  /** 确保 WebSocket 已连接（幂等）。连接就绪后 resolve。 */
+  connect(): Promise<void> {
+    if (this.ws?.readyState === WebSocket.OPEN) {
       return Promise.resolve()
     }
-    this.sessionId = id
-    this.disconnect()
     return new Promise<void>((resolve) => {
       this.connectResolvers.push(resolve)
-      this.connect()
+      this._connect()
     })
   }
 
@@ -93,19 +92,25 @@ class WsClient {
 
   // ── 连接管理 ──────────────────────────────────────────────────────
 
-  private connect(): void {
-    const id = this.sessionId
-    if (!id) return
+  private _connect(): void {
+    if (this.ws?.readyState === WebSocket.OPEN) return
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(`${proto}//${window.location.host}/ws/${id}`)
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws`)
     this.ws = ws
 
     ws.onopen = () => {
       this.retry = 0
-      // 通知所有等待连接就绪的 caller
       for (const resolve of this.connectResolvers) resolve()
       this.connectResolvers = []
+      // 重连（非首次连接）：事件流自动恢复，但断开期间的事件已丢失，
+      // 通知监听器重新拉取快照
+      if (this.hasConnected) {
+        for (const handler of this.eventHandlers) {
+          handler({ type: 'refresh' })
+        }
+      }
+      this.hasConnected = true
     }
 
     ws.onmessage = (event: MessageEvent) => {
@@ -161,12 +166,11 @@ class WsClient {
   }
 
   private scheduleReconnect(): void {
-    if (!this.sessionId) return
     this.retry += 1
     const delay = Math.min(1000 * 2 ** this.retry, 15_000)
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null
-      this.connect()
+      this._connect()
     }, delay)
   }
 
@@ -187,12 +191,15 @@ export const api = {
   /** 注册事件监听（组件生命周期内有效，需退订）。 */
   subscribe: (handler: EventHandler) => client.subscribe(handler),
 
-  /** 切换目标会话（断开旧连接，建立新连接，就绪后 resolve）。 */
-  setSession: (id: string) => client.setSession(id),
+  /** 确保 WebSocket 已连接（幂等）。 */
+  connect: () => client.connect(),
 
-  /** 获取会话快照（查询类，通过连接路径确定目标 session）。 */
-  state: () =>
-    client.request<StateResponse>({ type: 'get_state' }),
+  /** 获取会话快照（查询类；返回解析后的真实 session_id 与快照）。 */
+  state: (sessionId: string) =>
+    client.request<{ session_id: string; snapshot: SnapshotView }>({
+      type: 'get_state',
+      session_id: sessionId,
+    }),
 
   /** 列出全部 session 摘要。 */
   sessions: () =>
@@ -219,17 +226,26 @@ export const api = {
       (r) => r.candidates,
     ),
 
-  /** 切换会话模型（命令类）。 */
-  switchModel: (spec: string, reasoning?: string | null) => {
-    client.send({ type: 'switch_model', spec, reasoning: reasoning ?? null })
+  /** 切换会话模型（命令类，需指定 session_id）。 */
+  switchModel: (sessionId: string, spec: string, reasoning?: string | null) => {
+    client.send({
+      type: 'switch_model',
+      session_id: sessionId,
+      spec,
+      reasoning: reasoning ?? null,
+    })
   },
 
-  /** 提交 prompt（命令类，等待 prompt_ack 确认）。 */
-  prompt: (text: string, images?: ImageContent[]): Promise<{ status: 'started' | 'queued' }> => {
-    client.send({ type: 'prompt', text, images: images ?? [] })
+  /** 提交 prompt（命令类，需指定 session_id，等待 prompt_ack 确认）。 */
+  prompt: (
+    sessionId: string,
+    text: string,
+    images?: ImageContent[],
+  ): Promise<{ status: 'started' | 'queued' }> => {
+    client.send({ type: 'prompt', session_id: sessionId, text, images: images ?? [] })
     return new Promise((resolve) => {
       const unsub = client.subscribe((event) => {
-        if (event.type === 'prompt_ack') {
+        if (event.type === 'prompt_ack' && event.session_id === sessionId) {
           unsub()
           resolve({ status: event.queued ? 'queued' : 'started' })
         }
@@ -242,15 +258,16 @@ export const api = {
     })
   },
 
-  /** 取消当前轮运行（命令类）。 */
-  cancel: () => {
-    client.send({ type: 'cancel' })
+  /** 取消当前轮运行（命令类，需指定 session_id）。 */
+  cancel: (sessionId: string) => {
+    client.send({ type: 'cancel', session_id: sessionId })
   },
 
-  /** 回答提问（命令类）。 */
-  answerQuestion: (id: string, answer: AskUserAnswer) => {
+  /** 回答提问（命令类，需指定 session_id）。 */
+  answerQuestion: (sessionId: string, id: string, answer: AskUserAnswer) => {
     client.send({
       type: 'answer_question',
+      session_id: sessionId,
       id,
       answers: answer.answers,
       custom: answer.custom,

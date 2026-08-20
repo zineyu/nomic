@@ -34,17 +34,17 @@ export function ModelPicker({
   onSwitch,
   models: modelsProp,
 }: ModelPickerProps) {
-  const [candidates, setCandidates] = useState<ModelChoice[]>([])
+  const [fetchedCandidates, setFetchedCandidates] = useState<ModelChoice[]>([])
   const [open, setOpen] = useState(false)
   const [levelOpen, setLevelOpen] = useState(false)
 
+  const candidates = modelsProp ?? fetchedCandidates
+
   useEffect(() => {
-    if (modelsProp) {
-      setCandidates(modelsProp)
-    } else {
-      void api.models().then(setCandidates).catch(() => {})
+    if (!modelsProp) {
+      void api.models().then(setFetchedCandidates).catch(() => {})
     }
-  }, [open, levelOpen, modelsProp])
+  }, [modelsProp])
 
   const groups = useMemo(() => {
     const map = new Map<string, ModelChoice[]>()

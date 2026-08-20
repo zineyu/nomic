@@ -276,9 +276,9 @@ describe('applyAgentEvent / applyServerEvent', () => {
 
   it('applyServerEvent 透传 agent 事件并忽略运行/提问事件', () => {
     const events: ServerEvent[] = [
-      { type: 'run_started' },
-      { type: 'agent', event: { MessageStart: userMessage('x') } },
-      { type: 'question', id: 'q1', question: { question: '继续？', kind: 'single_choice', options: ['是'] } },
+      { type: 'run_started', session_id: 's1' },
+      { type: 'agent', session_id: 's1', event: { MessageStart: userMessage('x') } },
+      { type: 'question', session_id: 's1', id: 'q1', question: { question: '继续？', kind: 'single_choice', options: ['是'] } },
     ]
     const items = events.reduce<ChatItem[]>((acc, e) => applyServerEvent(acc, e), [])
     expect(items).toHaveLength(1)

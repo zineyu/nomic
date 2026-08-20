@@ -23,6 +23,11 @@ import type {
 
 type EventHandler = (event: ServerEvent) => void
 
+type QueryEventInput =
+  | { type: 'get_state'; session_id: string }
+  | { type: 'list_models' }
+  | { type: 'list_sessions' }
+
 class WsClient {
   private ws: WebSocket | null = null
   private pending = new Map<
@@ -66,10 +71,11 @@ class WsClient {
     }
   }
 
-  /** 发送查询事件并等待响应（通过 request_id 关联，30s 超时）。 */
-  request<T>(event: { type: string; request_id?: string }): Promise<T> {
+/** 发送查询事件并等待响应（通过 request_id 关联，30s 超时）。 */
+  request<T>(event: QueryEventInput): Promise<T> {
     const id = `r${++this.requestId}`
     const fullEvent = { ...event, request_id: id } as ClientEvent
+
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)

@@ -4,7 +4,7 @@
 //! - **客户端→服务端**：`ClientEvent`（JSON text frame，`type` 字段区分事件种类）
 //! - **服务端→客户端**：`ServerEvent`（JSON text frame，`type` 字段区分事件种类）
 //!
-//! 事件架构：进程级全局事件总线（[`Runtime::events`]），所有 session 的生命周期
+//! 事件架构：进程级全局事件总线（[`crate::web::Runtime::events`]），所有 session 的生命周期
 //! 事件直接发往总线，每个事件携带 `session_id` 供前端路由。WebSocket 连接只需
 //! 订阅总线一次，即可接收全部 session 的事件——无需订阅管理。
 //!

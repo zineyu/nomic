@@ -3,6 +3,7 @@
 //! - `tool`：[`AgentTool`] 强类型工具契约与 [`DynTool`] 类型擦除包装
 //! - `interception`：生命周期事件拦截（trait + 默认空实现，ADR-0028）
 //! - `agent`：事件驱动的 agent loop（actor 封装见 [`AgentHandle`]，ADR-0022）
+//! - `runner`：actor 之上的会话级串行 job 执行（[`SessionRunner`]，ADR-0033）
 //! - `injection`：运行中注入点（turn 边界转向，交互端实现注入源）
 //! - `builder`：typestate 创建 builder（编译期强制必填项）
 
@@ -11,6 +12,7 @@ mod builder;
 mod compaction;
 mod injection;
 mod interception;
+mod runner;
 mod supervisor;
 mod tool;
 
@@ -24,6 +26,10 @@ pub use injection::{TurnInjection, TurnMessage};
 pub use interception::{
     AgentInterceptor, NoopInterceptor, ToolCallDecision, ToolExecutionEnd, ToolExecutionOverride,
     ToolExecutionStart,
+};
+pub use runner::{
+    CompactOutcome, ContinueOutcome, JobKind, JobOutcome, NOTHING_TO_COMPACT, NOTHING_TO_CONTINUE,
+    PromptOutcome, RunnerError, RunnerEvent, SessionJob, SessionRunner,
 };
 pub use supervisor::{
     AgentId, AgentStatus, AgentSupervisor, CreateAgentRequest, SupervisorConfig, SupervisorError,

@@ -100,9 +100,7 @@ export function MessageList({
     return (
       <div className="flex h-full items-center justify-center px-7">
         <div className="max-w-md text-center">
-          <div className="mb-4 inline-flex size-14 items-center justify-center rounded-xl bg-primary shadow-sm">
-            <span className="text-h3 font-bold text-primary-foreground">n</span>
-          </div>
+          <img src="/favicon.svg" alt="nomic" className="mb-4 inline-block size-14 rounded-xl shadow-sm" />
           <h2 className="mb-1 text-h2 tracking-tight">向 nomic 提问</h2>
           <p className="mb-6 text-sm text-muted-foreground">
             可调用工具、读写文件、运行命令的 AI 编程助手

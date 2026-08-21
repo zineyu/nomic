@@ -228,8 +228,8 @@ export const api = {
     client.request<{ id: string; path: string }>({ type: 'create_workspace', path }),
 
   /** 新建 session（命令类，等待 session_created 事件确认）。
-      `workspace` 指定归属目录（不存在则登记新 workspace）；缺省归属服务端 cwd。 */
-  createSession: (workspace?: string): Promise<{ id: string; title: string | null }> => {
+      必须指定归属目录 `workspace`（无默认 workspace；不存在则报错）。 */
+  createSession: (workspace: string): Promise<{ id: string; title: string | null }> => {
     client.send({ type: 'create_session', workspace })
     return new Promise((resolve) => {
       const unsub = client.subscribe((event) => {

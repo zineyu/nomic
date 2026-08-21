@@ -1,11 +1,14 @@
 // 聊天主视图：顶栏（标题）+ 消息流 + 输入区 + 提问弹层 + 错误提示。页面列 max-w-page 居中。
+// 启动页（未选中任何 session）：输入框上方渲染工作区选择栏（WorkspaceBar），
+// 首条消息在选定 workspace 下创建 session；无默认 workspace。
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, Loader2, MessageCircleQuestion, PanelLeft, X } from 'lucide-react'
 
 import { ChatInput } from '@/components/chat/ChatInput'
 import { MessageList } from '@/components/chat/MessageList'
 import { QuestionModal } from '@/components/chat/QuestionModal'
+import { WorkspaceBar } from '@/components/chat/WorkspaceBar'
 import { Button } from '@/components/ui/button'
 import type { UseChat } from '@/hooks/useChat'
 
@@ -26,17 +29,35 @@ export function ChatView({
     question,
     error,
     session,
+    sessionId,
     model,
     reasoning,
     contextTokens,
+    workspaces,
     send,
     stop,
+    startSession,
     answerQuestion,
     dismissError,
     switchModel,
   } = chat
 
   const [minimizedId, setMinimizedId] = useState<string | null>(null)
+
+  // 启动页（无默认 workspace/session）：未选中任何 session 时展示工作区选择栏
+  const startPage = sessionId === null
+  // 用户手动选择/输入的目录；未选择时回落到最近活跃的 workspace（仅 UI 预选）
+  const [startChoice, setStartChoice] = useState<string | null>(null)
+  const startWorkspace = startChoice ?? workspaces[0]?.path ?? ''
+
+  // 启动页发送：在选定 workspace 下创建 session 并发出首条消息
+  const handleStartSend = useCallback(
+    (text: string) => {
+      if (!startWorkspace) return
+      void startSession(startWorkspace, text)
+    },
+    [startSession, startWorkspace],
+  )
 
   // 运行中按 Escape 停止当前运行
   useEffect(() => {
@@ -80,7 +101,10 @@ export function ChatView({
       </div>
 
       <div className="min-h-0 flex-1">
-        <MessageList items={items} onExample={send} />
+        <MessageList
+          items={items}
+          onExample={startPage ? (startWorkspace ? handleStartSend : undefined) : send}
+        />
       </div>
 
       {error && (
@@ -101,6 +125,14 @@ export function ChatView({
         </div>
       )}
 
+      {startPage && (
+        <WorkspaceBar
+          workspaces={workspaces}
+          value={startWorkspace}
+          onChange={setStartChoice}
+        />
+      )}
+
       <ChatInput
         running={running}
         queued={queued}
@@ -108,7 +140,11 @@ export function ChatView({
         reasoning={reasoning}
         contextTokens={contextTokens}
         contextWindow={model?.context_window ?? null}
-        onSend={send}
+        sendDisabled={startPage && !startWorkspace}
+        placeholder={
+          startPage && !startWorkspace ? '先选择工作区，再给智能体发消息' : undefined
+        }
+        onSend={startPage ? handleStartSend : send}
         onStop={stop}
         onSwitchModel={switchModel}
       />

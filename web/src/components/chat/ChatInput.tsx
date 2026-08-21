@@ -21,6 +21,10 @@ interface ChatInputProps {
   reasoning?: string | null
   contextTokens?: number
   contextWindow?: number | null
+  /** 额外禁用发送（启动页未选择工作区时） */
+  sendDisabled?: boolean
+  /** 输入框占位文本（缺省为「给智能体发消息」） */
+  placeholder?: string
   onSwitchModel?: (spec: string, reasoning?: string) => void
   onSend: (text: string) => void
   onStop: () => void
@@ -33,6 +37,8 @@ export function ChatInput({
   reasoning,
   contextTokens = 0,
   contextWindow = null,
+  sendDisabled = false,
+  placeholder = '给智能体发消息',
   onSwitchModel,
   onSend,
   onStop,
@@ -50,7 +56,7 @@ export function ChatInput({
 
   const submit = () => {
     const text = value.trim()
-    if (!text) return
+    if (!text || sendDisabled) return
     onSend(text)
     setValue('')
   }
@@ -78,7 +84,7 @@ export function ChatInput({
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="给智能体发消息"
+            placeholder={placeholder}
             rows={1}
             autoFocus
             style={{ maxHeight: MAX_HEIGHT }}
@@ -119,7 +125,7 @@ export function ChatInput({
               type="button"
               size="icon"
               onClick={submit}
-              disabled={!value.trim()}
+              disabled={!value.trim() || sendDisabled}
               className="size-7 shrink-0 rounded-full"
               title="发送（Enter）"
             >

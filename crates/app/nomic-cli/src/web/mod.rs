@@ -43,7 +43,7 @@ use tokio_util::sync::CancellationToken;
 use crate::bootstrap::{self, Bootstrap};
 use crate::model::ModelResolver;
 use crate::{Cli, web::api::ApiError};
-use session::{ResolvedSessionModel, SessionFactory};
+use session::SessionFactory;
 
 pub use session::{Snapshot, snapshot};
 
@@ -279,8 +279,6 @@ pub struct Runtime {
     pub(crate) shutdown: CancellationToken,
     /// 构建 SessionRuntime 的工厂（bootstrap 输入）
     pub(crate) factory: SessionFactory,
-    /// 启动时 bootstrap 的初始 session id（前端挂载时确定默认会话）
-    pub(crate) default_session_id: String,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -291,7 +289,6 @@ impl std::fmt::Debug for Runtime {
             .field("sessions", &self.sessions)
             .field("shutdown", &self.shutdown)
             .field("factory", &"<SessionFactory>")
-            .field("default_session_id", &self.default_session_id)
             .finish_non_exhaustive()
     }
 }
@@ -364,10 +361,11 @@ pub struct AppState {
     pub inner: Arc<Runtime>,
 }
 
-/// 进入 web 模式：bootstrap 装配运行时 → 构建初始 session → 起 HTTP 服务。
+/// 进入 web 模式：bootstrap 装配运行时（只开 session 库，不预建 session——
+/// 无默认 workspace，session 由前端在启动页选择 workspace 后显式创建）→ 起 HTTP 服务。
 pub async fn run(cli: &Cli) -> Result<()> {
-    let boot = bootstrap::bootstrap(cli).await?;
-    let state = build_app_state(boot).await;
+    let boot = bootstrap::bootstrap(cli, bootstrap::SessionPolicy::OpenStoreOnly).await?;
+    let state = build_app_state(boot);
 
     let app = api::router(state.clone());
     let host = cli.host.as_deref().unwrap_or(DEFAULT_HOST);
@@ -392,10 +390,12 @@ pub async fn run(cli: &Cli) -> Result<()> {
 /// 缺省监听地址（仅本机；`--host` 显式覆盖，跨机访问自担风险）。
 const DEFAULT_HOST: &str = "127.0.0.1";
 
-/// 构建进程级运行时：session 注册表 + 工厂 + 初始 session。
-async fn build_app_state(boot: Bootstrap) -> AppState {
+/// 构建进程级运行时：session 注册表（空）+ 工厂。不预建初始 session：
+/// web 模式没有默认 workspace，session 全部由 `create_session` 按前端选定
+/// 的 workspace 创建，历史 session 由 `open_session` 首访时惰性构建。
+fn build_app_state(boot: Bootstrap) -> AppState {
     let models = Arc::new(boot.models);
-    let store = boot.session.as_ref().map(|(store, _)| store.clone());
+    let store = boot.store.clone();
     let default_reasoning = boot.stream_options.reasoning;
     let (events, _) = broadcast::channel::<ServerEvent>(1024);
     let factory = SessionFactory {
@@ -405,44 +405,18 @@ async fn build_app_state(boot: Bootstrap) -> AppState {
         stream_options: boot.stream_options,
         compaction: boot.compaction,
         default_model: boot.model.clone(),
-        default_provider: boot.provider,
         default_reasoning,
         available_models: boot.available_models,
         events,
     };
 
-    // 初始 session：bootstrap 已解析默认模型 / provider / 历史；落库 tip 取
-    // 默认分支末端（分支场景下保证续写落在默认分支，与 TUI resume 同口径）。
-    let (default_session_id, tip) = match &boot.session {
-        Some((store, id)) => (id.clone(), store.latest_entry_id(id).await.ok().flatten()),
-        None => (uuid::Uuid::now_v7().to_string(), None),
-    };
-    let default_stream_options = {
-        let mut options = factory.stream_options.clone();
-        options.reasoning = default_reasoning;
-        options
-    };
-    let initial = factory.build(
-        store.clone(),
-        default_session_id.clone(),
-        boot.history,
-        tip,
-        boot.workspace,
-        ResolvedSessionModel {
-            model: factory.default_model.clone(),
-            provider: factory.default_provider.clone(),
-            options: default_stream_options,
-        },
-    );
-
     let runtime = Arc::new(Runtime {
         store,
         models,
-        sessions: Mutex::new(HashMap::from([(default_session_id.clone(), initial)])),
+        sessions: Mutex::new(HashMap::new()),
         events: factory.events.clone(),
         shutdown: CancellationToken::new(),
         factory,
-        default_session_id,
     });
     AppState { inner: runtime }
 }
@@ -534,10 +508,18 @@ mod tests {
     use nomic_ai::{Model, StreamOptions};
     use nomic_skills::SkillResolver;
 
+    use super::session::ResolvedSessionModel;
     use super::*;
 
     /// 构建一个最小 AppState（内存 session 库 + 空 agent 构建）。
+    /// 注册表中预置一个 session（多数测试的操作对象）。
     pub(super) async fn test_state() -> AppState {
+        let (state, _) = test_state_with_session().await;
+        state
+    }
+
+    /// [`test_state`] 的变体：同时返回预置 session 的 id。
+    pub(super) async fn test_state_with_session() -> (AppState, String) {
         let store = SessionStore::in_memory().await.expect("store");
         let id = store.create_session(".").await.expect("session");
         let models = Arc::new(ModelResolver::new(
@@ -577,7 +559,6 @@ mod tests {
             stream_options: StreamOptions::default(),
             compaction: nomic_core::CompactionSettings::default(),
             default_model: model.clone(),
-            default_provider: provider,
             default_reasoning: None,
             available_models: vec![model.clone()],
             events,
@@ -590,7 +571,7 @@ mod tests {
             std::env::current_dir().expect("cwd"),
             ResolvedSessionModel {
                 model,
-                provider: factory.default_provider.clone(),
+                provider,
                 options: StreamOptions::default(),
             },
         );
@@ -601,9 +582,8 @@ mod tests {
             events: factory.events.clone(),
             shutdown: CancellationToken::new(),
             factory,
-            default_session_id: id,
         });
-        AppState { inner: runtime }
+        (AppState { inner: runtime }, id)
     }
 
     #[tokio::test]

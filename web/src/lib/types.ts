@@ -209,7 +209,7 @@ export type ClientEvent =
   | { type: 'cancel'; session_id: string }
   | { type: 'answer_question'; session_id: string; id: string; answers: string[]; custom?: string | null }
   | { type: 'switch_model'; session_id: string; spec: string; reasoning?: string | null }
-  | { type: 'create_session'; workspace?: string }
+  | { type: 'create_session'; workspace: string }
   // ── 查询式命令（携带 request_id，响应/错误事件带同一 request_id）
   | { type: 'create_workspace'; request_id: string; path: string }
 

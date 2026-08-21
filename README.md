@@ -185,7 +185,9 @@ nomic --cwd /path/to/project
 
 - **流式聊天**：markdown 渲染、thinking 折叠、工具执行卡片（点击展开参数与结果）；
   运行中发送的消息进入统一队列，当前轮完成后按序续跑（与 TUI 同一语义）
-- **会话管理**：侧栏列出历史 session，新建 / 恢复（复用 SQLite 存储，与 TUI/print 共用）
+- **会话管理**：启动页选择 workspace 后开始新会话（无默认 workspace，session 严格归属
+  选定目录）；侧栏按 workspace 分组列出历史 session，支持新建 / 恢复（复用 SQLite 存储，
+  与 TUI/print 共用）
 - **模型选择**：跨 provider 候选列表 + 思考级别；切换结果落库，与 TUI `/models` 同一口径
 - **提问**：`ask_user_question` 以弹层呈现（单选/多选/填空 + 自定义填写）
 

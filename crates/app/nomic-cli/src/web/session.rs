@@ -34,7 +34,6 @@ pub struct SessionFactory {
     pub stream_options: StreamOptions,
     pub compaction: nomic_core::CompactionSettings,
     pub default_model: Model,
-    pub default_provider: Arc<dyn Provider>,
     pub default_reasoning: Option<ThinkingLevel>,
     /// 所有可用模型列表（子 agent 模型选择用）
     pub available_models: Vec<Model>,

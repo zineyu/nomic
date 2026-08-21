@@ -57,7 +57,9 @@ print/TUI 完全复用。前端产物编译期内嵌进二进制（见下），�
 多 session 并行：会话操作按路径参数 `session_id` 路由到对应 `SessionRuntime`；
 模型选择 / prompt / 取消 / 提问 / WebSocket 均为会话级，各会话独立运行互不阻塞。
 
-- `GET /api/session`：启动时的默认 session id（前端挂载时确定初始会话）。
+- 无默认 workspace/session：服务端启动不预建 session；前端启动页要求先选择
+  （或输入）workspace，首条消息经 `create_session`（必须携带 workspace 目录）
+  创建会话。历史 session 由前端从会话列表显式恢复。
 - `GET /api/sessions` / `POST /api/sessions`（新建）：复用 `SessionStore`。
 - `GET /api/sessions/{id}/state`：当前会话快照——消息历史、模型、思考级别、
   上下文 token 估算、运行状态、队列长度、session 信息、待回答问题。

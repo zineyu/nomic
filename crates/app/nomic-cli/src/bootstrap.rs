@@ -20,6 +20,16 @@ use crate::model::{
     db_reasoning_level, load_catalog_unless_complete, resolve_api_key, select_startup_model,
 };
 
+/// session 初始化策略：交互/print 模式启动即建/恢复 session；web 模式只开库，
+/// session 由前端按 workspace 显式创建（无默认 workspace，见 ADR-0030）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPolicy {
+    /// 启动即初始化 session（新建或按 --continue/--session 恢复）
+    Init,
+    /// 只打开库，不创建/恢复 session（web 模式：无默认 workspace）
+    OpenStoreOnly,
+}
+
 /// 初始化完成的运行时上下文：构建 agent 所需的全部零件 + 持久化句柄与恢复历史。
 pub struct Bootstrap {
     pub model: Model,
@@ -30,7 +40,10 @@ pub struct Bootstrap {
     pub system_prompt: String,
     /// 上下文压缩配置（`[compaction]` 合并内置默认）
     pub compaction: nomic_core::CompactionSettings,
-    /// `Some((store, session_id))` 时开启落库；session 库不可用时降级为 `None`
+    /// session 库句柄（模型选择与 workspace/session 列表共用）；不可用时为 `None`
+    pub store: Option<SessionStore>,
+    /// `Some((store, session_id))` 时开启落库；session 库不可用时降级为 `None`。
+    /// web 模式（[`SessionPolicy::OpenStoreOnly`]）恒为 `None`：不预建 session。
     pub session: Option<(SessionStore, String)>,
     /// 当前 session 的操作基准（workspace 严格归属）：持久化时为 session 的
     /// workspace 路径，未持久化时为规范化进程 cwd。前端以此构建工具基准。
@@ -50,8 +63,9 @@ pub struct Bootstrap {
 /// provider/model 的选择按 CLI 参数 > sqlite 配置（回退链）解析，两层都没有时
 /// 报错（无内置默认模型）；其余可配置项按 CLI 参数 > 环境变量 > 配置文件 >
 /// 协议默认 的优先级解析；配置文件存在但非法时硬报错（见 [`config`][crate::config]）。
+/// `policy` 决定是否在启动时创建/恢复 session（web 模式只开库不建 session）。
 #[allow(clippy::too_many_lines)]
-pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
+pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
     let config = crate::config::load()?;
     let env_openai_base_url = std::env::var("OPENAI_BASE_URL").ok();
     // session 库提前打开：模型选择（config 表）与消息持久化共用同一库
@@ -135,7 +149,10 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
         &active_skills,
     );
     let prompt_templates = load_prompt_templates(cli, &cwd, models.config())?;
-    let session = init_session(cli, &cwd, store).await?;
+    let session = match policy {
+        SessionPolicy::Init => init_session(cli, &cwd, store.clone()).await?,
+        SessionPolicy::OpenStoreOnly => None,
+    };
     let history = session
         .as_ref()
         .map(|init| init.history.clone())
@@ -154,6 +171,7 @@ pub async fn bootstrap(cli: &Cli) -> Result<Bootstrap> {
         stream_options,
         system_prompt,
         compaction,
+        store,
         session: session
             .as_ref()
             .map(|init| (init.store.clone(), init.id.clone())),

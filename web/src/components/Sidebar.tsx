@@ -1,15 +1,15 @@
 // 侧栏：模仿 DeepSeek Harness 布局。
-// 顶部新会话按钮 + 按 workspace 分组（可折叠）的会话列表，工作区组标题采用卡片样式。
+// 按 workspace 分组（可折叠）的会话列表，工作区组标题采用卡片样式。
 // 组标题右侧带「新建会话」按钮（在该 workspace 下创建）；「工作区」标题行带
 // 「添加工作区」按钮，展开内联输入框登记新 workspace（可无任何会话）。
 // 展开的会话列表缩进在组标题下方，并带竖向引导线，体现 session 对 workspace 的从属；
 // 折叠组之间保持紧凑间距，展开的组以额外下边距分隔。
 // 上下文用量由输入区环形指示器（ContextRing）展示，侧栏不再重复显示。
+// 无默认 workspace：新会话必须归属明确的 workspace（组标题按钮或启动页选择栏）。
 
-import { ChevronRight, FolderOpen, FolderPlus, MessageSquarePlus, Plus, Search } from 'lucide-react'
+import { ChevronRight, FolderOpen, FolderPlus, Plus, Search } from 'lucide-react'
 import { useId, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
 import { groupSessionsWithWorkspaces } from '@/lib/sessions'
 import type { SessionSummary, WorkspaceSummary } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -21,8 +21,8 @@ interface SidebarProps {
   currentSessionId: string | null
   workspace: string
   running: boolean
-  /** 新建会话；`workspace` 指定归属目录，缺省归属服务端 cwd */
-  onNewSession: (workspace?: string) => void
+  /** 新建会话（归属指定 workspace 目录；无默认 workspace，必须显式指定） */
+  onNewSession: (workspace: string) => void
   /** 登记新 workspace；失败时抛出错误消息（就地展示在输入框下方） */
   onAddWorkspace: (path: string) => Promise<void>
   onResume: (id: string) => void
@@ -77,21 +77,8 @@ export function Sidebar({
 
   return (
     <div className="flex h-full w-80 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
-      {/* 头部：新会话按钮 */}
-      <div className="px-3 pt-3 pb-1">
-        <Button
-          variant="outline"
-          size="sm"
-          className="w-full justify-start gap-2 rounded-xl border-dashed text-xs"
-          onClick={() => onNewSession()}
-        >
-          <MessageSquarePlus className="size-3.5" />
-          新会话
-        </Button>
-      </div>
-
       {/* 工作区区域标题（实际工作区在下方会话列表中以卡片样式分组展示） */}
-      <div className="px-3 pt-2 pb-1">
+      <div className="px-3 pt-3 pb-1">
         <div className="flex items-center justify-between px-1 pb-1.5">
           <span className="text-xs font-medium text-muted-foreground">工作区</span>
           <div className="flex items-center gap-0.5">

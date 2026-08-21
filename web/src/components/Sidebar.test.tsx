@@ -1,9 +1,10 @@
 // Sidebar 测试：模仿 DeepSeek Harness 布局。
 //
-// 顶部新会话按钮 + 按 workspace 分组（可折叠）的会话列表，工作区组标题为卡片样式。
+// 按 workspace 分组（可折叠）的会话列表，工作区组标题为卡片样式。
 // 组标题右侧带「新建会话」按钮（在该 workspace 下创建）；「工作区」标题行带
 // 「添加工作区」内联输入。每个 session 只展示标题，长标题被 CSS 截断但可通过
 // title 读取全文；当前会话以主色高亮；侧栏与聊天区之间有右侧分隔边框。
+// 无默认 workspace：新建会话必须经组标题按钮显式指定归属。
 
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -203,12 +204,11 @@ describe('Sidebar', () => {
     expect(betaGroup.className).not.toContain('mb-2')
   })
 
-  it('顶部新会话按钮不指定 workspace（归属服务端 cwd）', async () => {
-    const user = userEvent.setup()
-    const onNewSession = vi.fn()
-    renderSidebar({ sessions: [], onNewSession })
-    await user.click(screen.getByRole('button', { name: '新会话' }))
-    expect(onNewSession).toHaveBeenCalledWith()
+  it('不存在不指定 workspace 的顶部新会话按钮（无默认 workspace）', () => {
+    renderSidebar({ sessions: [] })
+    // 「新会话」文本只允许出现在缺省标题回退的会话列表项中；
+    // 空会话列表下不应有任何「新会话」按钮
+    expect(screen.queryByRole('button', { name: '新会话' })).not.toBeInTheDocument()
   })
 
   it('组标题「新建会话」按钮在该 workspace 下创建会话', async () => {

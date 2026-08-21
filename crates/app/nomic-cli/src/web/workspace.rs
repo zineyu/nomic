@@ -8,27 +8,22 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Context as _;
-
 use super::api::ApiError;
 use super::{Runtime, SessionRuntime};
 
 impl Runtime {
     /// 新建一个 session：落库（可用时）+ 以进程默认模型构建 SessionRuntime。
     ///
-    /// `workspace` 为 `Some` 时归属指定目录对应的 workspace（不存在则登记），
-    /// 工具基准取该目录的规范化路径；为 `None` 时归属进程 cwd。
+    /// 必须指定归属目录（无默认 workspace）：session 归属该目录对应的
+    /// workspace（不存在则登记），工具基准取该目录的规范化路径。
     /// 指定的目录不存在或不是目录时返回 `BadRequest`，不会静默登记无效路径。
     pub(crate) async fn create_session(
         &self,
-        workspace: Option<&Path>,
+        workspace: &Path,
     ) -> Result<Arc<SessionRuntime>, ApiError> {
-        let base = match workspace {
-            Some(path) => std::fs::canonicalize(path)
-                .map_err(|_| ApiError::BadRequest(format!("目录不存在：{}", path.display())))?,
-            None => std::env::current_dir().context("get cwd")?,
-        };
-        if workspace.is_some() && !base.is_dir() {
+        let base = std::fs::canonicalize(workspace)
+            .map_err(|_| ApiError::BadRequest(format!("目录不存在：{}", workspace.display())))?;
+        if !base.is_dir() {
             return Err(ApiError::BadRequest(format!(
                 "不是目录：{}",
                 base.display()
@@ -101,9 +96,10 @@ mod tests {
     #[tokio::test]
     async fn create_session_registers_independent_runtime() {
         let state = test_state().await;
+        let dir = tempfile::tempdir().expect("tempdir");
         let created = state
             .inner
-            .create_session(None)
+            .create_session(dir.path())
             .await
             .expect("create session");
         assert_eq!(
@@ -120,7 +116,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let created = state
             .inner
-            .create_session(Some(dir.path()))
+            .create_session(dir.path())
             .await
             .expect("create session in workspace");
         let canonical = std::fs::canonicalize(dir.path()).expect("canonical");
@@ -139,7 +135,7 @@ mod tests {
         // 同一路径再建 session：复用同一 workspace（get-or-create）
         let another = state
             .inner
-            .create_session(Some(dir.path()))
+            .create_session(dir.path())
             .await
             .expect("second session");
         let first = store.workspace_of_session(&created.id).await.expect("w1");
@@ -152,7 +148,7 @@ mod tests {
         let state = test_state().await;
         let result = state
             .inner
-            .create_session(Some(Path::new("/nonexistent/nomic-test-dir")))
+            .create_session(Path::new("/nonexistent/nomic-test-dir"))
             .await;
         assert!(
             matches!(result, Err(ApiError::BadRequest(_))),

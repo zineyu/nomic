@@ -19,7 +19,7 @@ use crate::{Cli, bootstrap};
 
 /// 运行 print 模式。
 pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
-    let boot = bootstrap::bootstrap(cli).await?;
+    let boot = bootstrap::bootstrap(cli, bootstrap::SessionPolicy::Init).await?;
     // `/name args` 视为 prompt template 调用：展开后发送；未知名称硬报错
     let prompt = match nomic_prompts::expand_invocation(&boot.prompt_templates, prompt) {
         Ok(expanded) => expanded.unwrap_or_else(|| prompt.to_string()),

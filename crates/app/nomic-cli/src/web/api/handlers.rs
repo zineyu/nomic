@@ -17,16 +17,15 @@ use crate::web::{AppState, ServerEvent, Snapshot};
 
 /// 获取会话快照：消息历史、模型、思考级别、运行状态等。
 pub async fn handle_get_state(state: &AppState, session_id: &str, request_id: &str) -> ServerEvent {
-    let resolved = resolve_session_id(state, session_id);
     let result = async {
-        let session = open_session(state, &resolved).await?;
+        let session = open_session(state, session_id).await?;
         let snapshot = crate::web::snapshot(&session).await?;
         Ok::<_, ApiError>(snapshot)
     }
     .await;
     match result {
         Ok(snapshot) => ServerEvent::StateSnapshot {
-            session_id: resolved,
+            session_id: session_id.to_string(),
             request_id: request_id.to_string(),
             snapshot: Box::new(SnapshotView::from_snapshot(snapshot)),
         },
@@ -82,29 +81,27 @@ pub async fn handle_prompt(
     if text.trim().is_empty() {
         return ApiError::BadRequest("prompt 为空".to_string()).to_ws_response(None);
     }
-    let resolved = resolve_session_id(state, session_id);
-    let session = match open_session(state, &resolved).await {
+    let session = match open_session(state, session_id).await {
         Ok(s) => s,
         Err(error) => return error.to_ws_response(None),
     };
     let was_running = session.gate.running();
     let started = session.submit_prompt(text, images).await;
     ServerEvent::PromptAck {
-        session_id: resolved,
+        session_id: session_id.to_string(),
         queued: was_running || !started,
     }
 }
 
 /// 取消当前轮运行。
 pub async fn handle_cancel(state: &AppState, session_id: &str) -> ServerEvent {
-    let resolved = resolve_session_id(state, session_id);
-    let session = match open_session(state, &resolved).await {
+    let session = match open_session(state, session_id).await {
         Ok(s) => s,
         Err(error) => return error.to_ws_response(None),
     };
     session.cancel_run().await;
     ServerEvent::CancelAck {
-        session_id: resolved,
+        session_id: session_id.to_string(),
     }
 }
 
@@ -116,15 +113,14 @@ pub async fn handle_answer_question(
     answers: Vec<String>,
     custom: Option<String>,
 ) -> ServerEvent {
-    let resolved = resolve_session_id(state, session_id);
-    let session = match open_session(state, &resolved).await {
+    let session = match open_session(state, session_id).await {
         Ok(s) => s,
         Err(error) => return error.to_ws_response(None),
     };
     let answer = AskUserAnswer { answers, custom };
     if session.answer_question(&qid, answer).await {
         ServerEvent::AnswerAck {
-            session_id: resolved,
+            session_id: session_id.to_string(),
         }
     } else {
         ApiError::NotFound(format!("question {qid} 不存在或已被回答")).to_ws_response(None)
@@ -138,8 +134,7 @@ pub async fn handle_switch_model(
     spec: String,
     reasoning: Option<String>,
 ) -> ServerEvent {
-    let resolved = resolve_session_id(state, session_id);
-    let session = match open_session(state, &resolved).await {
+    let session = match open_session(state, session_id).await {
         Ok(s) => s,
         Err(error) => return error.to_ws_response(None),
     };
@@ -202,17 +197,17 @@ pub async fn handle_switch_model(
         match parse_thinking_level(level) {
             Ok(level) => {
                 let _ = session.handle.set_reasoning(level);
-                persist_session_reasoning(state, &resolved, level).await;
+                persist_session_reasoning(state, session_id, level).await;
             }
             Err(error) => return error.to_ws_response(None),
         }
     }
 
     // 选择落库（会话级 config，与 TUI 同 append-only 口径）；失败仅告警
-    persist_session_model(state, &resolved, &selection.spec()).await;
+    persist_session_model(state, session_id, &selection.spec()).await;
 
     ServerEvent::SwitchModelAck {
-        session_id: resolved,
+        session_id: session_id.to_string(),
         choice: ModelChoice {
             provider: model.provider,
             id: model.id,
@@ -223,14 +218,14 @@ pub async fn handle_switch_model(
     }
 }
 
-/// 新建 session（新对话语义，默认模型）；`workspace` 指定归属目录，
-/// 缺省归属进程 cwd。
-pub async fn handle_create_session(state: &AppState, workspace: Option<String>) -> ServerEvent {
-    let workspace = match workspace.as_deref().map(expand_workspace_dir).transpose() {
+/// 新建 session（新对话语义，默认模型）；必须指定归属目录 `workspace`
+/// （无默认 workspace；目录不存在或不是目录时拒绝，不静默登记无效路径）。
+pub async fn handle_create_session(state: &AppState, workspace: String) -> ServerEvent {
+    let workspace = match expand_workspace_dir(&workspace) {
         Ok(workspace) => workspace,
         Err(error) => return error.to_ws_response(None),
     };
-    match state.inner.create_session(workspace.as_deref()).await {
+    match state.inner.create_session(&workspace).await {
         Ok(session) => ServerEvent::SessionCreated {
             id: session.id.clone(),
             title: None,
@@ -298,15 +293,6 @@ impl SnapshotView {
 
 // ── 辅助函数 ──────────────────────────────────────────────────────────────
 
-/// 解析 session id 别名：`"default"` → 进程的 `default_session_id`。
-fn resolve_session_id(state: &AppState, session_id: &str) -> String {
-    if session_id == "default" {
-        state.inner.default_session_id.clone()
-    } else {
-        session_id.to_string()
-    }
-}
-
 /// 展开用户输入的 workspace 目录：去空白、`~/` 展开为家目录。
 /// 空白输入返回 `BadRequest`；目录存在性由 `Runtime` 层校验。
 fn expand_workspace_dir(input: &str) -> Result<std::path::PathBuf, ApiError> {
@@ -322,7 +308,7 @@ fn expand_workspace_dir(input: &str) -> Result<std::path::PathBuf, ApiError> {
     Ok(std::path::PathBuf::from(trimmed))
 }
 
-/// 从运行时打开（或惰性构建）指定 session（自动解析别名）。
+/// 从运行时打开（或惰性构建）指定 session。
 async fn open_session(
     state: &AppState,
     id: &str,

@@ -1,11 +1,14 @@
 // useChat：聊天状态的单一入口——WebSocket 连接后自动接收全局事件总线上的所有
 // session 事件（每个事件携带 `session_id`），仅当前查看 session 的事件驱动 UI；
-// 对外暴露 send / stop / newSession / resumeSession / switchModel / answerQuestion。
+// 对外暴露 send / stop / newSession / startSession / resumeSession / switchModel /
+// answerQuestion。
 //
 // 多 session 并行：所有已打开 session 的事件都通过同一连接推送。`sessionId` 为
 // 当前查看的 session；切换查看仅影响 UI 展示，后台 session 的事件流不受影响。
 //
-// 快照获取：`api.state(session_id)` 查询（`"default"` 别名由后端解析为真实 id）。
+// 启动页：无默认 workspace/session——挂载时不加载任何 session（`sessionId` 为
+// null），前端展示启动页（workspace 选择栏 + 输入框），首条消息经 startSession
+// 在选定 workspace 下创建 session 并发送。
 //
 // 纯事件驱动：所有前端↔后端通信通过 WebSocket 双向事件流，无 REST。
 
@@ -205,13 +208,13 @@ export function useChat() {
     })
   }, [applyEvent, applySnapshot, refreshSessions, refreshWorkspaces])
 
-  // 挂载：确保 WebSocket 连接 → 拉取默认 session 快照（"default" 别名由后端解析）。
+  // 挂载：确保 WebSocket 连接 → 拉取会话与 workspace 列表。
+  // 不加载默认 session（无默认 workspace）：启动页由用户选择 workspace 后
+  // 显式创建 session，或从侧栏恢复历史 session。
   useEffect(() => {
     let cancelled = false
     const boot = async () => {
       await api.connect()
-      if (cancelled) return
-      await loadSession('default')
       if (cancelled) return
       void refreshSessions()
       void refreshWorkspaces()
@@ -227,7 +230,7 @@ export function useChat() {
     return () => {
       cancelled = true
     }
-  }, [loadSession, refreshSessions, refreshWorkspaces])
+  }, [refreshSessions, refreshWorkspaces])
 
   const send = useCallback(async (text: string) => {
     const trimmed = text.trim()
@@ -252,11 +255,37 @@ export function useChat() {
   }, [])
 
   const newSession = useCallback(
-    async (workspace?: string) => {
+    async (workspace: string) => {
       try {
         const { id } = await api.createSession(workspace)
         // 拉取新 session 快照并切换查看（其事件流已自动并入当前连接）
         await loadSession(id)
+        await refreshSessions()
+        await refreshWorkspaces()
+      } catch (error) {
+        setState((prev) => ({
+          ...prev,
+          error: error instanceof Error ? error.message : String(error),
+        }))
+      }
+    },
+    [loadSession, refreshSessions, refreshWorkspaces],
+  )
+
+  /** 启动页首条消息：在选定 workspace 下创建 session，切换到它并发送。 */
+  const startSession = useCallback(
+    async (workspace: string, text: string) => {
+      const trimmed = text.trim()
+      if (!workspace || !trimmed) return
+      try {
+        const { id } = await api.createSession(workspace)
+        // 先切换查看（快照为空会话），再提交 prompt：后续流式事件
+        // 经 applyEvent 增量驱动 UI
+        await loadSession(id)
+        const result = await api.prompt(id, trimmed)
+        if (result.status === 'queued') {
+          setState((prev) => ({ ...prev, queued: prev.queued + 1 }))
+        }
         await refreshSessions()
         await refreshWorkspaces()
       } catch (error) {
@@ -312,6 +341,7 @@ export function useChat() {
     send,
     stop,
     newSession,
+    startSession,
     addWorkspace,
     resumeSession,
     switchModel,

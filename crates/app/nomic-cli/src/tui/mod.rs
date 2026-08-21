@@ -72,7 +72,7 @@ type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 /// 运行交互 TUI。
 #[allow(clippy::too_many_lines)]
 pub async fn run(cli: &Cli) -> Result<()> {
-    let boot = bootstrap::bootstrap(cli).await?;
+    let boot = bootstrap::bootstrap(cli, bootstrap::SessionPolicy::Init).await?;
 
     let mut app = App::new(
         boot.model.name.clone(),

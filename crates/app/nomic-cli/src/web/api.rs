@@ -81,11 +81,9 @@ pub enum ClientEvent {
         reasoning: Option<String>,
     },
     /// 新建 session（命令类，返回 ack 事件 `session_created`）。
-    /// `workspace` 指定归属目录（不存在则登记新 workspace）；缺省归属进程 cwd。
-    CreateSession {
-        #[serde(default)]
-        workspace: Option<String>,
-    },
+    /// 必须指定归属目录 `workspace`（无默认 workspace；不存在则报错，
+    /// 不会静默归属进程 cwd）。
+    CreateSession { workspace: String },
     /// 登记新 workspace（查询式命令：携带 `request_id`，响应 `workspace_created`
     /// 或 error 事件带同一 `request_id`；按路径查或插，幂等）。
     CreateWorkspace { request_id: String, path: String },
@@ -248,7 +246,7 @@ async fn send_ws_response(socket: &mut WebSocket, event: &ServerEvent) {
 
 /// 分发客户端事件到对应 handler；返回 `None` 表示无需响应（fire-and-forget）。
 ///
-/// 命令/查询事件通过 `session_id` 路由到目标 session（`"default"` 别名自动解析）。
+/// 命令/查询事件通过 `session_id` 路由到目标 session。
 async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
     match event {
         // ── 查询类（携带 request_id，响应也带同一 request_id）──
@@ -391,16 +389,15 @@ mod tests {
         assert!(result.is_ok(), "停机后 WebSocket 未在 5 秒内关闭");
     }
 
-    /// `get_state` 请求-响应协议：发送 `"default"` 别名，应收到携带
-    /// `request_id` 和解析后真实 `session_id` 的 `state_snapshot`。
+    /// `get_state` 请求-响应协议：应收到携带 `request_id` 与真实
+    /// `session_id` 的 `state_snapshot`。
     #[tokio::test]
-    async fn get_state_resolves_default_alias() {
+    async fn get_state_returns_snapshot() {
         use axum::Router;
         use axum::routing::get;
         use futures::{SinkExt, StreamExt};
 
-        let state = crate::web::tests::test_state().await;
-        let real_id = state.inner.default_session_id.clone();
+        let (state, real_id) = crate::web::tests::test_state_with_session().await;
 
         let app = Router::new()
             .route("/ws", get(super::handle_ws))
@@ -419,7 +416,7 @@ mod tests {
         // 发送 get_state 查询
         let cmd = serde_json::json!({
             "type": "get_state",
-            "session_id": "default",
+            "session_id": real_id,
             "request_id": "test-r1",
         });
         ws_stream
@@ -451,7 +448,7 @@ mod tests {
         assert_eq!(
             json["session_id"].as_str().unwrap(),
             real_id,
-            "session_id 应为解析后的真实 id（非 \"default\"）"
+            "session_id 应为真实 id"
         );
         assert!(json["snapshot"].is_object(), "快照应存在");
     }
@@ -463,7 +460,7 @@ mod tests {
         use axum::routing::get;
         use futures::{SinkExt, StreamExt};
 
-        let state = crate::web::tests::test_state().await;
+        let (state, session_id) = crate::web::tests::test_state_with_session().await;
 
         let app = Router::new()
             .route("/ws", get(super::handle_ws))
@@ -514,7 +511,7 @@ mod tests {
         // prompt 命令的 ack 也应通过同一连接返回（命令路径回归）
         let cmd = serde_json::json!({
             "type": "cancel",
-            "session_id": state.inner.default_session_id,
+            "session_id": session_id,
         });
         ws_stream
             .send(tokio_tungstenite::tungstenite::Message::Text(

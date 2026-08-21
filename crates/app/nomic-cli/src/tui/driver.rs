@@ -21,9 +21,9 @@ use super::app::{App, Effect, Key, SkillEntry};
 use super::ask::PendingQuestion;
 use super::effects::{self, ModelSwitcher, SessionBinding};
 use super::goal::{GoalNudger, Nudge};
-use super::mention;
 use super::terminal::edit_input_in_editor;
 use super::{TuiTerminal, panic_payload_text};
+use crate::mention;
 use crate::model::ModelResolver;
 
 /// 提交给 agent driver 的任务。

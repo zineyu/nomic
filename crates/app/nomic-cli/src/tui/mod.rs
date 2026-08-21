@@ -33,7 +33,6 @@
 //! 错误策略：可预期错误（agent loop 失败、压缩失败、落库失败等）就地转为
 //! 状态栏/聊天区提示；意外错误（driver 任务 panic）经 JoinHandle 捕获后在
 //! 聊天区提示，TUI 保持存活供查看记录，而非静默退出。
-
 mod app;
 mod ask;
 mod chat_lines;
@@ -41,7 +40,7 @@ mod driver;
 mod effects;
 mod goal;
 mod markdown;
-mod mention;
+
 mod steering;
 mod terminal;
 mod theme;

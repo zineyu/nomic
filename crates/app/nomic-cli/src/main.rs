@@ -14,6 +14,7 @@ mod config;
 mod context_files;
 mod images;
 mod logging;
+mod mention;
 mod model;
 mod picker;
 mod print;

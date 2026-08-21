@@ -8,8 +8,8 @@ use nomic_ai::{
 };
 use nomic_skills::{ActivatedSkill, parse_active_skill_tag};
 
+use crate::mention;
 use crate::tui::chat_lines::chat_lines;
-use crate::tui::mention;
 
 /// 聊天区条目。
 #[derive(Debug)]

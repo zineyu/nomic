@@ -6,9 +6,9 @@
 //! - `@file:<path>`：引用一个文件（相对 cwd 或绝对路径）
 //!
 //! `@` 本身不触发任何动作；补全弹层只负责填好标记文本。消息提交（Enter
-//! 发送）后，由 driver 在发送前调用 [`expand_mentions`] 把**有效**的标记
-//! 展开为对应内容，与用户其余输入一起交给模型；找不到 skill / 文件不可读
-//! 的标记**原样保留**，不阻断发送。
+//! 发送）后，由发送方（TUI driver / web prompt handler）在发送前调用
+//! [`expand_mentions`] 把**有效**的标记展开为对应内容，与用户其余输入
+//! 一起交给模型；找不到 skill / 文件不可读的标记**原样保留**，不阻断发送。
 //!
 //! 展开产出的块沿用既有契约：skill 用 [`nomic_skills::ActivatedSkill::prompt_tag`]
 //! 的 `<active_skill>` 标签（与 `--skill`、`skill:<name>` 同一格式），文件用
@@ -19,16 +19,16 @@ use std::path::{Path, PathBuf};
 use nomic_skills::SkillResolver;
 
 /// skill mention 前缀。
-pub(super) const SKILL_PREFIX: &str = "@skill:";
+pub const SKILL_PREFIX: &str = "@skill:";
 /// file mention 前缀。
-pub(super) const FILE_PREFIX: &str = "@file:";
+pub const FILE_PREFIX: &str = "@file:";
 
 /// 文件 mention 展开的体积上限（避免误提及超大文件撑爆上下文）。
 const MAX_FILE_MENTION_BYTES: u64 = 1 << 20;
 
 /// 光标位于文本末尾、文本以 `@` 收尾且 `@` 后无空白时，返回该 mention
 /// 片段（从 `@` 到末尾）。调用方再按片段内容决定是否弹出补全。
-pub(super) fn mention_fragment(text: &str) -> Option<&str> {
+pub fn mention_fragment(text: &str) -> Option<&str> {
     let at = text.rfind('@')?;
     if !is_mention_start(text, at) {
         return None;
@@ -41,7 +41,7 @@ pub(super) fn mention_fragment(text: &str) -> Option<&str> {
 }
 
 /// 展开文本中的全部有效 mention；无效标记原样保留。
-pub(super) fn expand_mentions(text: &str, skills: &SkillResolver, cwd: &Path) -> String {
+pub fn expand_mentions(text: &str, skills: &SkillResolver, cwd: &Path) -> String {
     let mut out = String::with_capacity(text.len());
     let mut index = 0;
     while index < text.len() {
@@ -67,7 +67,7 @@ pub(super) fn expand_mentions(text: &str, skills: &SkillResolver, cwd: &Path) ->
 ///
 /// `prefix` 可能带目录部分（如 `src/ma`）：按最后一个 `/` 拆成目录与文件名
 /// 前缀，只列出该目录下前缀匹配的文件；目录不存在或不可读时返回空。
-pub(super) fn file_mention_candidates(prefix: &str, cwd: &Path) -> Vec<String> {
+pub fn file_mention_candidates(prefix: &str, cwd: &Path) -> Vec<String> {
     let (dir_part, name_part) = match prefix.rfind('/') {
         Some(index) => (&prefix[..=index], &prefix[index + 1..]),
         None => ("", prefix),
@@ -101,7 +101,7 @@ pub(super) fn file_mention_candidates(prefix: &str, cwd: &Path) -> Vec<String> {
 }
 
 /// 从 `<file path="...">` 标签头提取 path 属性（chat 折叠展示用）。
-pub(super) fn file_block_path(block: &str) -> Option<&str> {
+pub fn file_block_path(block: &str) -> Option<&str> {
     let header = block.strip_prefix("<file ")?;
     let header = &header[..header.find('>')?];
     let needle = "path=\"";

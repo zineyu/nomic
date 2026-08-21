@@ -10,7 +10,7 @@ use nomic_skills::SkillScope;
 use unicode_width::UnicodeWidthStr;
 
 use super::{COMMANDS, Command, line_count_of};
-use crate::tui::mention;
+use crate::mention;
 
 /// 补全候选：内建命令、prompt template 或 `skill:` 后的 skill 名。
 #[derive(Debug)]

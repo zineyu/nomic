@@ -1,9 +1,10 @@
 //! 前端静态产物内嵌：编译期把 `web/dist`（Vite build 输出）打包进二进制
 //! （rust-embed），`--web` 直接伺服内嵌资源，SPA 未命中路径回退 `index.html`。
 //!
-//! 构建 nomic 前必须先在 `web/` 下 `npm run build`（`devenv.nix` 的
-//! `web-build`/`check` 已保证顺序）；产物缺失时此处编译报错——这是有意的
-//! 耦合：前端与后端强制同版本交付，发行包不再单独携带 `web/dist`。
+//! cargo 直接构建（devenv）前必须先在 `web/` 下 `npm run build`（`devenv.nix`
+//! 的 `web-build`/`check` 已保证顺序）；`nix build` 则由 flake.nix 在沙箱内
+//! 自行构建 `web/dist` 并注入。产物缺失时此处编译报错——这是有意的耦合：
+//! 前端与后端强制同版本交付，发行包不再单独携带 `web/dist`。
 
 use axum::body::Body;
 use axum::http::{StatusCode, header};

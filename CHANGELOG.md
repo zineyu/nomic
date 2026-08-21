@@ -6,6 +6,81 @@
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，
 由 [git-cliff](https://git-cliff.org) 从 conventional commits 自动生成。
 
+## [0.3.0] - 2026-08-21
+
+### 代码风格
+
+- **(web)** 聊天消息字号收细为 15px 并加宽消息间距
+
+### 修复
+
+- **(chat)** Preserve tool state in history and live updates
+- **(sec)** Upgrade h2 to 0.4.16 (RUSTSEC-2026-0258)
+- **(web)** Rail 徽标 nom 改回 n
+- **(web)** 消息正文与工具卡片统一 72ch 阅读宽度
+- **(web)** 助手消息复制按钮改为悬浮右下角，不再占用布局空间
+- **(web)** 用户消息与思考内容右缘对齐 72ch 阅读列
+- **(web)** 用户消息右缘对齐阅读列（去掉 ml-auto 导致的页面列偏移）
+- **(web)** Resolve check fallout from session_id event refactor
+- **(web)** ContextRing 运行中实时更新上下文用量
+
+### 其他
+
+- **(web)** 全面采用websocket通信
+
+### 文档
+
+- 同步 DESIGN.md 与 web 实现（深色 token、Inter Variable、组件定义）
+- **(readme)** 会话恢复措辞从 cwd 隔离更新为 workspace 归属
+
+### 新功能
+
+- **(web)** Nomic --web 内置 HTTP 服务（axum REST + SSE 流式 + 前端伺服）
+- **(web)** React + Vite + TailwindCSS + shadcn/ui 前端（web/）
+- **(web)** Revamp UI with highlighting and theme
+- Add DESIGN.md configuration for design system
+- **(web)** Kimi 风格布局重构（模型选择移入输入区 + Topbar/Rail）
+- **(web)** [**breaking**] 前端产物编译期内嵌进二进制（rust-embed）
+- Add session stats to status bar
+- **(reasoning)** Persist reasoning level across sessions
+- **(web)** 默认字体改为 Maple Mono（@fontsource/maple-mono）
+- **(web)** 助手消息支持复制与失败重试
+- **(session)** Config 表支持会话级隔离（session_id 列 + 会话级读写 API）
+- **(web)** 多 session 并行（SessionRuntime 注册表 + 会话级路由与模型持久化）
+- **(session)** Workspace 成为一等实体，session 按 workspace 归属
+- **(cli)** Session 操作以 workspace 路径为基准端到端接线
+- **(web)** 侧栏会话列表按 workspace 分组，组可折叠
+- **(session)** WorkspaceSummary 支持序列化
+- **(web)** Create_session 支持指定 workspace，新增 workspace 登记/查询事件
+- **(web)** 侧栏支持按组新建会话与添加工作区
+- **(web)** 重新设计 favicon 并统一替换 UI 图标
+- **(web)** 输入框支持 @skill:/@file: mention 与 /compact、/continue 命令
+- **(core)** Actor 之上新增 SessionRunner 收敛会话级串行 job 语义
+
+### 杂项
+
+- **(web)** Devenv 集成 node/web-check + 文档
+- **(deny)** Remove unused Unicode-DFS-2016 license allowance
+
+### 重构
+
+- **(web)** 侧栏改为简洁胶囊风格会话列表
+- **(web)** 移除侧栏 cwd 提示，将上下文用量移入输入框环形指示器
+- **(tui)** 模仿工具调用样式优化 thinking 块渲染
+- **(web)** 模仿工具调用样式优化 thinking 胶囊
+- **(web)** 前端设计对齐 DESIGN.md（Inter 字体、类型比例、token 化）
+- **(web)** 布局列宽收敛为 max-w-reading/max-w-page 设计 token（单一来源）
+- **(web)** Remove session id path parameter from websocket endpoint
+- **(web)** Extract handlers module and add session_id to all events
+- **(session)** Config 表方法拆分至独立模块
+- **(web)** Require explicit workspace for session creation, remove default session
+- **(cli)** Mention 模块移至 crate 根，供 TUI 与 Web 共享
+- **(chat)** Remove max-w-reading constraint from message components
+- **(cli)** 收敛三入口的 agent 工具配方到 agent_recipe 组装模块
+- **(ai)** ThinkingLevel 字符串映射收敛到 nomic-ai（FromStr/Display + off 共享 helper）
+- **(tui)** Driver 迁移到 core SessionRunner
+- **(web)** Session runner 迁移到 core SessionRunner
+- 在途提问生命周期提为共享 QuestionRegistry
 ## [0.2.0] - 2026-08-15
 
 ### 修复

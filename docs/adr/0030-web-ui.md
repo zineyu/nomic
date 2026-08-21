@@ -76,6 +76,22 @@ print/TUI 完全复用。前端产物编译期内嵌进二进制（见下），�
   构造新连接并分层 api_key，与 TUI `/models` 一致）；选择结果落库到会话级 config。
 - `POST /api/sessions/{id}/question/{qid}`：提交提问回答。
 
+### 演进：纯 WebSocket 事件流 + mention / 斜杠命令
+
+后续迭代中 REST 接口已全部移除，前后端通信统一为单条 `GET /ws` 双向事件流
+（查询类事件经 `request_id` 关联响应，命令类事件携带 `session_id` fire-and-forget）。
+在此之上补齐了与 TUI 对齐的输入能力：
+
+- **mention**：输入框 `@` 弹出补全（`@skill:<name>` / `@file:<path>`）。补全候选经
+  `list_skills`（进程级 skill 清单）与 `list_files`（按目标 session 的 workspace
+  前缀匹配）查询事件获取；发送时由服务端在 `prompt` handler 展开有效标记
+  （复用 TUI 的 `mention` 模块，相对路径以本 session 的 workspace 为基准），无效
+  标记原样发送。
+- **斜杠命令**：`/compact [聚焦指令]`、`/continue`（web 命令子集，语法带 `/`
+  前缀——Web 没有 TUI 的 NORMAL/COMMAND 模式区分）。命令与 prompt 经
+  `SessionJob` 共用 session 队列串行执行（运行中提交则排队），未知命令以 error
+  事件回执、不入队。
+
 ### 序列化
 
 `nomic-core` 的 `AgentEvent`、`ToolResult`、`ToolUpdate` 补 `Serialize` 派生

@@ -111,6 +111,16 @@ pub enum ServerEvent {
         request_id: String,
         workspaces: Vec<nomic_session::WorkspaceSummary>,
     },
+    /// skill 清单响应（`list_skills` 查询的回复；`@skill:` 补全用）
+    SkillsList {
+        request_id: String,
+        skills: Vec<api::SkillItem>,
+    },
+    /// 文件候选响应（`list_files` 查询的回复；`@file:` 补全用）
+    FilesList {
+        request_id: String,
+        files: Vec<String>,
+    },
 
     // ── 命令 ack 事件 ──────────────────────────────────────────────
     /// prompt 提交确认（`queued: true` 表示排队，`false` 表示立即运行）
@@ -141,6 +151,20 @@ pub struct PendingPrompt {
     pub images: Vec<ImageContent>,
 }
 
+/// session 串行执行的任务：常规 prompt 或斜杠命令（压缩 / 续跑）。
+///
+/// 命令与 prompt 共用同一队列（对齐 TUI driver 的串行 job 语义）：运行中
+/// 提交的命令排队，当前轮完成后按序执行，不与在途运行并发。
+#[derive(Debug)]
+pub enum SessionJob {
+    /// 常规 prompt（mention 已展开）
+    Prompt(PendingPrompt),
+    /// `/compact [聚焦指令]`：手动压缩上下文
+    Compact { instructions: Option<String> },
+    /// `/continue`：续跑历史尾部消息
+    Continue,
+}
+
 /// 进行中的提问（应答表条目）：问题内容供状态快照重放（前端断线重连后
 /// 弹层恢复），oneshot 在回答到达时回填给 `ask_user_question` 工具。
 #[derive(Debug)]
@@ -156,7 +180,7 @@ pub struct PendingQuestion {
 /// 表示调用方应启动 runner（空闲时抢到标志）。
 #[derive(Debug)]
 pub struct RunGate {
-    queue: Mutex<VecDeque<PendingPrompt>>,
+    queue: Mutex<VecDeque<SessionJob>>,
     running: AtomicBool,
 }
 
@@ -169,10 +193,10 @@ impl RunGate {
         }
     }
 
-    /// 提交 prompt；返回 `true` 表示调用方应启动 runner 任务。
-    pub async fn submit(&self, prompt: PendingPrompt) -> bool {
+    /// 提交任务；返回 `true` 表示调用方应启动 runner 任务。
+    pub async fn submit(&self, job: SessionJob) -> bool {
         let mut queue = self.queue.lock().await;
-        queue.push_back(prompt);
+        queue.push_back(job);
         let was_running = self.running.load(Ordering::SeqCst);
         if !was_running {
             self.running.store(true, Ordering::SeqCst);
@@ -181,8 +205,8 @@ impl RunGate {
         !was_running
     }
 
-    /// 出队下一条 prompt；队列空时复位运行标志并返回 `None`（runner 应退出）。
-    pub async fn next(&self) -> Option<PendingPrompt> {
+    /// 出队下一个任务；队列空时复位运行标志并返回 `None`（runner 应退出）。
+    pub async fn next(&self) -> Option<SessionJob> {
         let mut queue = self.queue.lock().await;
         let next = queue.pop_front();
         if next.is_none() {
@@ -233,10 +257,10 @@ pub struct SessionRuntime {
 }
 
 impl SessionRuntime {
-    /// 提交 prompt；空闲时启动本 session 的 runner，运行中入队。
+    /// 提交任务；空闲时启动本 session 的 runner，运行中入队。
     /// 返回 `true` 表示本轮立即启动。
-    pub async fn submit_prompt(self: &Arc<Self>, text: String, images: Vec<ImageContent>) -> bool {
-        let started = self.gate.submit(PendingPrompt { text, images }).await;
+    pub async fn submit_job(self: &Arc<Self>, job: SessionJob) -> bool {
+        let started = self.gate.submit(job).await;
         if started {
             let session = self.clone();
             tokio::spawn(async move {
@@ -589,9 +613,11 @@ mod tests {
     #[tokio::test]
     async fn run_gate_queues_while_running_and_resets_when_empty() {
         let gate = RunGate::new();
-        let prompt = |text: &str| PendingPrompt {
-            text: text.to_string(),
-            images: Vec::new(),
+        let prompt = |text: &str| {
+            SessionJob::Prompt(PendingPrompt {
+                text: text.to_string(),
+                images: Vec::new(),
+            })
         };
 
         assert!(
@@ -605,14 +631,18 @@ mod tests {
         assert_eq!(gate.len().await, 2);
         assert!(gate.running());
 
-        assert_eq!(gate.next().await.expect("first").text, "first");
-        assert_eq!(gate.next().await.expect("second").text, "second");
+        let text_of = |job: SessionJob| match job {
+            SessionJob::Prompt(prompt) => prompt.text,
+            _ => panic!("应为 Prompt 任务"),
+        };
+        assert_eq!(text_of(gate.next().await.expect("first")), "first");
+        assert_eq!(text_of(gate.next().await.expect("second")), "second");
         assert!(gate.next().await.is_none(), "队列空应复位运行标志");
         assert!(!gate.running());
 
         // 复位后再次提交重新启动（空队列与复位之间不丢单）
         assert!(gate.submit(prompt("third")).await);
-        assert_eq!(gate.next().await.expect("third").text, "third");
+        assert_eq!(text_of(gate.next().await.expect("third")), "third");
     }
 
     #[tokio::test]

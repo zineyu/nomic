@@ -189,6 +189,8 @@ export type ServerEvent =
   | { type: 'models_list'; request_id: string; candidates: ModelChoice[] }
   | { type: 'sessions_list'; request_id: string; sessions: SessionSummary[] }
   | { type: 'workspaces_list'; request_id: string; workspaces: WorkspaceSummary[] }
+  | { type: 'skills_list'; request_id: string; skills: SkillSummary[] }
+  | { type: 'files_list'; request_id: string; files: string[] }
   // ── 命令 ack 事件
   | { type: 'prompt_ack'; session_id: string; queued: boolean }
   | { type: 'cancel_ack'; session_id: string }
@@ -204,6 +206,8 @@ export type ClientEvent =
   | { type: 'list_models'; request_id: string }
   | { type: 'list_sessions'; request_id: string }
   | { type: 'list_workspaces'; request_id: string }
+  | { type: 'list_skills'; request_id: string }
+  | { type: 'list_files'; session_id: string; prefix: string; request_id: string }
   // ── 命令类（fire-and-forget，由后续 ServerEvent 驱动状态）
   | { type: 'prompt'; session_id: string; text: string; images?: ImageContent[] }
   | { type: 'cancel'; session_id: string }
@@ -254,6 +258,12 @@ export interface WorkspaceSummary {
   path: string
   session_count: number
   last_active_at: number | null
+}
+
+/** skill 清单条目（list_skills 响应；`@skill:` 补全弹层展示用） */
+export interface SkillSummary {
+  name: string
+  description: string
 }
 
 /** 会话统计信息（从会话快照返回） */

@@ -69,27 +69,118 @@ pub async fn handle_list_workspaces(state: &AppState, request_id: &str) -> Serve
     }
 }
 
+/// skill 清单（`@skill:` 补全用；进程级 skill 解析器快照，与 TUI 补全同一来源）。
+pub fn handle_list_skills(state: &AppState, request_id: &str) -> ServerEvent {
+    let skills = state
+        .inner
+        .factory
+        .skill_resolver
+        .catalog()
+        .into_iter()
+        .map(|skill| SkillItem {
+            name: skill.name,
+            description: skill.document.description,
+        })
+        .collect();
+    ServerEvent::SkillsList {
+        request_id: request_id.to_string(),
+        skills,
+    }
+}
+
+/// 文件候选（`@file:` 补全用；相对目标 session 的 workspace 前缀匹配）。
+/// 最多返回 [`MAX_FILE_CANDIDATES`] 条，避免大目录撑爆事件负载。
+pub async fn handle_list_files(
+    state: &AppState,
+    session_id: &str,
+    prefix: &str,
+    request_id: &str,
+) -> ServerEvent {
+    let session = match open_session(state, session_id).await {
+        Ok(session) => session,
+        Err(error) => return error.to_ws_response(Some(request_id)),
+    };
+    let mut files = crate::mention::file_mention_candidates(prefix, &session.workspace);
+    files.truncate(MAX_FILE_CANDIDATES);
+    ServerEvent::FilesList {
+        request_id: request_id.to_string(),
+        files,
+    }
+}
+
+/// `@file:` 补全候选的返回上限（大目录如 `target/` 单层也有数百文件）。
+const MAX_FILE_CANDIDATES: usize = 100;
+
 // ── 命令类 handler（返回 ack ServerEvent）─────────────────────────────────
 
 /// 提交 prompt（空闲即跑，运行中入队）；返回 ack 携带排队状态。
+///
+/// `/` 开头的输入按斜杠命令解析（`/compact [聚焦指令]`、`/continue`），
+/// 与 prompt 共用同一队列串行执行；其余文本在提交前展开有效
+/// `@skill:` / `@file:` mention（相对本 session 的 workspace），无效标记原样
+/// 保留——与 TUI driver 同一口径。
 pub async fn handle_prompt(
     state: &AppState,
     session_id: &str,
     text: String,
     images: Vec<nomic_ai::ImageContent>,
 ) -> ServerEvent {
-    if text.trim().is_empty() {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
         return ApiError::BadRequest("prompt 为空".to_string()).to_ws_response(None);
     }
     let session = match open_session(state, session_id).await {
         Ok(s) => s,
         Err(error) => return error.to_ws_response(None),
     };
+    let job = if let Some(rest) = trimmed.strip_prefix('/') {
+        match parse_slash_command(rest) {
+            Ok(job) => job,
+            Err(error) => return error.to_ws_response(None),
+        }
+    } else {
+        // 发送前展开有效 `@skill:` / `@file:` mention；无效标记原样保留
+        let expanded = crate::mention::expand_mentions(
+            trimmed,
+            &state.inner.factory.skill_resolver,
+            &session.workspace,
+        );
+        crate::web::SessionJob::Prompt(crate::web::PendingPrompt {
+            text: expanded,
+            images,
+        })
+    };
     let was_running = session.gate.running();
-    let started = session.submit_prompt(text, images).await;
+    let started = session.submit_job(job).await;
     ServerEvent::PromptAck {
         session_id: session_id.to_string(),
         queued: was_running || !started,
+    }
+}
+
+/// 解析斜杠命令体（已去掉前导 `/`）；未知命令或参数非法时返回带用法
+/// 提示的错误。web 支持的命令子集：`/compact [聚焦指令]`、`/continue`。
+fn parse_slash_command(rest: &str) -> Result<crate::web::SessionJob, ApiError> {
+    const USAGE: &str = "可用命令：/compact [聚焦指令]（压缩上下文）、/continue（续跑上次运行）";
+    // 命令名取到首个 `:` 或空白为止；其余部分为参数（`compact 指令` 与
+    // `compact:指令` 两种形式等价，冒号形式与 TUI 命令语法对齐）
+    let (name, arg) = match rest.find(|c: char| c == ':' || c.is_whitespace()) {
+        Some(index) => {
+            let (name, tail) = rest.split_at(index);
+            let delimiter = tail.chars().next().expect("find 命中必有字符");
+            (
+                name,
+                Some(tail[delimiter.len_utf8()..].trim()).filter(|arg| !arg.is_empty()),
+            )
+        }
+        None => (rest, None),
+    };
+    match name {
+        "compact" => Ok(crate::web::SessionJob::Compact {
+            instructions: arg.map(str::to_string),
+        }),
+        "continue" if arg.is_none() => Ok(crate::web::SessionJob::Continue),
+        _ => Err(ApiError::BadRequest(format!("未知命令 /{rest}。{USAGE}"))),
     }
 }
 
@@ -256,6 +347,13 @@ pub async fn handle_create_workspace(
 
 // ── 共享类型 ──────────────────────────────────────────────────────────────
 
+/// skill 清单条目（`list_skills` 响应；`@skill:` 补全弹层展示用）。
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillItem {
+    pub name: String,
+    pub description: String,
+}
+
 /// 会话快照视图（WebSocket 响应携带，前端用于初始化/刷新状态）。
 #[derive(Debug, Clone, Serialize)]
 pub struct SnapshotView {
@@ -372,5 +470,143 @@ fn parse_thinking_level(level: &str) -> Result<Option<ThinkingLevel>, ApiError> 
         _ => Err(ApiError::BadRequest(format!(
             "--reasoning 取值非法：{level:?}（可选 minimal / low / medium / high / off）"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_slash_command_compact_and_continue() {
+        assert!(matches!(
+            parse_slash_command("compact").expect("compact"),
+            crate::web::SessionJob::Compact { instructions: None }
+        ));
+        // 自由文本指令（空格形式）
+        let Ok(crate::web::SessionJob::Compact {
+            instructions: Some(instructions),
+        }) = parse_slash_command("compact 专注 测试 部分")
+        else {
+            panic!("compact 带指令应解析成功");
+        };
+        assert_eq!(instructions, "专注 测试 部分");
+        // 冒号形式（与 TUI 命令语法对齐）
+        let Ok(crate::web::SessionJob::Compact {
+            instructions: Some(instructions),
+        }) = parse_slash_command("compact:focus on tests")
+        else {
+            panic!("compact:指令 应解析成功");
+        };
+        assert_eq!(instructions, "focus on tests");
+        assert!(matches!(
+            parse_slash_command("continue").expect("continue"),
+            crate::web::SessionJob::Continue
+        ));
+    }
+
+    #[test]
+    fn parse_slash_command_rejects_unknown_and_invalid_usage() {
+        let Err(ApiError::BadRequest(message)) = parse_slash_command("quit") else {
+            panic!("未知命令应报错");
+        };
+        assert!(message.contains("/compact"), "{message}");
+        assert!(message.contains("/continue"), "{message}");
+        // continue 不接受参数
+        assert!(parse_slash_command("continue extra").is_err());
+        // 空命令名
+        assert!(parse_slash_command("").is_err());
+    }
+
+    /// `list_files` 以目标 session 的 workspace 为基准做前缀匹配（测试
+    /// session 的 workspace 是 crate 根目录）。
+    #[tokio::test]
+    async fn list_files_matches_prefix_under_session_workspace() {
+        let (state, session_id) = crate::web::tests::test_state_with_session().await;
+
+        let event = handle_list_files(&state, &session_id, "src/mai", "r1").await;
+        let ServerEvent::FilesList { request_id, files } = event else {
+            panic!("应返回 FilesList");
+        };
+        assert_eq!(request_id, "r1");
+        assert!(files.contains(&"src/main.rs".to_string()), "{files:?}");
+
+        // 未命中前缀返回空列表
+        let event = handle_list_files(&state, &session_id, "src/no-such-file", "r2").await;
+        let ServerEvent::FilesList { files, .. } = event else {
+            panic!("应返回 FilesList");
+        };
+        assert!(files.is_empty(), "{files:?}");
+    }
+
+    /// `list_skills` 返回进程级 skill 清单（测试环境无 skill，为空列表）。
+    #[tokio::test]
+    async fn list_skills_roundtrip() {
+        let state = crate::web::tests::test_state().await;
+        let event = handle_list_skills(&state, "r3");
+        let ServerEvent::SkillsList { request_id, skills } = event else {
+            panic!("应返回 SkillsList");
+        };
+        assert_eq!(request_id, "r3");
+        assert!(skills.is_empty());
+    }
+
+    /// `/` 命令与 prompt 共用同一队列：运行中提交的命令应排队而非并发执行。
+    #[tokio::test]
+    async fn slash_command_jobs_share_prompt_queue() {
+        let (state, session_id) = crate::web::tests::test_state_with_session().await;
+        let session = state
+            .inner
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .expect("session")
+            .clone();
+
+        // 直接入队两个任务模拟「运行中提交命令」（不启动 runner：
+        // 第一个任务由 gate 抢占标志但未 spawn）
+        assert!(
+            session
+                .submit_job(crate::web::SessionJob::Prompt(crate::web::PendingPrompt {
+                    text: "hi".to_string(),
+                    images: Vec::new(),
+                }))
+                .await
+        );
+        let ack = handle_prompt(&state, &session_id, "/continue".to_string(), Vec::new()).await;
+        let ServerEvent::PromptAck { queued, .. } = ack else {
+            panic!("应返回 PromptAck");
+        };
+        assert!(queued, "运行中提交命令应排队");
+        assert_eq!(session.gate.len().await, 2);
+        assert!(matches!(
+            session.gate.next().await,
+            Some(crate::web::SessionJob::Prompt(_))
+        ));
+        assert!(matches!(
+            session.gate.next().await,
+            Some(crate::web::SessionJob::Continue)
+        ));
+    }
+
+    /// 未知斜杠命令不应进入队列，直接回错误事件。
+    #[tokio::test]
+    async fn unknown_slash_command_is_rejected() {
+        let (state, session_id) = crate::web::tests::test_state_with_session().await;
+        let event = handle_prompt(&state, &session_id, "/quit".to_string(), Vec::new()).await;
+        let ServerEvent::Error { message, .. } = event else {
+            panic!("未知命令应返回 error 事件");
+        };
+        assert!(message.contains("未知命令"), "{message}");
+        let session = state
+            .inner
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        assert_eq!(session.gate.len().await, 0, "未知命令不应入队");
     }
 }

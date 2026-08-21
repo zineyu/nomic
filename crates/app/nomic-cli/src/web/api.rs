@@ -32,7 +32,7 @@ use crate::web::{AppState, ServerEvent, assets};
 
 mod handlers;
 
-pub use handlers::SnapshotView;
+pub use handlers::{SkillItem, SnapshotView};
 
 // ── 客户端事件 ────────────────────────────────────────────────────────────
 
@@ -56,6 +56,14 @@ pub enum ClientEvent {
     ListSessions { request_id: String },
     /// 列出全部 workspace 摘要。
     ListWorkspaces { request_id: String },
+    /// 查询 skill 清单（`@skill:` 补全用；进程级 skill 解析器快照）。
+    ListSkills { request_id: String },
+    /// 查询文件候选（`@file:` 补全用；相对目标 session 的 workspace 前缀匹配）。
+    ListFiles {
+        session_id: String,
+        prefix: String,
+        request_id: String,
+    },
     /// 提交 prompt（空闲即跑，运行中入队）。
     Prompt {
         session_id: String,
@@ -263,6 +271,14 @@ async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
         ClientEvent::ListWorkspaces { request_id } => {
             Some(handlers::handle_list_workspaces(state, &request_id).await)
         }
+        ClientEvent::ListSkills { request_id } => {
+            Some(handlers::handle_list_skills(state, &request_id))
+        }
+        ClientEvent::ListFiles {
+            session_id,
+            prefix,
+            request_id,
+        } => Some(handlers::handle_list_files(state, &session_id, &prefix, &request_id).await),
 
         // ── 命令类（fire-and-forget，返回 ack 或由后续事件驱动）──
         ClientEvent::Prompt {

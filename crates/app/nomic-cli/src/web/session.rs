@@ -219,16 +219,13 @@ async fn forward_events(
     }
 }
 
-/// runner 任务：串行消费本 session 队列；每轮 prompt 带独立取消令牌，可被
-/// cancel 单独中断（中断后队列保留，恢复后继续下一轮）。
+/// runner 任务：串行消费本 session 队列；每个任务带独立取消令牌，可被
+/// cancel 单独中断（中断后队列保留，恢复后继续下一个）。
 pub async fn run_loop(session: &Arc<SessionRuntime>) {
-    while let Some(prompt) = session.gate.next().await {
+    while let Some(job) = session.gate.next().await {
         let cancel = CancellationToken::new();
         *session.cancel.lock().await = Some(cancel.clone());
-        let result = session
-            .handle
-            .prompt_with_images(&prompt.text, &prompt.images, cancel.clone())
-            .await;
+        let result = run_job(session, job, cancel).await;
         *session.cancel.lock().await = None;
         if let Err(error) = result {
             tracing::error!(%error, "agent run failed");
@@ -244,6 +241,71 @@ pub async fn run_loop(session: &Arc<SessionRuntime>) {
             });
         }
     }
+}
+
+/// 执行一个队列任务（prompt / 压缩 / 续跑）；命令的空结果按 TUI 口径
+/// 就地提示（不产生 agent 事件，需补一条通知）。
+async fn run_job(
+    session: &Arc<SessionRuntime>,
+    job: super::SessionJob,
+    cancel: CancellationToken,
+) -> Result<(), nomic_core::ActorError> {
+    match job {
+        super::SessionJob::Prompt(prompt) => session
+            .handle
+            .prompt_with_images(&prompt.text, &prompt.images, cancel)
+            .await
+            .map(|_| ()),
+        super::SessionJob::Compact { instructions } => {
+            // compact 不产生 AgentStart/End（仅 CompactionStart/End），
+            // 补发 RunStarted/RunFinished 驱动前端运行状态
+            let _ = session.events.send(ServerEvent::RunStarted {
+                session_id: session.id.clone(),
+            });
+            // 压缩成功经 CompactionStart/End 事件渲染与落库，无需额外处理
+            match session
+                .handle
+                .compact(instructions.as_deref(), cancel)
+                .await
+            {
+                Ok(Some(_)) => {
+                    let _ = session.events.send(ServerEvent::RunFinished {
+                        session_id: session.id.clone(),
+                    });
+                    Ok(())
+                }
+                Ok(None) => {
+                    let _ = session.events.send(ServerEvent::RunFinished {
+                        session_id: session.id.clone(),
+                    });
+                    notify(session, "上下文很短，没有可压缩的内容。");
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        }
+        super::SessionJob::Continue => {
+            // 续跑成功经事件流渲染与落库，无需额外处理
+            match session.handle.continue_run(cancel).await {
+                Ok(Some(_)) => Ok(()),
+                Ok(None) => {
+                    notify(session, "历史尾部没有可续跑的消息。");
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        }
+    }
+}
+
+/// 队列任务的就地提示（命令空结果等不产生 agent 事件的场景）：经 error
+/// 事件送达前端错误条，不影响运行状态（ runner 继续消费队列）。
+fn notify(session: &Arc<SessionRuntime>, message: &str) {
+    let _ = session.events.send(ServerEvent::Error {
+        session_id: Some(session.id.clone()),
+        request_id: None,
+        message: message.to_string(),
+    });
 }
 
 /// 当前状态快照的各部分（api 层拼装成响应）。

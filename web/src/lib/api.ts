@@ -19,6 +19,7 @@ import type {
   ModelChoice,
   ServerEvent,
   SessionSummary,
+  SkillSummary,
   SnapshotView,
   WorkspaceSummary,
 } from './types'
@@ -30,6 +31,8 @@ type QueryEventInput =
   | { type: 'list_models' }
   | { type: 'list_sessions' }
   | { type: 'list_workspaces' }
+  | { type: 'list_skills' }
+  | { type: 'list_files'; session_id: string; prefix: string }
   | { type: 'create_workspace'; path: string }
 
 class WsClient {
@@ -226,6 +229,16 @@ export const api = {
   /** 登记新 workspace（查询式命令；目录不存在时 reject 服务端错误消息）。 */
   createWorkspace: (path: string) =>
     client.request<{ id: string; path: string }>({ type: 'create_workspace', path }),
+
+  /** skill 清单（`@skill:` 补全用；进程级解析器快照）。 */
+  skills: () =>
+    client.request<{ skills: SkillSummary[] }>({ type: 'list_skills' }).then((r) => r.skills),
+
+  /** 文件候选（`@file:` 补全用；相对目标 session 的 workspace 前缀匹配）。 */
+  files: (sessionId: string, prefix: string) =>
+    client
+      .request<{ files: string[] }>({ type: 'list_files', session_id: sessionId, prefix })
+      .then((r) => r.files),
 
   /** 新建 session（命令类，等待 session_created 事件确认）。
       必须指定归属目录 `workspace`（无默认 workspace；不存在则报错）。 */

@@ -190,6 +190,10 @@ nomic --cwd /path/to/project
   与 TUI/print 共用）
 - **模型选择**：跨 provider 候选列表 + 思考级别；切换结果落库，与 TUI `/models` 同一口径
 - **提问**：`ask_user_question` 以弹层呈现（单选/多选/填空 + 自定义填写）
+- **mention 与命令**：输入 `@` 弹出行内补全（`@skill:` 引用 skill、`@file:` 引用
+  当前 session workspace 内的文件，发送时由服务端展开有效标记，与 TUI 同一口径）；
+  输入 `/` 弹出命令补全——`/compact [聚焦指令]` 压缩上下文、`/continue` 续跑上次
+  运行（命令与 prompt 共用同一队列串行执行）
 
 ```bash
 nomic --web [--port N] [--host H]

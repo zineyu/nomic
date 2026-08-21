@@ -140,6 +140,7 @@ export function ChatView({
         reasoning={reasoning}
         contextTokens={contextTokens}
         contextWindow={model?.context_window ?? null}
+        sessionId={sessionId}
         sendDisabled={startPage && !startWorkspace}
         placeholder={
           startPage && !startWorkspace ? '先选择工作区，再给智能体发消息' : undefined

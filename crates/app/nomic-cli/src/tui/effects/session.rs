@@ -7,13 +7,11 @@
 //! 切换收在本模块的 effect 函数里。
 
 use anyhow::{Context as _, Result};
-use nomic_core::AgentEvent;
+use nomic_core::{AgentEvent, AgentHandle};
 use nomic_session::{SessionError, SessionRecorder, SessionStore, TreeEntry};
 use nomic_tools::BaseDir;
-use tokio::sync::mpsc;
 
 use crate::tui::app::{App, PickerRow};
-use crate::tui::driver::DriverJob;
 
 /// 会话落库绑定：recorder（store、目标 session、父指针）与当前 session 的
 /// 操作基准（workspace 严格归属；与工具共享同一句柄，`set` 后下一次工具
@@ -76,7 +74,8 @@ pub(in crate::tui) async fn list_sessions(app: &mut App, session: &SessionBindin
     }
 }
 
-/// `new`：driver 串行清空上下文；本地重置聊天区并新建 session。
+/// `new`：actor 邮箱串行清空上下文（fire-and-forget，紧随的 prompt 一定
+/// 排在清空之后）；本地重置聊天区并新建 session。
 ///
 /// 新 session 归属当前操作基准的 workspace（严格归属：用户在哪个
 /// workspace 的上下文里操作，新 session 就属于哪个 workspace）；基准
@@ -84,10 +83,10 @@ pub(in crate::tui) async fn list_sessions(app: &mut App, session: &SessionBindin
 pub(in crate::tui) async fn new_session(
     app: &mut App,
     session: &mut SessionBinding,
-    job_tx: &mpsc::UnboundedSender<DriverJob>,
+    handle: &AgentHandle,
 ) {
-    // driver 串行处理任务；命令仅在空闲时可提交，无需排队等待
-    let _ = job_tx.send(DriverJob::Clear);
+    // 命令仅在空闲时可提交，无需排队等待
+    let _ = handle.clear_messages();
     app.start_new_conversation();
     // 先取基准快照以结束对 session 的借用（await 后要换绑 recorder）
     let base = session.base_dir();
@@ -137,7 +136,7 @@ pub(in crate::tui) async fn list_tree(app: &mut App, session: &SessionBinding) {
 pub(in crate::tui) async fn branch_to(
     app: &mut App,
     session: &mut SessionBinding,
-    job_tx: &mpsc::UnboundedSender<DriverJob>,
+    handle: &AgentHandle,
     entry_id: String,
 ) {
     let Some(recorder) = &session.recorder else {
@@ -154,8 +153,8 @@ pub(in crate::tui) async fn branch_to(
     match store.load_branch(&session_id, &entry_id).await {
         Err(error) => app.warn(format!("切换分支失败：{error}")),
         Ok(messages) => {
-            // driver 串行处理任务：紧随其后的 prompt 一定排在 Restore 之后
-            if job_tx.send(DriverJob::Restore(messages.clone())).is_err() {
+            // actor 邮箱 FIFO：紧随其后的 prompt 一定排在 Restore 之后
+            if handle.restore_messages(messages.clone()).is_err() {
                 app.warn("内部错误：agent 任务已退出，无法切换分支");
                 return;
             }
@@ -346,7 +345,7 @@ async fn session_store(recorder: Option<&SessionRecorder>) -> Result<SessionStor
 pub(in crate::tui) async fn resume_session(
     app: &mut App,
     session: &mut SessionBinding,
-    job_tx: &mpsc::UnboundedSender<DriverJob>,
+    handle: &AgentHandle,
     id: String,
 ) {
     let loaded = async {
@@ -369,9 +368,9 @@ pub(in crate::tui) async fn resume_session(
     match loaded {
         Err(error) => app.warn(format!("恢复 session 失败：{error:#}")),
         Ok((store, messages, tip, workspace)) => {
-            // driver 串行处理任务：紧随其后的 prompt 一定排在 Restore 之后，
+            // actor 邮箱 FIFO：紧随其后的 prompt 一定排在 Restore 之后，
             // 不会出现「新 prompt 跑在旧上下文」的交错
-            let _ = job_tx.send(DriverJob::Restore(messages.clone()));
+            let _ = handle.restore_messages(messages.clone());
             app.restore_conversation(&messages, id.clone());
             // workspace 严格归属：操作基准（工具相对路径、mention 展开）切到
             // 所恢复 session 的 workspace；句柄与工具共享，下一次执行即生效
@@ -430,12 +429,16 @@ mod tests {
         let mut binding =
             SessionBinding::new(Some(SessionRecorder::new(store, session_a)), base.clone());
         let mut app = App::new("test-model".to_string(), None, 200_000);
-        let (job_tx, mut job_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = crate::tui::driver::dummy_handle();
 
-        super::resume_session(&mut app, &mut binding, &job_tx, session_b.clone()).await;
+        super::resume_session(&mut app, &mut binding, &handle, session_b.clone()).await;
 
-        // Restore 任务已排队（driver 串行消费）
-        assert!(job_rx.try_recv().is_ok(), "应发送 Restore job");
+        // Restore 已经 actor 邮箱 FIFO 生效（紧随的查询一定看到）
+        assert_eq!(
+            handle.messages().await.expect("查询应成功").len(),
+            1,
+            "恢复的上下文应替换进 agent"
+        );
         assert_eq!(
             binding.recorder.as_ref().expect("recorder").session_id(),
             session_b,
@@ -459,11 +462,15 @@ mod tests {
         let mut binding =
             SessionBinding::new(Some(SessionRecorder::new(store, session_a)), base.clone());
         let mut app = App::new("test-model".to_string(), None, 200_000);
-        let (job_tx, mut job_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = crate::tui::driver::dummy_handle();
 
-        super::new_session(&mut app, &mut binding, &job_tx).await;
+        super::new_session(&mut app, &mut binding, &handle).await;
 
-        assert!(job_rx.try_recv().is_ok(), "应发送 Clear job");
+        // Clear 已经 actor 邮箱 FIFO 生效（紧随的查询一定看到）
+        assert!(
+            handle.messages().await.expect("查询应成功").is_empty(),
+            "上下文应已清空"
+        );
         let new_id = binding.recorder.as_ref().expect("recorder").session_id();
         let workspace = binding
             .recorder

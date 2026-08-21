@@ -6,12 +6,11 @@
 //! 选择器行构建/预选、app 状态栏更新与选择落库接线。
 
 use nomic_ai::ThinkingLevel;
-use tokio::sync::mpsc;
+use nomic_core::AgentHandle;
 
 use super::session::SessionBinding;
 use crate::model::{self, ModelChoice, ModelSelection};
 use crate::tui::app::{App, PickerRow};
-use crate::tui::driver::DriverJob;
 use crate::tui::widgets;
 
 mod switch;
@@ -47,11 +46,11 @@ pub(in crate::tui) fn list_models(app: &mut App, switcher: &ModelSwitcher) {
 pub(in crate::tui) fn select_model(
     app: &mut App,
     switcher: &mut ModelSwitcher,
-    job_tx: &mpsc::UnboundedSender<DriverJob>,
+    handle: &AgentHandle,
     session: &SessionBinding,
     id: &str,
 ) {
-    match switcher.select(id, job_tx) {
+    match switcher.select(id, handle) {
         Select::AwaitLevel => open_reasoning_picker(app, switcher.reasoning()),
         Select::Switched { notice, persist } => {
             persist_model_selection(session, persist);
@@ -68,7 +67,7 @@ pub(in crate::tui) fn select_model(
 pub(in crate::tui) fn set_reasoning(
     app: &mut App,
     switcher: &mut ModelSwitcher,
-    job_tx: &mpsc::UnboundedSender<DriverJob>,
+    handle: &AgentHandle,
     session: &SessionBinding,
     word: &str,
 ) {
@@ -80,7 +79,7 @@ pub(in crate::tui) fn set_reasoning(
             return;
         }
     };
-    match switcher.confirm_level(level, job_tx) {
+    match switcher.confirm_level(level, handle) {
         Confirm::Done { notice, persist } => {
             if let Some(spec) = persist {
                 persist_model_selection(session, spec);

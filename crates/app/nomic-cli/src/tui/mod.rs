@@ -64,7 +64,7 @@ use ask::{PendingQuestion, TuiQuestionSink};
 use driver::{handle_wake, next_wake, spawn_driver};
 use terminal::{TerminalGuard, block_cursor, set_cursor_style};
 
-use crate::{Cli, bootstrap};
+use crate::{Cli, agent_recipe, bootstrap};
 
 type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
@@ -113,45 +113,29 @@ pub async fn run(cli: &Cli) -> Result<()> {
     let (question_tx, mut question_rx) = mpsc::unbounded_channel::<PendingQuestion>();
     let question_sink: std::sync::Arc<dyn QuestionSink> =
         std::sync::Arc::new(TuiQuestionSink::new(question_tx));
-    let (agent, mut events) = Agent::builder()
-        .model(boot.model.clone())
-        .provider(boot.provider.clone())
-        .system_prompt(boot.system_prompt)
-        .tools({
-            // 子 agent 可用的工具池（基础工具，不含管理工具本身；与主 agent
-            // 共享同一基准句柄，随 session workspace 一并切换）
-            let child_tools = nomic_tools::default_tools_with_skills_in_shared(
-                &base_dir,
-                boot.skill_resolver.clone(),
-                todo_store.clone(),
-                question_sink.clone(),
-            );
-            // supervisor 管理子 agent 生命周期
-            let supervisor = std::sync::Arc::new(nomic_core::AgentSupervisor::new(
-                boot.provider.clone(),
-                boot.available_models,
-                nomic_core::SupervisorConfig::default(),
-            ));
-            // 主 agent 工具 = 基础工具 + 多 agent 管理工具
-            let mut tools = nomic_tools::default_tools_with_skills_in_shared(
-                &base_dir,
-                boot.skill_resolver,
-                todo_store.clone(),
-                question_sink,
-            );
-            tools.extend(nomic_tools::multi_agent::multi_agent_tools(
-                supervisor,
-                child_tools,
-            ));
-            tools
-        })
+    // 工具配方（组装收在 agent_recipe 模块）：TUI 的差异点——todo 清单
+    // 主/子共享（goal 模式与界面经同一句柄观察进度）、基准句柄共享
+    //（resume/new 切换 session 时原地生效）、提问走弹层通道、turn 注入
+    // 点接统一消息队列（ADR-0014，运行中 Enter 直推入队）
+    let recipe = agent_recipe::assemble(agent_recipe::RecipeOpts {
+        base: base_dir.clone(),
+        skill_resolver: boot.skill_resolver.clone(),
+        question_sink,
+        todo: agent_recipe::TodoPolicy::Shared(todo_store.clone()),
+        provider: boot.provider.clone(),
+        available_models: boot.available_models,
+        turn_injection: Some(app.queue().handle()),
+    });
+    let (agent, mut events) = recipe
+        .apply(
+            Agent::builder()
+                .model(boot.model.clone())
+                .provider(boot.provider.clone())
+                .system_prompt(boot.system_prompt),
+        )
         .messages(boot.history)
         .stream_options(boot.stream_options)
         .compaction(boot.compaction)
-        // 统一消息队列（ADR-0014）：TUI 自持队列，实现 core 的注入点
-        // （TurnInjection），运行中 Enter 直推入队，core 在 turn 边界经
-        // 注入点弹出注入（不经 driver job 通道）
-        .turn_injection(app.queue().handle())
         .build();
 
     // 落库器：恢复的 session 父指针从默认分支末端起算（分支场景下保证续写

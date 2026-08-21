@@ -15,7 +15,7 @@ use nomic_session::SessionRecorder;
 use nomic_tools::{AskUserAnswer, AskUserQuestion, CUSTOM_OPTION, QuestionKind, QuestionSink};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Cli, bootstrap};
+use crate::{Cli, agent_recipe, bootstrap};
 
 /// 运行 print 模式。
 pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
@@ -33,39 +33,25 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
         eprintln!("\x1b[2m{label}（{} 条历史消息）\x1b[0m", boot.history.len());
     }
 
-    let (agent, mut events) = Agent::builder()
-        .model(boot.model.clone())
-        .provider(boot.provider.clone())
-        .system_prompt(boot.system_prompt)
-        .tools({
-            // 工具相对路径以 session 的 workspace 为基准（严格归属）
-            let base = Some(boot.workspace.clone());
-            // 子 agent 可用的工具池（基础工具，不含管理工具本身）
-            let child_tools = nomic_tools::default_tools_with_skills_in(
-                base.clone(),
-                boot.skill_resolver.clone(),
-                nomic_tools::TodoStore::new(),
-                std::sync::Arc::new(StdinQuestionSink),
-            );
-            // supervisor 管理子 agent 生命周期
-            let supervisor = std::sync::Arc::new(nomic_core::AgentSupervisor::new(
-                boot.provider.clone(),
-                boot.available_models,
-                nomic_core::SupervisorConfig::default(),
-            ));
-            // 主 agent 工具 = 基础工具 + 多 agent 管理工具
-            let mut tools = nomic_tools::default_tools_with_skills_in(
-                base,
-                boot.skill_resolver,
-                nomic_tools::TodoStore::new(),
-                std::sync::Arc::new(StdinQuestionSink),
-            );
-            tools.extend(nomic_tools::multi_agent::multi_agent_tools(
-                supervisor,
-                child_tools,
-            ));
-            tools
-        })
+    // 工具配方（组装收在 agent_recipe 模块）：print 的差异点——主/子
+    // agent 各自独立的 todo 清单（非交互，无进度观察方）、提问走 stdin、
+    // 无 turn 注入点；工具相对路径以 session 的 workspace 为基准（严格归属）
+    let recipe = agent_recipe::assemble(agent_recipe::RecipeOpts {
+        base: nomic_tools::BaseDir::new(Some(boot.workspace.clone())),
+        skill_resolver: boot.skill_resolver.clone(),
+        question_sink: std::sync::Arc::new(StdinQuestionSink),
+        todo: agent_recipe::TodoPolicy::Isolated,
+        provider: boot.provider.clone(),
+        available_models: boot.available_models,
+        turn_injection: None,
+    });
+    let (agent, mut events) = recipe
+        .apply(
+            Agent::builder()
+                .model(boot.model.clone())
+                .provider(boot.provider.clone())
+                .system_prompt(boot.system_prompt),
+        )
         .messages(boot.history)
         .stream_options(boot.stream_options)
         .compaction(boot.compaction)

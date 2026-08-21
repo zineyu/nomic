@@ -11,7 +11,7 @@ use nomic_ai::{Message, Model, Provider, StreamOptions, ThinkingLevel};
 use nomic_core::{Agent, AgentEvent};
 use nomic_session::{SessionRecorder, SessionStore};
 use nomic_skills::SkillResolver;
-use nomic_tools::{AskUserQuestion, TodoStore};
+use nomic_tools::AskUserQuestion;
 use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -133,38 +133,25 @@ impl SessionFactory {
             events: events_tx.clone(),
             questions: questions.clone(),
         });
-        let (agent, events_rx) = Agent::builder()
-            .model(resolved.model)
-            .provider(resolved.provider.clone())
-            .system_prompt(self.system_prompt.clone())
-            .tools({
-                // 子 agent 可用的工具池（基础工具，不含管理工具本身）；
-                // 主/子 agent 工具都以本 session 的 workspace 为基准
-                let child_tools = nomic_tools::default_tools_with_skills_in(
-                    Some(workspace.clone()),
-                    self.skill_resolver.clone(),
-                    TodoStore::new(),
-                    sink.clone(),
-                );
-                // supervisor 管理子 agent 生命周期（per-session）
-                let supervisor = Arc::new(nomic_core::AgentSupervisor::new(
-                    resolved.provider,
-                    self.available_models.clone(),
-                    nomic_core::SupervisorConfig::default(),
-                ));
-                // 主 agent 工具 = 基础工具 + 多 agent 管理工具
-                let mut tools = nomic_tools::default_tools_with_skills_in(
-                    Some(workspace.clone()),
-                    self.skill_resolver.clone(),
-                    TodoStore::new(),
-                    sink,
-                );
-                tools.extend(nomic_tools::multi_agent::multi_agent_tools(
-                    supervisor,
-                    child_tools,
-                ));
-                tools
-            })
+        // 工具配方（组装收在 agent_recipe 模块）：web 的差异点——主/子
+        // agent 各自独立的 todo 清单、提问走事件总线、无 turn 注入点；
+        // 主/子 agent 工具都以本 session 的 workspace 为基准（严格归属）
+        let recipe = crate::agent_recipe::assemble(crate::agent_recipe::RecipeOpts {
+            base: nomic_tools::BaseDir::new(Some(workspace.clone())),
+            skill_resolver: self.skill_resolver.clone(),
+            question_sink: sink,
+            todo: crate::agent_recipe::TodoPolicy::Isolated,
+            provider: resolved.provider.clone(),
+            available_models: self.available_models.clone(),
+            turn_injection: None,
+        });
+        let (agent, events_rx) = recipe
+            .apply(
+                Agent::builder()
+                    .model(resolved.model)
+                    .provider(resolved.provider)
+                    .system_prompt(self.system_prompt.clone()),
+            )
             .messages(history)
             .stream_options(resolved.options)
             .compaction(self.compaction)

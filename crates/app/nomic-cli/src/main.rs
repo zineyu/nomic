@@ -5,9 +5,10 @@
 //! - 交互 TUI（缺省）：ratatui 全屏界面（见 docs/adr/0002）
 //!
 //! 本文件只做 CLI 解析与模式分发；共享的 provider/model/session 初始化在
-//! `bootstrap`，print 模式在 `print`，交互模式在 `tui`，session 管理子命令在
-//! `sessions`。
+//! `bootstrap`，主/子 agent 工具配方组装在 `agent_recipe`，print 模式在
+//! `print`，交互模式在 `tui`，session 管理子命令在 `sessions`。
 
+mod agent_recipe;
 mod bootstrap;
 mod clipboard;
 mod config;

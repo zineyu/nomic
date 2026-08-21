@@ -39,26 +39,43 @@ agent 运行中经常需要用户介入：决策（选哪个方案）、偏好�
 宿主并阻塞等待回答。宿主实现两个：
 
 - **TUI**（`tui/ask.rs`）：一条独立 mpsc 通道直连 agent 任务与事件循环
-  ——工具把问题连同 `oneshot::Sender<AskUserAnswer>` 推入通道，事件循环
-  在 `next_wake` 新增的 `Wake::UserQuestion` 分支收到后打开提问弹层
-  （模态覆盖层，`Mode::Question` 派生态），用户作答后经 oneshot 回传。
-  回答通道暂存在 `Driver.pending_question`（状态层不持有外部资源，
-  沿用 Effect 接线模式）。
+  ——工具先在共享注册表（见「修订」）登记问题拿到 id，把 id 连同问题
+  推入通道，事件循环在 `next_wake` 新增的 `Wake::UserQuestion` 分支收到
+  后打开提问弹层（模态覆盖层，`Mode::Question` 派生态），用户作答 / 取消
+  时凭 id 回调注册表（应答回填 / 丢弃）。问题 id 暂存在
+  `Driver.pending_question`（状态层不持有外部资源，沿用 Effect 接线模式）。
 - **print**（`print.rs`）：问题与编号选项渲染到 stderr（stdout 保持流式
   输出纯净），回答从 stdin 读取；编号选择，非编号文本视为自定义答案，
   自定义选项（末位）选中后二次输入文本。
 
 ### 取消与生命周期
 
-- 弹层 Esc：关闭弹层并丢弃回答通道 → 工具侧收到通道关闭转为错误结果
-  回喂模型（模型可重试或改道）。
-- 运行中断（NORMAL `q` / Ctrl+C）：`Effect::Cancel` 取消令牌并丢弃回答
-  通道，`TuiQuestionSink::ask` 的 `tokio::select!` 中取消分支先就绪返回
-  错误，工具不挂起。
+- 弹层 Esc：关闭弹层并丢弃注册表条目 → 回答通道关闭，工具侧收到通道
+  关闭转为错误结果回喂模型（模型可重试或改道）。
+- 运行中断（NORMAL `q` / Ctrl+C）：`Effect::Cancel` 取消令牌并丢弃
+  注册表条目，`TuiQuestionSink::ask` 的 `tokio::select!` 中取消分支先
+  就绪返回错误，工具不挂起。
 - 运行结束（含失败）：`App::finish_run` 兜底关闭弹层；`submit_prompt`
-  丢弃上一轮残留通道（防御）。
+  丢弃上一轮残留条目（防御）。
 - 同一时刻至多一个提问在途（Sequential 保证），弹层状态是单值
   `App.question: Option<Question>`。
+
+## 修订（2026-08-21）：在途提问生命周期提为共享 `QuestionRegistry`
+
+「登记 → 应答回填 / 取消丢弃 → 当前快照」这套生命周期原本在 TUI
+（`Driver.pending_question` + 弹层状态机）与 web（应答表 + 快照重放）
+各自实现，取消语义（`Effect::Cancel` 清 pending vs web `cancel_run`
+不碰应答表）开始分叉。提取为 nomic-tools 的共享模块
+`QuestionRegistry`（`register` / `answer` / `discard` / `current`）：
+
+- 取消语义唯一口径：无论取消来自工具侧 cancel 令牌还是 UI 侧放弃，
+  都是 `discard` 移除条目、回答通道关闭转为错误结果；两个方向重复
+  丢弃幂等。
+- UI 呈现仍留各 adapter：TUI 弹层状态机（`app/question.rs`）与 web 的
+  WebSocket 广播 / 断线重放（`Question` / `QuestionCancelled` 事件、
+  快照携带在途提问）不变。
+- TUI 的 mpsc 通道不再携带 `oneshot::Sender`，改传问题 id + 内容；
+  driver 暂存 id，作答 / 取消经 Effect 回调注册表。
 
 ### 弹层交互
 

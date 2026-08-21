@@ -3,7 +3,8 @@
 //! 八个工具：read/write/edit/bash 负责文件读写与命令执行，
 //! grep/find 提供 ripgrep/fd 语义的内容搜索与文件查找，
 //! todo_read/todo_write 提供带父子层级的任务清单（共享内存态 [`TodoStore`]），
-//! ask_user_question 经 [`QuestionSink`] 向用户提问（单选/多选/填空）。
+//! ask_user_question 经 [`QuestionSink`] 向用户提问（单选/多选/填空），
+//! 宿主侧的在途提问生命周期（登记/应答/丢弃/快照）收在 [`QuestionRegistry`]。
 //!
 //! 工具的输出格式与引导提示（截断翻页、diff 详情、错误文本）是与模型的
 //! 契约，忠实复刻 pi 的措辞以保证模型行为质量。
@@ -16,6 +17,7 @@ mod find;
 mod grep;
 pub mod multi_agent;
 mod mutation_queue;
+mod question_registry;
 mod read;
 mod todo;
 mod truncate;
@@ -31,6 +33,7 @@ pub use bash::BashTool;
 pub use edit::EditTool;
 pub use find::FindTool;
 pub use grep::GrepTool;
+pub use question_registry::QuestionRegistry;
 pub use read::ReadTool;
 pub use todo::{
     TodoItem, TodoItemInput, TodoReadTool, TodoStatus, TodoStore, TodoWriteParams, TodoWriteTool,

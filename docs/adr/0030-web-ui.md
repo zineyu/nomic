@@ -37,7 +37,8 @@ print/TUI 完全复用。前端产物编译期内嵌进二进制（见下），�
 - **进程级运行时 `Runtime`**：session 注册表（`id → SessionRuntime`）+ 共享
   `SessionStore` / `ModelResolver` / 停机令牌。每个 [`SessionRuntime`] 自持
   agent actor（ADR-0022）、`SessionRecorder`、broadcast 事件通道
-  （`tokio::sync::broadcast`）、提问应答表（question id → oneshot）、
+  （`tokio::sync::broadcast`）、提问注册表（nomic-tools `QuestionRegistry`，
+  ADR-0029 修订）、
   prompt 队列（`RunGate`）与取消令牌——多 session 的 runner 任务由 tokio
   多线程运行时天然并行，互不阻塞。
 - **事件转发**：每个 session 的 agent 事件接收端由专属任务持续消费——
@@ -48,9 +49,10 @@ print/TUI 完全复用。前端产物编译期内嵌进二进制（见下），�
   逐条消费。每条 prompt 附带独立 `CancellationToken`，`POST /api/sessions/{id}/cancel`
   取消当前轮。
 - **提问**：`ask_user_question` 经 `WebQuestionSink`（`QuestionSink` 实现）把
-  问题 id + 内容经 WebSocket 广播（`question` 事件），应答表登记 oneshot；
-  前端弹层回答后 `POST /api/sessions/{id}/question/{qid}` 经 oneshot 回填，
-  `cancel` 触发时询问立即返回错误。
+  问题 id + 内容经 WebSocket 广播（`question` 事件），在途提问登记在共享
+  `QuestionRegistry`（nomic-tools，与 TUI 同一实现，ADR-0029 修订）；
+  前端弹层回答后 `POST /api/sessions/{id}/question/{qid}` 经注册表回填，
+  `cancel` 触发时丢弃条目、询问立即返回错误。
 
 ### API（REST + WebSocket）
 

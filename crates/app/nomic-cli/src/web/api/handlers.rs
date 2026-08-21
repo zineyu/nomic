@@ -199,7 +199,7 @@ pub async fn handle_cancel(state: &AppState, session_id: &str) -> ServerEvent {
     }
 }
 
-/// 回答提问：回填 oneshot 通道。
+/// 回答提问：经注册表回填给等待中的工具。
 pub async fn handle_answer_question(
     state: &AppState,
     session_id: &str,
@@ -212,7 +212,7 @@ pub async fn handle_answer_question(
         Err(error) => return error.to_ws_response(None),
     };
     let answer = AskUserAnswer { answers, custom };
-    if session.answer_question(&qid, answer).await {
+    if session.answer_question(&qid, answer) {
         ServerEvent::AnswerAck {
             session_id: session_id.to_string(),
         }

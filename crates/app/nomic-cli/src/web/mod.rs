@@ -34,7 +34,7 @@ use anyhow::{Context as _, Result};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use nomic_core::{AgentEvent, SessionRunner};
 use nomic_session::{SessionRecorder, SessionStore};
-use nomic_tools::{AskUserAnswer, AskUserQuestion};
+use nomic_tools::{AskUserAnswer, AskUserQuestion, QuestionRegistry};
 use serde::Serialize;
 use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -143,16 +143,8 @@ pub enum ServerEvent {
     },
 }
 
-/// 进行中的提问（应答表条目）：问题内容供状态快照重放（前端断线重连后
-/// 弹层恢复），oneshot 在回答到达时回填给 `ask_user_question` 工具。
-#[derive(Debug)]
-pub struct PendingQuestion {
-    pub question: AskUserQuestion,
-    answer: oneshot::Sender<AskUserAnswer>,
-}
-
 /// 单个 session 的运行时：自持 agent actor、session runner（串行 job
-/// 队列与取消，ADR-0033）、事件广播、提问表与落库器。并行执行的单位。
+/// 队列与取消，ADR-0033）、事件广播、提问注册表与落库器。并行执行的单位。
 #[derive(Debug)]
 pub struct SessionRuntime {
     /// session id（registry 键；store 不可用时为临时 UUID）
@@ -166,8 +158,9 @@ pub struct SessionRuntime {
     /// run 类 job 的提交端（prompt / 压缩 / 续跑；串行消费、每 job 独立
     /// 取消令牌与生命周期翻译收在 core 的 runner）
     pub runner: SessionRunner,
-    /// 提问应答表（question id → 回答通道）
-    pub questions: Arc<Mutex<HashMap<String, PendingQuestion>>>,
+    /// 在途提问注册表（与工具侧 sink 共享，nomic-tools 统一实现）：
+    /// 应答回填 / 取消丢弃 / 断线重放快照的唯一口径
+    pub questions: Arc<QuestionRegistry>,
     /// 本 session 的操作基准（workspace 严格归属）：工具相对路径以它解析，
     /// 快照展示给用户
     pub workspace: PathBuf,
@@ -179,12 +172,9 @@ impl SessionRuntime {
         self.runner.cancel_current()
     }
 
-    /// 回答一个提问：从应答表取出通道并回填；提问不存在或已被取消返回 `false`。
-    pub async fn answer_question(&self, id: &str, answer: AskUserAnswer) -> bool {
-        let Some(pending) = self.questions.lock().await.remove(id) else {
-            return false;
-        };
-        pending.answer.send(answer).is_ok()
+    /// 回答一个提问：经注册表回填；提问不存在或已被取消返回 `false`。
+    pub fn answer_question(&self, id: &str, answer: AskUserAnswer) -> bool {
+        self.questions.answer(id, answer)
     }
 }
 
@@ -538,29 +528,22 @@ mod tests {
             .next()
             .expect("session")
             .clone();
-        let (tx, rx) = oneshot::channel();
-        session.questions.lock().await.insert(
-            "q1".to_string(),
-            PendingQuestion {
-                question: AskUserQuestion {
-                    question: "继续？".to_string(),
-                    kind: nomic_tools::QuestionKind::SingleChoice,
-                    options: vec!["是".to_string(), "否".to_string()],
-                },
-                answer: tx,
-            },
-        );
+        let (qid, rx) = session.questions.register(AskUserQuestion {
+            question: "继续？".to_string(),
+            kind: nomic_tools::QuestionKind::SingleChoice,
+            options: vec!["是".to_string(), "否".to_string()],
+        });
         let answer = AskUserAnswer {
             answers: vec!["是".to_string()],
             custom: None,
         };
-        assert!(session.answer_question("q1", answer.clone()).await);
+        assert!(session.answer_question(&qid, answer.clone()));
         assert_eq!(rx.await.expect("answer"), answer);
         assert!(
-            !session.answer_question("q1", answer.clone()).await,
+            !session.answer_question(&qid, answer.clone()),
             "重复回答应失败"
         );
-        assert!(!session.answer_question("missing", answer).await);
+        assert!(!session.answer_question("missing", answer));
     }
 
     #[test]

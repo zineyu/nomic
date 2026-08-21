@@ -9,7 +9,7 @@
 //!
 //! 答案组装（单选/多选/填空 → [`nomic_tools::AskUserAnswer`]）收在本模块，
 //! 提交时经 [`super::Effect::SubmitQuestionAnswer`] 交给事件循环回传工具；
-//! Esc 取消经 [`super::Effect::CancelQuestion`] 丢弃回答通道，工具侧收到
+//! Esc 取消经 [`super::Effect::CancelQuestion`] 丢弃注册表条目，工具侧收到
 //! 通道关闭转为错误结果回喂模型。
 
 use nomic_tools::{AskUserAnswer, AskUserQuestion, CUSTOM_OPTION, QuestionKind};
@@ -309,7 +309,7 @@ impl App {
         }
     }
 
-    /// Esc 取消提问：关闭弹层，事件循环丢弃回答通道（工具转错误结果）。
+    /// Esc 取消提问：关闭弹层，事件循环丢弃注册表条目（工具转错误结果）。
     fn question_cancel(&mut self) -> Vec<Effect> {
         self.question = None;
         self.pending_key = None;

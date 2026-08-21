@@ -55,7 +55,7 @@ use anyhow::{Context as _, Result};
 use crossterm::event::EventStream;
 use nomic_core::Agent;
 use nomic_session::SessionRecorder;
-use nomic_tools::{QuestionSink, TodoStore};
+use nomic_tools::{QuestionRegistry, QuestionSink, TodoStore};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 
@@ -108,11 +108,14 @@ pub async fn run(cli: &Cli) -> Result<()> {
     let initial_reasoning = boot.stream_options.reasoning;
 
     let todo_store = TodoStore::new();
-    // 提问通道（ADR-0029）：agent 任务内的 `ask_user_question` 工具经
-    // 发送端把问题推入，事件循环在 `next_wake` 中接收并打开提问弹层
+    // 提问通道（ADR-0029）：agent 任务内的 `ask_user_question` 工具经共享
+    // 注册表（nomic-tools `QuestionRegistry`，取消语义与 web 同一口径）
+    // 登记后把问题推入通道，事件循环在 `next_wake` 中接收并打开提问弹层；
+    // 作答 / 取消凭问题 id 回调注册表，driver 与 sink 共享同一注册表
+    let question_registry = std::sync::Arc::new(QuestionRegistry::new());
     let (question_tx, mut question_rx) = mpsc::unbounded_channel::<PendingQuestion>();
     let question_sink: std::sync::Arc<dyn QuestionSink> =
-        std::sync::Arc::new(TuiQuestionSink::new(question_tx));
+        std::sync::Arc::new(TuiQuestionSink::new(question_registry.clone(), question_tx));
     // 工具配方（组装收在 agent_recipe 模块）：TUI 的差异点——todo 清单
     // 主/子共享（goal 模式与界面经同一句柄观察进度）、基准句柄共享
     //（resume/new 切换 session 时原地生效）、提问走弹层通道、turn 注入
@@ -164,6 +167,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
         skill_resolver,
         initial_reasoning,
         todo_store,
+        question_registry,
     );
     let mut term_events = EventStream::new();
     // spinner 帧推进：仅运行中需要动画，空闲时分支挂起不唤醒事件循环

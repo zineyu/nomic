@@ -4,7 +4,6 @@
 //! 生命周期翻译收在 core 的 [`SessionRunner`]（ADR-0033）；本模块只做
 //! runner 事件 → [`ServerEvent`] 的 broadcast 翻译。
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -16,7 +15,7 @@ use nomic_core::{
 };
 use nomic_session::{SessionRecorder, SessionStore};
 use nomic_skills::SkillResolver;
-use nomic_tools::AskUserQuestion;
+use nomic_tools::{AskUserQuestion, QuestionRegistry};
 use tokio::sync::{Mutex, broadcast, mpsc};
 
 use super::{ServerEvent, SessionRuntime};
@@ -125,11 +124,13 @@ impl SessionFactory {
     ) -> Arc<SessionRuntime> {
         let events_tx = self.events.clone();
         let recorder = store.map(|store| SessionRecorder::with_tip(store, id.clone(), tip));
-        let questions = Arc::new(Mutex::new(HashMap::new()));
+        // 在途提问注册表：sink（登记 / 取消丢弃）与 SessionRuntime（应答
+        // 回填 / 断线重放快照）共享同一份，取消语义与 TUI 同一口径
+        let questions = Arc::new(QuestionRegistry::new());
         let sink = Arc::new(WebQuestionSink {
             session_id: id.clone(),
             events: events_tx.clone(),
-            questions: questions.clone(),
+            registry: questions.clone(),
         });
         // 工具配方（组装收在 agent_recipe 模块）：web 的差异点——主/子
         // agent 各自独立的 todo 清单、提问走事件总线、无 turn 注入点；
@@ -307,13 +308,7 @@ pub async fn snapshot(session: &SessionRuntime) -> Result<Snapshot> {
     let session_stats = session.handle.stats().await?;
     let (running, queued) = (session.runner.is_running(), session.runner.queued_len());
     let title = nomic_session::session_title(&messages);
-    let pending_question = session
-        .questions
-        .lock()
-        .await
-        .iter()
-        .next()
-        .map(|(id, pending)| (id.clone(), pending.question.clone()));
+    let pending_question = session.questions.current();
     Ok(Snapshot {
         messages,
         model,

@@ -20,7 +20,7 @@ use nomic_core::{
 };
 use nomic_session::SessionRecorder;
 use nomic_skills::SkillResolver;
-use nomic_tools::TodoStore;
+use nomic_tools::{QuestionRegistry, TodoStore};
 use tokio::sync::mpsc;
 
 use super::app::{App, Effect, Key, SkillEntry};
@@ -46,6 +46,7 @@ pub(super) fn spawn_driver(
     skill_resolver: SkillResolver,
     reasoning: Option<ThinkingLevel>,
     todos: TodoStore,
+    questions: std::sync::Arc<QuestionRegistry>,
 ) -> (Driver, mpsc::UnboundedReceiver<RunnerEvent>) {
     let (handle, actor_task) = agent.spawn();
     let (runner, runner_events, runner_task) = SessionRunner::spawn(handle.clone());
@@ -53,6 +54,7 @@ pub(super) fn spawn_driver(
         runner,
         handle,
         pending_question: None,
+        questions,
         actor_task: Some(actor_task),
         runner_task: Some(runner_task),
         alive: true,
@@ -74,9 +76,13 @@ pub(super) struct Driver {
     /// actor 句柄：注入 / 清空 / 恢复 / 模型切换等 fire-and-forget 变更
     /// 直调（邮箱 FIFO 保证其先于紧随的 runner job 生效）
     handle: AgentHandle,
-    /// 在途问题的回答回传端（提问弹层打开期间持有；作答/取消/中断
-    /// 时发送或丢弃——丢弃即关闭通道，工具侧收到关闭转为错误结果）
-    pending_question: Option<tokio::sync::oneshot::Sender<nomic_tools::AskUserAnswer>>,
+    /// 弹层当前展示的在途问题 id（提问弹层打开期间持有；作答 / 取消 /
+    /// 中断时凭它回调共享注册表——[`Driver::questions`]）。状态层不持有
+    /// 外部资源，回答通道收在注册表条目里
+    pending_question: Option<String>,
+    /// 在途提问注册表（与工具侧 sink 共享，nomic-tools 统一实现）：
+    /// 应答回填 / 取消丢弃 / 当前快照的取消语义唯一口径
+    questions: std::sync::Arc<QuestionRegistry>,
     /// agent actor 任务的 JoinHandle：任务退出时取出详情转为 TUI 内错误提示
     actor_task: Option<tokio::task::JoinHandle<()>>,
     /// runner 任务的 JoinHandle（与 actor 任务任一退出即整体不可用，
@@ -108,7 +114,7 @@ pub(super) enum Wake {
     Paste(String),
     /// agent 事件
     AgentEvent(AgentEvent),
-    /// 提问弹层请求（`ask_user_question` 工具；回答通道由事件循环持有）
+    /// 提问弹层请求（`ask_user_question` 工具；问题 id 由事件循环持有）
     UserQuestion(PendingQuestion),
     /// runner 事件（job 生命周期与执行结果）
     RunnerEvent(RunnerEvent),
@@ -154,10 +160,10 @@ pub(super) async fn handle_wake(
             }
             app.handle_event(&event);
         }
-        // 提问弹层请求：回答通道暂存在 driver（状态层不持有外部资源），
-        // 用户在弹层作答后经 Effect 回传；Esc 取消/运行中断时丢弃
+        // 提问弹层请求：问题 id 暂存在 driver（状态层不持有外部资源），
+        // 用户在弹层作答后经 Effect 回调注册表回传；Esc 取消/运行中断时丢弃
         Wake::UserQuestion(pending) => {
-            driver.pending_question = Some(pending.answer_tx);
+            driver.pending_question = Some(pending.id);
             app.open_question(pending.question);
         }
         Wake::RunnerEvent(event) => match event {
@@ -418,10 +424,10 @@ pub(super) async fn execute_effect(
             }
         }
         Effect::Cancel => {
-            // 取消在途 job（排队 job 保留）；提问弹层随中断关闭，回答
-            // 通道丢弃（工具侧经取消令牌/通道关闭解除阻塞，不挂起）
+            // 取消在途 job（排队 job 保留）；提问弹层随中断关闭，注册表
+            // 条目丢弃（工具侧经取消令牌/通道关闭解除阻塞，不挂起）
             driver.runner.cancel_current();
-            driver.pending_question = None;
+            discard_pending_question(driver);
         }
         // INSERT `Ctrl+G`：挂起 TUI 运行外部编辑器（ADR-0017），退出后写回
         Effect::OpenEditor => edit_input_in_editor(app, terminal).await,
@@ -479,15 +485,15 @@ pub(super) async fn execute_effect(
         Effect::AttachImage(path) => effects::attach_image(app, &std::path::PathBuf::from(path)),
         Effect::CopyText(text) => effects::copy_to_clipboard(app, text).await,
         Effect::SubmitQuestionAnswer(answer) => {
-            // 作答回传：发送端即返回（工具侧在 agent 任务内 await，
-            // 失败仅可能因 agent 任务退出，无需提示）
-            if let Some(answer_tx) = driver.pending_question.take() {
-                let _ = answer_tx.send(answer);
+            // 作答回传：经注册表回填（失败仅可能因条目已被丢弃 /
+            // agent 任务退出，无需提示）
+            if let Some(id) = driver.pending_question.take() {
+                driver.questions.answer(&id, answer);
             }
         }
         Effect::CancelQuestion => {
-            // 丢弃回答通道：工具侧收到关闭转为错误结果回喂模型
-            driver.pending_question = None;
+            // 丢弃注册表条目：回答通道关闭，工具侧转为错误结果回喂模型
+            discard_pending_question(driver);
         }
         Effect::NewSession => {
             effects::new_session(app, &mut driver.session, &driver.handle).await;
@@ -496,7 +502,7 @@ pub(super) async fn execute_effect(
 }
 
 /// `Effect::Prompt` 的实现：用户主动提交 prompt（重置 goal 计数、丢弃
-/// 上一轮残留的在途问题回答通道、展开 mention、提交 runner job）。
+/// 上一轮残留的在途问题、展开 mention、提交 runner job）。
 fn submit_prompt(
     app: &mut App,
     driver: &mut Driver,
@@ -504,9 +510,9 @@ fn submit_prompt(
     images: Vec<nomic_ai::ImageContent>,
 ) {
     // 用户主动提交：重置 goal 模式连续追问计数；丢弃上一轮残留的
-    // 在途问题回答通道（防御：正常路径弹层已随运行结束关闭）
+    // 在途问题（防御：正常路径弹层已随运行结束关闭）
     driver.goal.reset();
-    driver.pending_question = None;
+    discard_pending_question(driver);
     // 发送前展开有效 `@skill:` / `@file:` mention；无效标记原样保留
     // （`@file:` 相对路径以当前 session 的 workspace 为基准）
     let text = mention::expand_mentions(text, &driver.skill_resolver, &driver.session.base_dir());
@@ -517,6 +523,15 @@ fn submit_prompt(
     {
         // runner 已退出：不会有回执，立即回到空闲态并提示
         app.finish_run(Some("内部错误：agent 任务已退出，消息未发送。".to_string()));
+    }
+}
+
+/// 丢弃弹层当前展示的在途问题：从共享注册表移除条目（回答通道随之
+/// 关闭，工具侧收到关闭转为错误结果）。条目可能已被工具侧取消分支
+/// 先行丢弃——注册表的重复丢弃幂等。
+fn discard_pending_question(driver: &mut Driver) {
+    if let Some(id) = driver.pending_question.take() {
+        driver.questions.discard(&id);
     }
 }
 

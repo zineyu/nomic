@@ -481,9 +481,9 @@ pub(super) enum Effect {
     /// 后续消息以该条目为父 entry 落库）
     BranchTo(String),
     /// 提问弹层提交（`ask_user_question` 工具）：事件循环把回答经
-    /// 在途问题的 oneshot 通道回传工具，agent 继续运行
+    /// 在途问题的回答经共享注册表回传工具，agent 继续运行
     SubmitQuestionAnswer(nomic_tools::AskUserAnswer),
-    /// 提问弹层取消（Esc）：事件循环丢弃回答通道，工具侧收到通道
+    /// 提问弹层取消（Esc）：事件循环丢弃注册表条目，工具侧收到通道
     /// 关闭转为错误结果回喂模型
     CancelQuestion,
 }

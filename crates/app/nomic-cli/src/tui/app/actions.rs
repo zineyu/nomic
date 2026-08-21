@@ -445,7 +445,7 @@ impl App {
 
     /// 一轮运行（prompt/压缩）结束：回到空闲态，按需置状态栏告警。
     /// 提问弹层随运行结束关闭（工具已因取消/作答离开阻塞，弹层不再
-    /// 有效——未作答被中断时回答通道由事件循环丢弃）。
+    /// 有效——未作答被中断时注册表条目由事件循环丢弃）。
     pub fn finish_run(&mut self, notice: Option<String>) {
         self.running = false;
         self.notice = notice;

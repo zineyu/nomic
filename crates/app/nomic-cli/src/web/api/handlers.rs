@@ -440,13 +440,7 @@ async fn persist_session_reasoning(
     let Some(store) = &state.inner.store else {
         return;
     };
-    let value = match level {
-        Some(ThinkingLevel::Minimal) => "minimal",
-        Some(ThinkingLevel::Low) => "low",
-        Some(ThinkingLevel::Medium) => "medium",
-        Some(ThinkingLevel::High) => "high",
-        _ => "off",
-    };
+    let value = level.map_or("off", ThinkingLevel::as_str);
     if let Err(error) = store
         .set_session_config(
             session_id,
@@ -461,16 +455,7 @@ async fn persist_session_reasoning(
 
 /// 解析思考级别请求值；`off` → `None`（关闭）。
 fn parse_thinking_level(level: &str) -> Result<Option<ThinkingLevel>, ApiError> {
-    match level {
-        "off" => Ok(None),
-        "minimal" => Ok(Some(ThinkingLevel::Minimal)),
-        "low" => Ok(Some(ThinkingLevel::Low)),
-        "medium" => Ok(Some(ThinkingLevel::Medium)),
-        "high" => Ok(Some(ThinkingLevel::High)),
-        _ => Err(ApiError::BadRequest(format!(
-            "--reasoning 取值非法：{level:?}（可选 minimal / low / medium / high / off）"
-        ))),
-    }
+    ThinkingLevel::parse_setting(level).map_err(|error| ApiError::BadRequest(error.to_string()))
 }
 
 #[cfg(test)]

@@ -101,13 +101,7 @@ impl SessionFactory {
                 .ok()
                 .flatten()
         {
-            return match word.as_str() {
-                "minimal" => Some(ThinkingLevel::Minimal),
-                "low" => Some(ThinkingLevel::Low),
-                "medium" => Some(ThinkingLevel::Medium),
-                "high" => Some(ThinkingLevel::High),
-                _ => None,
-            };
+            return word.parse().ok();
         }
         self.default_reasoning
     }

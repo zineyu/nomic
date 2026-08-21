@@ -3,6 +3,9 @@
 //!
 //! 与 pi 的差异见 `docs/adr/0001-pi-rust-architecture.md`。
 
+use std::fmt;
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 
 /// 推理/思考级别。`xhigh` 与 `max` 仅部分模型族支持。
@@ -22,6 +25,70 @@ pub enum ThinkingLevel {
     /// 最大推理预算（仅部分模型支持）
     Max,
 }
+
+impl ThinkingLevel {
+    /// 级别词（与 serde 序列化同一份小写词表）。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+
+    /// 解析接口层级别词：完整词表外加 `"off"`（关闭思考 → `None`）。
+    ///
+    /// 配置 / CLI / web API 把「未开启思考」表示为 `None`；`Err` = 非法词，
+    /// `Ok(None)` = 关闭，二者在类型层面可区分。
+    pub fn parse_setting(word: &str) -> Result<Option<Self>, UnknownThinkingLevel> {
+        match word {
+            "off" => Ok(None),
+            _ => word.parse().map(Some),
+        }
+    }
+}
+
+impl fmt::Display for ThinkingLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ThinkingLevel {
+    type Err = UnknownThinkingLevel;
+
+    fn from_str(word: &str) -> Result<Self, Self::Err> {
+        Ok(match word {
+            "minimal" => Self::Minimal,
+            "low" => Self::Low,
+            "medium" => Self::Medium,
+            "high" => Self::High,
+            "xhigh" => Self::Xhigh,
+            "max" => Self::Max,
+            _ => return Err(UnknownThinkingLevel(word.to_string())),
+        })
+    }
+}
+
+/// 非法思考级别词（[`ThinkingLevel`] 的 [`FromStr`] 错误）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownThinkingLevel(String);
+
+impl fmt::Display for UnknownThinkingLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "未知思考级别 {:?}（可选 minimal / low / medium / high / xhigh / max）",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for UnknownThinkingLevel {}
 
 /// 文本内容块。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,4 +383,36 @@ pub fn now_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);
     millis
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ThinkingLevel;
+
+    /// 字符串词表与 serde 序列化同源：`as_str` / `Display` / `FromStr` 与
+    /// JSON 表示往返一致；`parse_setting` 额外接受 `off` → `None`。
+    #[test]
+    fn thinking_level_words_roundtrip_with_serde() {
+        for level in [
+            ThinkingLevel::Minimal,
+            ThinkingLevel::Low,
+            ThinkingLevel::Medium,
+            ThinkingLevel::High,
+            ThinkingLevel::Xhigh,
+            ThinkingLevel::Max,
+        ] {
+            let word = level.as_str();
+            assert_eq!(word.parse::<ThinkingLevel>(), Ok(level));
+            assert_eq!(level.to_string(), word);
+            assert_eq!(
+                serde_json::to_string(&level).expect("serialize"),
+                format!("\"{word}\"")
+            );
+            assert_eq!(ThinkingLevel::parse_setting(word), Ok(Some(level)));
+        }
+        assert_eq!(ThinkingLevel::parse_setting("off"), Ok(None));
+        assert!("off".parse::<ThinkingLevel>().is_err());
+        let error = "extreme".parse::<ThinkingLevel>().expect_err("非法词");
+        assert!(error.to_string().contains("extreme"));
+    }
 }

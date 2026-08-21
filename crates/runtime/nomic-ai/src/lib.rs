@@ -26,5 +26,6 @@ pub use stream::{
 pub use types::{
     ApiKind, AssistantContent, AssistantMessage, Context, Cost, ImageContent, Message, Model,
     StopReason, TextContent, ThinkingContent, ThinkingLevel, ToolCall, ToolDefinition,
-    ToolResultMessage, Usage, UserContent, UserMessage, UserMessageContent, now_millis,
+    ToolResultMessage, UnknownThinkingLevel, Usage, UserContent, UserMessage, UserMessageContent,
+    now_millis,
 };

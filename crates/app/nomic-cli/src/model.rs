@@ -138,13 +138,7 @@ pub async fn db_reasoning_level(store: Option<&SessionStore>) -> Option<Thinking
         .into_iter()
         .next()?;
     let word = value.as_str()?;
-    match word {
-        "minimal" => Some(ThinkingLevel::Minimal),
-        "low" => Some(ThinkingLevel::Low),
-        "medium" => Some(ThinkingLevel::Medium),
-        "high" => Some(ThinkingLevel::High),
-        _ => None,
-    }
+    word.parse().ok()
 }
 
 /// 启动模型选择：CLI 参数 > sqlite 配置回退链（feedback）；两层都没有时报错。

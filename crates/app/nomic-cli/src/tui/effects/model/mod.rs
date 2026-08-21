@@ -72,18 +72,21 @@ pub(in crate::tui) fn set_reasoning(
     session: &SessionBinding,
     word: &str,
 ) {
-    let Some(setting) = reasoning_setting(word) else {
-        // 理论不可达（选择器行 id 出自 REASONING_LEVELS 词表）
-        app.warn(format!("未知思考级别 {word:?}"));
-        return;
+    // 理论不可达（选择器行 id 出自 REASONING_LEVELS 词表）
+    let level = match ThinkingLevel::parse_setting(word) {
+        Ok(level) => level,
+        Err(error) => {
+            app.warn(error.to_string());
+            return;
+        }
     };
-    match switcher.confirm_level(setting.level(), job_tx) {
+    match switcher.confirm_level(level, job_tx) {
         Confirm::Done { notice, persist } => {
             if let Some(spec) = persist {
                 persist_model_selection(session, spec);
                 update_badge(app, switcher);
             }
-            persist_reasoning(session, setting.level());
+            persist_reasoning(session, level);
             app.chat_mut().push_system(notice);
         }
         Confirm::Failed(warn) => app.warn(warn),
@@ -126,13 +129,7 @@ fn persist_reasoning(session: &SessionBinding, level: Option<ThinkingLevel>) {
     let Some(store) = session.store() else {
         return;
     };
-    let value = match level {
-        Some(ThinkingLevel::Minimal) => "minimal",
-        Some(ThinkingLevel::Low) => "low",
-        Some(ThinkingLevel::Medium) => "medium",
-        Some(ThinkingLevel::High) => "high",
-        _ => "off",
-    };
+    let value = level.map_or("off", ThinkingLevel::as_str);
     tokio::spawn(async move {
         if let Err(error) = store
             .set_config(
@@ -173,51 +170,21 @@ fn model_row_text(choice: &ModelChoice, current: &ModelSelection) -> String {
     text
 }
 
-/// 思考级别选择器确认时的解析结果：关闭（`off`）或具体级别。
-///
-/// 独立于 `Option<ThinkingLevel>`：让「行 id 非法」（None，拒绝）与
-/// 「off 关闭」（合法设置）在类型层面可区分。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReasoningSetting {
-    /// 关闭思考
-    Off,
-    /// 具体思考级别
-    Level(ThinkingLevel),
-}
-
-impl ReasoningSetting {
-    /// 转为请求参数（`Off` → `None` 关闭）。
-    const fn level(self) -> Option<ThinkingLevel> {
-        match self {
-            Self::Off => None,
-            Self::Level(level) => Some(level),
-        }
-    }
-}
-
-/// 思考级别词表：选择器行 id 与展示说明共用同一来源。
-const REASONING_LEVELS: [(&str, ReasoningSetting); 5] = [
-    ("off", ReasoningSetting::Off),
-    ("minimal", ReasoningSetting::Level(ThinkingLevel::Minimal)),
-    ("low", ReasoningSetting::Level(ThinkingLevel::Low)),
-    ("medium", ReasoningSetting::Level(ThinkingLevel::Medium)),
-    ("high", ReasoningSetting::Level(ThinkingLevel::High)),
+/// 思考级别词表：选择器行顺序与展示说明共用同一来源，行 id 取自
+/// [`ThinkingLevel::as_str`] / `"off"`（解析侧统一走
+/// [`ThinkingLevel::parse_setting`]，行 id 非法与 `off` 关闭由 `Result` 区分）。
+/// xhigh/max 不在 TUI 词表内（配置文件与 CLI 同样不开放）。
+const REASONING_LEVELS: [Option<ThinkingLevel>; 5] = [
+    None,
+    Some(ThinkingLevel::Minimal),
+    Some(ThinkingLevel::Low),
+    Some(ThinkingLevel::Medium),
+    Some(ThinkingLevel::High),
 ];
 
-/// 级别词 → 设置；未知词返回 `None`（调用方告警）。
-fn reasoning_setting(word: &str) -> Option<ReasoningSetting> {
-    REASONING_LEVELS
-        .iter()
-        .find(|(name, _)| *name == word)
-        .map(|(_, setting)| *setting)
-}
-
-/// 当前级别 → 词表中的级别词（提示文本用；词表外取值回退 `off`）。
+/// 当前级别 → 级别词（提示文本用；`None` 即 `off`）。
 pub(super) fn reasoning_label(level: Option<ThinkingLevel>) -> &'static str {
-    REASONING_LEVELS
-        .iter()
-        .find(|(_, setting)| setting.level() == level)
-        .map_or("off", |(name, _)| *name)
+    level.map_or("off", ThinkingLevel::as_str)
 }
 
 /// 思考级别选择器（模型切换流程第二步）：列出级别并打开选择器
@@ -225,36 +192,32 @@ pub(super) fn reasoning_label(level: Option<ThinkingLevel>) -> &'static str {
 fn open_reasoning_picker(app: &mut App, current: Option<ThinkingLevel>) {
     let rows = REASONING_LEVELS
         .iter()
-        .map(|(name, setting)| PickerRow {
-            id: (*name).to_string(),
-            text: reasoning_row_text(name, *setting, current),
+        .map(|level| PickerRow {
+            id: reasoning_label(*level).to_string(),
+            text: reasoning_row_text(*level, current),
             selectable: true,
         })
         .collect();
     let selected = REASONING_LEVELS
         .iter()
-        .position(|(_, setting)| setting.level() == current)
+        .position(|level| *level == current)
         .unwrap_or(0);
     app.open_reasoning_picker(rows, selected);
 }
 
 /// 思考级别选择器行文本：`级别 — 说明`，当前级别带标记。
-fn reasoning_row_text(
-    name: &str,
-    setting: ReasoningSetting,
-    current: Option<ThinkingLevel>,
-) -> String {
-    let description = match setting {
-        ReasoningSetting::Off => "不开启思考",
-        ReasoningSetting::Level(ThinkingLevel::Minimal) => "最小推理预算",
-        ReasoningSetting::Level(ThinkingLevel::Low) => "低推理预算",
-        ReasoningSetting::Level(ThinkingLevel::Medium) => "中等推理预算",
-        ReasoningSetting::Level(ThinkingLevel::High) => "高推理预算",
+fn reasoning_row_text(level: Option<ThinkingLevel>, current: Option<ThinkingLevel>) -> String {
+    let description = match level {
+        None => "不开启思考",
+        Some(ThinkingLevel::Minimal) => "最小推理预算",
+        Some(ThinkingLevel::Low) => "低推理预算",
+        Some(ThinkingLevel::Medium) => "中等推理预算",
+        Some(ThinkingLevel::High) => "高推理预算",
         // xhigh/max 不在 TUI 词表内（配置文件与 CLI 同样不开放）
-        ReasoningSetting::Level(ThinkingLevel::Xhigh | ThinkingLevel::Max) => "推理预算",
+        Some(ThinkingLevel::Xhigh | ThinkingLevel::Max) => "推理预算",
     };
-    let mut text = format!("{name} — {description}");
-    if setting.level() == current {
+    let mut text = format!("{} — {description}", reasoning_label(level));
+    if level == current {
         text.push_str("（当前）");
     }
     text
@@ -262,10 +225,7 @@ fn reasoning_row_text(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ModelChoice, ModelSelection, ReasoningSetting, model_row_text, reasoning_label,
-        reasoning_row_text, reasoning_setting,
-    };
+    use super::{ModelChoice, ModelSelection, model_row_text, reasoning_label, reasoning_row_text};
     use nomic_ai::ThinkingLevel;
 
     /// `models` 选择器行：id + 展示名 + 窗口，推理模型带标注，当前模型带标记，
@@ -310,48 +270,33 @@ mod tests {
         assert_eq!(model_row_text(&unknown, &other), "openai/m — m");
     }
 
-    /// 思考级别词表：off 映射为关闭，词表内级别往返一致，未知词拒绝。
+    /// 思考级别词表：off 映射为关闭，词表内级别 label 往返一致。
     #[test]
-    fn reasoning_setting_roundtrip_and_rejects_unknown() {
-        assert_eq!(reasoning_setting("off"), Some(ReasoningSetting::Off));
-        assert_eq!(
-            reasoning_setting("minimal"),
-            Some(ReasoningSetting::Level(ThinkingLevel::Minimal))
-        );
-        assert_eq!(
-            reasoning_setting("high"),
-            Some(ReasoningSetting::Level(ThinkingLevel::High))
-        );
-        assert_eq!(
-            reasoning_setting("off").map(ReasoningSetting::level),
-            Some(None)
-        );
-        assert_eq!(reasoning_setting("extreme"), None);
-        // 词表内取值与 label 往返一致；词表外取值（xhigh/max）回退 off
+    fn reasoning_label_roundtrips_with_parse_setting() {
         for (name, level) in [
             ("off", None),
+            ("minimal", Some(ThinkingLevel::Minimal)),
             ("low", Some(ThinkingLevel::Low)),
             ("medium", Some(ThinkingLevel::Medium)),
             ("high", Some(ThinkingLevel::High)),
         ] {
             assert_eq!(reasoning_label(level), name);
+            assert_eq!(ThinkingLevel::parse_setting(name), Ok(level));
         }
-        assert_eq!(reasoning_label(Some(ThinkingLevel::Xhigh)), "off");
+        assert!(ThinkingLevel::parse_setting("extreme").is_err());
+        // 词表外取值（xhigh/max）label 如实显示级别词
+        assert_eq!(reasoning_label(Some(ThinkingLevel::Xhigh)), "xhigh");
     }
 
     /// 思考级别选择器行：级别 + 说明，当前级别带标记。
     #[test]
     fn reasoning_row_text_marks_current() {
         assert_eq!(
-            reasoning_row_text(
-                "low",
-                ReasoningSetting::Level(ThinkingLevel::Low),
-                Some(ThinkingLevel::Low)
-            ),
+            reasoning_row_text(Some(ThinkingLevel::Low), Some(ThinkingLevel::Low)),
             "low — 低推理预算（当前）"
         );
         assert_eq!(
-            reasoning_row_text("off", ReasoningSetting::Off, Some(ThinkingLevel::Low)),
+            reasoning_row_text(None, Some(ThinkingLevel::Low)),
             "off — 不开启思考"
         );
     }

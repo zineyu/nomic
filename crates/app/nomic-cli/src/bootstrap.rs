@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use nomic_ai::{Message, Model, Provider, StreamOptions, ThinkingLevel};
 use nomic_prompts::{ProjectDiscovery, PromptResolver, PromptTemplate};
 use nomic_session::SessionStore;
@@ -365,13 +365,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 fn parse_reasoning(level: &str) -> Result<ThinkingLevel> {
-    match level {
-        "minimal" => Ok(ThinkingLevel::Minimal),
-        "low" => Ok(ThinkingLevel::Low),
-        "medium" => Ok(ThinkingLevel::Medium),
-        "high" => Ok(ThinkingLevel::High),
-        _ => bail!("--reasoning 取值非法：{level:?}（可选 minimal / low / medium / high）"),
-    }
+    level.parse().context("--reasoning 取值非法")
 }
 
 /// 系统提示词（对齐 pi 的结构与措辞）：基础契约 → AGENTS.md（根到叶）→

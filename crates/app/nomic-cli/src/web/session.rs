@@ -1,6 +1,8 @@
 //! 会话构建与事件落库：SessionFactory 按 bootstrap 输入构建每个
-//! [`SessionRuntime`]（agent actor + 事件转发任务），
-//! 事件转发 / runner / 快照收集收在本模块。
+//! [`SessionRuntime`]（agent actor + session runner + 事件转发任务），
+//! 事件转发 / 快照收集收在本模块。run 类 job 的串行消费、取消与
+//! 生命周期翻译收在 core 的 [`SessionRunner`]（ADR-0033）；本模块只做
+//! runner 事件 → [`ServerEvent`] 的 broadcast 翻译。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -8,12 +10,14 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use nomic_ai::{Message, Model, Provider, StreamOptions, ThinkingLevel};
-use nomic_core::{Agent, AgentEvent};
+use nomic_core::{
+    Agent, AgentEvent, CompactOutcome, ContinueOutcome, JobKind, JobOutcome, NOTHING_TO_COMPACT,
+    NOTHING_TO_CONTINUE, RunnerEvent, SessionRunner,
+};
 use nomic_session::{SessionRecorder, SessionStore};
 use nomic_skills::SkillResolver;
 use nomic_tools::AskUserQuestion;
 use tokio::sync::{Mutex, broadcast, mpsc};
-use tokio_util::sync::CancellationToken;
 
 use super::{ServerEvent, SessionRuntime};
 use crate::model::ModelResolver;
@@ -151,18 +155,19 @@ impl SessionFactory {
             .compaction(self.compaction)
             .build();
         let (handle, _actor_task) = agent.spawn();
+        let (runner, runner_events, _runner_task) = SessionRunner::spawn(handle.clone());
 
         let session = Arc::new(SessionRuntime {
             id,
             handle,
             recorder: Mutex::new(recorder),
             events: events_tx,
-            gate: super::RunGate::new(),
-            cancel: Mutex::new(None),
+            runner,
             questions,
             workspace,
         });
         tokio::spawn(forward_events(session.clone(), events_rx));
+        tokio::spawn(forward_runner_events(session.clone(), runner_events));
         session
     }
 }
@@ -200,93 +205,81 @@ async fn forward_events(
     }
 }
 
-/// runner 任务：串行消费本 session 队列；每个任务带独立取消令牌，可被
-/// cancel 单独中断（中断后队列保留，恢复后继续下一个）。
-pub async fn run_loop(session: &Arc<SessionRuntime>) {
-    while let Some(job) = session.gate.next().await {
-        let cancel = CancellationToken::new();
-        *session.cancel.lock().await = Some(cancel.clone());
-        let result = run_job(session, job, cancel).await;
-        *session.cancel.lock().await = None;
-        if let Err(error) = result {
-            tracing::error!(%error, "agent run failed");
-            let _ = session.events.send(ServerEvent::Error {
-                session_id: Some(session.id.clone()),
-                request_id: None,
-                message: format!("{error:#}"),
-            });
-            // agent loop 整体失败时无 AgentEnd 事件（见 forward_events），
-            // 补发 RunFinished 避免前端运行状态悬挂
-            let _ = session.events.send(ServerEvent::RunFinished {
-                session_id: session.id.clone(),
-            });
+/// runner 事件转发任务：把 core runner 的 job 生命周期与结果翻译为
+/// broadcast 事件。分工（ADR-0033）：
+///
+/// - prompt / continue 的运行生命周期（RunStarted/RunFinished）仍由
+///   agent 事件流的 `AgentStart`/`AgentEnd` 推导（[`forward_events`]，
+///   与 agent 事件同通道、顺序一致）；
+/// - compact 不产生 `AgentStart`/`AgentEnd`，运行生命周期以 runner 事件
+///   合成（Started → RunStarted，Finished → RunFinished）；
+/// - 空结果（无可压缩内容 / 无可续跑消息）不产生 agent 事件，就地转为
+///   error 事件通知（文案用 core 常量，与 TUI 同一口径）；
+/// - 执行失败（agent loop 整体失败时无 `AgentEnd`）补发 RunFinished，
+///   避免前端运行状态悬挂。
+async fn forward_runner_events(
+    session: Arc<SessionRuntime>,
+    mut events: mpsc::UnboundedReceiver<RunnerEvent>,
+) {
+    let send = |event: ServerEvent| {
+        let _ = session.events.send(event);
+    };
+    let run_started = || {
+        send(ServerEvent::RunStarted {
+            session_id: session.id.clone(),
+        });
+    };
+    let run_finished = || {
+        send(ServerEvent::RunFinished {
+            session_id: session.id.clone(),
+        });
+    };
+    let notify = |message: String| {
+        send(ServerEvent::Error {
+            session_id: Some(session.id.clone()),
+            request_id: None,
+            message,
+        });
+    };
+    while let Some(event) = events.recv().await {
+        match event {
+            RunnerEvent::Started(JobKind::Compact) => run_started(),
+            RunnerEvent::Started(JobKind::Prompt | JobKind::Continue) => {}
+            RunnerEvent::Finished(JobOutcome::Prompt(result)) => {
+                if let Err(error) = result {
+                    tracing::error!(%error, "agent run failed");
+                    notify(format!("{error:#}"));
+                    run_finished();
+                }
+            }
+            RunnerEvent::Finished(JobOutcome::Compact(result)) => {
+                run_finished();
+                match result {
+                    // 压缩成功经 CompactionStart/End 事件渲染与落库，无需额外处理
+                    Ok(CompactOutcome::Compacted(_)) => {}
+                    Ok(CompactOutcome::NothingToCompact) => {
+                        notify(NOTHING_TO_COMPACT.to_string());
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "compact failed");
+                        notify(format!("{error:#}"));
+                    }
+                }
+            }
+            RunnerEvent::Finished(JobOutcome::Continue(result)) => match result {
+                // 续跑成功经事件流渲染与落库，无需额外处理
+                Ok(ContinueOutcome::Continued) => {}
+                Ok(ContinueOutcome::NothingToContinue) => {
+                    notify(NOTHING_TO_CONTINUE.to_string());
+                }
+                Err(error) => {
+                    tracing::error!(%error, "continue failed");
+                    notify(format!("{error:#}"));
+                    run_finished();
+                }
+            },
         }
     }
-}
-
-/// 执行一个队列任务（prompt / 压缩 / 续跑）；命令的空结果按 TUI 口径
-/// 就地提示（不产生 agent 事件，需补一条通知）。
-async fn run_job(
-    session: &Arc<SessionRuntime>,
-    job: super::SessionJob,
-    cancel: CancellationToken,
-) -> Result<(), nomic_core::ActorError> {
-    match job {
-        super::SessionJob::Prompt(prompt) => session
-            .handle
-            .prompt_with_images(&prompt.text, &prompt.images, cancel)
-            .await
-            .map(|_| ()),
-        super::SessionJob::Compact { instructions } => {
-            // compact 不产生 AgentStart/End（仅 CompactionStart/End），
-            // 补发 RunStarted/RunFinished 驱动前端运行状态
-            let _ = session.events.send(ServerEvent::RunStarted {
-                session_id: session.id.clone(),
-            });
-            // 压缩成功经 CompactionStart/End 事件渲染与落库，无需额外处理
-            match session
-                .handle
-                .compact(instructions.as_deref(), cancel)
-                .await
-            {
-                Ok(Some(_)) => {
-                    let _ = session.events.send(ServerEvent::RunFinished {
-                        session_id: session.id.clone(),
-                    });
-                    Ok(())
-                }
-                Ok(None) => {
-                    let _ = session.events.send(ServerEvent::RunFinished {
-                        session_id: session.id.clone(),
-                    });
-                    notify(session, "上下文很短，没有可压缩的内容。");
-                    Ok(())
-                }
-                Err(error) => Err(error),
-            }
-        }
-        super::SessionJob::Continue => {
-            // 续跑成功经事件流渲染与落库，无需额外处理
-            match session.handle.continue_run(cancel).await {
-                Ok(Some(_)) => Ok(()),
-                Ok(None) => {
-                    notify(session, "历史尾部没有可续跑的消息。");
-                    Ok(())
-                }
-                Err(error) => Err(error),
-            }
-        }
-    }
-}
-
-/// 队列任务的就地提示（命令空结果等不产生 agent 事件的场景）：经 error
-/// 事件送达前端错误条，不影响运行状态（ runner 继续消费队列）。
-fn notify(session: &Arc<SessionRuntime>, message: &str) {
-    let _ = session.events.send(ServerEvent::Error {
-        session_id: Some(session.id.clone()),
-        request_id: None,
-        message: message.to_string(),
-    });
 }
 
 /// 当前状态快照的各部分（api 层拼装成响应）。
@@ -312,7 +305,7 @@ pub async fn snapshot(session: &SessionRuntime) -> Result<Snapshot> {
     let reasoning = session.handle.reasoning().await?;
     let context_tokens = session.handle.context_tokens().await?;
     let session_stats = session.handle.stats().await?;
-    let (running, queued) = (session.gate.running(), session.gate.len().await);
+    let (running, queued) = (session.runner.is_running(), session.runner.queued_len());
     let title = nomic_session::session_title(&messages);
     let pending_question = session
         .questions

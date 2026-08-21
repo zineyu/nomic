@@ -15,9 +15,10 @@
 //!
 //! 多 session 并行：进程级 [`Runtime`] 持有一个 session 注册表
 //! （`id → SessionRuntime`），每个 [`SessionRuntime`] 自持一个 agent actor、
-//! 独立的 prompt 队列 / 取消令牌 / 事件广播 / 落库器——多个 session 的
-//! runner 任务由 tokio 多线程运行时天然并行，互不阻塞。模型选择按 session
-//! 隔离并持久化到 sqlite 会话级 config（见 nomic-session 迁移 0004）。
+//! session runner（串行 job 队列 / 取消，ADR-0033）、事件广播与落库
+//! 器——多个 session 的 runner 任务由 tokio 多线程运行时天然并行，
+//! 互不阻塞。模型选择按 session 隔离并持久化到 sqlite 会话级 config
+//! （见 nomic-session 迁移 0004）。
 
 mod api;
 mod assets;
@@ -25,15 +26,13 @@ mod question;
 mod session;
 mod workspace;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context as _, Result};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use nomic_ai::ImageContent;
-use nomic_core::AgentEvent;
+use nomic_core::{AgentEvent, SessionRunner};
 use nomic_session::{SessionRecorder, SessionStore};
 use nomic_tools::{AskUserAnswer, AskUserQuestion};
 use serde::Serialize;
@@ -144,27 +143,6 @@ pub enum ServerEvent {
     },
 }
 
-/// 待发送的 prompt（文本 + 图片附件）。
-#[derive(Debug)]
-pub struct PendingPrompt {
-    pub text: String,
-    pub images: Vec<ImageContent>,
-}
-
-/// session 串行执行的任务：常规 prompt 或斜杠命令（压缩 / 续跑）。
-///
-/// 命令与 prompt 共用同一队列（对齐 TUI driver 的串行 job 语义）：运行中
-/// 提交的命令排队，当前轮完成后按序执行，不与在途运行并发。
-#[derive(Debug)]
-pub enum SessionJob {
-    /// 常规 prompt（mention 已展开）
-    Prompt(PendingPrompt),
-    /// `/compact [聚焦指令]`：手动压缩上下文
-    Compact { instructions: Option<String> },
-    /// `/continue`：续跑历史尾部消息
-    Continue,
-}
-
 /// 进行中的提问（应答表条目）：问题内容供状态快照重放（前端断线重连后
 /// 弹层恢复），oneshot 在回答到达时回填给 `ask_user_question` 工具。
 #[derive(Debug)]
@@ -173,68 +151,8 @@ pub struct PendingQuestion {
     answer: oneshot::Sender<AskUserAnswer>,
 }
 
-/// 运行门：prompt 队列 + 运行标志，同一把锁维护。
-///
-/// `submit` 的「入队 + 读标志 + 抢标志」与 `next` 的「出队 + 复位标志」互斥，
-/// 不存在「出队发现队列空但 submit 已入队」的丢单竞态；`submit` 返回 `true`
-/// 表示调用方应启动 runner（空闲时抢到标志）。
-#[derive(Debug)]
-pub struct RunGate {
-    queue: Mutex<VecDeque<SessionJob>>,
-    running: AtomicBool,
-}
-
-impl RunGate {
-    /// 空队列、未运行的门。
-    pub fn new() -> Self {
-        Self {
-            queue: Mutex::new(VecDeque::new()),
-            running: AtomicBool::new(false),
-        }
-    }
-
-    /// 提交任务；返回 `true` 表示调用方应启动 runner 任务。
-    pub async fn submit(&self, job: SessionJob) -> bool {
-        let mut queue = self.queue.lock().await;
-        queue.push_back(job);
-        let was_running = self.running.load(Ordering::SeqCst);
-        if !was_running {
-            self.running.store(true, Ordering::SeqCst);
-        }
-        drop(queue);
-        !was_running
-    }
-
-    /// 出队下一个任务；队列空时复位运行标志并返回 `None`（runner 应退出）。
-    pub async fn next(&self) -> Option<SessionJob> {
-        let mut queue = self.queue.lock().await;
-        let next = queue.pop_front();
-        if next.is_none() {
-            self.running.store(false, Ordering::SeqCst);
-        }
-        drop(queue);
-        next
-    }
-
-    /// 当前队列长度（状态快照用）。
-    pub async fn len(&self) -> usize {
-        self.queue.lock().await.len()
-    }
-
-    /// 是否有 runner 任务在跑（状态快照用）。
-    pub fn running(&self) -> bool {
-        self.running.load(Ordering::SeqCst)
-    }
-}
-
-impl Default for RunGate {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// 单个 session 的运行时：自持 agent actor、prompt 队列、取消令牌、
-/// 事件广播、提问表与落库器。并行执行的单位。
+/// 单个 session 的运行时：自持 agent actor、session runner（串行 job
+/// 队列与取消，ADR-0033）、事件广播、提问表与落库器。并行执行的单位。
 #[derive(Debug)]
 pub struct SessionRuntime {
     /// session id（registry 键；store 不可用时为临时 UUID）
@@ -245,10 +163,9 @@ pub struct SessionRuntime {
     pub recorder: Mutex<Option<SessionRecorder>>,
     /// 全局事件总线（所有 session 共享；事件携带 `session_id` 区分来源）
     pub events: broadcast::Sender<ServerEvent>,
-    /// prompt 队列 + 运行标志
-    pub gate: RunGate,
-    /// 当前轮的取消令牌
-    pub cancel: Mutex<Option<CancellationToken>>,
+    /// run 类 job 的提交端（prompt / 压缩 / 续跑；串行消费、每 job 独立
+    /// 取消令牌与生命周期翻译收在 core 的 runner）
+    pub runner: SessionRunner,
     /// 提问应答表（question id → 回答通道）
     pub questions: Arc<Mutex<HashMap<String, PendingQuestion>>>,
     /// 本 session 的操作基准（workspace 严格归属）：工具相对路径以它解析，
@@ -257,25 +174,9 @@ pub struct SessionRuntime {
 }
 
 impl SessionRuntime {
-    /// 提交任务；空闲时启动本 session 的 runner，运行中入队。
-    /// 返回 `true` 表示本轮立即启动。
-    pub async fn submit_job(self: &Arc<Self>, job: SessionJob) -> bool {
-        let started = self.gate.submit(job).await;
-        if started {
-            let session = self.clone();
-            tokio::spawn(async move {
-                session::run_loop(&session).await;
-            });
-        }
-        started
-    }
-
-    /// 取消当前轮运行；没有进行中的运行时返回 `false`。
-    pub async fn cancel_run(&self) -> bool {
-        self.cancel.lock().await.take().is_some_and(|cancel| {
-            cancel.cancel();
-            true
-        })
+    /// 取消当前轮运行；没有进行中的运行时返回 `false`（排队 job 保留）。
+    pub fn cancel_run(&self) -> bool {
+        self.runner.cancel_current()
     }
 
     /// 回答一个提问：从应答表取出通道并回填；提问不存在或已被取消返回 `false`。
@@ -498,7 +399,7 @@ async fn shutdown_signal(state: AppState) {
 async fn cancel_all(state: &AppState) {
     let sessions = state.inner.sessions.lock().await;
     for session in sessions.values() {
-        let _ = session.cancel_run().await;
+        let _ = session.cancel_run();
     }
 }
 
@@ -611,41 +512,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_gate_queues_while_running_and_resets_when_empty() {
-        let gate = RunGate::new();
-        let prompt = |text: &str| {
-            SessionJob::Prompt(PendingPrompt {
-                text: text.to_string(),
-                images: Vec::new(),
-            })
-        };
-
-        assert!(
-            gate.submit(prompt("first")).await,
-            "空闲时首提交应启动 runner"
-        );
-        assert!(
-            !gate.submit(prompt("second")).await,
-            "运行中提交应入队而非启动 runner"
-        );
-        assert_eq!(gate.len().await, 2);
-        assert!(gate.running());
-
-        let text_of = |job: SessionJob| match job {
-            SessionJob::Prompt(prompt) => prompt.text,
-            _ => panic!("应为 Prompt 任务"),
-        };
-        assert_eq!(text_of(gate.next().await.expect("first")), "first");
-        assert_eq!(text_of(gate.next().await.expect("second")), "second");
-        assert!(gate.next().await.is_none(), "队列空应复位运行标志");
-        assert!(!gate.running());
-
-        // 复位后再次提交重新启动（空队列与复位之间不丢单）
-        assert!(gate.submit(prompt("third")).await);
-        assert_eq!(text_of(gate.next().await.expect("third")), "third");
-    }
-
-    #[tokio::test]
     async fn cancel_run_returns_false_when_idle() {
         let state = test_state().await;
         let session = state
@@ -657,7 +523,7 @@ mod tests {
             .next()
             .expect("session")
             .clone();
-        assert!(!session.cancel_run().await, "空闲时取消应返回 false");
+        assert!(!session.cancel_run(), "空闲时取消应返回 false");
     }
 
     #[tokio::test]

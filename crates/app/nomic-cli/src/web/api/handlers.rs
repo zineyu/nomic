@@ -116,9 +116,9 @@ const MAX_FILE_CANDIDATES: usize = 100;
 /// 提交 prompt（空闲即跑，运行中入队）；返回 ack 携带排队状态。
 ///
 /// `/` 开头的输入按斜杠命令解析（`/compact [聚焦指令]`、`/continue`），
-/// 与 prompt 共用同一队列串行执行；其余文本在提交前展开有效
-/// `@skill:` / `@file:` mention（相对本 session 的 workspace），无效标记原样
-/// 保留——与 TUI driver 同一口径。
+/// 与 prompt 共用同一队列串行执行（core runner，ADR-0033）；其余文本
+/// 在提交前展开有效 `@skill:` / `@file:` mention（相对本 session 的
+/// workspace），无效标记原样保留——与 TUI 同一口径。
 pub async fn handle_prompt(
     state: &AppState,
     session_id: &str,
@@ -145,22 +145,25 @@ pub async fn handle_prompt(
             &state.inner.factory.skill_resolver,
             &session.workspace,
         );
-        crate::web::SessionJob::Prompt(crate::web::PendingPrompt {
+        nomic_core::SessionJob::Prompt {
             text: expanded,
             images,
-        })
+        }
     };
-    let was_running = session.gate.running();
-    let started = session.submit_job(job).await;
+    // runner 串行消费（提交时已在运行则排队）；提交前读运行态作 ack
+    let queued = session.runner.is_running();
+    if let Err(error) = session.runner.submit(job) {
+        return ApiError::Internal(error.to_string()).to_ws_response(None);
+    }
     ServerEvent::PromptAck {
         session_id: session_id.to_string(),
-        queued: was_running || !started,
+        queued,
     }
 }
 
 /// 解析斜杠命令体（已去掉前导 `/`）；未知命令或参数非法时返回带用法
 /// 提示的错误。web 支持的命令子集：`/compact [聚焦指令]`、`/continue`。
-fn parse_slash_command(rest: &str) -> Result<crate::web::SessionJob, ApiError> {
+fn parse_slash_command(rest: &str) -> Result<nomic_core::SessionJob, ApiError> {
     const USAGE: &str = "可用命令：/compact [聚焦指令]（压缩上下文）、/continue（续跑上次运行）";
     // 命令名取到首个 `:` 或空白为止；其余部分为参数（`compact 指令` 与
     // `compact:指令` 两种形式等价，冒号形式与 TUI 命令语法对齐）
@@ -176,10 +179,10 @@ fn parse_slash_command(rest: &str) -> Result<crate::web::SessionJob, ApiError> {
         None => (rest, None),
     };
     match name {
-        "compact" => Ok(crate::web::SessionJob::Compact {
+        "compact" => Ok(nomic_core::SessionJob::Compact {
             instructions: arg.map(str::to_string),
         }),
-        "continue" if arg.is_none() => Ok(crate::web::SessionJob::Continue),
+        "continue" if arg.is_none() => Ok(nomic_core::SessionJob::Continue),
         _ => Err(ApiError::BadRequest(format!("未知命令 /{rest}。{USAGE}"))),
     }
 }
@@ -190,7 +193,7 @@ pub async fn handle_cancel(state: &AppState, session_id: &str) -> ServerEvent {
         Ok(s) => s,
         Err(error) => return error.to_ws_response(None),
     };
-    session.cancel_run().await;
+    session.cancel_run();
     ServerEvent::CancelAck {
         session_id: session_id.to_string(),
     }
@@ -466,10 +469,10 @@ mod tests {
     fn parse_slash_command_compact_and_continue() {
         assert!(matches!(
             parse_slash_command("compact").expect("compact"),
-            crate::web::SessionJob::Compact { instructions: None }
+            nomic_core::SessionJob::Compact { instructions: None }
         ));
         // 自由文本指令（空格形式）
-        let Ok(crate::web::SessionJob::Compact {
+        let Ok(nomic_core::SessionJob::Compact {
             instructions: Some(instructions),
         }) = parse_slash_command("compact 专注 测试 部分")
         else {
@@ -477,7 +480,7 @@ mod tests {
         };
         assert_eq!(instructions, "专注 测试 部分");
         // 冒号形式（与 TUI 命令语法对齐）
-        let Ok(crate::web::SessionJob::Compact {
+        let Ok(nomic_core::SessionJob::Compact {
             instructions: Some(instructions),
         }) = parse_slash_command("compact:focus on tests")
         else {
@@ -486,7 +489,7 @@ mod tests {
         assert_eq!(instructions, "focus on tests");
         assert!(matches!(
             parse_slash_command("continue").expect("continue"),
-            crate::web::SessionJob::Continue
+            nomic_core::SessionJob::Continue
         ));
     }
 
@@ -536,9 +539,10 @@ mod tests {
         assert!(skills.is_empty());
     }
 
-    /// `/` 命令与 prompt 共用同一队列：运行中提交的命令应排队而非并发执行。
+    /// `/` 命令与 prompt 的串行队列语义收在 core runner（集成测试覆盖）；
+    /// web 侧只验证提交路径：空闲时提交的 ack 不标记排队。
     #[tokio::test]
-    async fn slash_command_jobs_share_prompt_queue() {
+    async fn prompt_ack_not_queued_when_idle() {
         let (state, session_id) = crate::web::tests::test_state_with_session().await;
         let session = state
             .inner
@@ -548,31 +552,14 @@ mod tests {
             .get(&session_id)
             .expect("session")
             .clone();
+        assert!(!session.runner.is_running(), "预置 session 应空闲");
 
-        // 直接入队两个任务模拟「运行中提交命令」（不启动 runner：
-        // 第一个任务由 gate 抢占标志但未 spawn）
-        assert!(
-            session
-                .submit_job(crate::web::SessionJob::Prompt(crate::web::PendingPrompt {
-                    text: "hi".to_string(),
-                    images: Vec::new(),
-                }))
-                .await
-        );
+        // 斜杠命令同样走 runner 队列（/continue 空历史立即结束，不发起请求）
         let ack = handle_prompt(&state, &session_id, "/continue".to_string(), Vec::new()).await;
         let ServerEvent::PromptAck { queued, .. } = ack else {
             panic!("应返回 PromptAck");
         };
-        assert!(queued, "运行中提交命令应排队");
-        assert_eq!(session.gate.len().await, 2);
-        assert!(matches!(
-            session.gate.next().await,
-            Some(crate::web::SessionJob::Prompt(_))
-        ));
-        assert!(matches!(
-            session.gate.next().await,
-            Some(crate::web::SessionJob::Continue)
-        ));
+        assert!(!queued, "空闲时提交不应标记排队");
     }
 
     /// 未知斜杠命令不应进入队列，直接回错误事件。
@@ -592,6 +579,6 @@ mod tests {
             .get(&session_id)
             .expect("session")
             .clone();
-        assert_eq!(session.gate.len().await, 0, "未知命令不应入队");
+        assert_eq!(session.runner.queued_len(), 0, "未知命令不应入队");
     }
 }

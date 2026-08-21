@@ -22,8 +22,8 @@ function formatMessageTime(millis: number): string {
 
 function UserMessage({ item }: { item: UserItem }) {
   return (
-    // 约束到阅读列宽（max-w-reading）并在列内右对齐；不用 ml-auto（那会把右缘推到页面列 864px）
-    <div className="flex max-w-reading flex-col items-end gap-1">
+    // 页面列内右对齐（items-end）；气泡自身宽度仍由 max-w-[70%] 限制
+    <div className="flex flex-col items-end gap-1">
       <div className="max-w-[70%] rounded-xl rounded-br-md bg-primary px-4 py-2.5 text-[0.9375rem] leading-relaxed text-primary-foreground shadow-sm">
         {item.images.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
@@ -55,8 +55,7 @@ function ThinkingPill({ thinking, streaming }: { thinking: string; streaming: bo
   const brief = firstLine.length > 80 ? firstLine.slice(0, 80) + '…' : firstLine
 
   return (
-    // 折叠行与展开区统一收进阅读列（max-w-reading），右侧与用户气泡/正文对齐
-    <div className="max-w-reading text-muted-foreground">
+    <div className="text-muted-foreground">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
@@ -158,8 +157,7 @@ function AssistantMessage({
           )}
         </div>
       ) : item.text ? (
-        // 正文约束为阅读列宽（max-w-reading），避免铺满整列影响长文阅读
-        <div className="relative max-w-reading">
+        <div className="relative">
           <Markdown>{displayText}</Markdown>
           {item.streaming && (
             <span className="caret" aria-hidden="true">

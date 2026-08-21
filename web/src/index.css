@@ -67,11 +67,9 @@
   --text-caption--line-height: 1.5;
   --text-caption--font-weight: 400;
 
-  /* 布局列宽单一来源（生成 max-w-page / max-w-reading 工具类）：
-     页面列 920px；阅读列 72ch（Maple Mono 16px 下 ≈ 690px），
-     用户消息/正文/工具卡片/思考内容共用同一右缘 */
+  /* 布局列宽单一来源（生成 max-w-page 工具类）：
+     页面列 920px，消息流与输入区共用同一列宽 */
   --max-width-page: 920px;
-  --max-width-reading: 72ch;
 }
 
 /* 半径基准与 DESIGN.md rounded 对齐：sm 4px / md 6px / lg 8px / xl 12px */

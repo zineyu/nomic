@@ -21,7 +21,7 @@ const MAX_VISIBLE_TOOLS = 2
 function ToolGroup({ tools }: { tools: ToolItem[] }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className="flex max-w-reading flex-col gap-2">
+    <div className="flex flex-col gap-2">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}

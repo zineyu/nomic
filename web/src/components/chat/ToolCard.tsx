@@ -35,9 +35,8 @@ function ToolCardImpl({ item }: { item: ToolItem }) {
   const [expanded, setExpanded] = useState(false)
   const hasDetail = Object.keys(item.args).length > 0 || item.resultPreview !== ''
 
-  // 与助手 markdown 正文同一阅读列宽（max-w-reading），形成稳定的阅读参考线
   return (
-    <div className="max-w-reading text-muted-foreground">
+    <div className="text-muted-foreground">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}

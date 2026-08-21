@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { api } from '@/lib/api'
-import { applyServerEvent, messagesToItems, type ChatItem } from '@/lib/chat'
+import { agentEventContextTokens, applyServerEvent, messagesToItems, type ChatItem } from '@/lib/chat'
 import type {
   AskUserAnswer,
   AskUserQuestion,
@@ -146,8 +146,14 @@ export function useChat() {
           }
         case 'error':
           return { ...prev, items, running: false, error: event.message }
-        case 'agent':
-          return { ...prev, items }
+        case 'agent': {
+          // MessageEnd/AgentEnd/CompactionEnd 携带权威 context_tokens，
+          // 运行中实时驱动 ContextRing（否则只有快照刷新时才更新）
+          const contextTokens = agentEventContextTokens(event.event)
+          return contextTokens === null
+            ? { ...prev, items }
+            : { ...prev, items, contextTokens }
+        }
         default:
           return prev
       }

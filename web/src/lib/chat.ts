@@ -235,6 +235,22 @@ export function applyServerEvent(items: ChatItem[], event: ServerEvent): ChatIte
   }
 }
 
+/** 从 agent 事件提取权威上下文 token 数（MessageEnd/AgentEnd/CompactionEnd 携带）。 */
+export function agentEventContextTokens(event: AgentEvent): number | null {
+  const kind = eventKind(event as unknown as Record<string, unknown>)
+  const payload = eventPayload(event as unknown as Record<string, unknown>) as {
+    context_tokens?: unknown
+  }
+  switch (kind) {
+    case 'MessageEnd':
+    case 'AgentEnd':
+    case 'CompactionEnd':
+      return typeof payload.context_tokens === 'number' ? payload.context_tokens : null
+    default:
+      return null
+  }
+}
+
 /** 应用一个 agent 生命周期事件到消息项列表（纯函数）。 */
 export function applyAgentEvent(items: ChatItem[], event: AgentEvent): ChatItem[] {
   const kind = eventKind(event as unknown as Record<string, unknown>)

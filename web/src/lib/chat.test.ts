@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  agentEventContextTokens,
   applyAgentEvent,
   applyServerEvent,
   assistantText,
@@ -298,5 +299,42 @@ describe('assistantText', () => {
     } as never)
     expect(text).toBe('结论')
     expect(thinking).toBe('推理')
+  })
+})
+
+describe('agentEventContextTokens', () => {
+  it('从 MessageEnd / AgentEnd / CompactionEnd 提取 context_tokens', () => {
+    expect(
+      agentEventContextTokens({
+        MessageEnd: { message: assistantMessage('ok'), context_tokens: 12_345 },
+      }),
+    ).toBe(12_345)
+    expect(
+      agentEventContextTokens({ AgentEnd: { messages: [], context_tokens: 12_400 } }),
+    ).toBe(12_400)
+    expect(
+      agentEventContextTokens({
+        CompactionEnd: {
+          summary: 's',
+          tokens_before: 56_000,
+          context_tokens: 8_000,
+          kept_count: 3,
+          usage: {
+            input: 0,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            total_tokens: 0,
+            cost: { input: 0, output: 0, cache_read: 0, cache_write: 0, total: 0 },
+          },
+        },
+      }),
+    ).toBe(8_000)
+  })
+
+  it('其他事件返回 null', () => {
+    expect(agentEventContextTokens('AgentStart')).toBeNull()
+    expect(agentEventContextTokens('TurnStart')).toBeNull()
+    expect(agentEventContextTokens({ MessageStart: userMessage('x') })).toBeNull()
   })
 })

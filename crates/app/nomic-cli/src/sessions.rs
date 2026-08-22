@@ -18,10 +18,12 @@ use crate::picker::{Picker, PickerRow};
 /// 列出全部 session：标题、最后更新时间、消息数与启动目录。
 /// session id 是内部标识，不展示。
 pub async fn list() -> Result<()> {
+    tracing::debug!("sessions: listing all sessions");
     let store = SessionStore::open_default()
         .await
         .context("打开 session 库失败")?;
     let sessions = store.list_sessions().await.context("列出 session 失败")?;
+    tracing::debug!(count = sessions.len(), "sessions: listed");
     if sessions.is_empty() {
         println!("没有历史 session。");
         return Ok(());
@@ -40,6 +42,7 @@ pub async fn list() -> Result<()> {
 // future_not_send；block_on 主线程驱动，不跨线程迁移）
 #[allow(clippy::future_not_send)]
 pub async fn resume(cli: &Cli) -> Result<()> {
+    tracing::info!("sessions: starting interactive resume");
     let store = SessionStore::open_default()
         .await
         .context("打开 session 库失败")?;
@@ -55,8 +58,10 @@ pub async fn resume(cli: &Cli) -> Result<()> {
         );
     }
     let Some(id) = pick_session(&sessions)? else {
+        tracing::debug!("sessions: user cancelled picker");
         return Ok(());
     };
+    tracing::info!(session_id = %id, "sessions: user selected session");
     crate::dispatch(&resume_cli(cli, id)).await
 }
 

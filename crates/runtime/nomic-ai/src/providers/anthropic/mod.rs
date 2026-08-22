@@ -53,6 +53,7 @@ impl AnthropicProvider {
             .connect_timeout(Duration::from_secs(30))
             .build()
             .expect("failed to build reqwest client");
+        tracing::debug!(has_api_key = api_key.is_some(), "AnthropicProvider created");
         Self {
             client,
             api_key,
@@ -82,10 +83,21 @@ impl Provider for AnthropicProvider {
         options: &StreamOptions,
         cancel: CancellationToken,
     ) -> AssistantStream {
+        let api_key = self.resolve_api_key(options);
+        tracing::debug!(
+            model = %model.id,
+            base_url = %model.base_url,
+            messages = context.messages.len(),
+            tools = context.tools.len(),
+            has_system_prompt = context.system_prompt.is_some(),
+            has_api_key = api_key.is_ok(),
+            reasoning = ?options.reasoning,
+            "Anthropic stream request"
+        );
         let attempt = AnthropicAttempt {
             client: self.client.clone(),
             base_url: model.base_url.clone(),
-            api_key: self.resolve_api_key(options),
+            api_key,
             request: build_request(model, context, options),
             timeout_ms: options.timeout_ms,
         };
@@ -137,6 +149,7 @@ const fn thinking_budget(level: ThinkingLevel) -> u64 {
 }
 
 /// 构造请求体（serde_json::Value，字段省略靠调用方控制）。
+#[tracing::instrument(level = "trace", skip_all, fields(model = %model.id))]
 fn build_request(model: &Model, context: &Context, options: &StreamOptions) -> serde_json::Value {
     let mut body = serde_json::json!({
         "model": model.id,
@@ -183,7 +196,8 @@ fn build_request(model: &Model, context: &Context, options: &StreamOptions) -> s
     body
 }
 
-/// 消息转换（对齐 pi 的 `convertMessages`，M1 无 OAuth/cache/deferred tools）。
+/// 消息转换（对齐 pi 的 `convertMessages`，M1 无 OAuth/cache/deferred tools））。
+#[tracing::instrument(level = "trace", skip_all, fields(message_count = messages.len()))]
 fn convert_messages(messages: &[Message]) -> Vec<serde_json::Value> {
     let mut params = Vec::new();
     let mut iter = messages.iter().peekable();
@@ -308,7 +322,10 @@ async fn run(
 ) -> Result<(), RequestError> {
     let api_key = api_key
         .as_ref()
-        .map_err(|e| RequestError::fatal(e.clone()))?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "Anthropic API key resolution failed");
+            RequestError::fatal(e.clone())
+        })?;
     let mut builder = client
         .post(format!("{base_url}/v1/messages"))
         .header("x-api-key", api_key)
@@ -321,15 +338,20 @@ async fn run(
     let response = tokio::select! {
         biased;
         () = cancel.cancelled() => return Err(RequestError::fatal("request aborted".to_string())),
-        result = builder.json(request).send() => result.map_err(|e| RequestError::from_reqwest(&e))?,
+        result = builder.json(request).send() => result.map_err(|e| {
+            tracing::debug!(error = %e, "Anthropic HTTP request failed");
+            RequestError::from_reqwest(&e)
+        })?,
     };
 
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
+        tracing::warn!(status = %status, body_len = body.len(), "Anthropic API error");
         return Err(RequestError::from_status(status, &body));
     }
 
+    tracing::debug!(status = %status, "Anthropic SSE stream established");
     let _ = tx.send(AssistantEvent::Start);
     // Start 已发出，流中错误不得重试（会产生重复事件）
     process_events(response.bytes_stream().eventsource(), cancel, output, tx)
@@ -404,6 +426,7 @@ where
     }
 
     if saw_message_start && !saw_message_stop {
+        tracing::warn!("Anthropic stream ended before message_stop");
         return Err("Anthropic stream ended before message_stop".to_string());
     }
     Ok(())

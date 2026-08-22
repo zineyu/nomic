@@ -135,6 +135,7 @@ impl SkillResolver {
     /// 项目目录从 `cwd` 向上查找 `.nomic/skills` 与 `.agents/skills`；
     /// 用户目录为平台标准配置目录与 `~/.agents`（由 `dirs` 解析）。
     pub fn for_cwd(cwd: &Path) -> Result<Self, SkillsError> {
+        tracing::debug!(cwd = %cwd.display(), "skill resolver: initializing for cwd");
         Self::new(cwd, ProjectDiscovery::Ancestors, default_user_roots())
     }
 
@@ -170,6 +171,7 @@ impl SkillResolver {
     pub fn catalog_with_diagnostics(&self) -> SkillCatalog {
         let mut by_name: BTreeMap<String, Skill> = BTreeMap::new();
         let mut errors = Vec::new();
+        tracing::debug!(roots = self.roots.len(), "skill resolver: scanning roots");
         for root in &self.roots {
             let Ok(entries) = std::fs::read_dir(&root.path) else {
                 continue;
@@ -232,7 +234,9 @@ impl SkillResolver {
 
     /// 显式激活一个 skill，返回正文（不含 frontmatter）。
     pub fn activate(&self, name: &str) -> Result<ActivatedSkill, SkillsError> {
+        tracing::debug!(name = %name, "skill resolver: activating skill");
         let skill = self.resolve(name)?;
+        tracing::info!(name = %skill.name, scope = %skill.scope, "skill activated");
         Ok(ActivatedSkill {
             name: skill.name,
             scope: skill.scope,
@@ -253,6 +257,7 @@ impl SkillResolver {
         name: &str,
         rel: Option<&str>,
     ) -> Result<SkillResource, SkillsError> {
+        tracing::debug!(name = %name, rel = ?rel, "skill resolver: resolving resource");
         let skill = self.resolve(name)?;
         let Some(rel) = rel else {
             return Ok(SkillResource::Instructions(skill));

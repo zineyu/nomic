@@ -81,7 +81,9 @@ pub fn expand_invocation(
         return Ok(None);
     };
     let (name, tail) = split_invocation(rest);
+    tracing::debug!(name = %name, args = %tail, "expanding prompt template invocation");
     let Some(template) = templates.iter().find(|template| template.name == name) else {
+        tracing::debug!(name = %name, available = templates.len(), "prompt template not found");
         return Err(PromptsError::NotFound {
             name: name.to_string(),
             available: templates
@@ -91,6 +93,7 @@ pub fn expand_invocation(
         });
     };
     let args = split_arguments(tail)?;
+    tracing::debug!(name = %name, args_count = args.len(), "prompt template expanded");
     Ok(Some(template.expand(&args)))
 }
 

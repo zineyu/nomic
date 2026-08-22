@@ -15,6 +15,7 @@ impl SessionStore {
         key: &str,
         value: &serde_json::Value,
     ) -> Result<(), SessionError> {
+        tracing::debug!(key = %key, "setting global config");
         let payload = serde_json::to_string(value)?;
         sqlx::query("INSERT INTO config (\"key\", value, updated_at) VALUES (?, jsonb(?), ?)")
             .bind(key)
@@ -33,6 +34,7 @@ impl SessionStore {
         key: &str,
         value: &serde_json::Value,
     ) -> Result<(), SessionError> {
+        tracing::debug!(session_id = %session_id, key = %key, "setting session config");
         let payload = serde_json::to_string(value)?;
         sqlx::query(
             "INSERT INTO config (\"key\", value, updated_at, session_id) \

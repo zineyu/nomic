@@ -28,6 +28,7 @@ const EXTENSION_MIME: &[(&str, &str)] = &[
 
 /// 加载图片文件为内联内容块（同步读：本地小文件，含上限保护）。
 pub fn load_image(path: &Path) -> Result<ImageContent> {
+    tracing::debug!(path = %path.display(), "loading image");
     let declared =
         extension_mime(path).with_context(|| format!("不支持的图片类型：{}", path.display()))?;
     let data = std::fs::read(path).with_context(|| format!("读取图片失败：{}", path.display()))?;

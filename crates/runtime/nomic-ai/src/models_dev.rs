@@ -188,7 +188,14 @@ impl Catalog {
 
 /// 加载 models.dev 目录：新鲜缓存 → 网络拉取（成功则写缓存）→ 过期缓存 → `None`。
 pub async fn load() -> Option<Catalog> {
-    load_with(cache_path().ok().as_deref(), SystemTime::now(), fetch).await
+    tracing::debug!("loading models.dev catalog");
+    let result = load_with(cache_path().ok().as_deref(), SystemTime::now(), fetch).await;
+    if result.is_some() {
+        tracing::debug!("models.dev catalog loaded successfully");
+    } else {
+        tracing::warn!("models.dev catalog unavailable (no cache and fetch failed)");
+    }
+    result
 }
 
 /// `load` 的可测试内核：缓存路径、当前时间与网络拉取均可注入。
@@ -198,16 +205,20 @@ where
     Fut: Future<Output = Option<String>>,
 {
     if let Some(catalog) = cache_path.and_then(|path| read_fresh_cache(path, now)) {
+        tracing::debug!("models.dev: fresh cache hit");
         return Some(catalog);
     }
+    tracing::debug!("models.dev: fetching from network");
     if let Some(text) = fetch().await
         && let Ok(catalog) = Catalog::parse(&text)
     {
+        tracing::debug!(bytes = text.len(), "models.dev: fetch successful");
         if let Some(path) = cache_path {
             write_cache(path, &text);
         }
         return Some(catalog);
     }
+    tracing::debug!("models.dev: fetch failed, trying stale cache");
     cache_path.and_then(read_stale_cache)
 }
 
@@ -217,14 +228,27 @@ async fn fetch() -> Option<String> {
         .timeout(FETCH_TIMEOUT)
         .build()
         .ok()?;
-    let response = client
-        .get(API_URL)
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?;
-    response.text().await.ok()
+    let response = match client.get(API_URL).send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::debug!(error = %e, "models.dev: network request failed");
+            return None;
+        }
+    };
+    let response = match response.error_for_status() {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::debug!(error = %e, "models.dev: HTTP error");
+            return None;
+        }
+    };
+    match response.text().await {
+        Ok(text) => Some(text),
+        Err(e) => {
+            tracing::debug!(error = %e, "models.dev: failed to read response body");
+            None
+        }
+    }
 }
 
 /// 读取新鲜（TTL 内）缓存；不存在、过期或解析失败都返回 `None`。
@@ -255,7 +279,10 @@ fn write_cache(path: &Path, text: &str) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(path, text);
+    match std::fs::write(path, text) {
+        Ok(()) => tracing::debug!(path = %path.display(), bytes = text.len(), "models.dev: cache written"),
+        Err(e) => tracing::debug!(error = %e, path = %path.display(), "models.dev: cache write failed"),
+    }
 }
 
 /// 缓存路径：平台标准 cache 目录下的 `nomic/models-dev-api.json`（由 `dirs`

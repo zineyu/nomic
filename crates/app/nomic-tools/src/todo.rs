@@ -293,6 +293,7 @@ impl AgentTool for TodoReadTool {
         _on_update: ToolUpdateCallback,
     ) -> Result<ToolResult, ToolError> {
         let todos = self.store.todos();
+        tracing::debug!(count = todos.len(), "todo_read: reading todo list");
         Ok(ToolResult {
             details: Some(serde_json::json!({ "todos": todos })),
             ..ToolResult::text(render_todos(&todos))
@@ -352,6 +353,7 @@ impl AgentTool for TodoWriteTool {
             return Err(ToolError::new("Operation aborted"));
         }
         let todos = materialize(&params.todos)?;
+        tracing::debug!(count = todos.len(), "todo_write: updating todo list");
         self.store.replace(todos.clone());
         Ok(ToolResult {
             details: Some(serde_json::json!({ "todos": todos })),

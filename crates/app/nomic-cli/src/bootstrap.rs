@@ -66,10 +66,12 @@ pub struct Bootstrap {
 /// `policy` 决定是否在启动时创建/恢复 session（web 模式只开库不建 session）。
 #[allow(clippy::too_many_lines)]
 pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
+    tracing::info!(?policy, "bootstrap: starting initialization");
     let config = crate::config::load()?;
     let env_openai_base_url = std::env::var("OPENAI_BASE_URL").ok();
     // session 库提前打开：模型选择（config 表）与消息持久化共用同一库
     let store = open_store(cli).await?;
+    tracing::debug!(store_available = store.is_some(), "bootstrap: session store opened");
     // 数据库中的模型选择历史（最新在前的回退链；库不可用或读取失败为空链）
     let db_history = db_model_history(store.as_ref()).await;
     // catalog 加载提示：CLI 选择器 > 数据库最新选择；都没有时不做完整性预判
@@ -92,6 +94,12 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
             .await;
     let models = ModelResolver::new(cli, config, env_openai_base_url, catalog);
     let model = select_startup_model(cli, &db_history, &models)?;
+    tracing::info!(
+        model = %model.id,
+        provider = %model.provider,
+        api = ?model.api,
+        "bootstrap: model selected"
+    );
     // api_key 显式分层解析（provider 内部的 env 回退发生在请求时，
     // 若把配置文件值直接交给构造器会抢到环境变量前面）。
     let api_key = resolve_api_key(
@@ -153,6 +161,11 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
         SessionPolicy::Init => init_session(cli, &cwd, store.clone()).await?,
         SessionPolicy::OpenStoreOnly => None,
     };
+    tracing::debug!(
+        session_id = session.as_ref().map_or("none", |s| s.id.as_str()),
+        history = session.as_ref().map_or(0, |s| s.history.len()),
+        "bootstrap: session initialized"
+    );
     let history = session
         .as_ref()
         .map(|init| init.history.clone())
@@ -164,6 +177,14 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
         model: model.id.clone(),
     };
     let available_models = models.all_models(&current_selection);
+    tracing::info!(
+        model = %model.id,
+        provider = %model.provider,
+        skills = skill_resolver.catalog_with_diagnostics().skills.len(),
+        prompt_templates = prompt_templates.len(),
+        available_models = available_models.len(),
+        "bootstrap: initialization complete"
+    );
     Ok(Bootstrap {
         model,
         models,

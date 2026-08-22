@@ -2109,6 +2109,7 @@ dependencies = [
  "dirs",
  "tempfile",
  "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]
@@ -2124,6 +2125,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -2134,6 +2136,7 @@ dependencies = [
  "dirs",
  "tempfile",
  "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]

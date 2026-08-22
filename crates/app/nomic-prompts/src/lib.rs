@@ -116,6 +116,7 @@ impl PromptResolver {
     /// 项目目录从 `cwd` 向上查找 `.nomic/prompts`；用户目录为平台标准配置
     /// 目录（由 `dirs` 解析），无法解析时仅使用项目级目录。
     pub fn for_cwd(cwd: &Path) -> Result<Self, PromptsError> {
+        tracing::debug!(cwd = %cwd.display(), "prompt resolver: initializing for cwd");
         Self::new(
             cwd,
             ProjectDiscovery::Ancestors,
@@ -162,6 +163,7 @@ impl PromptResolver {
 
     /// 同 [`Self::catalog`]，同时返回被跳过模板的诊断信息。
     pub fn catalog_with_diagnostics(&self) -> PromptCatalog {
+        tracing::debug!(roots = self.roots.len(), explicit = self.explicit.len(), "prompt resolver: scanning");
         let mut by_name: BTreeMap<String, PromptTemplate> = BTreeMap::new();
         let mut errors = Vec::new();
         for root in &self.roots {

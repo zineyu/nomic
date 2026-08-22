@@ -523,14 +523,26 @@ async fn generate_summary(
         .stream(target.model, &context, &options, cancel)
         .result()
         .await
-        .map_err(|err| CompactionError::Summarization(err.to_string()))?;
+        .map_err(|err| {
+            tracing::warn!(error = %err, "compaction: summarization stream failed");
+            CompactionError::Summarization(err.to_string())
+        })?;
     match message.stop_reason {
-        nomic_ai::StopReason::Aborted => Err(CompactionError::Aborted(
-            message.error_message.unwrap_or_default(),
-        )),
-        nomic_ai::StopReason::Error => Err(CompactionError::Summarization(
-            message.error_message.unwrap_or_default(),
-        )),
+        nomic_ai::StopReason::Aborted => {
+            tracing::debug!("compaction: summarization aborted");
+            Err(CompactionError::Aborted(
+                message.error_message.unwrap_or_default(),
+            ))
+        }
+        nomic_ai::StopReason::Error => {
+            tracing::warn!(
+                error = message.error_message.as_deref().unwrap_or(""),
+                "compaction: summarization error"
+            );
+            Err(CompactionError::Summarization(
+                message.error_message.unwrap_or_default(),
+            ))
+        }
         _ => {
             let text = message
                 .content
@@ -578,13 +590,24 @@ pub async fn compact_messages(
         None => (0, None),
     };
     let Some(cut) = find_cut_point(messages, offset, settings.keep_recent_tokens) else {
+        tracing::debug!("compaction: no cut point found (history too short)");
         return Ok(None);
     };
     let to_summarize = &messages[offset..cut];
     if to_summarize.is_empty() {
+        tracing::debug!("compaction: nothing to summarize");
         return Ok(None);
     }
     let tokens_before = estimate_context_tokens(messages);
+    tracing::info!(
+        tokens_before,
+        keep_recent_tokens = settings.keep_recent_tokens,
+        messages_to_summarize = to_summarize.len(),
+        total_messages = messages.len(),
+        has_previous_summary = previous_summary.is_some(),
+        has_custom_instructions = request.custom_instructions.is_some(),
+        "compaction: starting summarization"
+    );
     on_start(tokens_before);
     let target = SummarizeTarget {
         provider,
@@ -606,6 +629,14 @@ pub async fn compact_messages(
     let kept_count = messages.len() - cut;
     let new_history = apply_compaction(messages, &summary, kept_count as u64, now_millis());
 
+    tracing::info!(
+        tokens_before,
+        kept_count,
+        summary_len = summary.len(),
+        input_tokens = usage.input,
+        output_tokens = usage.output,
+        "compaction: summarization complete"
+    );
     let compaction = Compaction {
         summary,
         tokens_before,

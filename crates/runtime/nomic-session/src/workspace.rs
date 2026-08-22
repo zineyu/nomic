@@ -47,9 +47,11 @@ impl SessionStore {
         let path = normalize_path(path.as_ref());
         let text = path.to_string_lossy().into_owned();
         if let Some(workspace) = self.workspace_by_path(&text).await? {
+            tracing::debug!(workspace_id = %workspace.id, path = %text, "workspace: existing found");
             return Ok(workspace);
         }
         let id = uuid::Uuid::now_v7().to_string();
+        tracing::info!(workspace_id = %id, path = %text, "workspace: creating new");
         sqlx::query("INSERT OR IGNORE INTO workspaces (id, path, created_at) VALUES (?, ?, ?)")
             .bind(&id)
             .bind(&text)
@@ -68,6 +70,7 @@ impl SessionStore {
     /// 外键约束拒绝。
     pub async fn create_session_in(&self, workspace_id: &str) -> Result<String, SessionError> {
         let id = uuid::Uuid::now_v7().to_string();
+        tracing::debug!(session_id = %id, workspace_id = %workspace_id, "creating session in workspace");
         let mut tx = self.pool.begin().await?;
         sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?, ?)")
             .bind(&id)

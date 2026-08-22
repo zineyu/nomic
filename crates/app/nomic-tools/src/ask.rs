@@ -141,7 +141,18 @@ impl AgentTool for AskUserQuestionTool {
         _on_update: ToolUpdateCallback,
     ) -> Result<ToolResult, ToolError> {
         let question = build_question(&params)?;
+        tracing::debug!(
+            question = %question.question,
+            kind = ?question.kind,
+            options = question.options.len(),
+            "asking user question"
+        );
         let answer = self.sink.ask(question.clone(), cancel).await?;
+        tracing::debug!(
+            answers = answer.answers.len(),
+            has_custom = answer.custom.is_some(),
+            "user answered question"
+        );
         Ok(ToolResult {
             details: Some(serde_json::json!({
                 "question": question.question,

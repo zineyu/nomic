@@ -45,6 +45,7 @@ impl QuestionRegistry {
         question: AskUserQuestion,
     ) -> (String, oneshot::Receiver<AskUserAnswer>) {
         let id = uuid::Uuid::now_v7().to_string();
+        tracing::debug!(id = %id, question = %question.question, kind = ?question.kind, "question registered");
         let (answer_tx, answer_rx) = oneshot::channel();
         self.entries
             .lock()
@@ -68,8 +69,10 @@ impl QuestionRegistry {
             .expect("question registry lock poisoned")
             .remove(id)
         else {
+            tracing::debug!(id = %id, "question answer: not found (already answered or discarded)");
             return false;
         };
+        tracing::debug!(id = %id, answers = answer.answers.len(), "question answered");
         entry.answer_tx.send(answer).is_ok()
     }
 
@@ -77,6 +80,7 @@ impl QuestionRegistry {
     /// 通道关闭转为错误结果）。返回是否确有在途条目被丢弃——web 据此决定
     /// 是否广播取消事件（前端收起弹层）。
     pub fn discard(&self, id: &str) -> bool {
+        tracing::debug!(id = %id, "question discarded");
         self.entries
             .lock()
             .expect("question registry lock poisoned")

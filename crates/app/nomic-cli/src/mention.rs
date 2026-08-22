@@ -42,6 +42,7 @@ pub fn mention_fragment(text: &str) -> Option<&str> {
 
 /// 展开文本中的全部有效 mention；无效标记原样保留。
 pub fn expand_mentions(text: &str, skills: &SkillResolver, cwd: &Path) -> String {
+    tracing::debug!(text_len = text.len(), "expanding mentions");
     let mut out = String::with_capacity(text.len());
     let mut index = 0;
     while index < text.len() {

@@ -173,6 +173,7 @@ impl SessionStore {
     /// 自动创建父目录；连接开启 WAL 与外键约束。
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, SessionError> {
         let path = path.as_ref();
+        tracing::info!(path = %path.display(), "session store: opening database");
         if let Some(parent) = path.parent() {
             // 相对路径 "sessions.db" 的 parent 是空串，create_dir_all("") 会失败
             if !parent.as_os_str().is_empty() {
@@ -185,7 +186,9 @@ impl SessionStore {
             .journal_mode(SqliteJournalMode::Wal)
             .foreign_keys(true);
         let pool = SqlitePool::connect_with(options).await?;
-        Self::migrate(pool).await
+        let store = Self::migrate(pool).await?;
+        tracing::info!(path = %path.display(), "session store: database opened");
+        Ok(store)
     }
 
     /// 打开默认路径（平台标准 data 目录）的库，见 [`default_db_path`]。
@@ -220,7 +223,9 @@ impl SessionStore {
         workspace: impl AsRef<Path>,
     ) -> Result<String, SessionError> {
         let workspace = self.get_or_create_workspace(workspace).await?;
-        self.create_session_in(&workspace.id).await
+        let session_id = self.create_session_in(&workspace.id).await?;
+        tracing::info!(session_id = %session_id, workspace_id = %workspace.id, "session created");
+        Ok(session_id)
     }
 
     /// 追加一条消息，返回新 entry id。
@@ -234,16 +239,25 @@ impl SessionStore {
         parent_id: Option<&str>,
         message: &Message,
     ) -> Result<String, SessionError> {
+        tracing::debug!(
+            session_id = %session_id,
+            role = message_role(message),
+            parent_id = ?parent_id,
+            "appending message to session"
+        );
         let payload = serde_json::to_string(message)?;
-        self.append_entry(
-            session_id,
-            parent_id,
-            "message",
-            message_role(message),
-            message_timestamp(message),
-            payload,
-        )
-        .await
+        let entry_id = self
+            .append_entry(
+                session_id,
+                parent_id,
+                "message",
+                message_role(message),
+                message_timestamp(message),
+                payload,
+            )
+            .await?;
+        tracing::debug!(session_id = %session_id, entry_id = %entry_id, "message appended");
+        Ok(entry_id)
     }
 
     /// 追加一条压缩条目，返回新 entry id。
@@ -256,16 +270,26 @@ impl SessionStore {
         parent_id: Option<&str>,
         record: &CompactionRecord,
     ) -> Result<String, SessionError> {
+        tracing::info!(
+            session_id = %session_id,
+            tokens_before = record.tokens_before,
+            kept_count = record.kept_count,
+            summary_len = record.summary.len(),
+            "appending compaction record"
+        );
         let payload = serde_json::to_string(record)?;
-        self.append_entry(
-            session_id,
-            parent_id,
-            "compaction",
-            "compaction",
-            now_millis(),
-            payload,
-        )
-        .await
+        let entry_id = self
+            .append_entry(
+                session_id,
+                parent_id,
+                "compaction",
+                "compaction",
+                now_millis(),
+                payload,
+            )
+            .await?;
+        tracing::debug!(session_id = %session_id, entry_id = %entry_id, "compaction record appended");
+        Ok(entry_id)
     }
 
     /// 追加一条 entry 的实现内核（消息与压缩条目共用）：同事务内校验
@@ -331,7 +355,14 @@ impl SessionStore {
     /// （默认分支语义；branch 切换走显式 entry id，见 [`Self::load_branch`]）。
     pub async fn load_messages(&self, session_id: &str) -> Result<Vec<Message>, SessionError> {
         let entries = self.fetch_entries(session_id).await?;
-        replay(default_path(&entries))
+        let path = default_path(&entries);
+        tracing::debug!(
+            session_id = %session_id,
+            entries = entries.len(),
+            path_len = path.len(),
+            "loading session messages (default branch)"
+        );
+        replay(path)
     }
 
     /// 加载指定 entry 所在分支的完整消息序列：沿 `entry_id` 的祖先链
@@ -348,6 +379,12 @@ impl SessionStore {
         let entries = self.fetch_entries(session_id).await?;
         let path = ancestor_path(&entries, entry_id)
             .ok_or_else(|| SessionError::EntryNotFound(entry_id.to_string()))?;
+        tracing::debug!(
+            session_id = %session_id,
+            entry_id = %entry_id,
+            path_len = path.len(),
+            "loading session branch"
+        );
         replay(path)
     }
 
@@ -402,7 +439,9 @@ impl SessionStore {
 
     /// 列出全部 session 摘要（按末条消息时间降序，无消息的排最后）。
     pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>, SessionError> {
-        self.summarize(None).await
+        let summaries = self.summarize(None).await?;
+        tracing::debug!(count = summaries.len(), "listed sessions");
+        Ok(summaries)
     }
 
     /// 列出指定 workspace 下的 session 摘要（排序同 [`Self::list_sessions`]）。

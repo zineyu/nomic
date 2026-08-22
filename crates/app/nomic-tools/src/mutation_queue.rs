@@ -21,5 +21,6 @@ pub async fn lock_path(path: &Path) -> OwnedMutexGuard<()> {
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
     };
+    tracing::trace!(path = %path.display(), "mutation_queue: acquiring lock");
     lock.lock_owned().await
 }

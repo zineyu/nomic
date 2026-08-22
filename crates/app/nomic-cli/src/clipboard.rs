@@ -17,6 +17,7 @@ pub enum ClipboardContent {
 
 /// 读取剪贴板：有图片返回图片，否则有文本返回文本，都没有返回 `None`。
 pub fn read() -> Result<Option<ClipboardContent>> {
+    tracing::debug!("clipboard: reading");
     let mut clipboard = arboard::Clipboard::new().context("剪贴板不可用（无桌面环境？）")?;
     if let Ok(image) = clipboard.get_image() {
         let width = u32::try_from(image.width).context("剪贴板图片尺寸异常")?;
@@ -35,6 +36,7 @@ pub fn read() -> Result<Option<ClipboardContent>> {
 /// 注意：X11/Wayland 下 arboard 默认在 `Clipboard` 析构时失去剪贴板所有权，
 /// 进程存活期间内容可粘贴（TUI 长驻进程，满足要求）。
 pub fn write_text(text: &str) -> Result<()> {
+    tracing::debug!(len = text.len(), "clipboard: writing text");
     let mut clipboard = arboard::Clipboard::new().context("剪贴板不可用（无桌面环境？）")?;
     clipboard.set_text(text).context("写入剪贴板失败")
 }

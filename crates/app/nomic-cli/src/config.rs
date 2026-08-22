@@ -121,7 +121,13 @@ impl Config {
 /// 从默认路径加载配置；文件不存在时返回 `Ok(None)`。
 pub fn load() -> Result<Option<Config>> {
     let path = default_config_path()?;
-    load_from(&path)
+    let config = load_from(&path)?;
+    if config.is_some() {
+        tracing::debug!(path = %path.display(), "config loaded");
+    } else {
+        tracing::debug!(path = %path.display(), "config file not found, using defaults");
+    }
+    Ok(config)
 }
 
 /// 从指定路径加载配置；不存在返回 `Ok(None)`，读取/解析/校验失败硬报错。
@@ -130,6 +136,7 @@ fn load_from(path: &Path) -> Result<Option<Config>> {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
+            tracing::warn!(error = %error, path = %path.display(), "failed to read config file");
             return Err(error).with_context(|| format!("读取配置文件失败：{}", path.display()));
         }
     };
@@ -138,6 +145,15 @@ fn load_from(path: &Path) -> Result<Option<Config>> {
     config
         .validate()
         .with_context(|| format!("校验配置文件失败：{}", path.display()))?;
+    tracing::debug!(
+        has_base_url = config.base_url.is_some(),
+        has_api_key = config.api_key.is_some(),
+        has_reasoning = config.reasoning.is_some(),
+        has_temperature = config.temperature.is_some(),
+        providers = config.providers.as_ref().map_or(0, BTreeMap::len),
+        has_compaction = config.compaction.is_some(),
+        "config parsed"
+    );
     Ok(Some(config))
 }
 

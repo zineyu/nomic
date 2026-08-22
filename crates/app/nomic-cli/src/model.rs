@@ -161,15 +161,22 @@ pub fn select_startup_model(
             Some(spec) => ModelSelection::parse(spec, Some(&provider))?.model,
             None => bail!("provider {provider:?} 无默认模型，请用 --model 指定模型 id"),
         };
+        tracing::debug!(provider = %provider, model = %model_id, "selecting model from CLI");
         return models.resolve(&provider, &model_id);
     }
     for selection in db_history {
         match models.resolve(&selection.provider, &selection.model) {
-            Ok(model) => return Ok(model),
-            Err(error) => eprintln!(
-                "\x1b[33m⚠ 模型选择 {} 已失效（{error:#}），回退到更早的选择\x1b[0m",
-                selection.spec()
-            ),
+            Ok(model) => {
+                tracing::debug!(provider = %selection.provider, model = %selection.model, "model selected from db history");
+                return Ok(model);
+            }
+            Err(error) => {
+                tracing::warn!(selection = %selection.spec(), error = %error, "db model selection invalid, falling back");
+                eprintln!(
+                    "\x1b[33m⚠ 模型选择 {} 已失效（{error:#}），回退到更早的选择\x1b[0m",
+                    selection.spec()
+                );
+            }
         }
     }
     bail!(
@@ -184,6 +191,18 @@ pub fn resolve_api_key(
     provider: Option<&str>,
     config: Option<&str>,
 ) -> Option<String> {
+    let source = if cli.is_some() {
+        "cli"
+    } else if env.is_some() {
+        "env"
+    } else if provider.is_some() {
+        "provider_config"
+    } else if config.is_some() {
+        "global_config"
+    } else {
+        "none"
+    };
+    tracing::debug!(source, has_key = cli.or(env).or(provider).or(config).is_some(), "api_key resolved");
     cli.or(env).or(provider).or(config).map(str::to_string)
 }
 
@@ -219,6 +238,7 @@ pub async fn load_catalog_unless_complete(
         model_spec_from_config(config, provider, model_id_hint).is_some_and(ModelSpec::is_complete)
     });
     if complete {
+        tracing::debug!("models.dev catalog skipped (config has complete spec)");
         return None;
     }
     let catalog = nomic_ai::models_dev::load().await;
@@ -376,6 +396,14 @@ impl ModelResolver {
         self.ensure_known(provider, model_id)?;
         let base_url = self.base_url(provider, api, &preset);
         let spec = self.spec_for(provider, model_id, &preset);
+        tracing::debug!(
+            provider = %provider,
+            model = %model_id,
+            api = ?api,
+            base_url = %base_url,
+            reasoning = spec.reasoning.unwrap_or(false),
+            "model resolved"
+        );
         Ok(Model {
             name: spec.name.unwrap_or_else(|| model_id.to_string()),
             id: model_id.to_string(),
@@ -407,8 +435,10 @@ impl ModelResolver {
         }
         if self.catalog.is_none() {
             // 目录不可用：无法校验存在性，保持降级行为
+            tracing::debug!(provider = %provider, model = %model_id, "model validation skipped (catalog unavailable)");
             return Ok(());
         }
+        tracing::warn!(provider = %provider, model = %model_id, "model not found in catalog or config");
         Err(anyhow::anyhow!(
             "模型 {model_id:?} 不存在：不在 models.dev 目录中，\
              也未在 config.toml 的 [providers.{provider}.models] 下定义，\

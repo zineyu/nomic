@@ -20,6 +20,7 @@ impl BaseDir {
 
     /// 更新基准目录（切换到另一个 workspace）。
     pub fn set(&self, dir: PathBuf) {
+        tracing::debug!(dir = %dir.display(), "base dir updated");
         *self
             .0
             .write()

@@ -198,6 +198,12 @@ impl AgentTool for CreateAgentTool {
 
         let tools = filter_tools(&self.available_tools, &params.tool_names);
 
+        tracing::info!(
+            model = %params.model,
+            tool_count = tools.len(),
+            id = ?params.id,
+            "creating child agent"
+        );
         let id = self
             .supervisor
             .create(CreateAgentRequest {
@@ -209,8 +215,12 @@ impl AgentTool for CreateAgentTool {
                 stream_options: None,
             })
             .await
-            .map_err(|e| ToolError::new(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to create child agent");
+                ToolError::new(e.to_string())
+            })?;
 
+        tracing::info!(agent_id = %id, model = %params.model, "child agent created");
         Ok(ToolResult::text(format!(
             "Agent created successfully.\n  ID: {id}\n  Model: {}\n  Tools: [{}]",
             params.model,
@@ -284,10 +294,14 @@ impl AgentTool for SendMessageTool {
         _on_update: ToolUpdateCallback,
     ) -> Result<ToolResult, ToolError> {
         let id = AgentId(params.agent_id.clone());
+        tracing::debug!(agent_id = %params.agent_id, message_len = params.message.len(), "sending message to child agent");
         self.supervisor
             .send_message(&id, &params.message, cancel)
             .await
-            .map_err(|e| ToolError::new(e.to_string()))?;
+            .map_err(|e| {
+                tracing::warn!(agent_id = %params.agent_id, error = %e, "failed to send message");
+                ToolError::new(e.to_string())
+            })?;
 
         Ok(ToolResult::text(format!(
             "Message sent to agent \"{}\" (non-blocking). Use wait_result to get the response.",
@@ -355,12 +369,17 @@ impl AgentTool for WaitResultTool {
         _on_update: ToolUpdateCallback,
     ) -> Result<ToolResult, ToolError> {
         let id = AgentId(params.agent_id.clone());
+        tracing::debug!(agent_id = %params.agent_id, "waiting for child agent result");
         let messages = self
             .supervisor
             .wait_result(&id)
             .await
-            .map_err(|e| ToolError::new(e.to_string()))?;
+            .map_err(|e| {
+                tracing::warn!(agent_id = %params.agent_id, error = %e, "wait_result failed");
+                ToolError::new(e.to_string())
+            })?;
 
+        tracing::debug!(agent_id = %params.agent_id, messages = messages.len(), "child agent result received");
         let text = format_messages(&messages);
         if text.is_empty() {
             Ok(ToolResult::text(format!(
@@ -530,10 +549,14 @@ impl AgentTool for CloseAgentTool {
         _on_update: ToolUpdateCallback,
     ) -> Result<ToolResult, ToolError> {
         let id = AgentId(params.agent_id.clone());
+        tracing::info!(agent_id = %params.agent_id, "closing child agent");
         self.supervisor
             .close(&id)
             .await
-            .map_err(|e| ToolError::new(e.to_string()))?;
+            .map_err(|e| {
+                tracing::warn!(agent_id = %params.agent_id, error = %e, "failed to close agent");
+                ToolError::new(e.to_string())
+            })?;
 
         Ok(ToolResult::text(format!(
             "Agent \"{}\" closed successfully.",

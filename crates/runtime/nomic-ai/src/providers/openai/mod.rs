@@ -80,6 +80,12 @@ impl std::fmt::Debug for OpenAiProvider {
 impl OpenAiProvider {
     /// 创建 provider；`api_key` 为 `None` 时每次请求回退到 `OPENAI_API_KEY` 环境变量。
     pub fn new(api_key: Option<String>, compat: OpenAiCompat) -> Self {
+        tracing::debug!(
+            has_api_key = api_key.is_some(),
+            max_tokens_field = ?compat.max_tokens_field,
+            supports_usage_in_streaming = ?compat.supports_usage_in_streaming,
+            "OpenAiProvider created"
+        );
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(30))
             .build()
@@ -112,6 +118,15 @@ impl Provider for OpenAiProvider {
         options: &StreamOptions,
         cancel: CancellationToken,
     ) -> AssistantStream {
+        tracing::debug!(
+            model = %model.id,
+            base_url = %model.base_url,
+            messages = context.messages.len(),
+            tools = context.tools.len(),
+            has_system_prompt = context.system_prompt.is_some(),
+            reasoning = ?options.reasoning,
+            "OpenAI stream request"
+        );
         let attempt = OpenAiAttempt {
             client: self.client.clone(),
             call: StreamCall {
@@ -417,15 +432,20 @@ async fn run(
     let response = tokio::select! {
         biased;
         () = cancel.cancelled() => return Err(RequestError::fatal("request aborted".to_string())),
-        result = builder.json(&call.request).send() => result.map_err(|e| RequestError::from_reqwest(&e))?,
+        result = builder.json(&call.request).send() => result.map_err(|e| {
+            tracing::debug!(error = %e, "OpenAI HTTP request failed");
+            RequestError::from_reqwest(&e)
+        })?,
     };
 
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
+        tracing::warn!(status = %status, body_len = body.len(), "OpenAI API error");
         return Err(RequestError::from_status(status, &body));
     }
 
+    tracing::debug!(status = %status, "OpenAI SSE stream established");
     let _ = tx.send(AssistantEvent::Start);
     // Start 已发出，流中错误不得重试（会产生重复事件）
     process_events(response.bytes_stream().eventsource(), cancel, output, tx)
@@ -518,12 +538,15 @@ where
     }
 
     if output.stop_reason == StopReason::Error {
-        return Err(output
+        let msg = output
             .error_message
             .clone()
-            .unwrap_or_else(|| "provider returned an error stop reason".to_string()));
+            .unwrap_or_else(|| "provider returned an error stop reason".to_string());
+        tracing::warn!(error = %msg, "OpenAI stream ended with error stop reason");
+        return Err(msg);
     }
     if !has_finish_reason {
+        tracing::warn!("OpenAI stream ended without finish_reason");
         return Err("stream ended without finish_reason".to_string());
     }
     Ok(())

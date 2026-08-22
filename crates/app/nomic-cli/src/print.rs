@@ -19,6 +19,7 @@ use crate::{Cli, agent_recipe, bootstrap};
 
 /// 运行 print 模式。
 pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
+    tracing::info!(prompt_len = prompt.len(), "print mode: starting");
     let boot = bootstrap::bootstrap(cli, bootstrap::SessionPolicy::Init).await?;
     // `/name args` 视为 prompt template 调用：展开后发送；未知名称硬报错
     let prompt = match nomic_prompts::expand_invocation(&boot.prompt_templates, prompt) {
@@ -81,8 +82,13 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
 
     let result = run.await.context("prompt task panicked")?;
     if let Err(error) = result {
+        tracing::error!(error = %error, "print mode: agent loop failed");
         bail!("agent loop failed: {error}");
     }
+    if let Some(error) = &saw_error {
+        tracing::error!(error = %error, "print mode: saw provider error");
+    }
+    tracing::info!(saw_error = saw_error.is_some(), "print mode: finished");
     if let Some(error) = saw_error {
         bail!("{error}");
     }
@@ -218,6 +224,7 @@ async fn drain_events(
         if let Some(recorder) = &mut recorder
             && let Err(error) = recorder.record(&event).await
         {
+            tracing::warn!(error = %error, "session record failed");
             eprintln!("\x1b[33m⚠ session 落库失败：{error}\x1b[0m");
         }
         match event {

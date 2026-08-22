@@ -27,6 +27,7 @@ pub fn discover_agents_files(cwd: &Path) -> Vec<ContextFile> {
         })
         .collect();
     files.reverse();
+    tracing::debug!(count = files.len(), "context files discovered");
     files
 }
 

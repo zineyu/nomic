@@ -71,6 +71,14 @@ pub struct AgentRecipe {
 /// 按配方组装：主 agent 工具 = 基础工具（含 skills、todo、提问）+
 /// 多 agent 管理工具；子 agent 池 = 同构的基础工具。
 pub fn assemble(opts: RecipeOpts) -> AgentRecipe {
+    tracing::debug!(
+        todo_policy = match &opts.todo {
+            TodoPolicy::Shared(_) => "shared",
+            TodoPolicy::Isolated => "isolated",
+        },
+        has_injection = opts.turn_injection.is_some(),
+        "assembling agent recipe"
+    );
     let (main_todo, child_todo) = match opts.todo {
         TodoPolicy::Shared(store) => (store.clone(), store),
         TodoPolicy::Isolated => (TodoStore::new(), TodoStore::new()),
@@ -99,6 +107,7 @@ pub fn assemble(opts: RecipeOpts) -> AgentRecipe {
         supervisor,
         child_tools,
     ));
+    tracing::debug!(total_tools = tools.len(), "agent recipe assembled");
     AgentRecipe {
         tools,
         turn_injection: opts.turn_injection,

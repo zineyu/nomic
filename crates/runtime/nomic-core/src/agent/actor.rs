@@ -238,6 +238,7 @@ impl Agent {
     /// 调用返回 [`ActorError::Gone`]，事件通道随 agent 丢弃而关闭。
     /// 事件流接收端在 builder `build()` 时取得，与 spawn 无关。
     pub fn spawn(self) -> (AgentHandle, tokio::task::JoinHandle<()>) {
+        tracing::debug!("spawning agent actor");
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<AgentCommand>();
         let task = tokio::spawn(async move {
             let mut agent = self;

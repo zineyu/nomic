@@ -67,13 +67,6 @@ impl SessionRecorder {
         self.tip = tip;
     }
 
-    /// 切换目标 session（`/new` 传 `tip=None` 重置；`/resume` 传恢复的
-    /// 分支末端）。
-    pub fn switch(&mut self, session_id: String, tip: Option<String>) {
-        self.session_id = session_id;
-        self.tip = tip;
-    }
-
     /// 消费一个 agent 事件：定稿点（`MessageEnd` / `CompactionEnd`）以
     /// 当前父指针落库，成功后推进父指针；其余事件忽略。
     ///
@@ -108,5 +101,18 @@ impl SessionRecorder {
             _ => {}
         }
         Ok(())
+    }
+
+    /// 切换目标 session（`/new` 传 `tip=None` 重置；`/resume` 传恢复的
+    /// 分支末端）。
+    pub fn switch(&mut self, session_id: String, tip: Option<String>) {
+        tracing::info!(
+            old_session = %self.session_id,
+            new_session = %session_id,
+            has_tip = tip.is_some(),
+            "session recorder: switching session"
+        );
+        self.session_id = session_id;
+        self.tip = tip;
     }
 }

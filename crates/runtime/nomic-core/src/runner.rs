@@ -220,6 +220,8 @@ impl SessionRunner {
     /// 无在途 job，令牌预放入在途槽位，覆盖「已提交未开始」的取消
     /// 窗口。
     pub fn submit(&self, job: SessionJob) -> Result<(), RunnerError> {
+        let kind = job.kind();
+        tracing::debug!(?kind, queued = self.queued_len(), "session runner: job submitted");
         let token = CancellationToken::new();
         {
             let mut current = self.shared.current.lock().expect("lock");
@@ -231,6 +233,7 @@ impl SessionRunner {
         if self.job_tx.send((job, token)).is_err() {
             self.shared.queued.fetch_sub(1, Ordering::SeqCst);
             self.shared.current.lock().expect("lock").take();
+            tracing::error!(?kind, "session runner: submit failed, runner exited");
             return Err(RunnerError::Gone);
         }
         Ok(())
@@ -238,7 +241,7 @@ impl SessionRunner {
 
     /// 取消在途 job；没有在途运行时返回 `false`（排队 job 保留）。
     pub fn cancel_current(&self) -> bool {
-        self.shared
+        let cancelled = self.shared
             .current
             .lock()
             .expect("lock")
@@ -246,7 +249,11 @@ impl SessionRunner {
             .is_some_and(|token| {
                 token.cancel();
                 true
-            })
+            });
+        if cancelled {
+            tracing::debug!("session runner: current job cancelled");
+        }
+        cancelled
     }
 
     /// 已提交未出队的 job 数（状态快照用）。
@@ -263,7 +270,10 @@ impl SessionRunner {
 /// 执行一个 job 并翻译结果：空结果转为专设变体，prompt 汇总
 /// 「是否正常结束」判定依据（取消令牌与尾部 stop reason）。
 async fn run_job(handle: &AgentHandle, job: SessionJob, token: &CancellationToken) -> JobOutcome {
-    match job {
+    let kind = job.kind();
+    tracing::info!(?kind, "session runner: job started");
+    let started = std::time::Instant::now();
+    let outcome = match job {
         SessionJob::Prompt { text, images } => {
             let result = handle
                 .prompt_with_images(&text, &images, token.clone())
@@ -286,7 +296,15 @@ async fn run_job(handle: &AgentHandle, job: SessionJob, token: &CancellationToke
                 None => ContinueOutcome::NothingToContinue,
             }))
         }
-    }
+    };
+    let elapsed_ms = started.elapsed().as_millis();
+    let is_ok = match &outcome {
+        JobOutcome::Prompt(r) => r.is_ok(),
+        JobOutcome::Compact(r) => r.is_ok(),
+        JobOutcome::Continue(r) => r.is_ok(),
+    };
+    tracing::info!(?kind, elapsed_ms, is_ok, "session runner: job finished");
+    outcome
 }
 
 /// prompt 是否正常结束：未被取消，且最后一条 assistant 消息不是以

@@ -3,7 +3,8 @@
 //! 输出目标由 `--log` 选择：
 //! - `file`（默认）：写入平台标准 state 目录下的 `nomic/logs`（由 `dirs` 解析：
 //!   Linux 为 `$XDG_STATE_HOME` 或 `~/.local/state`；无 state 目录定义的平台回退
-//!   data 目录），按天滚动（`nomic.log.YYYY-MM-DD`），
+//!   data 目录），按天滚动（`nomic.log.YYYY-MM-DD`），每条事件一行 JSON
+//!   （JSON Lines，含 timestamp/level/target/fields/span 字段），
 //!   经 tracing-appender 的非阻塞 writer 落盘；
 //! - `terminal`：输出到 stderr（print 模式调试用；TUI 模式下会干扰界面）；
 //! - `off`：关闭日志。
@@ -52,8 +53,8 @@ pub fn init(target: LogTarget, level: Option<&str>) -> Result<LogGuard> {
             let appender = tracing_appender::rolling::daily(&dir, "nomic.log");
             let (writer, guard) = tracing_appender::non_blocking(appender);
             tracing_subscriber::fmt()
+                .json()
                 .with_env_filter(filter)
-                .with_ansi(false)
                 .with_writer(writer)
                 .init();
             tracing::debug!(dir = %dir.display(), "日志写入文件");

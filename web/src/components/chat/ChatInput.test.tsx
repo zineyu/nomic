@@ -1,6 +1,6 @@
 // ChatInput 测试：Enter 发送、Shift+Enter 换行、运行中切换停止、上下文环形指示器。
 
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -23,7 +23,7 @@ describe('ChatInput', () => {
     const textarea = screen.getByPlaceholderText(/给智能体发消息/)
     await user.type(textarea, 'hello')
     await user.keyboard('{Enter}')
-    expect(onSend).toHaveBeenCalledWith('hello')
+    expect(onSend).toHaveBeenCalledWith('hello', [])
     expect(textarea).toHaveValue('')
   })
 
@@ -163,7 +163,7 @@ describe('ChatInput 补全弹层', () => {
 
     // 弹层关闭后 Enter 正常发送（trim 后交给服务端解析）
     await user.keyboard('{Enter}')
-    expect(onSend).toHaveBeenCalledWith('/continue')
+    expect(onSend).toHaveBeenCalledWith('/continue', [])
   })
 
   it('Esc 关闭弹层，Enter 原样发送', async () => {
@@ -178,6 +178,69 @@ describe('ChatInput 补全弹层', () => {
     expect(screen.queryByText('/compact [聚焦指令]')).not.toBeInTheDocument()
 
     await user.keyboard('{Enter}')
-    expect(onSend).toHaveBeenCalledWith('/com')
+    expect(onSend).toHaveBeenCalledWith('/com', [])
+  })
+})
+
+// ── 图片粘贴 ─────────────────────────────────────────────────────────────
+
+/** 构造只含图片项的 paste 事件（jsdom 无原生 clipboardData） */
+function pasteImage(textarea: HTMLElement, file: File) {
+  fireEvent.paste(textarea, {
+    clipboardData: {
+      items: [{ type: file.type, getAsFile: () => file }],
+    },
+  })
+}
+
+describe('ChatInput 图片粘贴', () => {
+  it('粘贴图片显示附件缩略图，发送时随消息携带', async () => {
+    const user = userEvent.setup()
+    const onSend = vi.fn()
+    renderChatInput({ onSend })
+    const textarea = screen.getByPlaceholderText(/给智能体发消息/)
+
+    pasteImage(textarea, new File(['fake-png'], 'a.png', { type: 'image/png' }))
+    expect(await screen.findByAltText('附件 1')).toBeInTheDocument()
+
+    await user.type(textarea, '看这张图')
+    await user.keyboard('{Enter}')
+    expect(onSend).toHaveBeenCalledWith('看这张图', [
+      { data: expect.any(String), mime_type: 'image/png' },
+    ])
+    // base64 载荷不含 data URL 前缀
+    const [, images] = onSend.mock.calls[0]
+    expect(images[0].data).not.toContain('base64,')
+    // 发送后附件清空
+    expect(screen.queryByAltText('附件 1')).not.toBeInTheDocument()
+  })
+
+  it('纯文本粘贴不产生附件', async () => {
+    const user = userEvent.setup()
+    renderChatInput()
+    const textarea = screen.getByPlaceholderText(/给智能体发消息/)
+
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        items: [{ type: 'text/plain', getAsFile: () => null }],
+      },
+    })
+    await user.type(textarea, 'x')
+    expect(screen.queryByAltText(/附件/)).not.toBeInTheDocument()
+  })
+
+  it('缩略图可移除', async () => {
+    renderChatInput()
+    const textarea = screen.getByPlaceholderText(/给智能体发消息/)
+
+    pasteImage(textarea, new File(['a'], 'a.png', { type: 'image/png' }))
+    pasteImage(textarea, new File(['b'], 'b.png', { type: 'image/png' }))
+    expect(await screen.findByAltText('附件 2')).toBeInTheDocument()
+
+    // 按钮 hover 才可见（jsdom 无 hover），直接派发 click
+    fireEvent.click(screen.getAllByTitle('移除图片')[0])
+    // 移除第一张后剩余一张（alt 重新编号）
+    expect(screen.queryByAltText('附件 2')).not.toBeInTheDocument()
+    expect(screen.getByAltText('附件 1')).toBeInTheDocument()
   })
 })

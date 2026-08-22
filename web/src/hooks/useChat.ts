@@ -19,6 +19,7 @@ import { agentEventContextTokens, applyServerEvent, messagesToItems, type ChatIt
 import type {
   AskUserAnswer,
   AskUserQuestion,
+  ImageContent,
   Model,
   ServerEvent,
   SessionStats,
@@ -238,12 +239,12 @@ export function useChat() {
     }
   }, [refreshSessions, refreshWorkspaces])
 
-  const send = useCallback(async (text: string) => {
+  const send = useCallback(async (text: string, images?: ImageContent[]) => {
     const trimmed = text.trim()
     const sid = sessionIdRef.current
     if (!trimmed || !sid) return
     try {
-      const result = await api.prompt(sid, trimmed)
+      const result = await api.prompt(sid, trimmed, images)
       if (result.status === 'queued') {
         setState((prev) => ({ ...prev, queued: prev.queued + 1 }))
       }
@@ -280,7 +281,7 @@ export function useChat() {
 
   /** 启动页首条消息：在选定 workspace 下创建 session，切换到它并发送。 */
   const startSession = useCallback(
-    async (workspace: string, text: string) => {
+    async (workspace: string, text: string, images?: ImageContent[]) => {
       const trimmed = text.trim()
       if (!workspace || !trimmed) return
       try {
@@ -288,7 +289,7 @@ export function useChat() {
         // 先切换查看（快照为空会话），再提交 prompt：后续流式事件
         // 经 applyEvent 增量驱动 UI
         await loadSession(id)
-        const result = await api.prompt(id, trimmed)
+        const result = await api.prompt(id, trimmed, images)
         if (result.status === 'queued') {
           setState((prev) => ({ ...prev, queued: prev.queued + 1 }))
         }

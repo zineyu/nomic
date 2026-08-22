@@ -13,6 +13,7 @@ import { WorkspaceBar } from '@/components/chat/WorkspaceBar'
 import { Button } from '@/components/ui/button'
 import { fadeSlideIn } from '@/lib/anim'
 import { runPhase } from '@/lib/chat'
+import type { ImageContent } from '@/lib/types'
 import type { UseChat } from '@/hooks/useChat'
 
 interface ChatViewProps extends UseChat {
@@ -100,9 +101,9 @@ export function ChatView({
 
   // 启动页发送：在选定 workspace 下创建 session 并发出首条消息
   const handleStartSend = useCallback(
-    (text: string) => {
+    (text: string, images?: ImageContent[]) => {
       if (!startWorkspace) return
-      void startSession(startWorkspace, text)
+      void startSession(startWorkspace, text, images)
     },
     [startSession, startWorkspace],
   )

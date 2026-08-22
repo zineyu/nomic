@@ -8,9 +8,13 @@
 // - `/` 开头触发斜杠命令候选（/compact、/continue；执行在服务端，
 //   见 crates/app/nomic-cli/src/web/api/handlers.rs）
 // - 弹层打开时 ↑/↓ 选择、Tab/Enter 接受、Esc 关闭；弹层关闭时 Enter 发送
+//
+// 图片粘贴：textarea 上捕获剪贴板中的 image/* 项（截图、复制图片），
+// 转为 base64 附件展示在输入框上方（可移除），随消息一并发送
+// （`prompt` 事件的 images 字段；服务端要求文本非空，图片仅作附件）。
 
 import { useEffect, useRef, useState } from 'react'
-import { SendHorizontal, Square } from 'lucide-react'
+import { SendHorizontal, Square, X } from 'lucide-react'
 
 import { ContextRing } from '@/components/chat/ContextRing'
 import { ModelPicker } from '@/components/ModelPicker'
@@ -24,7 +28,7 @@ import {
   mentionFragment,
   mentionTypeCandidates,
 } from '@/lib/mentions'
-import type { SkillSummary } from '@/lib/types'
+import type { ImageContent, SkillSummary } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const MAX_LINES = 8
@@ -67,7 +71,7 @@ interface ChatInputProps {
   /** 输入框占位文本（缺省为「给智能体发消息」） */
   placeholder?: string
   onSwitchModel?: (spec: string, reasoning?: string) => void
-  onSend: (text: string) => void
+  onSend: (text: string, images: ImageContent[]) => void
   onStop: () => void
 }
 
@@ -87,6 +91,8 @@ export function ChatInput({
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [popup, setPopup] = useState<PopupState | null>(null)
+  // 粘贴的图片附件（base64，随消息发送）
+  const [images, setImages] = useState<ImageContent[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   // skill 清单缓存（进程级，session 内不变；null = 尚未加载）
   const skillsRef = useRef<SkillSummary[] | null>(null)
@@ -214,9 +220,37 @@ export function ChatInput({
   const submit = () => {
     const text = value.trim()
     if (!text || sendDisabled) return
-    onSend(text)
+    onSend(text, images)
     setValue('')
+    setImages([])
     setPopup(null)
+  }
+
+  /** 粘贴：提取剪贴板中的 image/* 项转为 base64 附件；
+      不阻止默认行为，文本部分照常插入输入框。 */
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(e.clipboardData.items).filter((item) =>
+      item.type.startsWith('image/'),
+    )
+    for (const item of items) {
+      const file = item.getAsFile()
+      if (!file) continue
+      const reader = new FileReader()
+      reader.onload = () => {
+        const result = reader.result as string // data:<mime>;base64,<data>
+        const comma = result.indexOf(',')
+        if (comma < 0) return
+        setImages((prev) => [
+          ...prev,
+          { data: result.slice(comma + 1), mime_type: file.type || item.type },
+        ])
+      }
+      reader.readAsDataURL(file)
+    }
+  }
+
+  const removeImage = (index: number) => {
+    setImages((prev) => prev.filter((_, i) => i !== index))
   }
 
   /** 接受弹层候选：替换片段起点到文本末尾；完整候选补尾随空格结束标记 */
@@ -307,6 +341,29 @@ export function ChatInput({
             'focus-within:ring-1 focus-within:ring-ring/40',
           )}
         >
+          {/* 图片附件预览（粘贴收集，可移除） */}
+          {images.length > 0 && (
+            <div className="flex flex-wrap gap-2 px-3.5 pt-2.5">
+              {images.map((image, index) => (
+                <div key={index} className="group relative">
+                  <img
+                    src={`data:${image.mime_type};base64,${image.data}`}
+                    alt={`附件 ${index + 1}`}
+                    className="size-14 rounded-md border object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeImage(index)}
+                    title="移除图片"
+                    className="absolute -right-1.5 -top-1.5 hidden size-4 items-center justify-center rounded-full bg-foreground text-background group-hover:flex"
+                  >
+                    <X className="size-2.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* 输入区主体 */}
           <div className="flex items-start gap-2 px-3.5 pt-2">
             {/* 输入框 */}
@@ -315,6 +372,7 @@ export function ChatInput({
               value={value}
               onChange={(e) => setValue(e.target.value)}
               onKeyDown={onKeyDown}
+              onPaste={onPaste}
               placeholder={placeholder}
               rows={1}
               autoFocus

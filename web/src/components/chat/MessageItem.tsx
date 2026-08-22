@@ -10,6 +10,7 @@ import { useThrottledValue } from '@/hooks/useThrottledValue'
 import { useCollapse } from '@/lib/anim'
 import { cn } from '@/lib/utils'
 import type { AssistantItem, ChatItem, ToolItem, UserItem } from '@/lib/chat'
+import { isEmptyAssistant } from '@/lib/chat'
 import { ToolCard } from './ToolCard'
 
 function formatMessageTime(millis: number): string {
@@ -131,8 +132,8 @@ function AssistantMessage({
   const displayText = useThrottledValue(item.text, item.streaming ? 80 : 0)
   const canRetry = failed && Boolean(onRetry && retryText)
 
-  // 空输出（无正文、无思考、非失败、非流式）：不渲染气泡/操作条，避免空气泡与双倍行距
-  if (!failed && !item.streaming && !item.text && !item.thinking) return null
+  // 空输出：不渲染气泡/操作条，避免空气泡与双倍行距
+  if (isEmptyAssistant(item)) return null
 
   return (
     <div className="group flex flex-col gap-1.5">

@@ -67,6 +67,13 @@ export interface SystemItem {
 
 export type ChatItem = UserItem | AssistantItem | ToolItem | SystemItem
 
+/** 空 assistant 消息（无正文、无思考、非失败、非流式）不渲染任何内容。
+ * 消息项与消息列表共用同一判定：列表侧跳过该行，避免空行占位产生双倍间距。 */
+export function isEmptyAssistant(item: AssistantItem): boolean {
+  const failed = item.stopReason === 'error' || item.stopReason === 'aborted'
+  return !failed && !item.streaming && !item.text && !item.thinking
+}
+
 let idCounter = 0
 function nextId(): string {
   idCounter += 1

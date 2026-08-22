@@ -8,6 +8,7 @@ import { MessageItem } from '@/components/chat/MessageItem'
 import { ToolCard } from '@/components/chat/ToolCard'
 import { fadeSlideIn, staggerFadeSlideIn, useCollapse } from '@/lib/anim'
 import type { ChatItem, ToolItem } from '@/lib/chat'
+import { isEmptyAssistant } from '@/lib/chat'
 import { cn } from '@/lib/utils'
 
 const EXAMPLES = [
@@ -55,6 +56,12 @@ function renderRows(items: ChatItem[], initialBatch: RefObject<boolean>): ReactN
   let i = 0
   while (i < items.length) {
     const item = items[i]
+    // 渲染为空的 assistant 消息（无正文/思考的 tool_use 消息）直接跳过，
+    // 否则空行占位会让两侧工具卡片出现双倍间距
+    if (item.type === 'assistant' && isEmptyAssistant(item)) {
+      i += 1
+      continue
+    }
     if (item.type !== 'tool') {
       rows.push(
         <EnterRow key={item.id} initialBatch={initialBatch}>

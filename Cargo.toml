@@ -126,7 +126,7 @@ time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
 
 # ── 测试 ────────────────────────────────────────────────────────────────────
 tokio-test = "0.4"
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 tempfile = "3"
 
 # ── Lint 配置：严格但实用 ────────────────────────────────────────────────────

@@ -136,7 +136,7 @@ export function ChatView({
           <PanelLeft className="size-4" />
         </Button>
 
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           {/* 标题 */}
           <h2 className="truncate text-base font-semibold" title={title}>
             {title}

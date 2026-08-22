@@ -73,13 +73,13 @@ export function ModelPicker({
   }
 
   return (
-    <div className="flex shrink-0 items-center gap-1">
+    <div className="flex min-w-0 shrink items-center gap-1">
       <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 min-w-0 shrink-0 justify-start gap-1.5 rounded-full border border-border bg-background px-3 text-xs font-normal hover:bg-accent"
+            className="h-7 min-w-0 shrink justify-start gap-1.5 rounded-full border border-border bg-background px-3 text-xs font-normal hover:bg-accent"
           >
             <Cpu className="size-3 shrink-0 opacity-70" />
             <span className="min-w-0 flex-1 truncate text-left">

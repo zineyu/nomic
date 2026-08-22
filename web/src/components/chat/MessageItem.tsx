@@ -24,9 +24,9 @@ function formatMessageTime(millis: number): string {
 
 function UserMessage({ item }: { item: UserItem }) {
   return (
-    // 页面列内右对齐（items-end）；气泡自身宽度仍由 max-w-[70%] 限制
+    // 页面列内右对齐（items-end）；气泡宽度上限随断点收敛（小屏放宽到 85%）
     <div className="flex flex-col items-end gap-1">
-      <div className="max-w-[70%] rounded-xl rounded-br-md bg-primary px-4 py-2.5 text-[0.9375rem] leading-relaxed text-primary-foreground shadow-sm">
+      <div className="max-w-[85%] rounded-xl rounded-br-md bg-primary px-4 py-2.5 text-[0.9375rem] leading-relaxed text-primary-foreground shadow-sm sm:max-w-[70%]">
         {item.images.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {item.images.map((image, i) => (

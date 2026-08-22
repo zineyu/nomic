@@ -320,12 +320,10 @@ async fn run(
     output: &mut AssistantMessage,
     tx: &tokio::sync::mpsc::UnboundedSender<AssistantEvent>,
 ) -> Result<(), RequestError> {
-    let api_key = api_key
-        .as_ref()
-        .map_err(|e| {
-            tracing::error!(error = %e, "Anthropic API key resolution failed");
-            RequestError::fatal(e.clone())
-        })?;
+    let api_key = api_key.as_ref().map_err(|e| {
+        tracing::error!(error = %e, "Anthropic API key resolution failed");
+        RequestError::fatal(e.clone())
+    })?;
     let mut builder = client
         .post(format!("{base_url}/v1/messages"))
         .header("x-api-key", api_key)

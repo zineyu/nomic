@@ -71,7 +71,10 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
     let env_openai_base_url = std::env::var("OPENAI_BASE_URL").ok();
     // session 库提前打开：模型选择（config 表）与消息持久化共用同一库
     let store = open_store(cli).await?;
-    tracing::debug!(store_available = store.is_some(), "bootstrap: session store opened");
+    tracing::debug!(
+        store_available = store.is_some(),
+        "bootstrap: session store opened"
+    );
     // 数据库中的模型选择历史（最新在前的回退链；库不可用或读取失败为空链）
     let db_history = db_model_history(store.as_ref()).await;
     // catalog 加载提示：CLI 选择器 > 数据库最新选择；都没有时不做完整性预判

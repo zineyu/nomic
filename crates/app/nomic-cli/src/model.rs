@@ -202,7 +202,11 @@ pub fn resolve_api_key(
     } else {
         "none"
     };
-    tracing::debug!(source, has_key = cli.or(env).or(provider).or(config).is_some(), "api_key resolved");
+    tracing::debug!(
+        source,
+        has_key = cli.or(env).or(provider).or(config).is_some(),
+        "api_key resolved"
+    );
     cli.or(env).or(provider).or(config).map(str::to_string)
 }
 

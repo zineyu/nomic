@@ -221,7 +221,11 @@ impl SessionRunner {
     /// 窗口。
     pub fn submit(&self, job: SessionJob) -> Result<(), RunnerError> {
         let kind = job.kind();
-        tracing::debug!(?kind, queued = self.queued_len(), "session runner: job submitted");
+        tracing::debug!(
+            ?kind,
+            queued = self.queued_len(),
+            "session runner: job submitted"
+        );
         let token = CancellationToken::new();
         {
             let mut current = self.shared.current.lock().expect("lock");
@@ -241,7 +245,8 @@ impl SessionRunner {
 
     /// 取消在途 job；没有在途运行时返回 `false`（排队 job 保留）。
     pub fn cancel_current(&self) -> bool {
-        let cancelled = self.shared
+        let cancelled = self
+            .shared
             .current
             .lock()
             .expect("lock")

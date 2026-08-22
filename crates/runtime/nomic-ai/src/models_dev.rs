@@ -280,8 +280,12 @@ fn write_cache(path: &Path, text: &str) {
         let _ = std::fs::create_dir_all(parent);
     }
     match std::fs::write(path, text) {
-        Ok(()) => tracing::debug!(path = %path.display(), bytes = text.len(), "models.dev: cache written"),
-        Err(e) => tracing::debug!(error = %e, path = %path.display(), "models.dev: cache write failed"),
+        Ok(()) => {
+            tracing::debug!(path = %path.display(), bytes = text.len(), "models.dev: cache written");
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, path = %path.display(), "models.dev: cache write failed");
+        }
     }
 }
 

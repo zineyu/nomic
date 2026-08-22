@@ -163,7 +163,11 @@ impl PromptResolver {
 
     /// 同 [`Self::catalog`]，同时返回被跳过模板的诊断信息。
     pub fn catalog_with_diagnostics(&self) -> PromptCatalog {
-        tracing::debug!(roots = self.roots.len(), explicit = self.explicit.len(), "prompt resolver: scanning");
+        tracing::debug!(
+            roots = self.roots.len(),
+            explicit = self.explicit.len(),
+            "prompt resolver: scanning"
+        );
         let mut by_name: BTreeMap<String, PromptTemplate> = BTreeMap::new();
         let mut errors = Vec::new();
         for root in &self.roots {

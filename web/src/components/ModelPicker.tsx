@@ -88,7 +88,7 @@ export function ModelPicker({
             <ChevronsUpDown className="size-3 shrink-0 opacity-60" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="max-h-96 w-72 overflow-y-auto">
+        <DropdownMenuContent align="start" className="max-h-96 w-72 max-w-[calc(100vw-2rem)] overflow-y-auto">
           {[...groups.entries()].map(([provider, choices], i) => (
             <div key={provider}>
               {i > 0 && <DropdownMenuSeparator />}

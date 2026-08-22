@@ -74,7 +74,7 @@ export function WorkspaceBar({ workspaces, value, onChange }: WorkspaceBarProps)
                 <ChevronsUpDown className="size-3 shrink-0 opacity-60" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="max-h-96 w-80 overflow-y-auto">
+            <DropdownMenuContent align="start" className="max-h-96 w-80 max-w-[calc(100vw-2rem)] overflow-y-auto">
               {workspaces.map((ws) => (
                 <DropdownMenuItem
                   key={ws.id}

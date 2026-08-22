@@ -54,7 +54,7 @@ export default function App() {
           <div
             className={
               sidebarOpen
-                ? 'fixed inset-y-0 left-0 z-50 w-80 md:static md:z-auto'
+                ? 'fixed inset-y-0 left-0 z-50 w-80 max-w-[85vw] md:static md:z-auto'
                 : 'hidden'
             }
           >

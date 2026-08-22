@@ -1,4 +1,5 @@
 // 侧栏：模仿 DeepSeek Harness 布局。
+// 宽度由 App 容器统一控制（桌面 320px，移动端抽屉 max-w-[85vw]）。
 // 按 workspace 分组（可折叠）的会话列表，工作区组标题采用卡片样式。
 // 组标题右侧带「新建会话」按钮（在该 workspace 下创建）；「工作区」标题行带
 // 「添加工作区」按钮，展开内联输入框登记新 workspace（可无任何会话）。
@@ -76,7 +77,7 @@ export function Sidebar({
   }
 
   return (
-    <div className="flex h-full w-80 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
+    <div className="flex h-full w-full shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
       {/* 工作区区域标题（实际工作区在下方会话列表中以卡片样式分组展示） */}
       <div className="px-3 pt-3 pb-1">
         <div className="flex items-center justify-between px-1 pb-1.5">

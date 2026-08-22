@@ -15,6 +15,9 @@
 //!   （由 `dirs` 解析，见 [`default_db_path`]）
 //! - [`SessionRecorder`] 把落库策略（定稿点、落什么、父指针推进）收在
 //!   事件流 seam 后面：print / TUI 只做一行接线，语义不再漂移
+//! - 无 user 消息的 session（打开即退出、新建后未使用等空壳）不进入列表
+//!   与统计口径（`list_sessions` / `list_workspaces` 统一过滤），并在
+//!   session 结束点经 [`SessionStore::delete_if_no_user_message`] 物理清除
 //!
 //! 消息 payload 原样存 [`Message`] 的 serde JSON；`role`/`timestamp` 为提取列，
 //! 供查询与维护 session 时间字段。
@@ -437,7 +440,10 @@ impl SessionStore {
         Ok(entries)
     }
 
-    /// 列出全部 session 摘要（按末条消息时间降序，无消息的排最后）。
+    /// 列出全部 session 摘要（按末条消息时间降序）。
+    ///
+    /// 无 user 消息的 session 不出现（打开即退出、新建后未使用等空壳
+    /// 不进入历史与统计口径；物理清理见 [`Self::delete_if_no_user_message`]）。
     pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>, SessionError> {
         let summaries = self.summarize(None).await?;
         tracing::debug!(count = summaries.len(), "listed sessions");
@@ -453,6 +459,8 @@ impl SessionStore {
     }
 
     /// session 摘要查询内核：可选按 workspace 过滤；标题经分组查询批量补齐。
+    /// 只列出有 user 消息的 session（空壳 session 不是历史，见
+    /// [`Self::list_sessions`]）。
     async fn summarize(
         &self,
         workspace_id: Option<&str>,
@@ -464,6 +472,9 @@ impl SessionStore {
                      WHERE e.session_id = s.id AND e.kind = 'message') AS message_count
              FROM sessions s JOIN workspaces w ON w.id = s.workspace_id
              WHERE (?1 IS NULL OR s.workspace_id = ?1)
+               AND EXISTS(SELECT 1 FROM entries e
+                          WHERE e.session_id = s.id
+                            AND e.kind = 'message' AND e.role = 'user')
              ORDER BY s.last_message_at IS NULL, s.last_message_at DESC",
         )
         .bind(workspace_id)
@@ -489,6 +500,29 @@ impl SessionStore {
             });
         }
         Ok(summaries)
+    }
+
+    /// 删除一个没有任何 user 消息的 session（空壳：打开即退出、新建后
+    /// 未使用等），返回是否实际删除。
+    ///
+    /// 条件与删除同一条语句执行：session 已有 user 消息时是 no-op，调用方
+    /// 无需先查后删。entries 与会话级 config 经外键 `ON DELETE CASCADE`
+    /// 一并清除。session 不存在时同样返回 `Ok(false)`。
+    pub async fn delete_if_no_user_message(&self, session_id: &str) -> Result<bool, SessionError> {
+        let result = sqlx::query(
+            "DELETE FROM sessions WHERE id = ?
+               AND NOT EXISTS(SELECT 1 FROM entries e
+                              WHERE e.session_id = sessions.id
+                                AND e.kind = 'message' AND e.role = 'user')",
+        )
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        let deleted = result.rows_affected() > 0;
+        if deleted {
+            tracing::info!(session_id = %session_id, "deleted session without user messages");
+        }
+        Ok(deleted)
     }
 
     /// 各 session 的标题（首条 user 消息摘要）：一次分组查询取每个 session

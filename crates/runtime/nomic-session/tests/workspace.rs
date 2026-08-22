@@ -37,10 +37,20 @@ async fn workspace_path_is_normalized() {
 
 #[tokio::test]
 async fn list_sessions_in_filters_by_workspace() {
+    use nomic_ai::{Message, UserMessage, UserMessageContent};
     let store = SessionStore::in_memory().await.unwrap();
     let a = store.create_session("/tmp/ws-a").await.unwrap();
     let b = store.create_session("/tmp/ws-b").await.unwrap();
     let a2 = store.create_session("/tmp/ws-a").await.unwrap();
+
+    // 列表只包含有 user 消息的 session（空壳不进列表口径）
+    for id in [&a, &b, &a2] {
+        let message = Message::User(UserMessage {
+            content: UserMessageContent::Text("hi".to_string()),
+            timestamp: 1_000,
+        });
+        store.append_message(id, None, &message).await.unwrap();
+    }
 
     let summaries = store.list_sessions().await.unwrap();
     let ws_a = summaries

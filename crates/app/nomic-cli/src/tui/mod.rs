@@ -199,6 +199,8 @@ pub async fn run(cli: &Cli) -> Result<()> {
             set_cursor_style(block);
         }
     }
+    // 退出清理：无 user 消息的空 session（打开即退出等）不保留在库里
+    driver.discard_empty_session().await;
     Ok(())
 }
 

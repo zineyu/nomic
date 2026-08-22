@@ -80,6 +80,17 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
         .map(|(store, id)| SessionRecorder::new(store, id));
     let saw_error = drain_events(&mut events, recorder.as_mut()).await;
 
+    // 空壳 session 不保留（正常路径必有 user 消息，这里兜住 prompt 未落库
+    // 的异常退出）；失败仅告警（store 非权威源）
+    if let Some(recorder) = &recorder
+        && let Err(error) = recorder
+            .store()
+            .delete_if_no_user_message(recorder.session_id())
+            .await
+    {
+        tracing::warn!(error = %error, "print mode: discard empty session failed");
+    }
+
     let result = run.await.context("prompt task panicked")?;
     if let Err(error) = result {
         tracing::error!(error = %error, "print mode: agent loop failed");

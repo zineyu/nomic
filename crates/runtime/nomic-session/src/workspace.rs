@@ -28,7 +28,8 @@ pub struct WorkspaceSummary {
     pub id: String,
     /// 规范化路径
     pub path: PathBuf,
-    /// 名下 session 总数
+    /// 名下有 user 消息的 session 总数（空壳 session 不计入，口径同
+    /// `list_sessions`）
     pub session_count: u64,
     /// 最近活跃时间（Unix 毫秒；从未有 session 活动时为 `None`）
     pub last_active_at: Option<u64>,
@@ -142,10 +143,17 @@ impl SessionStore {
     }
 
     /// 列出全部 workspace 摘要（按最近活跃降序，从未活跃的排最后）。
+    ///
+    /// `session_count` 只统计有 user 消息的 session（与 `list_sessions`
+    /// 同一口径：空壳 session 不进统计）。
     pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceSummary>, SessionError> {
         let rows = sqlx::query(
             "SELECT w.id, w.path, w.last_active_at,
-                    (SELECT COUNT(*) FROM sessions s WHERE s.workspace_id = w.id) AS session_count
+                    (SELECT COUNT(*) FROM sessions s WHERE s.workspace_id = w.id
+                       AND EXISTS(SELECT 1 FROM entries e
+                                  WHERE e.session_id = s.id
+                                    AND e.kind = 'message' AND e.role = 'user')
+                    ) AS session_count
              FROM workspaces w
              ORDER BY w.last_active_at IS NULL, w.last_active_at DESC",
         )

@@ -157,10 +157,21 @@ async fn resume_requires_tty_for_picker() {
     let store = SessionStore::open(tmp.path().join("nomic").join("sessions.db"))
         .await
         .expect("open db");
-    store
+    let id = store
         .create_session(Path::new("/tmp/project-alpha"))
         .await
         .expect("create session");
+    store
+        .append_message(
+            &id,
+            None,
+            &Message::User(UserMessage {
+                content: UserMessageContent::Text("hello".to_string()),
+                timestamp: 1_785_000_000_000,
+            }),
+        )
+        .await
+        .expect("append message");
     drop(store);
 
     // 测试进程 stdout 是管道（非 TTY）：选择器不可用，必须报错并给出替代路径

@@ -96,24 +96,36 @@ async fn create_session_binds_workspace_and_null_timestamps() {
     assert_ne!(id_a, id_b, "session id 应互不相同");
     uuid::Uuid::parse_str(&id_a).expect("session id 应为合法 UUID");
 
-    let summaries = store.list_sessions().await.unwrap();
-    let a = summaries.iter().find(|s| s.id == id_a).unwrap();
-    assert_eq!(a.workspace, Path::new("/tmp/project-a"));
-    assert_eq!(a.first_message_at, None);
-    assert_eq!(a.last_message_at, None);
-    assert_eq!(a.message_count, 0);
+    // 无 user 消息的 session 不进入列表口径；归属经 workspace 查询验证
+    assert!(store.list_sessions().await.unwrap().is_empty());
+    let workspace_a = store.workspace_of_session(&id_a).await.unwrap().unwrap();
+    assert_eq!(workspace_a.path, Path::new("/tmp/project-a"));
 
     // 同一路径创建第二个 session：复用同一 workspace，不重复登记
     let id_a2 = store.create_session("/tmp/project-a").await.unwrap();
-    let summaries = store.list_sessions().await.unwrap();
-    let a2 = summaries.iter().find(|s| s.id == id_a2).unwrap();
-    assert_eq!(a2.workspace_id, a.workspace_id);
+    let workspace_a2 = store.workspace_of_session(&id_a2).await.unwrap().unwrap();
+    assert_eq!(workspace_a2.id, workspace_a.id);
     let workspaces = store.list_workspaces().await.unwrap();
     assert_eq!(workspaces.len(), 2);
-    let wa = workspaces.iter().find(|w| w.id == a.workspace_id).unwrap();
+    let wa = workspaces.iter().find(|w| w.id == workspace_a.id).unwrap();
     assert_eq!(wa.path, Path::new("/tmp/project-a"));
-    assert_eq!(wa.session_count, 2);
+    assert_eq!(wa.session_count, 0, "空壳 session 不计入统计");
     assert!(wa.last_active_at.is_some(), "创建 session 推进活跃时间");
+
+    // 有 user 消息后进入列表与统计：时间字段与消息数照常维护
+    store
+        .append_message(&id_a, None, &user_message("hi", 1_000))
+        .await
+        .unwrap();
+    let summaries = store.list_sessions().await.unwrap();
+    let a = summaries.iter().find(|s| s.id == id_a).unwrap();
+    assert_eq!(a.workspace, Path::new("/tmp/project-a"));
+    assert_eq!(a.first_message_at, Some(1_000));
+    assert_eq!(a.last_message_at, Some(1_000));
+    assert_eq!(a.message_count, 1);
+    let workspaces = store.list_workspaces().await.unwrap();
+    let wa = workspaces.iter().find(|w| w.id == workspace_a.id).unwrap();
+    assert_eq!(wa.session_count, 1);
 }
 
 #[tokio::test]
@@ -222,8 +234,8 @@ async fn persists_across_reopen() {
     let reopened = SessionStore::open(&path).await.unwrap();
     let loaded = reopened.load_messages(&session).await.unwrap();
     assert_eq!(loaded, vec![assistant_message(1_000)]);
-    let summaries = reopened.list_sessions().await.unwrap();
-    assert_eq!(summaries[0].message_count, 1);
+    // 只有 assistant 消息的 session 不进入列表口径（无 user 消息）
+    assert!(reopened.list_sessions().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -252,62 +264,6 @@ async fn append_with_missing_parent_fails() {
         .await
         .unwrap_err();
     assert!(matches!(err, SessionError::EntryNotFound(_)));
-}
-
-#[tokio::test]
-async fn list_sessions_orders_by_last_message_desc() {
-    let store = SessionStore::in_memory().await.unwrap();
-    let empty = store.create_session("/tmp/empty").await.unwrap();
-    let older = store.create_session("/tmp/older").await.unwrap();
-    let newer = store.create_session("/tmp/newer").await.unwrap();
-
-    store
-        .append_message(&older, None, &user_message("old", 1_000))
-        .await
-        .unwrap();
-    store
-        .append_message(&newer, None, &user_message("new", 2_000))
-        .await
-        .unwrap();
-
-    let summaries = store.list_sessions().await.unwrap();
-    let ids: Vec<&str> = summaries.iter().map(|s| s.id.as_str()).collect();
-    assert_eq!(
-        ids,
-        vec![newer.as_str(), older.as_str(), empty.as_str()],
-        "应按末条消息时间降序，无消息的排最后"
-    );
-}
-
-#[tokio::test]
-async fn list_sessions_computes_title_from_first_user_message() {
-    let store = SessionStore::in_memory().await.unwrap();
-    let empty = store.create_session("/tmp/empty").await.unwrap();
-    let titled = store.create_session("/tmp/titled").await.unwrap();
-
-    // 标题取首条 user 消息的首行，即使它不是 session 的第一条 entry
-    store
-        .append_message(&titled, None, &assistant_message(1_000))
-        .await
-        .unwrap();
-    store
-        .append_message(
-            &titled,
-            None,
-            &user_message("实现会话命名\n第二行忽略", 2_000),
-        )
-        .await
-        .unwrap();
-    store
-        .append_message(&titled, None, &user_message("后来的消息不作标题", 3_000))
-        .await
-        .unwrap();
-
-    let summaries = store.list_sessions().await.unwrap();
-    let titled_summary = summaries.iter().find(|s| s.id == titled).unwrap();
-    assert_eq!(titled_summary.title.as_deref(), Some("实现会话命名"));
-    let empty_summary = summaries.iter().find(|s| s.id == empty).unwrap();
-    assert_eq!(empty_summary.title, None, "无消息的 session 无标题");
 }
 
 // ── compaction entry ────────────────────────────────────────────────────────

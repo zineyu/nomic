@@ -103,6 +103,14 @@ pub(super) struct Driver {
     goal: GoalNudger,
 }
 
+impl Driver {
+    /// 退出清理：当前 session 没有任何 user 消息（打开即退出等）时物理
+    /// 删除，空壳不留在库与统计里；失败仅记录日志（store 非权威源）。
+    pub(super) async fn discard_empty_session(&self) {
+        self.session.discard_if_empty().await;
+    }
+}
+
 /// 事件循环单次等待的结果。
 pub(super) enum Wake {
     /// 按键（Press/Repeat）

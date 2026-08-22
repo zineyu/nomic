@@ -48,6 +48,24 @@ impl SessionBinding {
             None => Ok(()),
         }
     }
+
+    /// 当前 session 是空壳（没有任何 user 消息）时物理删除：打开即退出、
+    /// 新建后未使用等场景不把空 session 留在库里（列表/统计口径已在
+    /// store 查询层过滤，这里是物理清除）。失败仅记录日志（store 非权威源）。
+    pub(in crate::tui) async fn discard_if_empty(&self) {
+        if let Some(recorder) = &self.recorder {
+            discard_empty_session(recorder.store(), recorder.session_id()).await;
+        }
+    }
+}
+
+/// 物理清除空壳 session（无 user 消息）；失败仅记录日志（store 非权威源）。
+async fn discard_empty_session(store: &SessionStore, session_id: &str) {
+    match store.delete_if_no_user_message(session_id).await {
+        Ok(true) => tracing::info!(session_id, "已清除无 user 消息的空 session"),
+        Ok(false) => {}
+        Err(error) => tracing::warn!(%error, session_id, "清除空 session 失败"),
+    }
 }
 
 /// `resume`：列出历史 session 并打开选择器。
@@ -93,9 +111,13 @@ pub(in crate::tui) async fn new_session(
     if let Some(recorder) = &mut session.recorder {
         match recorder.store().create_session(&base).await {
             Ok(new_id) => {
+                let old_id = recorder.session_id().to_string();
                 // 换绑新 session：没有任何 entry，父指针重置（自动链最新）
                 recorder.switch(new_id.clone(), None);
                 app.set_session(new_id);
+                // 换绑成功后清理被丢弃的空壳（有 user 消息的旧 session 保留）；
+                // 先换绑再删：删除失败不影响新 session 落库
+                discard_empty_session(recorder.store(), &old_id).await;
             }
             Err(error) => {
                 app.warn(format!("创建新 session 失败，续写当前 session：{error}"));
@@ -348,6 +370,11 @@ pub(in crate::tui) async fn resume_session(
     handle: &AgentHandle,
     id: String,
 ) {
+    // 恢复成功后旧 session 若为空壳（从未发送消息）会被清除，先记下 id
+    let previous_session = session
+        .recorder
+        .as_ref()
+        .map(|recorder| recorder.session_id().to_string());
     let loaded = async {
         let store = session_store(session.recorder.as_ref()).await?;
         let messages = store
@@ -381,6 +408,12 @@ pub(in crate::tui) async fn resume_session(
                 None => {
                     session.recorder = Some(SessionRecorder::with_tip(store, id.clone(), tip));
                 }
+            }
+            if let Some(previous_id) = previous_session
+                && previous_id != id
+            {
+                let store = session.recorder.as_ref().expect("已换绑").store().clone();
+                discard_empty_session(&store, &previous_id).await;
             }
             let label = nomic_session::session_title(&messages)
                 .map_or_else(String::new, |title| format!("「{title}」"));
@@ -448,6 +481,98 @@ mod tests {
             binding.base_dir(),
             std::fs::canonicalize(dir_b.path()).expect("canonicalize"),
             "操作基准应切到所恢复 session 的 workspace"
+        );
+    }
+
+    /// `new`：被丢弃的旧 session 若没有 user 消息，换绑后物理删除；
+    /// 有 user 消息的保留。
+    #[tokio::test]
+    async fn new_session_discards_previous_session_only_when_empty() {
+        let dir_a = tempfile::tempdir().expect("tempdir a");
+        let store = SessionStore::in_memory().await.expect("store");
+        let empty_a = store.create_session(dir_a.path()).await.expect("create a");
+
+        let base = BaseDir::new(Some(dir_a.path().to_path_buf()));
+        let mut binding = SessionBinding::new(
+            Some(SessionRecorder::new(store, empty_a.clone())),
+            base.clone(),
+        );
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        let handle = crate::tui::driver::dummy_handle();
+
+        super::new_session(&mut app, &mut binding, &handle).await;
+
+        let store = binding.recorder.as_ref().expect("recorder").store().clone();
+        let result = store.load_messages(&empty_a).await;
+        assert!(
+            matches!(result, Err(nomic_session::SessionError::SessionNotFound(_))),
+            "无 user 消息的旧 session 应被删除"
+        );
+
+        // 有 user 消息的旧 session：`/new` 后仍保留
+        let active = store
+            .create_session(dir_a.path())
+            .await
+            .expect("create active");
+        store
+            .append_message(
+                &active,
+                None,
+                &Message::User(UserMessage {
+                    content: UserMessageContent::Text("有内容".to_string()),
+                    timestamp: 1_000,
+                }),
+            )
+            .await
+            .expect("append");
+        binding
+            .recorder
+            .as_mut()
+            .expect("recorder")
+            .switch(active.clone(), None);
+        super::new_session(&mut app, &mut binding, &handle).await;
+        assert_eq!(
+            store.load_messages(&active).await.expect("load").len(),
+            1,
+            "有 user 消息的旧 session 应保留"
+        );
+    }
+
+    /// `resume`：换绑后清除无 user 消息的旧 session。
+    #[tokio::test]
+    async fn resume_discards_empty_previous_session() {
+        let dir_a = tempfile::tempdir().expect("tempdir a");
+        let dir_b = tempfile::tempdir().expect("tempdir b");
+        let store = SessionStore::in_memory().await.expect("store");
+        let empty_a = store.create_session(dir_a.path()).await.expect("create a");
+        let session_b = store.create_session(dir_b.path()).await.expect("create b");
+        store
+            .append_message(
+                &session_b,
+                None,
+                &Message::User(UserMessage {
+                    content: UserMessageContent::Text("hello from b".to_string()),
+                    timestamp: 1000,
+                }),
+            )
+            .await
+            .expect("append b");
+
+        let base = BaseDir::new(Some(dir_a.path().to_path_buf()));
+        let mut binding = SessionBinding::new(
+            Some(SessionRecorder::new(store, empty_a.clone())),
+            base.clone(),
+        );
+        let mut app = App::new("test-model".to_string(), None, 200_000);
+        let handle = crate::tui::driver::dummy_handle();
+
+        super::resume_session(&mut app, &mut binding, &handle, session_b).await;
+
+        let store = binding.recorder.as_ref().expect("recorder").store().clone();
+        let result = store.load_messages(&empty_a).await;
+        assert!(
+            matches!(result, Err(nomic_session::SessionError::SessionNotFound(_))),
+            "无 user 消息的旧 session 应在 resume 后被删除"
         );
     }
 

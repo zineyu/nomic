@@ -13,7 +13,7 @@ interface RunHintProps {
 export function RunHint({ phase }: RunHintProps) {
   if (!phase) return null
   return (
-    <div data-slot="run-hint" className="mx-auto w-full max-w-page px-7 pb-0.5">
+    <div data-slot="run-hint" className="mx-auto w-full max-w-page px-4 pb-0.5 sm:px-7">
       <span className="run-hint-shimmer font-mono text-xs">{runHintText(phase)}</span>
     </div>
   )

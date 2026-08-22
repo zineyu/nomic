@@ -153,7 +153,11 @@ export function ChatView({
         />
       </div>
 
-      {error && <ErrorBanner error={error} onDismiss={dismissError} />}
+      {error && (
+        <div className="px-4 sm:px-7">
+          <ErrorBanner error={error} onDismiss={dismissError} />
+        </div>
+      )}
 
       {startPage && (
         <WorkspaceBar

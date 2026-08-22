@@ -125,7 +125,7 @@ function EmptyState({ onExample }: { onExample?: (text: string) => void }) {
     }
   }, [])
   return (
-    <div className="flex h-full items-center justify-center px-7">
+    <div className="flex h-full items-center justify-center px-4 sm:px-7">
       <div ref={ref} className="max-w-md text-center">
         <img
           src="/favicon.svg"
@@ -225,7 +225,7 @@ export function MessageList({
   return (
     <div className="relative h-full">
       <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
-        <div className="mx-auto w-full max-w-page px-7 py-6">
+        <div className="mx-auto w-full max-w-page px-4 py-4 sm:px-7 sm:py-6">
           <div className="flex flex-col gap-4">{renderRows(items, initialBatch)}</div>
         </div>
       </div>

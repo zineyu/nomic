@@ -38,7 +38,7 @@ export function WorkspaceBar({ workspaces, value, onChange }: WorkspaceBarProps)
   }
 
   return (
-    <div className="mx-auto w-full max-w-page px-7 pt-2">
+    <div className="mx-auto w-full max-w-page px-4 pt-2 sm:px-7">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <span className="shrink-0">工作区</span>
         {editing ? (

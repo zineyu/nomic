@@ -4,6 +4,7 @@
 import { memo, useState } from 'react'
 import { ChevronDown, Loader2, Terminal } from 'lucide-react'
 
+import { useCollapse } from '@/lib/anim'
 import { cn } from '@/lib/utils'
 import { briefArgs } from '@/lib/toolArgs'
 import type { ToolItem } from '@/lib/chat'
@@ -34,6 +35,8 @@ function StatusBadge({ item }: { item: ToolItem }) {
 function ToolCardImpl({ item }: { item: ToolItem }) {
   const [expanded, setExpanded] = useState(false)
   const hasDetail = Object.keys(item.args).length > 0 || item.resultPreview !== ''
+  // 展开/收起时做高度动画；收起动画结束后卸载内容
+  const { ref: detailRef, mounted: detailMounted } = useCollapse<HTMLDivElement>(expanded)
 
   return (
     <div className="text-muted-foreground">
@@ -63,20 +66,22 @@ function ToolCardImpl({ item }: { item: ToolItem }) {
           />
         )}
       </button>
-      {expanded && (
-        <div className="space-y-1 py-1.5">
-          {Object.keys(item.args).length > 0 && (
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 font-mono text-xs leading-relaxed text-muted-foreground break-all">
-              {JSON.stringify(item.args, null, 2)}
-            </pre>
-          )}
-          {item.resultPreview !== '' && (
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 font-mono text-xs leading-relaxed text-muted-foreground/80">
-              {item.resultPreview}
-            </pre>
-          )}
-        </div>
-      )}
+      <div ref={detailRef} className="overflow-hidden">
+        {detailMounted && (
+          <div className="space-y-1 py-1.5">
+            {Object.keys(item.args).length > 0 && (
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 font-mono text-xs leading-relaxed text-muted-foreground break-all">
+                {JSON.stringify(item.args, null, 2)}
+              </pre>
+            )}
+            {item.resultPreview !== '' && (
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 font-mono text-xs leading-relaxed text-muted-foreground/80">
+                {item.resultPreview}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

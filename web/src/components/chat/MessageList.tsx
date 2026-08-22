@@ -6,7 +6,7 @@ import { ArrowDown, Layers } from 'lucide-react'
 
 import { MessageItem } from '@/components/chat/MessageItem'
 import { ToolCard } from '@/components/chat/ToolCard'
-import { fadeSlideIn, staggerFadeSlideIn } from '@/lib/anim'
+import { fadeSlideIn, staggerFadeSlideIn, useCollapse } from '@/lib/anim'
 import type { ChatItem, ToolItem } from '@/lib/chat'
 import { cn } from '@/lib/utils'
 
@@ -21,6 +21,8 @@ const MAX_VISIBLE_TOOLS = 2
 
 function ToolGroup({ tools }: { tools: ToolItem[] }) {
   const [open, setOpen] = useState(false)
+  // 展开/收起时做高度动画；收起动画结束后卸载内容
+  const { ref: listRef, mounted: listMounted } = useCollapse<HTMLDivElement>(open)
   return (
     <div className="flex flex-col gap-2">
       <button
@@ -34,7 +36,15 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
         </span>
         <span className={cn('transition-transform', open && 'rotate-90')}>›</span>
       </button>
-      {open && tools.map((tool) => <ToolCard key={tool.id} item={tool} />)}
+      <div ref={listRef} className="overflow-hidden">
+        {listMounted && (
+          <div className="flex flex-col gap-2">
+            {tools.map((tool) => (
+              <ToolCard key={tool.id} item={tool} />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

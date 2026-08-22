@@ -7,6 +7,7 @@ import { AlertTriangle, Brain, Check, ChevronDown, Copy, Loader2, RotateCcw } fr
 
 import { Markdown } from '@/components/Markdown'
 import { useThrottledValue } from '@/hooks/useThrottledValue'
+import { useCollapse } from '@/lib/anim'
 import { cn } from '@/lib/utils'
 import type { AssistantItem, ChatItem, ToolItem, UserItem } from '@/lib/chat'
 import { ToolCard } from './ToolCard'
@@ -48,6 +49,8 @@ function UserMessage({ item }: { item: UserItem }) {
 
 function ThinkingPill({ thinking, streaming }: { thinking: string; streaming: boolean }) {
   const [expanded, setExpanded] = useState(false)
+  // 展开/收起时做高度动画；收起动画结束后卸载内容
+  const { ref: detailRef, mounted: detailMounted } = useCollapse<HTMLDivElement>(expanded)
   if (!thinking) return null
 
   // 取第一行非空内容作为摘要
@@ -74,13 +77,15 @@ function ThinkingPill({ thinking, streaming }: { thinking: string; streaming: bo
           )}
         />
       </button>
-      {expanded && (
-        <div className="py-1.5">
-          <div className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 text-xs leading-relaxed text-muted-foreground">
-            {thinking}
+      <div ref={detailRef} className="overflow-hidden">
+        {detailMounted && (
+          <div className="py-1.5">
+            <div className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/30 p-2 text-xs leading-relaxed text-muted-foreground">
+              {thinking}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }

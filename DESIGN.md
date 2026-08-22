@@ -1,37 +1,39 @@
 ---
 name: Nomic
 colors:
-  primary: "oklch(0.21 0.006 285.885)"
+  primary: "oklch(0.52 0.16 245)"
   primary-foreground: "oklch(0.985 0 0)"
-  secondary: "oklch(0.97 0.001 286.375)"
-  secondary-foreground: "oklch(0.21 0.006 285.885)"
-  accent: "oklch(0.97 0.001 286.375)"
-  accent-foreground: "oklch(0.21 0.006 285.885)"
+  secondary: "oklch(0.967 0.008 250)"
+  secondary-foreground: "oklch(0.21 0.02 250)"
+  accent: "oklch(0.967 0.008 250)"
+  accent-foreground: "oklch(0.21 0.02 250)"
   destructive: "oklch(0.577 0.245 27.325)"
   destructive-foreground: "oklch(0.985 0 0)"
   background: "oklch(1 0 0)"
-  foreground: "oklch(0.21 0.006 285.885)"
+  foreground: "oklch(0.21 0.02 250)"
   card: "oklch(1 0 0)"
-  card-foreground: "oklch(0.21 0.006 285.885)"
-  muted: "oklch(0.97 0.001 286.375)"
-  muted-foreground: "oklch(0.552 0.016 285.938)"
-  border: "oklch(0.9 0.005 285.823)"
-  input: "oklch(0.9 0.005 285.823)"
-  ring: "oklch(0.552 0.016 285.938)"
+  card-foreground: "oklch(0.21 0.02 250)"
+  muted: "oklch(0.967 0.008 250)"
+  muted-foreground: "oklch(0.55 0.03 250)"
+  border: "oklch(0.9 0.012 250)"
+  input: "oklch(0.9 0.012 250)"
+  ring: "oklch(0.52 0.16 245)"
   success: "oklch(0.596 0.145 163.225)"
-  chart-1: "oklch(0.646 0.222 41.116)"
-  chart-2: "oklch(0.6 0.118 184.704)"
-  chart-3: "oklch(0.398 0.07 227.392)"
-  chart-4: "oklch(0.828 0.189 84.429)"
-  chart-5: "oklch(0.769 0.188 70.08)"
+  warning: "oklch(0.62 0.16 60)"
+  warning-foreground: "oklch(0.985 0 0)"
+  chart-1: "oklch(0.62 0.19 45)"
+  chart-2: "oklch(0.6 0.13 195)"
+  chart-3: "oklch(0.55 0.18 300)"
+  chart-4: "oklch(0.6 0.15 150)"
+  chart-5: "oklch(0.58 0.18 330)"
   sidebar: "oklch(0.985 0 0)"
-  sidebar-foreground: "oklch(0.21 0.006 285.885)"
-  sidebar-primary: "oklch(0.21 0.006 285.885)"
+  sidebar-foreground: "oklch(0.21 0.02 250)"
+  sidebar-primary: "oklch(0.52 0.16 245)"
   sidebar-primary-foreground: "oklch(0.985 0 0)"
-  sidebar-accent: "oklch(0.967 0.001 286.375)"
-  sidebar-accent-foreground: "oklch(0.21 0.006 285.885)"
-  sidebar-border: "oklch(0.9 0.005 285.823)"
-  sidebar-ring: "oklch(0.552 0.016 285.938)"
+  sidebar-accent: "oklch(0.967 0.008 250)"
+  sidebar-accent-foreground: "oklch(0.21 0.02 250)"
+  sidebar-border: "oklch(0.9 0.012 250)"
+  sidebar-ring: "oklch(0.52 0.16 245)"
 typography:
   h1:
     fontFamily: "Maple Mono, system-ui, sans-serif"
@@ -139,13 +141,15 @@ Nomic is an ADE (AI Development Environment) with a ratatui full-screen TUI. The
 
 ## Colors
 
-The palette uses high-contrast neutrals with semantic color tokens for different states and contexts.
+The palette pairs a restrained cool-neutral skeleton with a single chromatic accent and a categorical palette, using semantic color tokens for different states and contexts.
 
-- **Primary**: Deep ink for headlines and core text
-- **Secondary**: Light gray for backgrounds and subtle elements
+- **Primary**: Light blue (sky) accent (`oklch(0.52 0.16 245)`) for interactive elements — links, selected states, focus rings, running-status indicators, and the user chat bubble
+- **Secondary / Accent**: Light cool gray for backgrounds and hover states
 - **Destructive**: Red for errors and destructive actions
 - **Success**: Green for success states and confirmations
-- **Background/Foreground**: Base layer colors for the application surface
+- **Warning**: Amber for intermediate caution states (e.g. context usage between healthy and critical)
+- **Chart 1–5**: Categorical palette (orange / teal / violet / green / magenta). Besides future data visualization, it colors tool-call categories in the chat: 执行 bash → chart-1，查看 read/grep/find → chart-2，修改 write/edit → chart-3，交互 ask/todo → chart-4，代理 agent 系列 → chart-5
+- **Background/Foreground**: Base layer colors for the application surface. Neutrals keep hue 250 (blue-leaning gray) with slightly raised chroma (0.01–0.03) so grays read as intentional cool tones rather than pure gray
 
 ### Dark Mode
 
@@ -153,19 +157,20 @@ The design system includes full dark mode support with appropriate contrast rati
 
 | Token | Value |
 | --- | --- |
-| `background` / `popover` / `card` | `oklch(0.147 0.004 285.823)` / `oklch(0.21 0.006 285.885)` / `oklch(0.21 0.006 285.885)` |
+| `background` / `popover` / `card` | `oklch(0.147 0.008 250)` / `oklch(0.21 0.012 250)` / `oklch(0.21 0.012 250)` |
 | `foreground` / `popover-foreground` / `card-foreground` | `oklch(0.985 0 0)` |
-| `primary` / `secondary` / `accent` | `oklch(0.985 0 0)` / `oklch(0.274 0.006 286.033)` / `oklch(0.274 0.006 286.033)` |
-| `primary-foreground` / `secondary-foreground` / `accent-foreground` | `oklch(0.21 0.006 285.885)` / `oklch(0.985 0 0)` / `oklch(0.985 0 0)` |
-| `muted` / `muted-foreground` | `oklch(0.274 0.006 286.033)` / `oklch(0.705 0.015 286.067)` |
+| `primary` / `secondary` / `accent` | `oklch(0.72 0.13 235)` / `oklch(0.274 0.012 250)` / `oklch(0.274 0.012 250)` |
+| `primary-foreground` / `secondary-foreground` / `accent-foreground` | `oklch(0.21 0.02 250)` / `oklch(0.985 0 0)` / `oklch(0.985 0 0)` |
+| `muted` / `muted-foreground` | `oklch(0.274 0.012 250)` / `oklch(0.705 0.03 250)` |
 | `destructive` / `destructive-foreground` | `oklch(0.704 0.191 22.216)` / `oklch(0.985 0 0)` |
 | `border` / `input` | `oklch(1 0 0 / 10%)` / `oklch(1 0 0 / 15%)` |
-| `ring` / `success` | `oklch(0.705 0.015 286.067)` / `oklch(0.696 0.17 162.48)` |
-| `chart-1` … `chart-5` | `oklch(0.488 0.243 264.376)` / `oklch(0.696 0.17 162.48)` / `oklch(0.769 0.188 70.08)` / `oklch(0.627 0.265 303.9)` / `oklch(0.645 0.246 16.439)` |
-| `sidebar` / `sidebar-foreground` | `oklch(0.21 0.006 285.885)` / `oklch(0.985 0 0)` |
-| `sidebar-primary` / `sidebar-primary-foreground` | `oklch(0.985 0 0)` / `oklch(0.21 0.006 285.885)` |
-| `sidebar-accent` / `sidebar-accent-foreground` | `oklch(0.274 0.006 286.033)` / `oklch(0.985 0 0)` |
-| `sidebar-border` / `sidebar-ring` | `oklch(1 0 0 / 10%)` / `oklch(0.705 0.015 286.067)` |
+| `ring` / `success` | `oklch(0.72 0.13 235)` / `oklch(0.696 0.17 162.48)` |
+| `warning` / `warning-foreground` | `oklch(0.75 0.15 75)` / `oklch(0.21 0.02 250)` |
+| `chart-1` … `chart-5` | `oklch(0.75 0.16 45)` / `oklch(0.75 0.11 195)` / `oklch(0.72 0.15 300)` / `oklch(0.75 0.14 150)` / `oklch(0.72 0.15 330)` |
+| `sidebar` / `sidebar-foreground` | `oklch(0.21 0.012 250)` / `oklch(0.985 0 0)` |
+| `sidebar-primary` / `sidebar-primary-foreground` | `oklch(0.72 0.13 235)` / `oklch(0.21 0.02 250)` |
+| `sidebar-accent` / `sidebar-accent-foreground` | `oklch(0.274 0.012 250)` / `oklch(0.985 0 0)` |
+| `sidebar-border` / `sidebar-ring` | `oklch(1 0 0 / 10%)` / `oklch(0.72 0.13 235)` |
 
 These values are kept in sync with the `.dark` block in `web/src/index.css`.
 
@@ -175,7 +180,7 @@ Uses **Maple Mono** as the default font family (locally bundled via `@fontsource
 
 ## Components
 
-Components follow shadcn/ui patterns with consistent padding, rounded corners, and color token references. Interactive hover/active states use the accent tokens; all interactive elements use the ring token for focus states. Form fields use the `input` token for borders and placeholders use `muted-foreground`. Chat status badges reuse `success` / `destructive` with translucent backgrounds, and the sidebar hover/active states use `sidebar-accent` / `sidebar-primary`. The `chart-1` … `chart-5` tokens are reserved for future data visualization.
+Components follow shadcn/ui patterns with consistent padding, rounded corners, and color token references. Interactive hover/active states use the accent tokens; all interactive elements use the ring token (light blue) for focus states. Form fields use the `input` token for borders and placeholders use `muted-foreground`. Chat status badges reuse `success` / `destructive` with translucent backgrounds, and the sidebar hover/active states use `sidebar-accent` / `sidebar-primary`. The user chat bubble is a solid `primary` (light blue) block with `primary-foreground` text. Tool-call cards tint their leading icon by category using the `chart-1` … `chart-5` categorical palette (icon-only, decorative; the tool name stays `muted-foreground` for AA contrast). The context-usage ring escalates `muted-foreground` → `primary` → `warning` → `destructive` as usage crosses 50% / 65% / 80%.
 
 ## Accessibility
 

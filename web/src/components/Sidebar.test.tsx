@@ -170,10 +170,10 @@ describe('Sidebar', () => {
     const alphaToggle = within(alphaGroup).getByRole('button', { name: /^alpha/ })
 
     // 展开时无指示点（会话本身可见高亮）
-    expect(alphaToggle.querySelector('span.bg-primary[aria-hidden="true"]')).toBeNull()
+    expect(alphaToggle.querySelector('span.bg-foreground[aria-hidden="true"]')).toBeNull()
 
     await user.click(alphaToggle)
-    expect(alphaToggle.querySelector('span.bg-primary[aria-hidden="true"]')).not.toBeNull()
+    expect(alphaToggle.querySelector('span.bg-foreground[aria-hidden="true"]')).not.toBeNull()
   })
 
   it('展开的会话列表缩进在组标题下方并带竖向引导线，体现从属关系', () => {

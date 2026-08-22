@@ -337,7 +337,7 @@ export function ChatInput({
 
         <div
           className={cn(
-            'rounded-xl border bg-card shadow-sm',
+            'rounded-xl border bg-card',
             'focus-within:ring-1 focus-within:ring-ring/40',
           )}
         >

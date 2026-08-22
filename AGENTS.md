@@ -85,6 +85,61 @@ npm run design:export-css
 - Use token references (`{colors.primary}`) in component definitions
 - See [spec](https://github.com/google-labs-code/design.md/blob/main/docs/spec.md) for full format reference
 
+## UI Rules
+
+Visual tokens have a single source of truth: `DESIGN.md` + the `@theme` block in `web/src/index.css`.
+New visual properties must be added as tokens first, then consumed by components.
+
+### 0. Design style: Minimalism
+
+- Content first: establish information hierarchy before decoration; remove any element (divider,
+  border, icon, color block) that serves no functional or semantic purpose
+- Whitespace over separators: prefer spacing to express hierarchy; add a line or background only
+  when spacing alone is not enough
+- One focal point per screen: a single primary action; everything else degrades to secondary/ghost
+- Restraint with color and effects: color, shadow, and radius are hierarchy tools — start with none
+  and add only when needed
+- Copy as interface: prefer clear typographic hierarchy to express state instead of adding badges or
+  icons
+
+### 1. Color ratio 70-20-10
+
+- **~70% dominant**: the neutral skeleton (`background` / `foreground` / `card`) sets the base tone
+- **~20% secondary**: surface-level grays (`muted` / `secondary` / `sidebar-accent`, hover states,
+  separators)
+- **≤10% accent**: the `primary` ink (near-black in light mode, near-white in dark mode —
+  inversion, not hue, is the emphasis mechanism) plus the functional `success` / `destructive`
+  semantic colors — only for interactive elements (links, buttons, selected states, focus rings)
+  and status indicators
+- Never flood large areas (whole cards, whole sidebar) with accent color; the interface is
+  achromatic by default and chromatic tokens (`destructive`, `success`) appear only in their
+  single designated role, never decoratively
+
+### 2. Proportion and rhythm
+
+- **Column width**: page and message flow share `max-w-page` (920px, defined in `index.css`
+  `@theme`); do not introduce new column widths
+- **Line height**: headings 1.2–1.4 (`h1` / `h2` / `h3` tokens), body and UI text 1.5 (`body` /
+  `body-sm` / `caption`)
+- **Spacing**: only spacing tokens (8/16/24/32): card padding 24, card/section gaps 16–24, control
+  gaps 8; every `p-*` / `gap-*` / `px-*` value must map to a token step, no magic numbers
+
+### 3. One unified set of base tokens
+
+- **Radius**: only the rounded tokens (4/6/8/12/full); cards and bubbles lg(8)/xl(12), controls
+  md(6), badges full
+- **Shadow**: shadows are reserved for overlays (`shadow-md`/`shadow-lg` on dropdowns/dialogs);
+  in-flow surfaces (cards, bubbles, inputs) are flat and use hairline borders instead; no custom
+  `box-shadow` values
+- **Border**: uniform 1px `border` token; use `separator` for dividers; focus state is always `ring`
+  + `ring-ring/50`, never ad-hoc outline colors
+- **Button height**: only the button size steps xs 24 / sm 32 / default 36 / lg 40 (icon buttons
+  24/32/36/40); no custom heights
+- **Icons**: lucide-react only; sizes limited to 12 (`size-3`, auxiliary) / 14 (`size-3.5`, inline
+  default) / 16 (`size-4`, standard); icons are achromatic — categories are expressed by a foreground
+  opacity ladder (e.g. ToolCard tints its icon via `text-foreground/<opacity>`) and only errors use
+  `destructive`; no other icon libraries or inline SVGs
+
 ## After Coding
 
 Every commit must pass the `check` command defined in `devenv.nix`.

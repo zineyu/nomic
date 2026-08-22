@@ -56,10 +56,10 @@ export function StatusBar({ stats, running }: StatusBarProps) {
           <span>· 输出 {formatTokens(stats.output_tokens)} tok</span>
         )}
         {running && (
-          <span className="flex items-center gap-1 text-primary">
+          <span className="flex items-center gap-1 text-foreground">
             <span className="relative flex size-1.5">
-              <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary opacity-75" />
-              <span className="relative inline-flex size-1.5 rounded-full bg-primary" />
+              <span className="absolute inline-flex size-full animate-ping rounded-full bg-foreground opacity-75" />
+              <span className="relative inline-flex size-1.5 rounded-full bg-foreground" />
             </span>
             运行中
           </span>

@@ -1,6 +1,7 @@
-// 工具类别：按行为分组，用于 ToolCard 图标的类别色。
-// 类别色取自 chart-1~5 类别色板（见 DESIGN.md），仅用于装饰性图标；
-// 工具名保持 muted-foreground 以满足 AA 文本对比度。
+// 工具类别：按行为分组，用于 ToolCard 图标的类别区分。
+// 极简单色体系：不使用彩色类别色板，改用 foreground 明度阶梯——
+// 墨色越重代表动作后果越强（执行 > 查看 > 修改 > 交互 > 代理）。
+// 图标为装饰性元素；工具名保持 muted-foreground 以满足 AA 文本对比度。
 
 export type ToolCategory = 'exec' | 'inspect' | 'modify' | 'interact' | 'agent' | 'other'
 
@@ -27,11 +28,11 @@ export function toolCategory(name: string): ToolCategory {
 }
 
 const CATEGORY_ICON_CLASS: Record<ToolCategory, string> = {
-  exec: 'text-chart-1',
-  inspect: 'text-chart-2',
-  modify: 'text-chart-3',
-  interact: 'text-chart-4',
-  agent: 'text-chart-5',
+  exec: 'text-foreground',
+  inspect: 'text-foreground/75',
+  modify: 'text-foreground/60',
+  interact: 'text-foreground/45',
+  agent: 'text-foreground/35',
   other: 'text-muted-foreground',
 }
 

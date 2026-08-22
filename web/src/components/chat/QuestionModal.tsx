@@ -69,7 +69,7 @@ export function QuestionModal({ id, question, onAnswer, onMinimize }: QuestionMo
       <DialogContent className="sm:max-w-md" showCloseButton={false}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
-            <PencilLine className="size-4 text-primary" />
+            <PencilLine className="size-4 text-foreground" />
             nomic 提问
             {onMinimize && (
               <Button
@@ -110,7 +110,7 @@ export function QuestionModal({ id, question, onAnswer, onMinimize }: QuestionMo
                     className={cn(
                       'flex w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-left text-sm transition-colors',
                       checked
-                        ? 'border-primary bg-primary/10 text-foreground'
+                        ? 'border-foreground/60 bg-muted text-foreground'
                         : 'hover:bg-accent/60',
                     )}
                   >
@@ -118,7 +118,7 @@ export function QuestionModal({ id, question, onAnswer, onMinimize }: QuestionMo
                       className={cn(
                         'flex size-4 shrink-0 items-center justify-center rounded border',
                         isSingle ? 'rounded-full' : 'rounded',
-                        checked ? 'border-primary bg-primary' : 'border-input',
+                        checked ? 'border-foreground bg-foreground' : 'border-input',
                       )}
                     >
                       {checked && <Check className="size-3 text-primary-foreground" />}

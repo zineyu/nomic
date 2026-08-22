@@ -87,7 +87,7 @@ export function WorkspaceBar({ workspaces, value, onChange }: WorkspaceBarProps)
                       {ws.path}
                     </span>
                   </span>
-                  {ws.path === value && <Check className="size-3.5 shrink-0 text-primary" />}
+                  {ws.path === value && <Check className="size-3.5 shrink-0 text-foreground" />}
                 </DropdownMenuItem>
               ))}
               {workspaces.length > 0 && <DropdownMenuSeparator />}

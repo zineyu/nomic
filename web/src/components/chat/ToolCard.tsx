@@ -13,7 +13,7 @@ import type { ToolItem } from '@/lib/chat'
 function StatusBadge({ item }: { item: ToolItem }) {
   if (item.status === 'running') {
     return (
-      <span className="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full border border-border bg-muted px-2 text-xs text-muted-foreground">
+      <span className="inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs text-muted-foreground">
         <Loader2 className="size-2.5 animate-spin" />
         运行中
       </span>
@@ -21,13 +21,13 @@ function StatusBadge({ item }: { item: ToolItem }) {
   }
   if (item.status === 'error') {
     return (
-      <span className="flex h-5 shrink-0 items-center rounded-full border border-destructive/40 bg-destructive/10 px-2 text-xs text-destructive">
+      <span className="flex h-5 shrink-0 items-center rounded-full px-2 text-xs text-destructive">
         ✗ 失败
       </span>
     )
   }
   return (
-    <span className="flex h-5 shrink-0 items-center rounded-full border border-success/40 bg-success/10 px-2 text-xs text-success">
+    <span className="flex h-5 shrink-0 items-center rounded-full px-2 text-xs text-muted-foreground">
       ✓ 完成
     </span>
   )

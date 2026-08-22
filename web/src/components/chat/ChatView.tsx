@@ -60,7 +60,7 @@ function MinimizedQuestionButton({ onClick }: { onClick: () => void }) {
       onClick={onClick}
       className="fixed right-4 bottom-12 z-50 flex items-center gap-2 rounded-full border bg-background px-4 py-2 text-xs font-medium shadow-lg transition-colors hover:bg-accent"
     >
-      <MessageCircleQuestion className="size-4 text-primary" />
+      <MessageCircleQuestion className="size-4 text-foreground" />
       待回答问题
     </button>
   )

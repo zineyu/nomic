@@ -105,7 +105,7 @@ export function ModelPicker({
                   <span className="flex shrink-0 items-center gap-1">
                     {choice.reasoning && <Cpu className="size-3 text-muted-foreground" />}
                     {`${choice.provider}/${choice.id}` === currentSpec && (
-                      <Check className="size-3.5 text-primary" />
+                      <Check className="size-3.5 text-foreground" />
                     )}
                   </span>
                 </DropdownMenuItem>
@@ -129,7 +129,7 @@ export function ModelPicker({
               className={cn(
                 'h-7 shrink-0 gap-1.5 rounded-full px-2 text-xs font-normal',
                 reasoning && reasoning !== 'off'
-                  ? 'border border-primary/30 bg-primary/10 text-primary'
+                  ? 'border border-foreground/30 bg-muted text-foreground'
                   : 'text-muted-foreground',
               )}
               title={reasoning && reasoning !== 'off' ? `推理强度: ${reasoning}` : '推理强度: 关闭'}
@@ -149,7 +149,7 @@ export function ModelPicker({
                   <Brain className="size-3" />
                   {level}
                 </span>
-                {reasoning === level && <Check className="size-3.5 text-primary" />}
+                {reasoning === level && <Check className="size-3.5 text-foreground" />}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>

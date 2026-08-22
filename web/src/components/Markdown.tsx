@@ -61,7 +61,7 @@ function Link({ href, children }: ComponentProps<'a'>) {
       href={href}
       target="_blank"
       rel="noreferrer"
-      className="text-primary underline underline-offset-2 hover:text-primary/80"
+      className="text-foreground underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground"
     >
       {children}
     </a>
@@ -115,7 +115,12 @@ function MarkdownImpl({
   className?: string
 }) {
   return (
-    <div className={cn('space-y-1 break-words text-[0.9375rem] leading-relaxed', className)}>
+    <div
+      className={cn(
+        'space-y-1 break-words text-[0.9375rem] leading-relaxed',
+        className,
+      )}
+    >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -139,7 +144,7 @@ function MarkdownImpl({
           td: TableCell,
           hr: () => <hr className="my-3 border-border" />,
           blockquote: ({ children }) => (
-            <blockquote className="my-2 border-l-2 border-primary/40 pl-3 text-muted-foreground">
+            <blockquote className="my-2 border-l-2 border-foreground/25 pl-3 text-muted-foreground">
               {children}
             </blockquote>
           ),

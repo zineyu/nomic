@@ -41,12 +41,12 @@ describe('toolCategory', () => {
 })
 
 describe('toolCategoryIconClass', () => {
-  it('类别映射到 chart 色板', () => {
-    expect(toolCategoryIconClass('bash')).toBe('text-chart-1')
-    expect(toolCategoryIconClass('read')).toBe('text-chart-2')
-    expect(toolCategoryIconClass('edit')).toBe('text-chart-3')
-    expect(toolCategoryIconClass('ask_user_question')).toBe('text-chart-4')
-    expect(toolCategoryIconClass('create_agent')).toBe('text-chart-5')
+  it('类别映射到 foreground 明度阶梯（单色体系）', () => {
+    expect(toolCategoryIconClass('bash')).toBe('text-foreground')
+    expect(toolCategoryIconClass('read')).toBe('text-foreground/75')
+    expect(toolCategoryIconClass('edit')).toBe('text-foreground/60')
+    expect(toolCategoryIconClass('ask_user_question')).toBe('text-foreground/45')
+    expect(toolCategoryIconClass('create_agent')).toBe('text-foreground/35')
   })
 
   it('未知工具回退 muted', () => {

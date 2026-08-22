@@ -23,11 +23,6 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --color-chart-1: var(--chart-1);
-  --color-chart-2: var(--chart-2);
-  --color-chart-3: var(--chart-3);
-  --color-chart-4: var(--chart-4);
-  --color-chart-5: var(--chart-5);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
@@ -37,8 +32,6 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-success: var(--success);
-  --color-warning: var(--warning);
-  --color-warning-foreground: var(--warning-foreground);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -48,8 +41,9 @@
 /* DESIGN.md 排版比例：h1 2.25rem/700/1.2，h2 1.875rem/600/1.3，h3 1.5rem/600/1.4，
    body 1rem/400/1.5，body-sm 0.875rem/400/1.5，caption 0.75rem/400/1.5 */
 @theme {
-  --font-sans: 'Maple Mono', system-ui, sans-serif;
-  --font-mono: 'Maple Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', monospace;
+  --font-sans: 'Noto Sans', 'Noto Sans SC', system-ui, sans-serif;
+  --font-mono:
+    'Maple Mono', 'Noto Sans SC', ui-monospace, 'SF Mono', 'Cascadia Mono', monospace;
   --text-h1: 2.25rem;
   --text-h1--line-height: 1.2;
   --text-h1--font-weight: 700;
@@ -74,82 +68,70 @@
   --max-width-page: 920px;
 }
 
-/* 半径基准与 DESIGN.md rounded 对齐：sm 4px / md 6px / lg 8px / xl 12px */
+/* 极简单色体系：纯灰阶（chroma 0）+ 墨色单强调（primary = ink）。
+   强调通过明暗反转、字重与留白表达，不使用色相。
+   语义色仅保留 destructive（错误）与 success（瞬时确认），各一职。 */
 :root {
   --radius: 0.5rem;
   --background: oklch(1 0 0);
-  --foreground: oklch(0.21 0.02 250);
+  --foreground: oklch(0.19 0 0);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.21 0.02 250);
+  --card-foreground: oklch(0.19 0 0);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.21 0.02 250);
-  --primary: oklch(0.52 0.16 245);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.967 0.008 250);
-  --secondary-foreground: oklch(0.21 0.02 250);
-  --muted: oklch(0.967 0.008 250);
-  --muted-foreground: oklch(0.55 0.03 250);
-  --accent: oklch(0.967 0.008 250);
-  --accent-foreground: oklch(0.21 0.02 250);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.9 0.012 250);
-  --input: oklch(0.9 0.012 250);
-  --ring: oklch(0.52 0.16 245);
-  --success: oklch(0.596 0.145 163.225);
-  --warning: oklch(0.62 0.16 60);
-  --warning-foreground: oklch(0.985 0 0);
-  --chart-1: oklch(0.62 0.19 45);
-  --chart-2: oklch(0.6 0.13 195);
-  --chart-3: oklch(0.55 0.18 300);
-  --chart-4: oklch(0.6 0.15 150);
-  --chart-5: oklch(0.58 0.18 330);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.21 0.02 250);
-  --sidebar-primary: oklch(0.52 0.16 245);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.967 0.008 250);
-  --sidebar-accent-foreground: oklch(0.21 0.02 250);
-  --sidebar-border: oklch(0.9 0.012 250);
-  --sidebar-ring: oklch(0.52 0.16 245);
+  --popover-foreground: oklch(0.19 0 0);
+  --primary: oklch(0.19 0 0);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.955 0 0);
+  --secondary-foreground: oklch(0.19 0 0);
+  --muted: oklch(0.955 0 0);
+  --muted-foreground: oklch(0.5 0 0);
+  --accent: oklch(0.955 0 0);
+  --accent-foreground: oklch(0.19 0 0);
+  --destructive: oklch(0.5 0.17 27);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.915 0 0);
+  --input: oklch(0.915 0 0);
+  --ring: oklch(0.19 0 0);
+  --success: oklch(0.52 0.11 155);
+  --sidebar: oklch(0.975 0 0);
+  --sidebar-foreground: oklch(0.19 0 0);
+  --sidebar-primary: oklch(0.19 0 0);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
+  --sidebar-accent: oklch(0.94 0 0);
+  --sidebar-accent-foreground: oklch(0.19 0 0);
+  --sidebar-border: oklch(0.915 0 0);
+  --sidebar-ring: oklch(0.19 0 0);
 }
 
 .dark {
-  --background: oklch(0.147 0.008 250);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.012 250);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.012 250);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.72 0.13 235);
-  --primary-foreground: oklch(0.21 0.02 250);
-  --secondary: oklch(0.274 0.012 250);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.012 250);
-  --muted-foreground: oklch(0.705 0.03 250);
-  --accent: oklch(0.274 0.012 250);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.985 0 0);
+  --background: oklch(0.16 0 0);
+  --foreground: oklch(0.95 0 0);
+  --card: oklch(0.19 0 0);
+  --card-foreground: oklch(0.95 0 0);
+  --popover: oklch(0.19 0 0);
+  --popover-foreground: oklch(0.95 0 0);
+  --primary: oklch(0.95 0 0);
+  --primary-foreground: oklch(0.19 0 0);
+  --secondary: oklch(0.23 0 0);
+  --secondary-foreground: oklch(0.95 0 0);
+  --muted: oklch(0.23 0 0);
+  --muted-foreground: oklch(0.65 0 0);
+  --accent: oklch(0.23 0 0);
+  --accent-foreground: oklch(0.95 0 0);
+  --destructive: oklch(0.62 0.17 25);
+  --destructive-foreground: oklch(0.98 0 0);
   --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.72 0.13 235);
-  --success: oklch(0.696 0.17 162.48);
-  --warning: oklch(0.75 0.15 75);
-  --warning-foreground: oklch(0.21 0.02 250);
-  --chart-1: oklch(0.75 0.16 45);
-  --chart-2: oklch(0.75 0.11 195);
-  --chart-3: oklch(0.72 0.15 300);
-  --chart-4: oklch(0.75 0.14 150);
-  --chart-5: oklch(0.72 0.15 330);
-  --sidebar: oklch(0.21 0.012 250);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.72 0.13 235);
-  --sidebar-primary-foreground: oklch(0.21 0.02 250);
-  --sidebar-accent: oklch(0.274 0.012 250);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --input: oklch(1 0 0 / 14%);
+  --ring: oklch(0.95 0 0);
+  --success: oklch(0.68 0.12 155);
+  --sidebar: oklch(0.18 0 0);
+  --sidebar-foreground: oklch(0.95 0 0);
+  --sidebar-primary: oklch(0.95 0 0);
+  --sidebar-primary-foreground: oklch(0.19 0 0);
+  --sidebar-accent: oklch(0.25 0 0);
+  --sidebar-accent-foreground: oklch(0.95 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.72 0.13 235);
+  --sidebar-ring: oklch(0.95 0 0);
 }
 
 @layer base {

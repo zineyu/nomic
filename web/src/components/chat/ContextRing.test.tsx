@@ -23,20 +23,16 @@ describe('ContextRing 用量分档', () => {
     expect(ringClass(100, null)).toContain('text-muted-foreground')
   })
 
-  it('<=50% 低调灰', () => {
-    expect(ringClass(50, 100)).toContain('text-muted-foreground')
+  it('<=75% 低调灰', () => {
+    expect(ringClass(75, 100)).toContain('text-muted-foreground')
   })
 
-  it('50–65% 强调色', () => {
-    expect(ringClass(60, 100)).toContain('text-primary')
+  it('75–90% 墨色强调', () => {
+    expect(ringClass(80, 100)).toContain('text-foreground')
   })
 
-  it('65–80% 琥珀警示', () => {
-    expect(ringClass(70, 100)).toContain('text-warning')
-  })
-
-  it('>80% 红色危险', () => {
-    expect(ringClass(90, 100)).toContain('text-destructive')
+  it('>90% 红色危险', () => {
+    expect(ringClass(95, 100)).toContain('text-destructive')
   })
 
   it('tooltip 展示用量明细', () => {

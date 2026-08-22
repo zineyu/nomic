@@ -32,17 +32,15 @@ export function ContextRing({
   const circumference = 2 * Math.PI * radius
   const dashoffset = pct !== null ? circumference * (1 - pct / 100) : circumference
 
-  // 用量分档：<50% 低调灰，50–65% 强调色，65–80% 琥珀警示，>80% 红色危险
+  // 用量分档（单色阶梯）：<75% 低调灰，75–90% 墨色，>90% 红色危险
   const colorClass =
     pct === null
       ? 'text-muted-foreground'
-      : pct > 80
+      : pct > 90
         ? 'text-destructive'
-        : pct > 65
-          ? 'text-warning'
-          : pct > 50
-            ? 'text-primary'
-            : 'text-muted-foreground'
+        : pct > 75
+          ? 'text-foreground'
+          : 'text-muted-foreground'
 
   const tooltip =
     pct !== null && window !== null

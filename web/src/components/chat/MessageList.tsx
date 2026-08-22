@@ -131,7 +131,7 @@ function EmptyState({ onExample }: { onExample?: (text: string) => void }) {
           src="/favicon.svg"
           alt="nomic"
           data-intro
-          className="mb-4 inline-block size-14 rounded-xl shadow-sm"
+          className="mb-4 inline-block size-14 rounded-xl"
         />
         <h2 data-intro className="mb-1 text-h2 tracking-tight">
           向 nomic 提问
@@ -147,7 +147,7 @@ function EmptyState({ onExample }: { onExample?: (text: string) => void }) {
                 type="button"
                 data-intro
                 onClick={() => onExample(example)}
-                className="rounded-full border border-border bg-card px-3.5 py-1.5 text-xs text-muted-foreground transition-colors hover:border-ring hover:text-foreground"
+                className="rounded-full border border-border bg-card px-3.5 py-1.5 text-xs text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
               >
                 {example}
               </button>

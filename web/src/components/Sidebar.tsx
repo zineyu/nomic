@@ -171,7 +171,7 @@ export function Sidebar({
                     <span className="min-w-0 flex-1 truncate">{group.name}</span>
                     {/* 折叠时隐藏当前会话无从感知，标题上保留活跃指示点 */}
                     {isCollapsed && hasActive && (
-                      <span className="size-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
+                      <span className="size-1.5 shrink-0 rounded-full bg-foreground" aria-hidden="true" />
                     )}
                     <span className="shrink-0 tabular-nums text-muted-foreground/70">
                       {group.sessions.length}
@@ -211,7 +211,7 @@ export function Sidebar({
                           className={cn(
                             'flex w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
                             active
-                              ? 'bg-sidebar-primary/10 font-medium text-sidebar-primary'
+                              ? 'bg-sidebar-accent font-medium text-sidebar-foreground'
                               : 'text-sidebar-foreground hover:bg-sidebar-accent/50',
                           )}
                         >
@@ -223,8 +223,8 @@ export function Sidebar({
                           </span>
                           {active && running && (
                             <span className="relative flex size-1.5 shrink-0" aria-hidden="true">
-                              <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary opacity-75" />
-                              <span className="relative inline-flex size-1.5 rounded-full bg-primary" />
+                              <span className="absolute inline-flex size-full animate-ping rounded-full bg-foreground opacity-75" />
+                              <span className="relative inline-flex size-1.5 rounded-full bg-foreground" />
                             </span>
                           )}
                         </button>

@@ -108,7 +108,7 @@ export function QuestionModal({ id, question, onAnswer, onMinimize }: QuestionMo
                     type="button"
                     onClick={() => toggle(option)}
                     className={cn(
-                      'flex w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-left text-sm transition-colors',
+                      'flex w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-left text-sm transition-all outline-none focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-[0.99]',
                       checked
                         ? 'border-foreground/60 bg-muted text-foreground'
                         : 'hover:bg-accent/60',
@@ -116,7 +116,7 @@ export function QuestionModal({ id, question, onAnswer, onMinimize }: QuestionMo
                   >
                     <span
                       className={cn(
-                        'flex size-4 shrink-0 items-center justify-center rounded border',
+                        'flex size-4 shrink-0 items-center justify-center rounded border transition-colors',
                         isSingle ? 'rounded-full' : 'rounded',
                         checked ? 'border-foreground bg-foreground' : 'border-input',
                       )}

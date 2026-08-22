@@ -51,7 +51,7 @@ function CodeBlockImpl({ lang, code }: CodeBlockProps) {
       <button
         type="button"
         onClick={onCopy}
-        className="absolute top-2 right-2 flex size-7 items-center justify-center rounded-md border bg-background/80 text-muted-foreground opacity-0 backdrop-blur transition-opacity hover:text-foreground group-hover/code:opacity-100"
+        className="absolute top-2 right-2 flex size-7 items-center justify-center rounded-md border bg-background/80 text-muted-foreground opacity-0 backdrop-blur transition-all outline-none hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-90 group-hover/code:opacity-100"
         aria-label={copied ? '已复制' : '复制代码'}
         title={copied ? '已复制' : '复制代码'}
       >

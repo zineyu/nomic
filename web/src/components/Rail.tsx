@@ -11,7 +11,7 @@ export function Rail() {
       </div>
       <button
         type="button"
-        className="flex size-10 items-center justify-center rounded-lg bg-foreground text-background"
+        className="flex size-10 items-center justify-center rounded-lg bg-foreground text-background transition-all outline-none hover:bg-foreground/85 focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-95"
         title="会话"
         aria-label="会话"
       >

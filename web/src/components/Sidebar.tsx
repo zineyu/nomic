@@ -85,7 +85,7 @@ export function Sidebar({
           <div className="flex items-center gap-0.5">
             <button
               type="button"
-              className="flex size-5 items-center justify-center rounded text-muted-foreground/60 hover:text-muted-foreground"
+              className="flex size-5 items-center justify-center rounded text-muted-foreground/60 transition-all outline-none hover:bg-sidebar-accent hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-90"
               title="搜索"
             >
               <Search className="size-3" />
@@ -94,7 +94,7 @@ export function Sidebar({
               type="button"
               aria-label="添加工作区"
               aria-expanded={adding}
-              className="flex size-5 items-center justify-center rounded text-muted-foreground/60 hover:text-muted-foreground"
+              className="flex size-5 items-center justify-center rounded text-muted-foreground/60 transition-all outline-none hover:bg-sidebar-accent hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-90"
               title="添加工作区"
               onClick={() => (adding ? closeAddInput() : setAdding(true))}
             >
@@ -113,7 +113,7 @@ export function Sidebar({
               placeholder="目录路径，如 ~/code/proj"
               aria-label="工作区路径"
               aria-invalid={addError !== null}
-              className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs outline-none placeholder:text-muted-foreground/60 focus:border-ring disabled:opacity-60"
+              className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-60"
               onChange={(e) => setNewPath(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') void submitWorkspace()
@@ -154,7 +154,7 @@ export function Sidebar({
                     onClick={() => toggleGroup(group.workspace)}
                     title={group.workspace}
                     className={cn(
-                      'flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors',
+                      'flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
                       isCurrent
                         ? 'bg-sidebar-accent text-sidebar-foreground'
                         : 'bg-sidebar-accent/50 hover:bg-sidebar-accent hover:text-sidebar-foreground',
@@ -188,7 +188,7 @@ export function Sidebar({
                     aria-label={`在 ${group.workspace} 下新建会话`}
                     title={`在 ${group.workspace} 下新建会话`}
                     onClick={() => onNewSession(group.workspace)}
-                    className="ml-1 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover:opacity-100"
+                    className="ml-1 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 opacity-0 transition-all outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-90 group-hover:opacity-100"
                   >
                     <Plus className="size-3" aria-hidden="true" />
                   </button>
@@ -209,10 +209,10 @@ export function Sidebar({
                           aria-current={active ? 'page' : undefined}
                           title={title}
                           className={cn(
-                            'flex w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+                            'flex w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
                             active
                               ? 'bg-sidebar-accent font-medium text-sidebar-foreground'
-                              : 'text-sidebar-foreground hover:bg-sidebar-accent/50',
+                              : 'text-sidebar-foreground hover:bg-sidebar-accent/50 active:bg-sidebar-accent/70',
                           )}
                         >
                           <span

@@ -320,7 +320,7 @@ export function ChatInput({
                 onClick={() => accept(index)}
                 onMouseEnter={() => setPopup({ ...popup, selected: index })}
                 className={cn(
-                  'flex w-full items-baseline gap-2 rounded-md px-2.5 py-1.5 text-left text-sm',
+                  'flex w-full items-baseline gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors',
                   index === popup.selected ? 'bg-accent text-accent-foreground' : '',
                 )}
               >
@@ -355,7 +355,7 @@ export function ChatInput({
                     type="button"
                     onClick={() => removeImage(index)}
                     title="移除图片"
-                    className="absolute -right-1.5 -top-1.5 hidden size-4 items-center justify-center rounded-full bg-foreground text-background group-hover:flex"
+                    className="absolute -right-1.5 -top-1.5 flex size-4 items-center justify-center rounded-full bg-foreground text-background opacity-0 transition-all outline-none group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-90"
                   >
                     <X className="size-2.5" />
                   </button>

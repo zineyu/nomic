@@ -38,7 +38,7 @@ function ErrorBanner({ error, onDismiss }: { error: string; onDismiss: () => voi
       <button
         type="button"
         onClick={onDismiss}
-        className="shrink-0 rounded p-0.5 hover:bg-destructive/10"
+        className="shrink-0 rounded p-0.5 transition-colors outline-none hover:bg-destructive/10 focus-visible:ring-2 focus-visible:ring-destructive/40 active:bg-destructive/20"
         aria-label="关闭错误提示"
       >
         <X className="size-3.5" />
@@ -58,7 +58,7 @@ function MinimizedQuestionButton({ onClick }: { onClick: () => void }) {
       ref={ref}
       type="button"
       onClick={onClick}
-      className="fixed right-4 bottom-12 z-50 flex items-center gap-2 rounded-full border bg-background px-4 py-2 text-xs font-medium shadow-lg transition-colors hover:bg-accent"
+      className="fixed right-4 bottom-12 z-50 flex items-center gap-2 rounded-full border bg-background px-4 py-2 text-xs font-medium shadow-lg transition-all outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-[0.97]"
     >
       <MessageCircleQuestion className="size-4 text-foreground" />
       待回答问题

@@ -63,7 +63,7 @@ function ThinkingPill({ thinking, streaming }: { thinking: string; streaming: bo
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex h-6 w-full items-center gap-1.5 text-left text-xs cursor-pointer hover:bg-accent/60"
+        className="flex h-6 w-full items-center gap-1.5 text-left text-xs transition-colors outline-none hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50 active:bg-accent"
       >
         <Brain className="size-3 shrink-0 text-muted-foreground" />
         <span className="shrink-0 font-semibold text-muted-foreground">Think</span>
@@ -107,7 +107,7 @@ function MessageActions({ item }: { item: AssistantItem }) {
       <button
         type="button"
         onClick={onCopy}
-        className="flex size-6 items-center justify-center rounded-md border bg-background/80 text-muted-foreground backdrop-blur transition-colors hover:text-foreground"
+        className="flex size-6 items-center justify-center rounded-md border bg-background/80 text-muted-foreground backdrop-blur transition-all outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-90"
         title={copied ? '已复制' : '复制回复'}
         aria-label={copied ? '已复制' : '复制回复'}
       >
@@ -154,7 +154,7 @@ function AssistantMessage({
             <button
               type="button"
               onClick={() => onRetry!(retryText!)}
-              className="flex shrink-0 items-center gap-1.5 rounded-lg border border-destructive/30 bg-background/60 px-2.5 py-1.5 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10"
+              className="flex shrink-0 items-center gap-1.5 rounded-lg border border-destructive/30 bg-background/60 px-2.5 py-1.5 text-xs font-medium text-destructive transition-colors outline-none hover:bg-destructive/10 focus-visible:ring-2 focus-visible:ring-destructive/40 active:bg-destructive/20"
               title="重发该轮问题，重新生成回复"
             >
               <RotateCcw className="size-3.5" />

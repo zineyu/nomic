@@ -29,7 +29,7 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex h-8 w-full items-center gap-2 rounded-lg border bg-card px-4 text-xs text-muted-foreground transition-colors hover:bg-accent/60"
+        className="flex h-8 w-full items-center gap-2 rounded-lg border bg-card px-4 text-xs text-muted-foreground transition-colors outline-none hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring/50 active:bg-accent"
       >
         <Layers className="size-3.5 shrink-0" />
         <span className="flex-1 text-left">
@@ -147,7 +147,7 @@ function EmptyState({ onExample }: { onExample?: (text: string) => void }) {
                 type="button"
                 data-intro
                 onClick={() => onExample(example)}
-                className="rounded-full border border-border bg-card px-3.5 py-1.5 text-xs text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground"
+                className="rounded-full border border-border bg-card px-3.5 py-1.5 text-xs text-muted-foreground transition-all outline-none hover:border-foreground/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-[0.97]"
               >
                 {example}
               </button>
@@ -170,7 +170,7 @@ function JumpButton({ onClick }: { onClick: () => void }) {
       ref={ref}
       type="button"
       onClick={onClick}
-      className="absolute bottom-4 right-4 flex size-9 items-center justify-center rounded-full border bg-background/90 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground"
+      className="absolute bottom-4 right-4 flex size-9 items-center justify-center rounded-full border bg-background/90 text-muted-foreground shadow-sm backdrop-blur transition-all outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-95"
       aria-label="跳到最新消息"
       title="跳到最新消息"
     >

@@ -46,8 +46,8 @@ function ToolCardImpl({ item }: { item: ToolItem }) {
         onClick={() => setExpanded((v) => !v)}
         disabled={!hasDetail}
         className={cn(
-          'flex h-6 w-full items-center gap-1.5 text-left text-xs',
-          hasDetail ? 'cursor-pointer hover:bg-accent/60' : 'cursor-default',
+          'flex h-6 w-full items-center gap-1.5 text-left text-xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50',
+          hasDetail ? 'hover:bg-accent/60 active:bg-accent' : 'cursor-default',
         )}
       >
         <Terminal className={cn('size-3 shrink-0', toolCategoryIconClass(item.name))} />

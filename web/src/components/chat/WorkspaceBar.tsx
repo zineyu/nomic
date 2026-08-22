@@ -48,7 +48,7 @@ export function WorkspaceBar({ workspaces, value, onChange }: WorkspaceBarProps)
             autoFocus
             placeholder="目录路径，如 ~/code/proj"
             aria-label="工作区路径"
-            className="h-7 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-xs outline-none placeholder:text-muted-foreground/60 focus:border-ring"
+            className="h-7 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50"
             onChange={(e) => setPath(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') confirmPath()

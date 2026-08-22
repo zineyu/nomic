@@ -42,6 +42,8 @@ export interface AssistantItem {
   /** 最终内容块（MessageEnd 后权威） */
   blocks: AssistantContent[]
   streaming: boolean
+  /** 流式中最近一个内容块的种类（运行状态提示的阶段推导用；定稿后不设置） */
+  streamPhase?: 'thinking' | 'text'
   stopReason?: StopReason
   errorMessage?: string
   model?: string
@@ -309,13 +311,27 @@ export function applyAgentEvent(items: ChatItem[], event: AgentEvent): ChatItem[
       if (index < 0) return next
       const current = next[index]
       if (current.type !== 'assistant') return next
+      if (kind === 'TextStart') {
+        return next.with(index, { ...current, streamPhase: 'text' as const })
+      }
+      if (kind === 'ThinkingStart') {
+        return next.with(index, { ...current, streamPhase: 'thinking' as const })
+      }
       if (kind === 'TextDelta') {
         const delta = (detail as { delta: string }).delta
-        return next.with(index, { ...current, text: current.text + delta })
+        return next.with(index, {
+          ...current,
+          text: current.text + delta,
+          streamPhase: 'text' as const,
+        })
       }
       if (kind === 'ThinkingDelta') {
         const delta = (detail as { delta: string }).delta
-        return next.with(index, { ...current, thinking: current.thinking + delta })
+        return next.with(index, {
+          ...current,
+          thinking: current.thinking + delta,
+          streamPhase: 'thinking' as const,
+        })
       }
       return next
     }
@@ -465,4 +481,45 @@ function upsertToolResult(items: ChatItem[], message: ToolResultMessage): ChatIt
     isError: message.is_error,
   }
   return appendItem(items, tool)
+}
+
+// ── 运行状态提示（输入框上方单行提示，与 TUI 同一口径）─────────────────────
+
+/** 运行状态提示的阶段：仅运行中有值。 */
+export interface RunPhase {
+  kind: 'waiting' | 'thinking' | 'writing' | 'tool'
+  /** 工具阶段的工具名（无则退化文案） */
+  tool?: string
+}
+
+/** 推导运行提示阶段：运行中工具优先；否则看流式 assistant 最近的内容块
+ *（thinking/正文）；都没有即等输出。空闲（非运行中）返回 `null`。 */
+export function runPhase(items: ChatItem[], running: boolean): RunPhase | null {
+  if (!running) return null
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i]
+    if (item.type === 'tool' && item.status === 'running') {
+      return { kind: 'tool', tool: item.name }
+    }
+  }
+  const last = items[items.length - 1]
+  if (last?.type === 'assistant' && last.streaming) {
+    if (last.streamPhase === 'thinking') return { kind: 'thinking' }
+    if (last.streamPhase === 'text') return { kind: 'writing' }
+  }
+  return { kind: 'waiting' }
+}
+
+/** 各阶段的提示文案（同一风格：小写动词 + 省略号）；工具阶段标注工具名。 */
+export function runHintText(phase: RunPhase): string {
+  switch (phase.kind) {
+    case 'waiting':
+      return 'waiting...'
+    case 'thinking':
+      return 'thinking...'
+    case 'writing':
+      return 'writing...'
+    case 'tool':
+      return phase.tool ? `tool calling(${phase.tool})...` : 'tool calling...'
+  }
 }

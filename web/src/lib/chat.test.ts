@@ -8,6 +8,8 @@ import {
   applyServerEvent,
   assistantText,
   messagesToItems,
+  runHintText,
+  runPhase,
   userContent,
   type ChatItem,
 } from './chat'
@@ -336,5 +338,79 @@ describe('agentEventContextTokens', () => {
     expect(agentEventContextTokens('AgentStart')).toBeNull()
     expect(agentEventContextTokens('TurnStart')).toBeNull()
     expect(agentEventContextTokens({ MessageStart: userMessage('x') })).toBeNull()
+  })
+})
+
+describe('runPhase / runHintText', () => {
+  it('空闲（非运行中）无阶段', () => {
+    expect(runPhase([], false)).toBeNull()
+    const items = applyAgentEvent([], { MessageStart: assistantMessage('') })
+    expect(runPhase(items, false)).toBeNull()
+  })
+
+  it('阶段随消息项尾部切换：等输出 → thinking → 正文 → 工具 → 等下一轮', () => {
+    // 已启动、尚无输出：等输出
+    let items: ChatItem[] = []
+    expect(runPhase(items, true)).toEqual({ kind: 'waiting' })
+
+    // assistant 消息开始但还没有内容块：仍等输出
+    items = applyAgentEvent(items, { MessageStart: assistantMessage('') })
+    expect(runPhase(items, true)).toEqual({ kind: 'waiting' })
+
+    // thinking 流式输出中
+    items = applyAgentEvent(items, {
+      MessageUpdate: { ThinkingDelta: { index: 0, delta: '想' } },
+    })
+    expect(runPhase(items, true)).toEqual({ kind: 'thinking' })
+
+    // 正文流式输出中
+    items = applyAgentEvent(items, {
+      MessageUpdate: { TextDelta: { index: 1, delta: '答' } },
+    })
+    expect(runPhase(items, true)).toEqual({ kind: 'writing' })
+
+    // 工具执行中（优先于 assistant 流式状态）
+    items = applyAgentEvent(items, {
+      ToolExecutionStart: { tool_call_id: 't1', tool_name: 'bash', args: {} },
+    })
+    expect(runPhase(items, true)).toEqual({ kind: 'tool', tool: 'bash' })
+
+    // 工具结束、等下一轮回复：回到等输出
+    items = applyAgentEvent(items, {
+      ToolExecutionEnd: {
+        tool_call_id: 't1',
+        tool_name: 'bash',
+        result: { content: [{ type: 'text', text: 'ok' }], terminate: false },
+        is_error: false,
+      },
+    })
+    expect(runPhase(items, true)).toEqual({ kind: 'waiting' })
+  })
+
+  it('Start 事件也驱动阶段（无增量先到的场景）', () => {
+    let items = applyAgentEvent([], { MessageStart: assistantMessage('') })
+    items = applyAgentEvent(items, { MessageUpdate: { ThinkingStart: { index: 0 } } })
+    expect(runPhase(items, true)).toEqual({ kind: 'thinking' })
+    items = applyAgentEvent(items, { MessageUpdate: { TextStart: { index: 1 } } })
+    expect(runPhase(items, true)).toEqual({ kind: 'writing' })
+  })
+
+  it('定稿后的流式状态不再影响阶段', () => {
+    let items = applyAgentEvent([], { MessageStart: assistantMessage('') })
+    items = applyAgentEvent(items, {
+      MessageUpdate: { TextDelta: { index: 0, delta: '答' } },
+    })
+    items = applyAgentEvent(items, {
+      MessageEnd: { message: assistantMessage('答'), context_tokens: 0 },
+    })
+    expect(runPhase(items, true)).toEqual({ kind: 'waiting' })
+  })
+
+  it('提示文案：四阶段同一风格；工具阶段标注工具名', () => {
+    expect(runHintText({ kind: 'waiting' })).toBe('waiting...')
+    expect(runHintText({ kind: 'thinking' })).toBe('thinking...')
+    expect(runHintText({ kind: 'writing' })).toBe('writing...')
+    expect(runHintText({ kind: 'tool', tool: 'bash' })).toBe('tool calling(bash)...')
+    expect(runHintText({ kind: 'tool' })).toBe('tool calling...')
   })
 })

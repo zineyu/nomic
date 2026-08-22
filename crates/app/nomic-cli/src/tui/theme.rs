@@ -76,6 +76,16 @@ pub(super) const fn busy() -> Style {
     Style::new().fg(BUSY)
 }
 
+/// 运行提示扫光的头部字符（最亮一档，扫光带右缘）。
+pub(super) const fn shimmer_head() -> Style {
+    Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
+}
+
+/// 运行提示扫光的拖尾字符（介于头部与底色之间）。
+pub(super) const fn shimmer_trail() -> Style {
+    busy().add_modifier(Modifier::BOLD)
+}
+
 /// 工具成功标记。
 pub(super) const fn ok() -> Style {
     Style::new().fg(OK)

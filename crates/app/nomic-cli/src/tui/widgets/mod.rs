@@ -1,9 +1,10 @@
 //! TUI 渲染：组合根与各区域自定义 widget（ratatui）。
 //!
-//! [`draw`] 是组合根：布局（聊天区 + 输入框 + 状态栏三段）后把各区域交给
+//! [`draw`] 是组合根：布局（聊天区 + 运行提示行 + 输入框 + 状态栏）后把各区域交给
 //! 对应 widget 渲染——聊天区 [`ChatView`]（只读；几何在渲染前由
-//! [`App::sync_chat_geometry`] 按视口算进状态层）、输入框 [`InputArea`]、
-//! 状态栏 [`StatusBar`]，以及覆盖层：COMMAND 模式的浮层命令栏
+//! [`App::sync_chat_geometry`] 按视口算进状态层）、运行状态提示
+//! [`RunHint`]（仅运行中占一行：阶段文案 + 扫光动效，空闲时高度为 0）、
+//! 输入框 [`InputArea`]、状态栏 [`StatusBar`]，以及覆盖层：COMMAND 模式的浮层命令栏
 //! [`CommandPalette`]（不占布局）、选择器弹层 [`PickerPopup`] 与
 //! 帮助/提问弹层（[`HelpOverlay`] / [`QuestionOverlay`]，内容区画布居中），
 //! 输入框上方的 `@` mention 弹层 [`MentionPopup`]（贴输入框，服务草稿
@@ -16,6 +17,7 @@ mod overlay;
 mod palette;
 mod popup;
 mod question;
+mod runhint;
 mod status;
 
 use ratatui::{
@@ -32,14 +34,19 @@ use overlay::HelpOverlay;
 use palette::CommandPalette;
 use popup::{MentionPopup, PickerPopup};
 use question::QuestionOverlay;
+use runhint::RunHint;
 use status::StatusBar;
 
 pub(in crate::tui) use status::format_tokens;
 
 /// 绘制整帧。
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
+    // 运行中在输入框上方插入一行运行状态提示（扫光动效）；空闲时高度
+    // 为 0，不占布局
+    let hint_height = u16::from(app.is_running());
     let chunks = Layout::vertical([
         Constraint::Min(3),
+        Constraint::Length(hint_height),
         Constraint::Length(input::input_height(app)),
         Constraint::Length(1),
     ])
@@ -53,10 +60,13 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     app.sync_chat_geometry(chat_area.width, chat_area.height);
     frame.render_widget(ChatView::new(app), chat_area);
 
+    // 运行状态提示行（输入框上方；空闲时高度为 0）
+    frame.render_widget(RunHint::new(app), chunks[1]);
+
     // 输入框（COMMAND 下草稿照常渲染，焦点在浮层命令栏）
     let input_widget = InputArea::new(app);
-    let input_cursor = input_widget.cursor_position(chunks[1]);
-    frame.render_widget(input_widget, chunks[1]);
+    let input_cursor = input_widget.cursor_position(chunks[2]);
+    frame.render_widget(input_widget, chunks[2]);
 
     // 浮层命令栏（COMMAND，ADR-0020 修订）：屏幕中上方的覆盖层单行
     // 输入框，不占布局；光标随之移到栏内。选择器打开时输入框失焦，
@@ -71,12 +81,12 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     }
 
     // 状态栏
-    frame.render_widget(StatusBar::new(app), chunks[2]);
+    frame.render_widget(StatusBar::new(app), chunks[3]);
 
     // `@` mention 补全弹层贴输入框上方（服务草稿补全，ADR-0020）；
     // 选择器/帮助/提问弹层是模态覆盖层：内容区（状态栏以上）整体作为画布
     if let Some(mention) = app.input().mention() {
-        frame.render_widget(MentionPopup::new(mention), chunks[1]);
+        frame.render_widget(MentionPopup::new(mention), chunks[2]);
     }
     let content = Rect {
         height: frame.area().height.saturating_sub(1),
@@ -198,7 +208,8 @@ mod tests {
         assert!(!compact.contains("abcd1234"));
     }
 
-    /// 运行中输入框标题含 spinner 与提示（聊天区不再叠加流式指示）。
+    /// 运行中：状态提示由输入框上方的提示行承担（waiting...），输入框
+    /// 标题不再叠加 spinner 与「运行中」字样；聊天区亦不叠加流式指示。
     #[test]
     fn shows_running_input_state() {
         let mut app = App::new("test-model".to_string(), None, 200_000);
@@ -224,8 +235,50 @@ mod tests {
 
         let compact = compact_text(&terminal);
         assert!(!compact.contains("生成中"), "{compact}");
-        assert!(compact.contains("运行中"), "{compact}");
-        assert!(compact.contains(app.spinner()), "{compact}");
+        assert!(!compact.contains("运行中"), "{compact}");
+        assert!(!compact.contains(app.spinner()), "{compact}");
+        assert!(compact.contains("waiting..."), "{compact}");
+    }
+
+    /// 运行状态提示行（输入框上方）：阶段文案随聊天区尾部切换；扫光带
+    /// 头部字符带最亮样式；运行结束（空闲）后提示行不占布局。
+    #[test]
+    fn shows_run_phase_hint_with_shimmer() {
+        use nomic_ai::AssistantEvent;
+        use ratatui::style::Modifier;
+
+        let mut app = thinking_app();
+        app.handle_event(&AgentEvent::AgentStart);
+        app.tick();
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let compact = compact_text(&terminal);
+        assert!(compact.contains("thinking..."), "{compact}");
+        // 扫光头部字符带加粗样式（tick=1：头部在第 2 字符）
+        let head = buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "h")
+            .expect("thinking 字符 cell");
+        assert!(head.modifier.contains(Modifier::BOLD));
+
+        // 正文流式输出：提示切换为 writing...
+        app.handle_event(&AgentEvent::MessageUpdate(AssistantEvent::TextStart {
+            index: 1,
+        }));
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let compact = compact_text(&terminal);
+        assert!(compact.contains("writing..."), "{compact}");
+
+        // 运行结束：提示行消失（不占布局）
+        app.finish_run(None);
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let compact = compact_text(&terminal);
+        assert!(!compact.contains("writing..."), "{compact}");
+        assert!(!compact.contains("waiting..."), "{compact}");
     }
 
     /// 队列区渲染（ADR-0014）：排队消息显示在输入框草稿上方，运行中

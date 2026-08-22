@@ -727,6 +727,7 @@ fn user_message_with_images_shows_placeholder() {
 
 mod mention_tests;
 mod normal_tests;
+mod phase_tests;
 mod picker_tests;
 fn image() -> nomic_ai::ImageContent {
     nomic_ai::ImageContent {

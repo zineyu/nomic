@@ -48,7 +48,7 @@ pub(in crate::tui) use question::Question;
 
 use crate::print::brief_args;
 
-/// braille spinner 帧序列（运行中工具与流式指示共用）。
+/// braille spinner 帧序列（运行中工具条目标题用；帧序号同时驱动运行提示扫光）。
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// 一条内建命令的静态描述。
@@ -370,6 +370,20 @@ const PAGE_SCROLL: u16 = 10;
 
 /// NORMAL 模式 Ctrl+D/Ctrl+U 的半页滚动步长。
 const HALF_PAGE_SCROLL: u16 = 5;
+
+/// 运行状态提示的阶段（输入框上方单行提示，渲染用）：由 [`App::run_phase`]
+/// 按聊天区尾部状态推导，仅运行中有值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::tui) enum RunPhase {
+    /// 已启动尚无输出（等首 token，或工具结束后等下一轮回复）
+    Waiting,
+    /// 流式 thinking 输出中
+    Thinking,
+    /// 流式正文输出中
+    Writing,
+    /// 工具执行中
+    ToolCalling,
+}
 
 /// TUI 交互模式（ADR-0021）：模式是一等状态，每个按键在当前模式
 /// 只有一个语义。

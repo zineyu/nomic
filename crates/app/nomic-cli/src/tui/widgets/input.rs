@@ -188,18 +188,15 @@ fn queue_area_lines(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
-/// 输入框标题与边框样式：标题只保留运行/队列等临时功能态；
+/// 输入框标题与边框样式：标题只保留队列等临时功能态；运行状态提示
+/// 由输入框上方的提示行（[`super::runhint::RunHint`]）承担，标题不再
+/// 叠加 spinner 与「运行中」字样，只以 busy 色边框低调标示。
 /// INSERT/NORMAL 等常驻模式的提示由状态栏徽标与右侧键位提示
 /// 承担（ADR-0011），输入框不再叠加，避免同一信息两处渲染。
 /// 选择器打开时输入框失焦：说明与键位提示在浮层弹层自身。
 fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
-    // QUEUE 模式（ADR-0012）：队列缓冲标题；运行中叠加 spinner
+    // QUEUE 模式（ADR-0012）：队列缓冲标题
     if app.queue_mode_active() {
-        let mut spans = Vec::new();
-        if app.is_running() {
-            spans.push(Span::styled(format!("{} ", app.spinner()), theme::busy()));
-            spans.push(Span::styled("运行中 · ", theme::busy()));
-        }
         let text = if app.queue().is_editing() {
             "队列编辑 · Enter/Esc 保存 · Shift+Enter 换行".to_string()
         } else {
@@ -208,22 +205,23 @@ fn input_title(app: &App) -> (Option<Line<'static>>, Style) {
                 app.queue().len()
             )
         };
-        spans.push(Span::styled(text, theme::accent()));
-        return (Some(Line::from(spans)), theme::accent());
+        return (
+            Some(Line::from(Span::styled(text, theme::accent()))),
+            theme::accent(),
+        );
     }
     if app.is_running() {
-        let mut spans = vec![
-            Span::styled(format!("{} ", app.spinner()), theme::busy()),
-            Span::styled("运行中 · NORMAL q 中断/退出", theme::busy()),
-        ];
         // 排队消息数（ADR-0014）：运行中 Enter 排队的可见反馈
         if !app.queue().is_empty() {
-            spans.push(Span::styled(
-                format!(" · {} 条排队（Esc→m 编辑）", app.queue().len()),
+            return (
+                Some(Line::from(Span::styled(
+                    format!("{} 条排队 · Esc→m 编辑", app.queue().len()),
+                    theme::busy(),
+                ))),
                 theme::busy(),
-            ));
+            );
         }
-        return (Some(Line::from(spans)), theme::busy());
+        return (None, theme::busy());
     }
     // 选择器打开时输入框失焦：不叠加标题（选择器的说明与键位提示
     // 已收进浮层弹层自身），边框降为暗色

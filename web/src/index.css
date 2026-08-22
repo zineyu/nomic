@@ -165,15 +165,35 @@
   background-color: var(--shiki-dark-bg) !important;
 }
 
-/* 流式输出光标 */
-@keyframes nomic-blink {
-  50% {
-    opacity: 0;
+/* 运行状态提示：高亮带自左到右扫过文本（background-size 200% 下，
+   position 100% → -100% 即亮点从左缘移到右缘），扫过右缘后从头再来 */
+@keyframes nomic-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
   }
 }
-.caret {
-  color: var(--ring);
-  animation: nomic-blink 1s steps(1) infinite;
+.run-hint-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--muted-foreground) 35%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 65%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: nomic-shimmer 1.6s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-hint-shimmer {
+    animation: none;
+    background-image: none;
+    color: var(--muted-foreground);
+  }
 }
 
 /* 细滚动条（侧栏 / 消息流） */

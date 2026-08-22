@@ -19,6 +19,8 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
   未清空则持续续行；运行被取消或失败时队列保留，恢复后按序作为下一轮发送）；
   oil.nvim 式 QUEUE 模式编辑队列（就地编辑/删除/换位），设计见
   [ADR-0014](docs/adr/0014-unified-message-queue.md)
+- **运行状态提示**：输入框上方单行阶段提示（`thinking...` / `tool calling...` /
+  `writing...` / `waiting...`），文字带自左到右的扫光动效
 - **九件工具**：`read` / `write` / `edit` / `bash` / `grep` / `find` / `todo_read` /
   `todo_write` / `ask_user_question`（单选/多选/填空，自动追加自定义填写选项，
   TUI 弹出模态提问框），schemars + serde 即校验，parallel 执行

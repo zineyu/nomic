@@ -1,5 +1,5 @@
 // 单条消息渲染：user（右侧气泡 + 时间元信息）/ assistant（思考胶囊 +
-// markdown 正文 + 流式光标 + 复制/重试操作）/ tool（执行卡片，独立渲染）/
+// markdown 正文 + 复制/重试操作）/ tool（执行卡片，独立渲染）/
 // system（居中提示）。参考 Kimi 布局：助手回合左对齐、正文优先。
 
 import { memo, useState } from 'react'
@@ -164,11 +164,6 @@ function AssistantMessage({
       ) : item.text ? (
         <div className="relative">
           <Markdown>{displayText}</Markdown>
-          {item.streaming && (
-            <span className="caret" aria-hidden="true">
-              ▍
-            </span>
-          )}
           {!item.streaming && <MessageActions item={item} />}
         </div>
       ) : item.streaming ? (

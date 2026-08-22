@@ -2,19 +2,67 @@
 // 启动页（未选中任何 session）：输入框上方渲染工作区选择栏（WorkspaceBar），
 // 首条消息在选定 workspace 下创建 session；无默认 workspace。
 
-import { useCallback, useEffect, useState } from 'react'
-import { AlertTriangle, Loader2, MessageCircleQuestion, PanelLeft, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { AlertTriangle, MessageCircleQuestion, PanelLeft, X } from 'lucide-react'
 
 import { ChatInput } from '@/components/chat/ChatInput'
 import { MessageList } from '@/components/chat/MessageList'
 import { QuestionModal } from '@/components/chat/QuestionModal'
+import { RunHint } from '@/components/chat/RunHint'
 import { WorkspaceBar } from '@/components/chat/WorkspaceBar'
 import { Button } from '@/components/ui/button'
+import { fadeSlideIn } from '@/lib/anim'
+import { runPhase } from '@/lib/chat'
 import type { UseChat } from '@/hooks/useChat'
 
 interface ChatViewProps extends UseChat {
   sidebarOpen: boolean
   onToggleSidebar: () => void
+}
+
+/** 错误提示横幅：出现时自下方滑入。 */
+function ErrorBanner({ error, onDismiss }: { error: string; onDismiss: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (ref.current) fadeSlideIn(ref.current, { y: 8, duration: 0.25 })
+  }, [])
+  return (
+    <div
+      ref={ref}
+      role="alert"
+      className="mx-auto mb-2 flex w-full max-w-page items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+    >
+      <AlertTriangle className="size-4 shrink-0" />
+      <span className="min-w-0 flex-1 break-words">{error}</span>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="shrink-0 rounded p-0.5 hover:bg-destructive/10"
+        aria-label="关闭错误提示"
+      >
+        <X className="size-3.5" />
+      </button>
+    </div>
+  )
+}
+
+/** 最小化的待回答问题入口：弹出式入场。 */
+function MinimizedQuestionButton({ onClick }: { onClick: () => void }) {
+  const ref = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (ref.current) fadeSlideIn(ref.current, { y: 8, duration: 0.25 })
+  }, [])
+  return (
+    <button
+      ref={ref}
+      type="button"
+      onClick={onClick}
+      className="fixed right-4 bottom-12 z-50 flex items-center gap-2 rounded-full border bg-background px-4 py-2 text-xs font-medium shadow-lg transition-colors hover:bg-accent"
+    >
+      <MessageCircleQuestion className="size-4 text-primary" />
+      待回答问题
+    </button>
+  )
 }
 
 export function ChatView({
@@ -92,9 +140,6 @@ export function ChatView({
           <h2 className="truncate text-base font-semibold" title={title}>
             {title}
           </h2>
-          {running && (
-            <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
-          )}
         </div>
 
         <div className="flex-1" />
@@ -107,23 +152,7 @@ export function ChatView({
         />
       </div>
 
-      {error && (
-        <div
-          role="alert"
-          className="mx-auto mb-2 flex w-full max-w-page items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
-        >
-          <AlertTriangle className="size-4 shrink-0" />
-          <span className="min-w-0 flex-1 break-words">{error}</span>
-          <button
-            type="button"
-            onClick={dismissError}
-            className="shrink-0 rounded p-0.5 hover:bg-destructive/10"
-            aria-label="关闭错误提示"
-          >
-            <X className="size-3.5" />
-          </button>
-        </div>
-      )}
+      {error && <ErrorBanner error={error} onDismiss={dismissError} />}
 
       {startPage && (
         <WorkspaceBar
@@ -132,6 +161,9 @@ export function ChatView({
           onChange={setStartChoice}
         />
       )}
+
+      {/* 运行状态提示（输入框上方；空闲时不渲染） */}
+      <RunHint phase={runPhase(items, running)} />
 
       <ChatInput
         running={running}
@@ -161,14 +193,7 @@ export function ChatView({
       )}
 
       {isMinimized && (
-        <button
-          type="button"
-          onClick={() => setMinimizedId(null)}
-          className="fixed right-4 bottom-12 z-50 flex items-center gap-2 rounded-full border bg-background px-4 py-2 text-xs font-medium shadow-lg transition-colors hover:bg-accent"
-        >
-          <MessageCircleQuestion className="size-4 text-primary" />
-          待回答问题
-        </button>
+        <MinimizedQuestionButton onClick={() => setMinimizedId(null)} />
       )}
     </div>
   )

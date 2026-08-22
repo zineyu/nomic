@@ -1,9 +1,9 @@
 //! App 的第二组方法：复制/选择器/队列/help/会话与命令执行（由 app/mod.rs 的 `impl App` 拆分而来）。
 
 use super::{
-    App, CommandAction, Effect, HALF_PAGE_SCROLL, Key, Message, Mode, PAGE_SCROLL,
-    PICKER_PAGE_SCROLL, Picker, PickerKind, PickerRow, Question, SPINNER_FRAMES, SkillEntry,
-    TurnMessage, help_text, line_count_of, skill_list_text,
+    App, Block, ChatItem, CommandAction, Effect, HALF_PAGE_SCROLL, Key, Message, Mode, PAGE_SCROLL,
+    PICKER_PAGE_SCROLL, Picker, PickerKind, PickerRow, Question, RunPhase, SPINNER_FRAMES,
+    SkillEntry, ToolItem, ToolStatus, TurnMessage, help_text, line_count_of, skill_list_text,
 };
 
 impl App {
@@ -625,6 +625,39 @@ impl App {
     /// 是否有 agent 运行在途（spinner 动画与运行态渲染用）。
     pub const fn is_running(&self) -> bool {
         self.running
+    }
+
+    /// 运行状态提示的阶段（输入框上方单行提示）：仅运行中有值，按聊天区
+    /// 尾部推导——运行中工具优先；否则看最新一条未定稿 assistant 的末尾
+    /// 内容块（thinking/正文）；都没有即等输出。
+    pub fn run_phase(&self) -> Option<RunPhase> {
+        if !self.running {
+            return None;
+        }
+        if self.running_tool().is_some() {
+            return Some(RunPhase::ToolCalling);
+        }
+        match self.chat.items().last() {
+            Some(ChatItem::Assistant(item)) if !item.done => match item.blocks.last() {
+                Some(Block::Thinking(_)) => Some(RunPhase::Thinking),
+                Some(Block::Text(_)) => Some(RunPhase::Writing),
+                None => Some(RunPhase::Waiting),
+            },
+            _ => Some(RunPhase::Waiting),
+        }
+    }
+
+    /// 最近一次启动且仍在运行的工具（运行提示标注工具名用）。
+    pub fn running_tool(&self) -> Option<&ToolItem> {
+        self.chat.items().iter().rev().find_map(|item| match item {
+            ChatItem::Tool(tool) if tool.status == ToolStatus::Running => Some(tool),
+            _ => None,
+        })
+    }
+
+    /// spinner 帧序号（运行提示扫光动画的相位）。
+    pub const fn spinner_tick(&self) -> usize {
+        self.spinner
     }
 
     /// 是否请求退出（事件循环退出条件）。

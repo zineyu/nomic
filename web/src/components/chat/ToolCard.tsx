@@ -7,6 +7,7 @@ import { ChevronDown, Loader2, Terminal } from 'lucide-react'
 import { useCollapse } from '@/lib/anim'
 import { cn } from '@/lib/utils'
 import { briefArgs } from '@/lib/toolArgs'
+import { toolCategoryIconClass } from '@/lib/toolCategory'
 import type { ToolItem } from '@/lib/chat'
 
 function StatusBadge({ item }: { item: ToolItem }) {
@@ -49,7 +50,7 @@ function ToolCardImpl({ item }: { item: ToolItem }) {
           hasDetail ? 'cursor-pointer hover:bg-accent/60' : 'cursor-default',
         )}
       >
-        <Terminal className="size-3 shrink-0 text-muted-foreground" />
+        <Terminal className={cn('size-3 shrink-0', toolCategoryIconClass(item.name))} />
         <span className="shrink-0 font-mono text-xs font-semibold text-muted-foreground">
           {item.name}
         </span>

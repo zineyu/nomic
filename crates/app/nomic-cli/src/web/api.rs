@@ -64,12 +64,29 @@ pub enum ClientEvent {
         prefix: String,
         request_id: String,
     },
-    /// 提交 prompt（空闲即跑，运行中入队）。
+    /// 提交 prompt（空闲即跑；运行中普通文本入 steering 队列——turn 边界
+    /// 注入本轮，斜杠命令仍走 runner 串行 job 队列等待本轮结束）。
     Prompt {
         session_id: String,
         text: String,
         #[serde(default)]
         images: Vec<nomic_ai::ImageContent>,
+    },
+    /// 编辑 steering 队列条目原文（空文本删除该条目，oil.nvim 空行忽略
+    /// 语义；附件保留）。fire-and-forget，变更经 `queue_changed` 广播。
+    UpdateQueueEntry {
+        session_id: String,
+        id: String,
+        text: String,
+    },
+    /// 删除 steering 队列条目。fire-and-forget，变更经 `queue_changed` 广播。
+    RemoveQueueEntry { session_id: String, id: String },
+    /// 移动 steering 队列条目（上移/下移一位）。fire-and-forget，变更经
+    /// `queue_changed` 广播。
+    MoveQueueEntry {
+        session_id: String,
+        id: String,
+        direction: MoveDirection,
     },
     /// 取消当前轮运行。
     Cancel { session_id: String },
@@ -98,6 +115,16 @@ pub enum ClientEvent {
 }
 
 // ── 组装路由 ──────────────────────────────────────────────────────────────
+
+/// 队列条目移动方向（`move_queue_entry` 命令）。
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoveDirection {
+    /// 上移一位（队首方向）
+    Up,
+    /// 下移一位（队尾方向）
+    Down,
+}
 
 /// 组装路由：WebSocket 事件流 + 静态前端（内嵌 `web/dist`，见 [`assets`]；
 /// 未命中路径 SPA 回退 `index.html`）。
@@ -286,6 +313,19 @@ async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
             text,
             images,
         } => Some(handlers::handle_prompt(state, &session_id, text, images).await),
+        ClientEvent::UpdateQueueEntry {
+            session_id,
+            id,
+            text,
+        } => handlers::handle_update_queue_entry(state, &session_id, &id, text).await,
+        ClientEvent::RemoveQueueEntry { session_id, id } => {
+            handlers::handle_remove_queue_entry(state, &session_id, &id).await
+        }
+        ClientEvent::MoveQueueEntry {
+            session_id,
+            id,
+            direction,
+        } => handlers::handle_move_queue_entry(state, &session_id, &id, direction).await,
         ClientEvent::Cancel { session_id } => {
             Some(handlers::handle_cancel(state, &session_id).await)
         }

@@ -23,6 +23,7 @@
 mod api;
 mod assets;
 mod question;
+mod queue;
 mod session;
 mod workspace;
 
@@ -44,6 +45,7 @@ use crate::model::ModelResolver;
 use crate::{Cli, web::api::ApiError};
 use session::SessionFactory;
 
+pub use queue::{MessageQueue, QueueEntryView};
 pub use session::{Snapshot, snapshot};
 
 /// 服务端推送给前端的事件（WebSocket text frame 负载；`type` 字段区分事件种类）。
@@ -87,6 +89,12 @@ pub enum ServerEvent {
     },
     /// 客户端落后于事件流，应重新拉取快照
     Refresh,
+    /// steering 队列变化（全量快照；入队 / turn 边界注入弹出 / 编辑 /
+    /// 删除 / 换位后广播，前端整体替换本地队列状态）
+    QueueChanged {
+        session_id: String,
+        queue: Vec<QueueEntryView>,
+    },
 
     // ── 查询响应事件（携带 request_id）───────────────────────────────
     /// 会话快照响应（`get_state` 查询的回复）
@@ -161,6 +169,9 @@ pub struct SessionRuntime {
     /// 在途提问注册表（与工具侧 sink 共享，nomic-tools 统一实现）：
     /// 应答回填 / 取消丢弃 / 断线重放快照的唯一口径
     pub questions: Arc<QuestionRegistry>,
+    /// steering 统一消息队列（ADR-0014/0027，web 侧实现）：运行中提交的
+    /// prompt 入队，core 在 turn 边界经注入点弹出；编辑按条目 id 寻址
+    pub queue: MessageQueue,
     /// 本 session 的操作基准（workspace 严格归属）：工具相对路径以它解析，
     /// 快照展示给用户
     pub workspace: PathBuf,
@@ -573,7 +584,7 @@ mod tests {
         assert_eq!(snap.model.provider, "openai");
         assert_eq!(snap.model.id, "gpt-4o");
         assert!(!snap.running);
-        assert_eq!(snap.queued, 0);
+        assert!(snap.queue.is_empty());
         assert!(snap.session.is_some(), "内存库 session 应存在");
         assert!(snap.pending_question.is_none());
     }

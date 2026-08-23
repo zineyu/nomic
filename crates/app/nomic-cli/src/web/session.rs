@@ -11,14 +11,14 @@ use anyhow::Result;
 use nomic_ai::{Message, Model, Provider, StreamOptions, ThinkingLevel};
 use nomic_core::{
     Agent, AgentEvent, CompactOutcome, ContinueOutcome, JobKind, JobOutcome, NOTHING_TO_COMPACT,
-    NOTHING_TO_CONTINUE, RunnerEvent, SessionRunner,
+    NOTHING_TO_CONTINUE, RunnerEvent, SessionJob, SessionRunner,
 };
 use nomic_session::{SessionRecorder, SessionStore};
 use nomic_skills::SkillResolver;
 use nomic_tools::{AskUserQuestion, QuestionRegistry};
 use tokio::sync::{Mutex, broadcast, mpsc};
 
-use super::{ServerEvent, SessionRuntime};
+use super::{MessageQueue, QueueEntryView, ServerEvent, SessionRuntime};
 use crate::model::ModelResolver;
 use crate::web::question::WebQuestionSink;
 
@@ -132,9 +132,20 @@ impl SessionFactory {
             events: events_tx.clone(),
             registry: questions.clone(),
         });
+        // steering 统一消息队列（ADR-0014/0027，web 侧实现）：与 agent
+        // 共享同一份并作为 core 的注入源（turn 边界弹出队首注入本轮）；
+        // 运行中提交的 prompt 由 handler 入队，mention 在投递时展开
+        let queue = MessageQueue::new(id.clone(), events_tx.clone(), {
+            let skills = self.skill_resolver.clone();
+            let base = workspace.clone();
+            Some(Arc::new(move |text: &str| {
+                crate::mention::expand_mentions(text, &skills, &base)
+            }))
+        });
         // 工具配方（组装收在 agent_recipe 模块）：web 的差异点——主/子
-        // agent 各自独立的 todo 清单、提问走事件总线、无 turn 注入点；
-        // 主/子 agent 工具都以本 session 的 workspace 为基准（严格归属）
+        // agent 各自独立的 todo 清单、提问走事件总线、steering 经统一
+        // 消息队列注入；主/子 agent 工具都以本 session 的 workspace 为
+        // 基准（严格归属）
         let recipe = crate::agent_recipe::assemble(crate::agent_recipe::RecipeOpts {
             base: nomic_tools::BaseDir::new(Some(workspace.clone())),
             skill_resolver: self.skill_resolver.clone(),
@@ -142,7 +153,7 @@ impl SessionFactory {
             todo: crate::agent_recipe::TodoPolicy::Isolated,
             provider: resolved.provider.clone(),
             available_models: self.available_models.clone(),
-            turn_injection: None,
+            turn_injection: Some(Arc::new(queue.clone())),
         });
         let (agent, events_rx) = recipe
             .apply(
@@ -165,6 +176,7 @@ impl SessionFactory {
             events: events_tx,
             runner,
             questions,
+            queue,
             workspace,
         });
         tokio::spawn(forward_events(session.clone(), events_rx));
@@ -247,10 +259,20 @@ async fn forward_runner_events(
             RunnerEvent::Started(JobKind::Compact) => run_started(),
             RunnerEvent::Started(JobKind::Prompt | JobKind::Continue) => {}
             RunnerEvent::Finished(JobOutcome::Prompt(result)) => {
-                if let Err(error) = result {
-                    tracing::error!(%error, "agent run failed");
-                    notify(format!("{error:#}"));
-                    run_finished();
+                match result {
+                    Ok(outcome) => {
+                        // 队列 drain（ADR-0014）：正常结束但队列仍非空
+                        //（注入点查询后的滞后入队竞态），弹出队首作为下
+                        // 一轮 prompt；异常结束（取消/失败）队列暂停保留
+                        if outcome.ended_normally() {
+                            drain_queue(&session);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "agent run failed");
+                        notify(format!("{error:#}"));
+                        run_finished();
+                    }
                 }
             }
             RunnerEvent::Finished(JobOutcome::Compact(result)) => {
@@ -283,6 +305,21 @@ async fn forward_runner_events(
     }
 }
 
+/// 队列 drain（ADR-0014）：弹出队首作为下一轮 prompt 提交；runner 串行
+/// 消费使各轮 drain 首尾相接成链，直至队列清空。弹出即 mention 展开
+///（队列存原文，投递时展开）。
+fn drain_queue(session: &Arc<SessionRuntime>) {
+    let Some(message) = session.queue.pop_front() else {
+        return;
+    };
+    if let Err(error) = session.runner.submit(SessionJob::Prompt {
+        text: message.text,
+        images: message.images,
+    }) {
+        tracing::error!(%error, "queue drain 提交失败");
+    }
+}
+
 /// 当前状态快照的各部分（api 层拼装成响应）。
 pub struct Snapshot {
     pub messages: Vec<Message>,
@@ -290,7 +327,8 @@ pub struct Snapshot {
     pub reasoning: Option<ThinkingLevel>,
     pub context_tokens: u64,
     pub running: bool,
-    pub queued: usize,
+    /// steering 队列内容（原文 + 附件数；前端队列区渲染与编辑寻址用）
+    pub queue: Vec<QueueEntryView>,
     pub session: Option<(String, Option<String>)>,
     pub pending_question: Option<(String, AskUserQuestion)>,
     /// 本 session 的 workspace 路径（操作基准）
@@ -306,7 +344,8 @@ pub async fn snapshot(session: &SessionRuntime) -> Result<Snapshot> {
     let reasoning = session.handle.reasoning().await?;
     let context_tokens = session.handle.context_tokens().await?;
     let session_stats = session.handle.stats().await?;
-    let (running, queued) = (session.runner.is_running(), session.runner.queued_len());
+    let running = session.runner.is_running();
+    let queue = session.queue.snapshot();
     let title = nomic_session::session_title(&messages);
     let pending_question = session.questions.current();
     Ok(Snapshot {
@@ -315,10 +354,57 @@ pub async fn snapshot(session: &SessionRuntime) -> Result<Snapshot> {
         reasoning,
         context_tokens,
         running,
-        queued,
+        queue,
         session: Some((session.id.clone(), title)),
         pending_question,
         workspace: session.workspace.clone(),
         stats: session_stats,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! 队列 drain（ADR-0014）：run 正常结束后队列仍非空（滞后入队竞态），
+    //! 队首作为下一轮 prompt 提交；空队列不动。
+
+    #[tokio::test]
+    async fn drain_submits_front_as_next_prompt() {
+        let (state, session_id) = crate::web::tests::test_state_with_session().await;
+        let session = state
+            .inner
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        assert!(!session.runner.is_running(), "预置 session 应空闲");
+
+        session.queue.push("下一条".to_string(), Vec::new());
+        super::drain_queue(&session);
+
+        assert!(session.queue.snapshot().is_empty(), "drain 应弹出队首");
+        assert!(
+            session.runner.is_running(),
+            "drain 应提交下一轮 prompt（submit 同步入队，无调度点）"
+        );
+        // 取消在途 job，避免测试发起真实 provider 请求
+        session.cancel_run();
+    }
+
+    #[tokio::test]
+    async fn drain_noop_when_queue_empty() {
+        let (state, session_id) = crate::web::tests::test_state_with_session().await;
+        let session = state
+            .inner
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .expect("session")
+            .clone();
+
+        super::drain_queue(&session);
+        assert!(!session.runner.is_running(), "空队列不应产生 job");
+    }
 }

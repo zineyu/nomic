@@ -54,7 +54,7 @@ pub struct RecipeOpts {
     pub provider: Arc<dyn Provider>,
     /// 可供子 agent 选择的模型列表（supervisor 校验与展示用）。
     pub available_models: Vec<Model>,
-    /// 运行中注入源（ADR-0014，仅 TUI：自持统一消息队列，core 在 turn
+    /// 运行中注入源（ADR-0014，交互端自持统一消息队列，core 在 turn
     /// 边界经注入点弹出注入；非交互入口为 `None`）。
     pub turn_injection: Option<Arc<dyn TurnInjection>>,
 }

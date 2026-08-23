@@ -113,12 +113,16 @@ const MAX_FILE_CANDIDATES: usize = 100;
 
 // ── 命令类 handler（返回 ack ServerEvent）─────────────────────────────────
 
-/// 提交 prompt（空闲即跑，运行中入队）；返回 ack 携带排队状态。
+/// 提交 prompt；返回 ack 携带排队状态。
 ///
 /// `/` 开头的输入按斜杠命令解析（`/compact [聚焦指令]`、`/continue`），
-/// 与 prompt 共用同一队列串行执行（core runner，ADR-0033）；其余文本
-/// 在提交前展开有效 `@skill:` / `@file:` mention（相对本 session 的
-/// workspace），无效标记原样保留——与 TUI 同一口径。
+/// 走 runner 串行 job 队列（运行中排队等待本轮结束，ADR-0033）。
+///
+/// 普通文本：运行中入 steering 统一消息队列（ADR-0014），core 在 turn
+/// 边界弹出注入本轮运行（队列存原文，`@skill:` / `@file:` mention 在
+/// 投递时展开；异常结束队列保留，正常结束的滞后入队由 runner 事件侧
+/// drain 续跑）；空闲时直接提交运行（提交前展开 mention，无效标记原样
+/// 保留——与 TUI 同一口径）。
 pub async fn handle_prompt(
     state: &AppState,
     session_id: &str,
@@ -133,32 +137,101 @@ pub async fn handle_prompt(
         Ok(s) => s,
         Err(error) => return error.to_ws_response(None),
     };
-    let job = if let Some(rest) = trimmed.strip_prefix('/') {
-        match parse_slash_command(rest) {
+    if let Some(rest) = trimmed.strip_prefix('/') {
+        let job = match parse_slash_command(rest) {
             Ok(job) => job,
             Err(error) => return error.to_ws_response(None),
+        };
+        // runner 串行消费（提交时已在运行则排队）；提交前读运行态作 ack
+        let queued = session.runner.is_running();
+        if let Err(error) = session.runner.submit(job) {
+            return ApiError::Internal(error.to_string()).to_ws_response(None);
         }
-    } else {
-        // 发送前展开有效 `@skill:` / `@file:` mention；无效标记原样保留
-        let expanded = crate::mention::expand_mentions(
-            trimmed,
-            &state.inner.factory.skill_resolver,
-            &session.workspace,
-        );
-        nomic_core::SessionJob::Prompt {
-            text: expanded,
-            images,
-        }
-    };
-    // runner 串行消费（提交时已在运行则排队）；提交前读运行态作 ack
-    let queued = session.runner.is_running();
-    if let Err(error) = session.runner.submit(job) {
+        return ServerEvent::PromptAck {
+            session_id: session_id.to_string(),
+            queued,
+        };
+    }
+    // 运行中：入 steering 队列（含 runner 尚有排队 job 的窗口），turn 边界
+    // 注入本轮；入队即广播 queue_changed 驱动前端队列区
+    if session.runner.is_running() {
+        session.queue.push(trimmed.to_string(), images);
+        return ServerEvent::PromptAck {
+            session_id: session_id.to_string(),
+            queued: true,
+        };
+    }
+    // 空闲：展开 mention 后直接提交运行
+    let expanded = crate::mention::expand_mentions(
+        trimmed,
+        &state.inner.factory.skill_resolver,
+        &session.workspace,
+    );
+    if let Err(error) = session.runner.submit(nomic_core::SessionJob::Prompt {
+        text: expanded,
+        images,
+    }) {
         return ApiError::Internal(error.to_string()).to_ws_response(None);
     }
     ServerEvent::PromptAck {
         session_id: session_id.to_string(),
-        queued,
+        queued: false,
     }
+}
+
+/// 编辑 steering 队列条目原文：空文本删除该条目（oil.nvim 空行忽略语义，
+/// 与 TUI QUEUE 模式保存口径一致）；附件保留在槽位上。成功时无响应事件，
+/// 变更经队列的 `queue_changed` 广播驱动前端。
+pub async fn handle_update_queue_entry(
+    state: &AppState,
+    session_id: &str,
+    id: &str,
+    text: String,
+) -> Option<ServerEvent> {
+    let session = match open_session(state, session_id).await {
+        Ok(s) => s,
+        Err(error) => return Some(error.to_ws_response(None)),
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        session.queue.remove(id);
+    } else {
+        session.queue.update_text(id, trimmed.to_string());
+    }
+    None
+}
+
+/// 删除 steering 队列条目（幂等：id 不存在静默无操作）。
+pub async fn handle_remove_queue_entry(
+    state: &AppState,
+    session_id: &str,
+    id: &str,
+) -> Option<ServerEvent> {
+    let session = match open_session(state, session_id).await {
+        Ok(s) => s,
+        Err(error) => return Some(error.to_ws_response(None)),
+    };
+    session.queue.remove(id);
+    None
+}
+
+/// 移动 steering 队列条目（上移/下移一位；到底/顶不动）。
+pub async fn handle_move_queue_entry(
+    state: &AppState,
+    session_id: &str,
+    id: &str,
+    direction: super::MoveDirection,
+) -> Option<ServerEvent> {
+    let session = match open_session(state, session_id).await {
+        Ok(s) => s,
+        Err(error) => return Some(error.to_ws_response(None)),
+    };
+    let delta = match direction {
+        super::MoveDirection::Up => -1,
+        super::MoveDirection::Down => 1,
+    };
+    session.queue.move_by(id, delta);
+    None
 }
 
 /// 解析斜杠命令体（已去掉前导 `/`）；未知命令或参数非法时返回带用法
@@ -365,7 +438,8 @@ pub struct SnapshotView {
     pub reasoning: Option<ThinkingLevel>,
     pub context_tokens: u64,
     pub running: bool,
-    pub queued: usize,
+    /// steering 队列内容（原文 + 附件数；前端队列区渲染与编辑寻址用）
+    pub queue: Vec<crate::web::QueueEntryView>,
     pub session: Option<(String, Option<String>)>,
     pub pending_question: Option<(String, AskUserQuestion)>,
     /// 本 session 的 workspace 路径（操作基准）
@@ -383,7 +457,7 @@ impl SnapshotView {
             reasoning: snap.reasoning,
             context_tokens: snap.context_tokens,
             running: snap.running,
-            queued: snap.queued,
+            queue: snap.queue,
             session: snap.session,
             pending_question: snap.pending_question,
             workspace: snap.workspace.display().to_string(),
@@ -560,6 +634,126 @@ mod tests {
             panic!("应返回 PromptAck");
         };
         assert!(!queued, "空闲时提交不应标记排队");
+    }
+
+    /// 运行中提交普通文本：入 steering 队列（ack 标记排队），不占用
+    /// runner job 队列；入队即向总线广播 queue_changed。
+    #[tokio::test]
+    async fn prompt_while_running_enqueues_steering() {
+        let (state, session_id) = crate::web::tests::test_state_with_session().await;
+        let session = state
+            .inner
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        let mut events = state.inner.events.subscribe();
+
+        // 用一个 runner job 占住运行态（/continue 空历史立即结束；单线程
+        // 测试运行时中 submit 与下方 is_running 判定之间无调度点，job 尚
+        // 未出队，运行态判定为真）
+        session
+            .runner
+            .submit(nomic_core::SessionJob::Continue)
+            .expect("submit continue");
+
+        let ack = handle_prompt(&state, &session_id, "转向一下".to_string(), Vec::new()).await;
+        let ServerEvent::PromptAck { queued, .. } = ack else {
+            panic!("应返回 PromptAck");
+        };
+        assert!(queued, "运行中提交应标记排队");
+
+        let queue = session.queue.snapshot();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].text, "转向一下");
+        assert!(
+            matches!(
+                events.try_recv().expect("queue_changed"),
+                ServerEvent::QueueChanged { .. }
+            ),
+            "入队应广播 queue_changed"
+        );
+        // runner job 队列不因 steering 入队增长（steering 不占 job 队列）
+        assert!(
+            session.runner.queued_len() <= 1,
+            "steering 不入 runner 队列"
+        );
+    }
+
+    /// 队列编辑命令：更新原文 / 空文本删除 / 删除 / 上下移，均按 id 寻址。
+    #[tokio::test]
+    async fn queue_edit_handlers() {
+        let (state, session_id) = crate::web::tests::test_state_with_session().await;
+        let session = state
+            .inner
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        let a = session.queue.push("a".to_string(), Vec::new());
+        let b = session.queue.push("b".to_string(), Vec::new());
+
+        // 更新原文（首尾空白裁剪，与 prompt 提交口径一致）
+        assert!(
+            handle_update_queue_entry(&state, &session_id, &a, "  A  ".to_string())
+                .await
+                .is_none()
+        );
+        let texts: Vec<String> = session
+            .queue
+            .snapshot()
+            .into_iter()
+            .map(|entry| entry.text)
+            .collect();
+        assert_eq!(texts, ["A", "b"]);
+
+        // 下移队首条目
+        assert!(
+            handle_move_queue_entry(
+                &state,
+                &session_id,
+                &a,
+                crate::web::api::MoveDirection::Down
+            )
+            .await
+            .is_none()
+        );
+        let texts: Vec<String> = session
+            .queue
+            .snapshot()
+            .into_iter()
+            .map(|entry| entry.text)
+            .collect();
+        assert_eq!(texts, ["b", "A"]);
+
+        // 空文本保存 = 删除（oil.nvim 空行忽略语义）
+        assert!(
+            handle_update_queue_entry(&state, &session_id, &b, "   ".to_string())
+                .await
+                .is_none()
+        );
+        let queue = session.queue.snapshot();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].id, a);
+
+        // 显式删除
+        assert!(
+            handle_remove_queue_entry(&state, &session_id, &a)
+                .await
+                .is_none()
+        );
+        assert!(session.queue.snapshot().is_empty());
+
+        // 未知 session 返回 error 事件
+        let event = handle_remove_queue_entry(&state, "missing", "1").await;
+        assert!(
+            matches!(event, Some(ServerEvent::Error { .. })),
+            "未知 session 应返回 error 事件"
+        );
     }
 
     /// 未知斜杠命令不应进入队列，直接回错误事件。

@@ -10,7 +10,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 function renderChatInput(props: Partial<Parameters<typeof ChatInput>[0]> = {}) {
   return render(
     <TooltipProvider delayDuration={0}>
-      <ChatInput running={false} queued={0} onSend={vi.fn()} onStop={vi.fn()} {...props} />
+      <ChatInput running={false} onSend={vi.fn()} onStop={vi.fn()} {...props} />
     </TooltipProvider>,
   )
 }
@@ -52,9 +52,8 @@ describe('ChatInput', () => {
 
   it('运行中显示停止按钮', () => {
     const onStop = vi.fn()
-    renderChatInput({ running: true, queued: 1, onStop })
+    renderChatInput({ running: true, onStop })
     expect(screen.getByTitle(/停止当前运行/)).toBeInTheDocument()
-    expect(screen.getByText(/已排队 1 条/)).toBeInTheDocument()
   })
 
   it('输入框显示上下文环形指示器，悬停展示详情', async () => {

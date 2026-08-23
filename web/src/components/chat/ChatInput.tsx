@@ -59,7 +59,6 @@ interface PopupState {
 
 interface ChatInputProps {
   running: boolean
-  queued: number
   modelSpec?: string | null
   reasoning?: string | null
   contextTokens?: number
@@ -77,7 +76,6 @@ interface ChatInputProps {
 
 export function ChatInput({
   running,
-  queued,
   modelSpec,
   reasoning,
   contextTokens = 0,
@@ -297,11 +295,6 @@ export function ChatInput({
 
   return (
     <div className="mx-auto w-full max-w-page px-4 pb-2 pt-1.5 sm:px-7">
-      {queued > 0 && (
-        <div className="mb-2 text-center text-xs text-muted-foreground">
-          已排队 {queued} 条，当前轮完成后按序发送
-        </div>
-      )}
       <div className="relative">
         {/* 补全弹层（`@` mention / `/` 命令） */}
         {popup && (

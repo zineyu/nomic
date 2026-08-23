@@ -1,9 +1,10 @@
-// ChatInput / QuestionModal / ToolCard stories。
+// ChatInput / QueuePanel / QuestionModal / ToolCard stories。
 
 import type { Meta, StoryObj } from '@storybook/react'
 
 import { ChatInput } from '@/components/chat/ChatInput'
 import { QuestionModal } from '@/components/chat/QuestionModal'
+import { QueuePanel } from '@/components/chat/QueuePanel'
 import { ToolCard } from '@/components/chat/ToolCard'
 
 // ── ChatInput ────────────────────────────────────────────────────────────────
@@ -18,11 +19,29 @@ export default chatInputMeta
 type InputStory = StoryObj<typeof ChatInput>
 
 export const InputIdle: InputStory = {
-  args: { running: false, queued: 0, onSend: () => {}, onStop: () => {} },
+  args: { running: false, onSend: () => {}, onStop: () => {} },
 }
 
-export const InputRunningWithQueue: InputStory = {
-  args: { running: true, queued: 2, onSend: () => {}, onStop: () => {} },
+export const InputRunning: InputStory = {
+  args: { running: true, onSend: () => {}, onStop: () => {} },
+}
+
+// ── QueuePanel ───────────────────────────────────────────────────────────────
+
+export const QueueWithEntries: StoryObj<typeof QueuePanel> = {
+  name: 'QueuePanel / 排队条目',
+  render: () => (
+    <QueuePanel
+      queue={[
+        { id: '1', text: '把刚才的改动拆成两个 commit', images: 0 },
+        { id: '2', text: '补充 @file:src/runner.rs 的单测', images: 0 },
+        { id: '3', text: '看一下这张截图的报错', images: 1 },
+      ]}
+      onUpdate={() => {}}
+      onRemove={() => {}}
+      onMove={() => {}}
+    />
+  ),
 }
 
 // ── QuestionModal ────────────────────────────────────────────────────────────

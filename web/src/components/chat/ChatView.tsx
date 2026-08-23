@@ -8,6 +8,7 @@ import { AlertTriangle, MessageCircleQuestion, PanelLeft, X } from 'lucide-react
 import { ChatInput } from '@/components/chat/ChatInput'
 import { MessageList } from '@/components/chat/MessageList'
 import { QuestionModal } from '@/components/chat/QuestionModal'
+import { QueuePanel } from '@/components/chat/QueuePanel'
 import { RunHint } from '@/components/chat/RunHint'
 import { WorkspaceBar } from '@/components/chat/WorkspaceBar'
 import { Button } from '@/components/ui/button'
@@ -74,7 +75,7 @@ export function ChatView({
   const {
     items,
     running,
-    queued,
+    queue,
     question,
     error,
     session,
@@ -87,6 +88,9 @@ export function ChatView({
     stop,
     startSession,
     answerQuestion,
+    updateQueueEntry,
+    removeQueueEntry,
+    moveQueueEntry,
     dismissError,
     switchModel,
   } = chat
@@ -170,9 +174,16 @@ export function ChatView({
       {/* 运行状态提示（输入框上方；空闲时不渲染） */}
       <RunHint phase={runPhase(items, running)} />
 
+      {/* steering 队列区（排队消息的展示与编辑；空队列不渲染） */}
+      <QueuePanel
+        queue={queue}
+        onUpdate={updateQueueEntry}
+        onRemove={removeQueueEntry}
+        onMove={moveQueueEntry}
+      />
+
       <ChatInput
         running={running}
-        queued={queued}
         modelSpec={modelSpec}
         reasoning={reasoning}
         contextTokens={contextTokens}

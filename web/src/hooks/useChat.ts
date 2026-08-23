@@ -21,6 +21,7 @@ import type {
   AskUserQuestion,
   ImageContent,
   Model,
+  QueueEntry,
   ServerEvent,
   SessionStats,
   SessionSummary,
@@ -39,7 +40,8 @@ export interface ChatState {
   items: ChatItem[]
   sessions: SessionSummary[]
   running: boolean
-  queued: number
+  /** steering 队列内容（服务端权威：queue_changed 事件与快照驱动） */
+  queue: QueueEntry[]
   model: Model | null
   reasoning: string | null
   contextTokens: number
@@ -70,7 +72,7 @@ const initialState: ChatState = {
   items: [],
   sessions: [],
   running: false,
-  queued: 0,
+  queue: [],
   model: null,
   reasoning: null,
   contextTokens: 0,
@@ -97,7 +99,7 @@ export function useChat() {
       reasoning: snapshot.reasoning,
       contextTokens: snapshot.context_tokens,
       running: snapshot.running,
-      queued: snapshot.queued,
+      queue: snapshot.queue,
       session: snapshot.session,
       workspace: snapshot.workspace,
       question: snapshot.pending_question ?? null,
@@ -134,9 +136,12 @@ export function useChat() {
       const items = applyServerEvent(prev.items, event)
       switch (event.type) {
         case 'run_started':
-          return { ...prev, items, running: true, queued: 0 }
+          return { ...prev, items, running: true }
         case 'run_finished':
-          return { ...prev, items, running: false, queued: 0 }
+          return { ...prev, items, running: false }
+        case 'queue_changed':
+          // steering 队列全量快照：整体替换（队列短小，免增量合并）
+          return { ...prev, items, queue: event.queue }
         case 'question':
           return { ...prev, items, question: { id: event.id, question: event.question } }
         case 'question_cancelled':
@@ -244,10 +249,9 @@ export function useChat() {
     const sid = sessionIdRef.current
     if (!trimmed || !sid) return
     try {
-      const result = await api.prompt(sid, trimmed, images)
-      if (result.status === 'queued') {
-        setState((prev) => ({ ...prev, queued: prev.queued + 1 }))
-      }
+      // 运行中提交由服务端入 steering 队列并经 queue_changed 广播，
+      // 前端无需本地预调队列状态
+      await api.prompt(sid, trimmed, images)
     } catch (error) {
       setState((prev) => ({
         ...prev,
@@ -289,10 +293,7 @@ export function useChat() {
         // 先切换查看（快照为空会话），再提交 prompt：后续流式事件
         // 经 applyEvent 增量驱动 UI
         await loadSession(id)
-        const result = await api.prompt(id, trimmed, images)
-        if (result.status === 'queued') {
-          setState((prev) => ({ ...prev, queued: prev.queued + 1 }))
-        }
+        await api.prompt(id, trimmed, images)
         await refreshSessions()
         await refreshWorkspaces()
       } catch (error) {
@@ -339,6 +340,24 @@ export function useChat() {
     setState((prev) => ({ ...prev, question: null }))
   }, [])
 
+  /** 编辑 steering 队列条目原文（空文本 = 删除；变更经 queue_changed 回填）。 */
+  const updateQueueEntry = useCallback((id: string, text: string) => {
+    const sid = sessionIdRef.current
+    if (sid) api.updateQueueEntry(sid, id, text)
+  }, [])
+
+  /** 删除 steering 队列条目。 */
+  const removeQueueEntry = useCallback((id: string) => {
+    const sid = sessionIdRef.current
+    if (sid) api.removeQueueEntry(sid, id)
+  }, [])
+
+  /** 移动 steering 队列条目（上移/下移一位）。 */
+  const moveQueueEntry = useCallback((id: string, direction: 'up' | 'down') => {
+    const sid = sessionIdRef.current
+    if (sid) api.moveQueueEntry(sid, id, direction)
+  }, [])
+
   const dismissError = useCallback(() => {
     setState((prev) => ({ ...prev, error: null }))
   }, [])
@@ -353,6 +372,9 @@ export function useChat() {
     resumeSession,
     switchModel,
     answerQuestion,
+    updateQueueEntry,
+    removeQueueEntry,
+    moveQueueEntry,
     dismissError,
   }
 }

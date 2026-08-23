@@ -297,6 +297,21 @@ export const api = {
     client.send({ type: 'cancel', session_id: sessionId })
   },
 
+  /** 编辑 steering 队列条目原文（命令类；空文本 = 删除该条目）。 */
+  updateQueueEntry: (sessionId: string, id: string, text: string) => {
+    client.send({ type: 'update_queue_entry', session_id: sessionId, id, text })
+  },
+
+  /** 删除 steering 队列条目（命令类）。 */
+  removeQueueEntry: (sessionId: string, id: string) => {
+    client.send({ type: 'remove_queue_entry', session_id: sessionId, id })
+  },
+
+  /** 移动 steering 队列条目（命令类；上移/下移一位）。 */
+  moveQueueEntry: (sessionId: string, id: string, direction: 'up' | 'down') => {
+    client.send({ type: 'move_queue_entry', session_id: sessionId, id, direction })
+  },
+
   /** 回答提问（命令类，需指定 session_id）。 */
   answerQuestion: (sessionId: string, id: string, answer: AskUserAnswer) => {
     client.send({

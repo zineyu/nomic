@@ -184,6 +184,8 @@ export type ServerEvent =
   | { type: 'run_finished'; session_id: string }
   | { type: 'error'; session_id?: string; request_id?: string; message: string }
   | { type: 'refresh' }
+  // ── steering 队列变更（全量快照：入队 / turn 边界注入弹出 / 编辑 / 删除 / 换位）
+  | { type: 'queue_changed'; session_id: string; queue: QueueEntry[] }
   // ── 查询响应事件（携带 request_id）
   | { type: 'state_snapshot'; session_id: string; request_id: string; snapshot: SnapshotView }
   | { type: 'models_list'; request_id: string; candidates: ModelChoice[] }
@@ -214,6 +216,11 @@ export type ClientEvent =
   | { type: 'answer_question'; session_id: string; id: string; answers: string[]; custom?: string | null }
   | { type: 'switch_model'; session_id: string; spec: string; reasoning?: string | null }
   | { type: 'create_session'; workspace: string }
+  // ── steering 队列编辑（fire-and-forget，变更经 queue_changed 广播驱动）
+  // update 的 text 为空时服务端删除该条目（oil.nvim 空行忽略语义）
+  | { type: 'update_queue_entry'; session_id: string; id: string; text: string }
+  | { type: 'remove_queue_entry'; session_id: string; id: string }
+  | { type: 'move_queue_entry'; session_id: string; id: string; direction: 'up' | 'down' }
   // ── 查询式命令（携带 request_id，响应/错误事件带同一 request_id）
   | { type: 'create_workspace'; request_id: string; path: string }
 
@@ -260,6 +267,14 @@ export interface WorkspaceSummary {
   last_active_at: number | null
 }
 
+/** steering 队列条目（快照与 queue_changed 事件携带；text 为用户输入原文，
+ * mention 在投递时展开；images 仅回传附件数，编辑仅改文本、附件保留） */
+export interface QueueEntry {
+  id: string
+  text: string
+  images: number
+}
+
 /** skill 清单条目（list_skills 响应；`@skill:` 补全弹层展示用） */
 export interface SkillSummary {
   name: string
@@ -286,7 +301,8 @@ export interface StateResponse {
   reasoning: 'minimal' | 'low' | 'medium' | 'high' | null
   context_tokens: number
   running: boolean
-  queued: number
+  /** steering 队列内容（运行中提交的消息，turn 边界注入本轮） */
+  queue: QueueEntry[]
   session: { id: string; title: string | null } | null
   pending_question: { id: string; question: AskUserQuestion } | null
   workspace: string

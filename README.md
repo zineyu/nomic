@@ -186,7 +186,8 @@ nomic --cwd /path/to/project
 `nomic --web` 启动内置 HTTP 服务（缺省 `127.0.0.1:3333`），浏览器访问即用：
 
 - **流式聊天**：markdown 渲染、thinking 折叠、工具执行卡片（点击展开参数与结果）；
-  运行中发送的消息进入统一队列，当前轮完成后按序续跑（与 TUI 同一语义）
+  运行中发送的消息进入统一消息队列，当前步骤完成后注入本轮运行（与 TUI 同一语义），
+  输入框上方的队列区展示排队消息并支持就地编辑 / 删除 / 上移下移
 - **会话管理**：启动页选择 workspace 后开始新会话（无默认 workspace，session 严格归属
   选定目录）；侧栏按 workspace 分组列出历史 session，支持新建 / 恢复（复用 SQLite 存储，
   与 TUI/print 共用）
@@ -195,7 +196,7 @@ nomic --cwd /path/to/project
 - **mention 与命令**：输入 `@` 弹出行内补全（`@skill:` 引用 skill、`@file:` 引用
   当前 session workspace 内的文件，发送时由服务端展开有效标记，与 TUI 同一口径）；
   输入 `/` 弹出命令补全——`/compact [聚焦指令]` 压缩上下文、`/continue` 续跑上次
-  运行（命令与 prompt 共用同一队列串行执行）
+  运行（命令走 runner 串行队列，运行中提交则等本轮结束）
 
 ```bash
 nomic --web [--port N] [--host H]

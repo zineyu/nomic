@@ -2,7 +2,7 @@
 // 启动页（未选中任何 session）：输入框上方渲染工作区选择栏（WorkspaceBar），
 // 首条消息在选定 workspace 下创建 session；无默认 workspace。
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, MessageCircleQuestion, PanelLeft, X } from 'lucide-react'
 
 import { ChatInput } from '@/components/chat/ChatInput'
@@ -10,10 +10,12 @@ import { MessageList } from '@/components/chat/MessageList'
 import { QuestionModal } from '@/components/chat/QuestionModal'
 import { QueuePanel } from '@/components/chat/QueuePanel'
 import { RunHint } from '@/components/chat/RunHint'
+import { TodoPanel } from '@/components/chat/TodoPanel'
 import { WorkspaceBar } from '@/components/chat/WorkspaceBar'
 import { Button } from '@/components/ui/button'
 import { fadeSlideIn } from '@/lib/anim'
 import { runPhase } from '@/lib/chat'
+import { currentTodos } from '@/lib/todo'
 import type { ImageContent } from '@/lib/types'
 import type { UseChat } from '@/hooks/useChat'
 
@@ -126,6 +128,10 @@ export function ChatView({
   const modelSpec = model ? `${model.provider}/${model.id}` : null
   const isMinimized = question && minimizedId === question.id
 
+  // 当前 todo 清单：由消息项推导（最后一次成功的 todo_write 参数），
+  // 随工具调用事件实时更新；空清单不渲染面板
+  const todos = useMemo(() => currentTodos(items), [items])
+
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col bg-background">
       {/* 顶栏：标题 */}
@@ -170,6 +176,9 @@ export function ChatView({
           onChange={setStartChoice}
         />
       )}
+
+      {/* todo 任务清单（输入框上方；空清单不渲染） */}
+      <TodoPanel todos={todos} />
 
       {/* 运行状态提示（输入框上方；空闲时不渲染） */}
       <RunHint phase={runPhase(items, running)} />

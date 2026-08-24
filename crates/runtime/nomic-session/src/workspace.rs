@@ -174,6 +174,58 @@ impl SessionStore {
             .collect())
     }
 
+    /// 删除 workspace，返回是否实际删除（不存在返回 `Ok(false)`）。
+    ///
+    /// 默认拒绝删除仍有 session 的 workspace（[`SessionError::WorkspaceNotEmpty`]；
+    /// 只统计有 user 消息的 session——空壳不进列表口径，不拦截删除，随
+    /// workspace 一并清除）；`force` 时级联删除名下全部 session（entries
+    /// 与会话级 config 经外键 `ON DELETE CASCADE` 清除）。同事务执行，
+    /// 拒绝与删除之间不会因并发创建 session 而漂移。
+    pub async fn delete_workspace(
+        &self,
+        workspace_id: &str,
+        force: bool,
+    ) -> Result<bool, SessionError> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?)")
+                .bind(workspace_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if !exists {
+            return Ok(false);
+        }
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sessions s WHERE s.workspace_id = ?
+               AND EXISTS(SELECT 1 FROM entries e
+                          WHERE e.session_id = s.id
+                            AND e.kind = 'message' AND e.role = 'user')",
+        )
+        .bind(workspace_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if count > 0 && !force {
+            return Err(SessionError::WorkspaceNotEmpty {
+                id: workspace_id.to_string(),
+                count: to_u64(count),
+            });
+        }
+
+        sqlx::query("DELETE FROM sessions WHERE workspace_id = ?")
+            .bind(workspace_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM workspaces WHERE id = ?")
+            .bind(workspace_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        tracing::info!(workspace_id = %workspace_id, force, "workspace deleted");
+        Ok(true)
+    }
+
     /// 条目追加时推进所属 workspace 的活跃时间（`append_entry` 事务内调用）。
     pub(crate) async fn touch_workspace(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,

@@ -18,6 +18,10 @@
 //! - 无 user 消息的 session（打开即退出、新建后未使用等空壳）不进入列表
 //!   与统计口径（`list_sessions` / `list_workspaces` 统一过滤），并在
 //!   session 结束点经 [`SessionStore::delete_if_no_user_message`] 物理清除
+//! - 管理操作：[`SessionStore::delete_session`] 物理删除（entries 与会话级
+//!   config 级联清除）、[`SessionStore::rename_session`] 自定义标题（优先于
+//!   派生标题）、[`SessionStore::delete_workspace`] 删除 workspace（默认拒绝
+//!   非空，`force` 级联删除名下全部 session）
 //!
 //! 消息 payload 原样存 [`Message`] 的 serde JSON；`role`/`timestamp` 为提取列，
 //! 供查询与维护 session 时间字段。
@@ -35,10 +39,13 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row as _, SqlitePool};
 
 mod config;
+mod error;
 #[cfg(test)]
 mod feature_tests;
 mod recorder;
+mod session;
 mod workspace;
+pub use error::SessionError;
 pub use recorder::SessionRecorder;
 pub use workspace::{Workspace, WorkspaceSummary};
 
@@ -62,43 +69,17 @@ pub struct CompactionRecord {
     pub tokens_before: u64,
 }
 
-/// session 存储层的错误。
-#[derive(Debug, thiserror::Error)]
-pub enum SessionError {
-    /// SQLite 运行时错误
-    #[error(transparent)]
-    Sqlx(#[from] sqlx::Error),
-    /// 迁移执行失败
-    #[error(transparent)]
-    Migrate(#[from] sqlx::migrate::MigrateError),
-    /// 文件系统错误（创建目录、解析默认路径等）
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    /// session id 不存在
-    #[error("session not found: {0}")]
-    SessionNotFound(String),
-    /// workspace 不存在（`get_or_create_workspace` 登记后读取仍缺失，
-    /// 仅在库被并发破坏时可能出现）
-    #[error("workspace not found: {0}")]
-    WorkspaceNotFound(String),
-    /// entry id 不存在（或不属于目标 session）
-    #[error("entry not found: {0}")]
-    EntryNotFound(String),
-    /// 库中 payload 不是合法的 [`Message`] JSON（数据损坏）
-    #[error("message payload corrupted: {0}")]
-    Corrupt(#[from] serde_json::Error),
-}
-
 /// session 摘要（`list_sessions` / `list_sessions_in` 返回）。
 ///
 /// `id` 为内部标识（UUID v7），不对用户展示；用户可见的名称是
-/// [`Self::title`]（首条 user 消息的首行摘要）。
+/// [`Self::title`]（自定义标题优先，缺省为首条 user 消息的首行摘要）。
 /// 派生 serde（web 模式经 REST 列表给前端会话侧栏）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SessionSummary {
     /// session id（UUID v7；内部标识，不展示给用户）
     pub id: String,
-    /// 会话标题：首条 user 消息的首行摘要（无消息时为 `None`，展示侧自行回退）
+    /// 会话标题：自定义标题（`rename_session`）优先，缺省为首条 user
+    /// 消息的首行摘要（无消息时为 `None`，展示侧自行回退）
     pub title: Option<String>,
     /// 所属 workspace id
     pub workspace_id: String,
@@ -464,7 +445,8 @@ impl SessionStore {
         self.summarize(Some(workspace_id)).await
     }
 
-    /// session 摘要查询内核：可选按 workspace 过滤；标题经分组查询批量补齐。
+    /// session 摘要查询内核：可选按 workspace 过滤；标题取自定义标题
+    /// （`sessions.title`），缺失时经分组查询批量补齐派生标题。
     /// 只列出有 user 消息的 session（空壳 session 不是历史，见
     /// [`Self::list_sessions`]）。
     async fn summarize(
@@ -472,7 +454,7 @@ impl SessionStore {
         workspace_id: Option<&str>,
     ) -> Result<Vec<SessionSummary>, SessionError> {
         let rows = sqlx::query(
-            "SELECT s.id, s.workspace_id, w.path AS workspace_path,
+            "SELECT s.id, s.workspace_id, w.path AS workspace_path, s.title,
                     s.first_message_at, s.last_message_at,
                     (SELECT COUNT(*) FROM entries e
                      WHERE e.session_id = s.id AND e.kind = 'message') AS message_count
@@ -492,11 +474,12 @@ impl SessionStore {
         for row in &rows {
             let id: String = row.get("id");
             let workspace_path: String = row.get("workspace_path");
+            let custom: Option<String> = row.get("title");
             let first: Option<i64> = row.get("first_message_at");
             let last: Option<i64> = row.get("last_message_at");
             let count: i64 = row.get("message_count");
             summaries.push(SessionSummary {
-                title: titles.get(&id).cloned(),
+                title: custom.or_else(|| titles.get(&id).cloned()),
                 id,
                 workspace_id: row.get("workspace_id"),
                 workspace: PathBuf::from(workspace_path),
@@ -531,9 +514,9 @@ impl SessionStore {
         Ok(deleted)
     }
 
-    /// 各 session 的标题（首条 user 消息摘要）：一次分组查询取每个 session
-    /// 最早一条 user 消息的 payload，在内存计算摘要；payload 损坏或无 user
-    /// 消息的 session 不出现在结果中（标题为 `None`）。
+    /// 各 session 的派生标题（首条 user 消息摘要）：一次分组查询取每个
+    /// session 最早一条 user 消息的 payload，在内存计算摘要；payload 损坏或
+    /// 无 user 消息的 session 不出现在结果中（派生标题为 `None`）。
     async fn fetch_titles(&self) -> Result<HashMap<String, String>, SessionError> {
         let rows = sqlx::query(
             "SELECT e.session_id, e.payload FROM entries e

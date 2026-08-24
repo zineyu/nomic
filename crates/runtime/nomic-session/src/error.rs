@@ -1,0 +1,37 @@
+//! session 存储层的错误类型。
+
+/// session 存储层的错误。
+#[derive(Debug, thiserror::Error)]
+pub enum SessionError {
+    /// SQLite 运行时错误
+    #[error(transparent)]
+    Sqlx(#[from] sqlx::Error),
+    /// 迁移执行失败
+    #[error(transparent)]
+    Migrate(#[from] sqlx::migrate::MigrateError),
+    /// 文件系统错误（创建目录、解析默认路径等）
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    /// session id 不存在
+    #[error("session not found: {0}")]
+    SessionNotFound(String),
+    /// workspace 不存在（`get_or_create_workspace` 登记后读取仍缺失，
+    /// 仅在库被并发破坏时可能出现）
+    #[error("workspace not found: {0}")]
+    WorkspaceNotFound(String),
+    /// workspace 下仍有 session，非 force 删除被拒（只统计有 user 消息的
+    /// session；空壳不拦截删除，随 workspace 一并清除）
+    #[error("workspace {id} 下仍有 {count} 个 session（force 可级联删除）")]
+    WorkspaceNotEmpty {
+        /// workspace id
+        id: String,
+        /// 有 user 消息的 session 数
+        count: u64,
+    },
+    /// entry id 不存在（或不属于目标 session）
+    #[error("entry not found: {0}")]
+    EntryNotFound(String),
+    /// 库中 payload 不是合法的 [`Message`](nomic_ai::Message) JSON（数据损坏）
+    #[error("message payload corrupted: {0}")]
+    Corrupt(#[from] serde_json::Error),
+}

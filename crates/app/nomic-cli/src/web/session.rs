@@ -178,9 +178,14 @@ impl SessionFactory {
             questions,
             queue,
             workspace,
+            tasks: std::sync::Mutex::new(None),
         });
-        tokio::spawn(forward_events(session.clone(), events_rx));
-        tokio::spawn(forward_runner_events(session.clone(), runner_events));
+        let events_task = tokio::spawn(forward_events(session.clone(), events_rx));
+        let runner_task = tokio::spawn(forward_runner_events(session.clone(), runner_events));
+        session.set_forward_tasks(super::ForwardTasks {
+            events: events_task,
+            runner: runner_task,
+        });
         session
     }
 }
@@ -347,6 +352,21 @@ pub async fn snapshot(session: &SessionRuntime) -> Result<Snapshot> {
     let running = session.runner.is_running();
     let queue = session.queue.snapshot();
     let title = nomic_session::session_title(&messages);
+    // 自定义标题（rename_session）优先于派生标题；store 不可用时只有派生
+    let store = session
+        .recorder
+        .lock()
+        .await
+        .as_ref()
+        .map(|recorder| recorder.store().clone());
+    let custom = match store {
+        Some(store) => store
+            .session_title_override(&session.id)
+            .await
+            .unwrap_or(None),
+        None => None,
+    };
+    let title = custom.or(title);
     let pending_question = session.questions.current();
     Ok(Snapshot {
         messages,

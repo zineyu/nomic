@@ -112,6 +112,24 @@ pub enum ClientEvent {
     /// 登记新 workspace（查询式命令：携带 `request_id`，响应 `workspace_created`
     /// 或 error 事件带同一 `request_id`；按路径查或插，幂等）。
     CreateWorkspace { request_id: String, path: String },
+    /// 删除 session（查询式命令：响应 `session_deleted` 或 error 事件带同一
+    /// `request_id`；物理删除，entries 与会话级 config 级联清除）。
+    DeleteSession { request_id: String, session_id: String },
+    /// 重命名 session（查询式命令：响应 `session_renamed` 或 error 事件；
+    /// `title` 裁剪后为空 = 清除自定义标题，回退派生标题）。
+    RenameSession {
+        request_id: String,
+        session_id: String,
+        title: String,
+    },
+    /// 删除 workspace（查询式命令：响应 `workspace_deleted` 或 error 事件；
+    /// 默认拒绝非空 workspace，`force` 级联删除名下全部 session）。
+    DeleteWorkspace {
+        request_id: String,
+        id: String,
+        #[serde(default)]
+        force: bool,
+    },
 }
 
 // ── 组装路由 ──────────────────────────────────────────────────────────────
@@ -346,6 +364,20 @@ async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
         ClientEvent::CreateWorkspace { request_id, path } => {
             Some(handlers::handle_create_workspace(state, &request_id, path).await)
         }
+        ClientEvent::DeleteSession {
+            request_id,
+            session_id,
+        } => Some(handlers::handle_delete_session(state, &request_id, &session_id).await),
+        ClientEvent::RenameSession {
+            request_id,
+            session_id,
+            title,
+        } => Some(handlers::handle_rename_session(state, &request_id, &session_id, &title).await),
+        ClientEvent::DeleteWorkspace {
+            request_id,
+            id,
+            force,
+        } => Some(handlers::handle_delete_workspace(state, &request_id, &id, force).await),
     }
 }
 

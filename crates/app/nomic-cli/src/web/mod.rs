@@ -149,6 +149,24 @@ pub enum ServerEvent {
         id: String,
         path: String,
     },
+    /// 删除 session 确认（响应 `delete_session` 时携带 request_id；
+    /// workspace 级联删除名下已打开 session 时的广播不带 request_id）。
+    /// 其他客户端据此刷新列表并跳出被删会话的视图
+    SessionDeleted {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        id: String,
+    },
+    /// 重命名 session 确认（响应 `rename_session`；`title` 为生效的自定义
+    /// 标题，`None` 表示已清除自定义、回退派生标题；同时经总线广播）
+    SessionRenamed {
+        request_id: String,
+        id: String,
+        title: Option<String>,
+    },
+    /// 删除 workspace 确认（响应 `delete_workspace`；名下 session 已级联
+    /// 删除；同时经总线广播，其他客户端据此刷新列表）
+    WorkspaceDeleted { request_id: String, id: String },
 }
 
 /// 单个 session 的运行时：自持 agent actor、session runner（串行 job
@@ -175,6 +193,16 @@ pub struct SessionRuntime {
     /// 本 session 的操作基准（workspace 严格归属）：工具相对路径以它解析，
     /// 快照展示给用户
     pub workspace: PathBuf,
+    /// 事件转发任务句柄（删除 session 时 abort：释放任务持有的
+    /// `Arc<SessionRuntime>` 引用，actor / runner 任务随后随通道关闭退出）
+    tasks: std::sync::Mutex<Option<ForwardTasks>>,
+}
+
+/// 每个 session 的两个事件转发任务（agent 事件 / runner 事件）的句柄。
+#[derive(Debug)]
+pub(crate) struct ForwardTasks {
+    pub events: tokio::task::JoinHandle<()>,
+    pub runner: tokio::task::JoinHandle<()>,
 }
 
 impl SessionRuntime {
@@ -186,6 +214,22 @@ impl SessionRuntime {
     /// 回答一个提问：经注册表回填；提问不存在或已被取消返回 `false`。
     pub fn answer_question(&self, id: &str, answer: AskUserAnswer) -> bool {
         self.questions.answer(id, answer)
+    }
+
+    /// 关停本 session（删除时调用）：取消在途运行并 abort 事件转发任务。
+    /// 转发任务与注册表是 `Arc<SessionRuntime>` 的常驻持有者；两者都释放后
+    /// 本体 drop，agent actor 与 runner 任务随通道关闭自然退出。
+    pub(crate) fn shutdown(&self) {
+        self.cancel_run();
+        if let Some(tasks) = self.tasks.lock().expect("tasks lock").take() {
+            tasks.events.abort();
+            tasks.runner.abort();
+        }
+    }
+
+    /// 登记事件转发任务句柄（构建后置入，见 `SessionFactory::build`）。
+    pub(crate) fn set_forward_tasks(&self, tasks: ForwardTasks) {
+        *self.tasks.lock().expect("tasks lock") = Some(tasks);
     }
 }
 

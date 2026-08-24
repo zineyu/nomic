@@ -1,9 +1,11 @@
-//! web 模式的 workspace 管理：[`Runtime`] 上的 workspace 相关方法。
+//! web 模式的 workspace 与 session 生命周期管理：[`Runtime`] 上的相关方法。
 //!
 //! workspace 是文件系统路径的一等实体（见 nomic-session 迁移 0005）：session
 //! 创建时绑定 workspace，其所有操作以 workspace 路径为基准。这里的方法负责
-//! 「按用户指定目录创建 session」与「显式登记 workspace」，并对用户输入的
-//! 目录做存在性校验——不存在的目录返回 `BadRequest`，不静默登记无效路径。
+//! 「按用户指定目录创建 session」「显式登记 workspace」与「删除 / 重命名」，
+//! 并对用户输入的目录做存在性校验——不存在的目录返回 `BadRequest`，不静默
+//! 登记无效路径。删除同时摘除注册表中对应的运行时（取消在途运行并关停，
+//! 见 [`SessionRuntime::shutdown`](super::SessionRuntime::shutdown)）。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -83,6 +85,81 @@ impl Runtime {
             )));
         }
         Ok(store.get_or_create_workspace(&canonical).await?)
+    }
+
+    /// 删除 session：摘除注册表中的运行时（在途运行取消、转发任务关停）
+    /// 后物理删除；库中不存在时返回 `NotFound`。
+    pub(crate) async fn delete_session(&self, session_id: &str) -> Result<(), ApiError> {
+        let Some(store) = &self.store else {
+            return Err(ApiError::StoreUnavailable);
+        };
+        // 先摘除并关停运行时，避免删除落库后落库器继续追加（外键拒绝只告警）
+        if let Some(session) = self.sessions.lock().await.remove(session_id) {
+            session.shutdown();
+        }
+        if !store.delete_session(session_id).await? {
+            return Err(ApiError::NotFound(format!("session {session_id} not found")));
+        }
+        Ok(())
+    }
+
+    /// 重命名 session：返回生效的自定义标题（`None` = 已清除，回退派生
+    /// 标题）；session 不存在时返回 `NotFound`。
+    pub(crate) async fn rename_session(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> Result<Option<String>, ApiError> {
+        let Some(store) = &self.store else {
+            return Err(ApiError::StoreUnavailable);
+        };
+        match store.rename_session(session_id, title).await {
+            Ok(title) => Ok(title),
+            Err(nomic_session::SessionError::SessionNotFound(_)) => {
+                Err(ApiError::NotFound(format!("session {session_id} not found")))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// 删除 workspace：默认拒绝非空（`BadRequest`，前端据此弹级联确认后
+    /// 以 `force` 重试）；删除后摘除注册表中属于该 workspace 的全部
+    /// session 运行时（含未落库口径外的空壳），返回被摘除的 session id
+    /// 列表（向正在查看这些 session 的客户端广播用）。
+    pub(crate) async fn delete_workspace(
+        &self,
+        id: &str,
+        force: bool,
+    ) -> Result<Vec<String>, ApiError> {
+        let Some(store) = &self.store else {
+            return Err(ApiError::StoreUnavailable);
+        };
+        let Some(workspace) = store.workspace(id).await? else {
+            return Err(ApiError::NotFound(format!("workspace {id} not found")));
+        };
+        match store.delete_workspace(id, force).await {
+            Ok(_) => {}
+            Err(error @ nomic_session::SessionError::WorkspaceNotEmpty { .. }) => {
+                return Err(ApiError::BadRequest(format!("{error}")));
+            }
+            Err(error) => return Err(error.into()),
+        }
+        // 按路径匹配摘除该 workspace 名下的运行时（registry 不持 workspace
+        // id，SessionRuntime.workspace 与 Workspace.path 同为规范化路径）
+        let mut sessions = self.sessions.lock().await;
+        let stale: Vec<String> = sessions
+            .iter()
+            .filter(|(_, session)| session.workspace == workspace.path)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut removed = Vec::with_capacity(stale.len());
+        for id in stale {
+            if let Some(session) = sessions.remove(&id) {
+                session.shutdown();
+                removed.push(id);
+            }
+        }
+        Ok(removed)
     }
 }
 
@@ -193,5 +270,121 @@ mod tests {
             workspaces.iter().any(|w| w.path == canonical),
             "列表应包含新登记的 workspace",
         );
+    }
+
+    #[tokio::test]
+    async fn delete_session_removes_runtime_and_store_row() {
+        let state = test_state().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let created = state
+            .inner
+            .create_session(dir.path())
+            .await
+            .expect("create session");
+
+        state
+            .inner
+            .delete_session(&created.id)
+            .await
+            .expect("delete session");
+        assert!(
+            !state.inner.sessions.lock().await.contains_key(&created.id),
+            "注册表应摘除已删除的 session",
+        );
+        let store = state.inner.store.as_ref().expect("store");
+        assert!(
+            matches!(
+                store.load_messages(&created.id).await,
+                Err(nomic_session::SessionError::SessionNotFound(_))
+            ),
+            "库中 session 应物理删除",
+        );
+        // 未知 session 返回 NotFound
+        assert!(matches!(
+            state.inner.delete_session("no-such-session").await,
+            Err(ApiError::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn rename_session_roundtrip_and_not_found() {
+        let state = test_state().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let created = state
+            .inner
+            .create_session(dir.path())
+            .await
+            .expect("create session");
+
+        let title = state
+            .inner
+            .rename_session(&created.id, " 改名 ")
+            .await
+            .expect("rename");
+        assert_eq!(title.as_deref(), Some("改名"));
+        // 空白标题 = 清除自定义
+        let title = state
+            .inner
+            .rename_session(&created.id, "  ")
+            .await
+            .expect("clear");
+        assert_eq!(title, None);
+        assert!(matches!(
+            state.inner.rename_session("no-such-session", "x").await,
+            Err(ApiError::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn delete_workspace_refuses_non_empty_and_force_unregisters() {
+        let state = test_state().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let created = state
+            .inner
+            .create_session(dir.path())
+            .await
+            .expect("create session");
+        let store = state.inner.store.as_ref().expect("store");
+        // 让 session 有一条 user 消息（非空 workspace）
+        store
+            .append_message(
+                &created.id,
+                None,
+                &nomic_ai::Message::User(nomic_ai::UserMessage {
+                    content: nomic_ai::UserMessageContent::Text("hi".to_string()),
+                    timestamp: 1_000,
+                }),
+            )
+            .await
+            .expect("append");
+        let workspace = store
+            .workspace_of_session(&created.id)
+            .await
+            .expect("workspace")
+            .expect("workspace row");
+
+        // 默认拒绝非空
+        assert!(matches!(
+            state.inner.delete_workspace(&workspace.id, false).await,
+            Err(ApiError::BadRequest(_))
+        ));
+        assert!(state.inner.sessions.lock().await.contains_key(&created.id));
+
+        // force 级联：库中 session 删除 + 注册表摘除
+        state
+            .inner
+            .delete_workspace(&workspace.id, true)
+            .await
+            .expect("force delete");
+        assert!(store.workspace(&workspace.id).await.expect("q").is_none());
+        assert!(
+            !state.inner.sessions.lock().await.contains_key(&created.id),
+            "force 删除应摘除该 workspace 名下的运行时",
+        );
+        // 未知 workspace 返回 NotFound
+        assert!(matches!(
+            state.inner.delete_workspace("no-such-workspace", true).await,
+            Err(ApiError::NotFound(_))
+        ));
     }
 }

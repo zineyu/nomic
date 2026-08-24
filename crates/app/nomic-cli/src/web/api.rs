@@ -105,10 +105,14 @@ pub enum ClientEvent {
         #[serde(default)]
         reasoning: Option<String>,
     },
-    /// 新建 session（命令类，返回 ack 事件 `session_created`）。
-    /// 必须指定归属目录 `workspace`（无默认 workspace；不存在则报错，
-    /// 不会静默归属进程 cwd）。
-    CreateSession { workspace: String },
+    /// 新建 session（查询式命令：携带 `request_id`，响应 `session_created`
+    /// 或 error 事件带同一 `request_id`，ack 同时经总线广播供其他客户端
+    /// 刷新列表）。新对话语义，默认模型；必须指定归属目录 `workspace`
+    /// （无默认 workspace；不存在则报错，不会静默归属进程 cwd）。
+    CreateSession {
+        request_id: String,
+        workspace: String,
+    },
     /// 登记新 workspace（查询式命令：携带 `request_id`，响应 `workspace_created`
     /// 或 error 事件带同一 `request_id`；按路径查或插，幂等）。
     CreateWorkspace { request_id: String, path: String },
@@ -361,9 +365,10 @@ async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
             spec,
             reasoning,
         } => Some(handlers::handle_switch_model(state, &session_id, spec, reasoning).await),
-        ClientEvent::CreateSession { workspace } => {
-            Some(handlers::handle_create_session(state, workspace).await)
-        }
+        ClientEvent::CreateSession {
+            request_id,
+            workspace,
+        } => Some(handlers::handle_create_session(state, &request_id, workspace).await),
         ClientEvent::CreateWorkspace { request_id, path } => {
             Some(handlers::handle_create_workspace(state, &request_id, path).await)
         }

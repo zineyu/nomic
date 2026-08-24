@@ -6,17 +6,26 @@ use crate::web::{AppState, ServerEvent};
 
 /// 新建 session（新对话语义，默认模型）；必须指定归属目录 `workspace`
 /// （无默认 workspace；目录不存在或不是目录时拒绝，不静默登记无效路径）。
-pub async fn handle_create_session(state: &AppState, workspace: String) -> ServerEvent {
+/// ack 携带 `request_id` 且经总线广播（其他客户端据此刷新列表）。
+pub async fn handle_create_session(
+    state: &AppState,
+    request_id: &str,
+    workspace: String,
+) -> ServerEvent {
     let workspace = match expand_workspace_dir(&workspace) {
         Ok(workspace) => workspace,
-        Err(error) => return error.to_ws_response(None),
+        Err(error) => return error.to_ws_response(Some(request_id)),
     };
     match state.inner.create_session(&workspace).await {
-        Ok(session) => ServerEvent::SessionCreated {
-            id: session.id.clone(),
-            title: None,
-        },
-        Err(error) => error.to_ws_response(None),
+        Ok(session) => broadcast_ack(
+            state,
+            ServerEvent::SessionCreated {
+                request_id: request_id.to_string(),
+                id: session.id.clone(),
+                title: None,
+            },
+        ),
+        Err(error) => error.to_ws_response(Some(request_id)),
     }
 }
 
@@ -136,6 +145,39 @@ mod tests {
 
     use super::*;
     use crate::web::ServerEvent;
+
+    /// 新建 session：ack 携带 request_id 且经总线广播；目录不存在回 error。
+    #[tokio::test]
+    async fn create_session_ack_broadcasts_and_missing_dir_errors() {
+        let state = crate::web::tests::test_state().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut events = state.inner.events.subscribe();
+
+        let event =
+            handle_create_session(&state, "r-new", dir.path().to_string_lossy().into_owned()).await;
+        let ServerEvent::SessionCreated { request_id, id, .. } = event else {
+            panic!("应返回 SessionCreated");
+        };
+        assert_eq!(request_id, "r-new");
+        assert!(
+            state.inner.sessions.lock().await.contains_key(&id),
+            "新 session 应注册进表",
+        );
+        assert!(
+            matches!(
+                events.try_recv().expect("broadcast"),
+                ServerEvent::SessionCreated { .. }
+            ),
+            "创建 ack 应广播到事件总线（其他客户端刷新列表）",
+        );
+
+        let event =
+            handle_create_session(&state, "r-bad", "/nonexistent/nomic-test-dir".to_string()).await;
+        let ServerEvent::Error { request_id, .. } = event else {
+            panic!("不存在的目录应返回 error 事件");
+        };
+        assert_eq!(request_id.as_deref(), Some("r-bad"));
+    }
 
     /// 删除 session：ack 携带 request_id 且经总线广播；未知 id 回 error。
     #[tokio::test]

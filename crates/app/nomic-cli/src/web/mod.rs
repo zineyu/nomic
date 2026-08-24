@@ -141,8 +141,13 @@ pub enum ServerEvent {
         session_id: String,
         choice: crate::model::ModelChoice,
     },
-    /// 新建 session 确认
-    SessionCreated { id: String, title: Option<String> },
+    /// 新建 session 确认（响应 `create_session`，携带 request_id；同时经
+    /// 总线广播，其他客户端据此刷新会话与 workspace 列表）
+    SessionCreated {
+        request_id: String,
+        id: String,
+        title: Option<String>,
+    },
     /// 新建（或复用）workspace 确认（响应 `create_workspace`，携带 request_id）
     WorkspaceCreated {
         request_id: String,

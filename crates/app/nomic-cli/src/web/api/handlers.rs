@@ -1,8 +1,8 @@
 //! WebSocket 事件 handler：查询类（`get_state` / `list_models` / `list_sessions` /
 //! `list_workspaces`）与命令类（`prompt` / `cancel` / `answer_question` /
 //! `switch_model`）的具体实现，以及共享类型与辅助函数。
-//! session / workspace 生命周期命令（创建 / 删除 / 重命名）收在 [`crud`]
-//! 子模块（800 行封顶拆分）。
+//! session / workspace 生命周期命令收在 [`crud`] 子模块（查询式命令携带
+//! `request_id` 关联响应；800 行封顶拆分）。
 
 use std::sync::Arc;
 

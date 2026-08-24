@@ -198,7 +198,7 @@ export type ServerEvent =
   | { type: 'cancel_ack'; session_id: string }
   | { type: 'answer_ack'; session_id: string }
   | { type: 'switch_model_ack'; session_id: string; choice: ModelChoice }
-  | { type: 'session_created'; id: string; title: string | null }
+  | { type: 'session_created'; request_id: string; id: string; title: string | null }
   | { type: 'workspace_created'; request_id: string; id: string; path: string }
   | { type: 'session_deleted'; request_id?: string; id: string }
   | { type: 'session_renamed'; request_id: string; id: string; title: string | null }
@@ -218,13 +218,13 @@ export type ClientEvent =
   | { type: 'cancel'; session_id: string }
   | { type: 'answer_question'; session_id: string; id: string; answers: string[]; custom?: string | null }
   | { type: 'switch_model'; session_id: string; spec: string; reasoning?: string | null }
-  | { type: 'create_session'; workspace: string }
   // ── steering 队列编辑（fire-and-forget，变更经 queue_changed 广播驱动）
   // update 的 text 为空时服务端删除该条目（oil.nvim 空行忽略语义）
   | { type: 'update_queue_entry'; session_id: string; id: string; text: string }
   | { type: 'remove_queue_entry'; session_id: string; id: string }
   | { type: 'move_queue_entry'; session_id: string; id: string; direction: 'up' | 'down' }
   // ── 查询式命令（携带 request_id，响应/错误事件带同一 request_id）
+  | { type: 'create_session'; request_id: string; workspace: string }
   | { type: 'create_workspace'; request_id: string; path: string }
   | { type: 'delete_session'; request_id: string; session_id: string }
   | { type: 'rename_session'; request_id: string; session_id: string; title: string }

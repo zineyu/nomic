@@ -3,10 +3,11 @@
 // 所有前端↔后端通信通过 `ws://{host}/ws` 双向事件流。服务端维护进程级全局事件
 // 总线，连接后自动接收所有 session 的事件（每个事件携带 `session_id` 供路由）：
 // - **查询类**（`get_state` / `list_models` / `list_sessions` / `list_workspaces`，
-//   以及查询式命令 `create_workspace`）：携带 `request_id`，
+//   以及查询式命令 `create_session` / `create_workspace` / `delete_session` /
+//   `rename_session` / `delete_workspace`）：携带 `request_id`，
 //   服务端响应事件带同一 `request_id` 供关联。
-// - **命令类**（`prompt` / `cancel` / `answer_question` / `switch_model` /
-//   `create_session`）：携带 `session_id` 指定目标 session，fire-and-forget，
+// - **命令类**（`prompt` / `cancel` / `answer_question` / `switch_model`）：
+//   携带 `session_id` 指定目标 session，fire-and-forget，
 //   由服务端后续生命周期事件驱动前端状态更新。
 //
 // 连接生命周期：断线自动退避重连（指数退避上限 15s）；重连成功后向所有监听器
@@ -33,6 +34,7 @@ type QueryEventInput =
   | { type: 'list_workspaces' }
   | { type: 'list_skills' }
   | { type: 'list_files'; session_id: string; prefix: string }
+  | { type: 'create_session'; workspace: string }
   | { type: 'create_workspace'; path: string }
   | { type: 'delete_session'; session_id: string }
   | { type: 'rename_session'; session_id: string; title: string }
@@ -259,19 +261,14 @@ export const api = {
       .request<{ files: string[] }>({ type: 'list_files', session_id: sessionId, prefix })
       .then((r) => r.files),
 
-  /** 新建 session（命令类，等待 session_created 事件确认）。
-      必须指定归属目录 `workspace`（无默认 workspace；不存在则报错）。 */
-  createSession: (workspace: string): Promise<{ id: string; title: string | null }> => {
-    client.send({ type: 'create_session', workspace })
-    return new Promise((resolve) => {
-      const unsub = client.subscribe((event) => {
-        if (event.type === 'session_created') {
-          unsub()
-          resolve({ id: event.id, title: event.title })
-        }
-      })
-    })
-  },
+  /** 新建 session（查询式命令；新对话语义，默认模型，列表刷新经广播
+      事件回填）。必须指定归属目录 `workspace`（无默认 workspace；不存在
+      则 reject 服务端错误消息）。 */
+  createSession: (workspace: string) =>
+    client.request<{ id: string; title: string | null }>({
+      type: 'create_session',
+      workspace,
+    }),
 
   /** 候选模型列表。 */
   models: () =>

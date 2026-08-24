@@ -3,7 +3,8 @@
 //! 一个 workspace 对应一个规范化路径（`workspaces.path` 全局唯一），session
 //! 创建时绑定 workspace（`sessions.workspace_id`），其所有操作以 workspace
 //! 路径为基准（工具相对路径解析、mention 展开、`--continue` 匹配等）。
-//! `last_active_at` 在 session 创建与条目追加时推进，供 workspace 列表排序。
+//! `last_active_at` 在 session 创建与条目追加时推进，仅作活跃时间记录；
+//! workspace 列表按登记时间排序（稳定顺序，不随活跃度浮动）。
 
 use std::path::{Path, PathBuf};
 
@@ -142,7 +143,8 @@ impl SessionStore {
         Ok(PathBuf::from(path))
     }
 
-    /// 列出全部 workspace 摘要（按最近活跃降序，从未活跃的排最后）。
+    /// 列出全部 workspace 摘要（按登记时间升序：稳定顺序，不随活跃度浮动，
+    /// 新登记的排最后）。
     ///
     /// `session_count` 只统计有 user 消息的 session（与 `list_sessions`
     /// 同一口径：空壳 session 不进统计）。
@@ -155,7 +157,7 @@ impl SessionStore {
                                     AND e.kind = 'message' AND e.role = 'user')
                     ) AS session_count
              FROM workspaces w
-             ORDER BY w.last_active_at IS NULL, w.last_active_at DESC",
+             ORDER BY w.created_at, w.rowid",
         )
         .fetch_all(&self.pool)
         .await?;

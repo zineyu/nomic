@@ -1,6 +1,6 @@
 //! workspace：登记去重、路径规范化、按 workspace 过滤 session、0005 迁移语义。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use nomic_session::SessionStore;
 
@@ -102,6 +102,30 @@ async fn append_message_advances_workspace_activity() {
 
     let workspaces = store.list_workspaces().await.unwrap();
     assert_eq!(workspaces[0].last_active_at, Some(1_000));
+}
+
+#[tokio::test]
+async fn list_workspaces_keeps_registration_order_despite_activity() {
+    use nomic_ai::{Message, UserMessage, UserMessageContent};
+    let store = SessionStore::in_memory().await.unwrap();
+    store.get_or_create_workspace("/tmp/ws-a").await.unwrap();
+    let b = store.create_session("/tmp/ws-b").await.unwrap();
+    // ws-b 产生活动（推进 last_active_at），但列表顺序不随活跃度浮动
+    let message = Message::User(UserMessage {
+        content: UserMessageContent::Text("hi".to_string()),
+        timestamp: 1_000,
+    });
+    store.append_message(&b, None, &message).await.unwrap();
+
+    let workspaces = store.list_workspaces().await.unwrap();
+    assert_eq!(
+        workspaces
+            .iter()
+            .map(|w| w.path.clone())
+            .collect::<Vec<_>>(),
+        vec![PathBuf::from("/tmp/ws-a"), PathBuf::from("/tmp/ws-b")],
+        "列表顺序以登记时间为准，活跃度不置顶",
+    );
 }
 
 /// 0005 迁移脚本语义：旧库（sessions.cwd）迁移后每个 distinct cwd 登记为

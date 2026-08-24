@@ -32,7 +32,6 @@ interface SidebarProps {
   /** 已登记的全部 workspace（含无会话的；为空时分组退化为纯会话视图） */
   workspaces: WorkspaceSummary[]
   currentSessionId: string | null
-  workspace: string
   running: boolean
   /** 新建会话（归属指定 workspace 目录；无默认 workspace，必须显式指定） */
   onNewSession: (workspace: string) => void
@@ -60,7 +59,6 @@ export function Sidebar({
   sessions,
   workspaces,
   currentSessionId,
-  workspace,
   running,
   onNewSession,
   onAddWorkspace,
@@ -215,7 +213,6 @@ export function Sidebar({
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pt-1">
         <div className="space-y-1 pb-3">
           {groups.map((group, index) => {
-            const isCurrent = group.workspace === workspace
             const isCollapsed = collapsed.has(group.workspace)
             const hasActive = group.sessions.some((s) => s.id === currentSessionId)
             const listId = `${listIdPrefix}-group-${index}`
@@ -234,9 +231,7 @@ export function Sidebar({
                     title={group.workspace}
                     className={cn(
                       'flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-                      isCurrent
-                        ? 'bg-sidebar-accent text-sidebar-foreground'
-                        : 'bg-sidebar-accent/50 hover:bg-sidebar-accent hover:text-sidebar-foreground',
+                      'bg-sidebar-accent/50 hover:bg-sidebar-accent hover:text-sidebar-foreground',
                     )}
                   >
                     <ChevronRight
@@ -255,11 +250,6 @@ export function Sidebar({
                     <span className="shrink-0 tabular-nums text-muted-foreground/70">
                       {group.sessions.length}
                     </span>
-                    {isCurrent && (
-                      <span className="shrink-0 rounded-full border border-border/60 bg-background/40 px-1.5 py-px text-[10px] leading-4 text-muted-foreground">
-                        当前
-                      </span>
-                    )}
                   </button>
                   {/* 在该 workspace 下新建会话（悬停组标题时显现） */}
                   <button

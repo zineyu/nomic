@@ -46,7 +46,6 @@ export interface ChatState {
   reasoning: string | null
   contextTokens: number
   session: { id: string; title: string | null } | null
-  workspace: string
   /** 已登记的全部 workspace（含无会话的；store 不可用时为空，分组退化为纯会话） */
   workspaces: WorkspaceSummary[]
   question: QuestionState | null
@@ -77,7 +76,6 @@ const initialState: ChatState = {
   reasoning: null,
   contextTokens: 0,
   session: null,
-  workspace: '',
   workspaces: [],
   question: null,
   error: null,
@@ -104,7 +102,6 @@ export function useChat() {
       running: snapshot.running,
       queue: snapshot.queue,
       session: snapshot.session,
-      workspace: snapshot.workspace,
       question: snapshot.pending_question ?? null,
       error: null,
       stats: {
@@ -251,10 +248,9 @@ export function useChat() {
         }
       } else {
         applyEvent(event)
-        // run 结束刷新会话列表（活跃度变化，workspace 排序一并刷新）
+        // run 结束刷新会话列表（活跃度变化）
         if (event.type === 'run_finished') {
           void refreshSessions()
-          void refreshWorkspaces()
         }
       }
     })

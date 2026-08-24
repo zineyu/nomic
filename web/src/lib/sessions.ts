@@ -3,8 +3,8 @@
 // 服务端返回的会话列表按最近活跃排序（last_message_at DESC，NULL 最后）；
 // 纯会话分组保持「组内顺序不变、组顺序取组内首个会话的出现顺序」，因此组的
 // 先后即各组最新会话的活跃度先后，无需额外排序。合并已登记 workspace 时
-// （groupSessionsWithWorkspaces）组顺序以 workspace 列表为准（last_active
-// 降序），无会话的 workspace 展示为空组。
+// （groupSessionsWithWorkspaces）组顺序以 workspace 列表为准（登记时间升序，
+// 稳定不随活跃度浮动），无会话的 workspace 展示为空组。
 
 import type { SessionSummary, WorkspaceSummary } from './types'
 
@@ -44,7 +44,7 @@ export function groupSessionsByWorkspace(sessions: SessionSummary[]): SessionGro
 
 /** 合并已登记的 workspace 与会话列表：无会话的 workspace 也展示为空组。
  *
- * 组顺序以 workspace 列表为准（服务端已按 last_active 降序，无活动的排最后）；
+ * 组顺序以 workspace 列表为准（服务端按登记时间升序，稳定不随活跃度浮动）；
  * workspace 列表为空（如 store 不可用）时退化为纯会话分组。 */
 export function groupSessionsWithWorkspaces(
   workspaces: WorkspaceSummary[],

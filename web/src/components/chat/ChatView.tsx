@@ -101,7 +101,7 @@ export function ChatView({
 
   // 启动页（无默认 workspace/session）：未选中任何 session 时展示工作区选择栏
   const startPage = sessionId === null
-  // 用户手动选择/输入的目录；未选择时回落到最近活跃的 workspace（仅 UI 预选）
+  // 用户手动选择/输入的目录；未选择时回落到 workspace 列表首个（仅 UI 预选）
   const [startChoice, setStartChoice] = useState<string | null>(null)
   const startWorkspace = startChoice ?? workspaces[0]?.path ?? ''
 

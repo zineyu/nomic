@@ -36,7 +36,6 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
       sessions={sessions}
       workspaces={[]}
       currentSessionId="a"
-      workspace="/tmp"
       running={false}
       onNewSession={vi.fn()}
       onAddWorkspace={vi.fn().mockResolvedValue(undefined)}
@@ -89,7 +88,7 @@ describe('Sidebar', () => {
   })
 
   it('会话按 workspace 分组，组标题为路径最后一段且 title 为完整路径', () => {
-    renderSidebar({ sessions: groupedSessions, workspace: '/home/zine/alpha' })
+    renderSidebar({ sessions: groupedSessions })
     const alpha = screen.getByRole('heading', { name: /alpha/ })
     const beta = screen.getByRole('heading', { name: /beta/ })
     // title 完整路径在组标题的折叠按钮上（折叠按钮名以组名开头，区别于「新建会话」按钮）
@@ -116,24 +115,14 @@ describe('Sidebar', () => {
     expect(within(betaGroup).getAllByRole('button', { name: /^项目 B/ })).toHaveLength(1)
   })
 
-  it('当前 workspace 所在分组带「当前」标记', () => {
-    renderSidebar({ sessions: groupedSessions, workspace: '/home/zine/beta' })
-    const betaGroup = screen.getByRole('region', { name: '/home/zine/beta' })
-    expect(within(betaGroup).getByText('当前')).toBeInTheDocument()
-    const alphaGroup = screen.getByRole('region', { name: '/home/zine/alpha' })
-    expect(within(alphaGroup).queryByText('当前')).not.toBeInTheDocument()
-  })
-
-  it('工作区组标题为卡片样式，当前工作区高亮，且不存在额外的固定工作区卡片', () => {
-    renderSidebar({ sessions: groupedSessions, workspace: '/home/zine/alpha' })
+  it('工作区组标题为卡片样式，各组样式一致，且不存在额外的固定工作区卡片', () => {
+    renderSidebar({ sessions: groupedSessions })
     const alphaToggle = screen.getByRole('button', { name: /^alpha/ })
     const betaToggle = screen.getByRole('button', { name: /^beta/ })
-    // 实际工作区采用卡片样式（圆角 + accent 底色）
+    // 实际工作区采用卡片样式（圆角 + accent 底色）；无「当前工作区」特殊高亮
     expect(alphaToggle.className).toContain('rounded-lg')
+    expect(alphaToggle.className).toContain('bg-sidebar-accent/50')
     expect(betaToggle.className).toContain('bg-sidebar-accent/50')
-    // 当前工作区以更强的 accent 底色高亮
-    expect(alphaToggle.className).toContain('bg-sidebar-accent')
-    expect(alphaToggle.className).not.toContain('bg-sidebar-accent/50')
     // 不再有固定工作区卡片：工作区路径只出现在组标题的 title 上
     const titled = screen.getAllByTitle('/home/zine/alpha')
     expect(titled).toHaveLength(1)
@@ -142,7 +131,7 @@ describe('Sidebar', () => {
 
   it('组标题可折叠/展开，默认全部展开，且各组折叠互不影响', async () => {
     const user = userEvent.setup()
-    renderSidebar({ sessions: groupedSessions, workspace: '/home/zine/alpha' })
+    renderSidebar({ sessions: groupedSessions })
 
     const alphaToggle = screen.getByRole('button', { name: /^alpha/ })
     const betaToggle = screen.getByRole('button', { name: /^beta/ })
@@ -167,7 +156,6 @@ describe('Sidebar', () => {
     renderSidebar({
       sessions: groupedSessions,
       currentSessionId: 'a1',
-      workspace: '/home/zine/alpha',
     })
     const alphaGroup = screen.getByRole('region', { name: '/home/zine/alpha' })
     const alphaToggle = within(alphaGroup).getByRole('button', { name: /^alpha/ })
@@ -180,7 +168,7 @@ describe('Sidebar', () => {
   })
 
   it('展开的会话列表缩进在组标题下方并带竖向引导线，体现从属关系', () => {
-    renderSidebar({ sessions: groupedSessions, workspace: '/home/zine/alpha' })
+    renderSidebar({ sessions: groupedSessions })
     const alphaGroup = screen.getByRole('region', { name: '/home/zine/alpha' })
     const sessionButton = within(alphaGroup).getByRole('button', { name: '项目 A 会话一' })
     // 会话列表容器：缩进 + 左侧引导线（会话行内嵌操作按钮，向上追溯到列表容器）
@@ -191,7 +179,7 @@ describe('Sidebar', () => {
 
   it('折叠组之间保持紧凑间距，展开的组用额外下边距分隔', async () => {
     const user = userEvent.setup()
-    renderSidebar({ sessions: groupedSessions, workspace: '/home/zine/alpha' })
+    renderSidebar({ sessions: groupedSessions })
     const alphaGroup = screen.getByRole('region', { name: '/home/zine/alpha' })
     const betaGroup = screen.getByRole('region', { name: '/home/zine/beta' })
 
@@ -216,7 +204,7 @@ describe('Sidebar', () => {
   it('组标题「新建会话」按钮在该 workspace 下创建会话', async () => {
     const user = userEvent.setup()
     const onNewSession = vi.fn()
-    renderSidebar({ sessions: groupedSessions, workspace: '/home/zine/alpha', onNewSession })
+    renderSidebar({ sessions: groupedSessions, onNewSession })
     const alphaGroup = screen.getByRole('region', { name: '/home/zine/alpha' })
     await user.click(
       within(alphaGroup).getByRole('button', { name: '在 /home/zine/alpha 下新建会话' }),
@@ -231,7 +219,6 @@ describe('Sidebar', () => {
         workspace('wa', '/home/zine/alpha', 2),
         workspace('wc', '/home/zine/gamma'),
       ],
-      workspace: '/home/zine/alpha',
     })
     // 无会话的 gamma 也成组（顺序跟 workspace 列表）
     const gammaGroup = screen.getByRole('region', { name: '/home/zine/gamma' })
@@ -368,7 +355,6 @@ describe('Sidebar', () => {
       sessions: [],
       workspaces: [workspace('wc', '/home/zine/gamma')],
       currentSessionId: null,
-      workspace: '',
       onDeleteWorkspace,
     })
 
@@ -385,7 +371,6 @@ describe('Sidebar', () => {
     const onDeleteWorkspace = vi.fn().mockResolvedValue(undefined)
     renderSidebar({
       sessions: groupedSessions,
-      workspace: '/home/zine/alpha',
       onDeleteWorkspace,
     })
 

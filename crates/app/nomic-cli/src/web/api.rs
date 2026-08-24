@@ -27,6 +27,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
+use tower_http::trace::TraceLayer;
 
 use crate::web::{AppState, ServerEvent, assets};
 
@@ -159,6 +160,7 @@ pub fn router(state: AppState) -> Router {
         .route_layer(from_fn(reject_foreign_origin))
         .fallback(|uri: Uri| async move { assets::serve(uri.path()) })
         .with_state(state)
+        .layer(TraceLayer::new_for_http())
 }
 
 // ── API 错误 ──────────────────────────────────────────────────────────────

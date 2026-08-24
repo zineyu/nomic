@@ -136,7 +136,7 @@ fn load_from(path: &Path) -> Result<Option<Config>> {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
-            tracing::warn!(error = %error, path = %path.display(), "failed to read config file");
+            tracing::warn!(error = ?error, path = %path.display(), "failed to read config file");
             return Err(error).with_context(|| format!("读取配置文件失败：{}", path.display()));
         }
     };

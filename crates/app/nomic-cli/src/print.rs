@@ -88,16 +88,16 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
             .delete_if_no_user_message(recorder.session_id())
             .await
     {
-        tracing::warn!(error = %error, "print mode: discard empty session failed");
+        tracing::warn!(error = ?error, "print mode: discard empty session failed");
     }
 
     let result = run.await.context("prompt task panicked")?;
     if let Err(error) = result {
-        tracing::error!(error = %error, "print mode: agent loop failed");
+        tracing::error!(error = ?error, "print mode: agent loop failed");
         bail!("agent loop failed: {error}");
     }
     if let Some(error) = &saw_error {
-        tracing::error!(error = %error, "print mode: saw provider error");
+        tracing::error!(error = ?error, "print mode: saw provider error");
     }
     tracing::info!(saw_error = saw_error.is_some(), "print mode: finished");
     if let Some(error) = saw_error {
@@ -235,7 +235,7 @@ async fn drain_events(
         if let Some(recorder) = &mut recorder
             && let Err(error) = recorder.record(&event).await
         {
-            tracing::warn!(error = %error, "session record failed");
+            tracing::warn!(error = ?error, "session record failed");
             eprintln!("\x1b[33m⚠ session 落库失败：{error}\x1b[0m");
         }
         match event {

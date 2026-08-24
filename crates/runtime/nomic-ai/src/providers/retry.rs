@@ -64,7 +64,7 @@ impl RequestError {
     /// 传输层错误分类：连接失败与超时为瞬时错误，可重试。
     pub fn from_reqwest(error: &reqwest::Error) -> Self {
         let retryable = error.is_connect() || error.is_timeout();
-        tracing::debug!(error = %error, retryable, "request error classified");
+        tracing::debug!(error = ?error, retryable, "request error classified");
         Self {
             message: format!("request failed: {error}"),
             retryable,

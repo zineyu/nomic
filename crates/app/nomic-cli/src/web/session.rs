@@ -201,7 +201,7 @@ async fn forward_events(
         if let Some(recorder) = &mut *recorder
             && let Err(error) = recorder.record(&event).await
         {
-            tracing::warn!(%error, "session 落库失败");
+            tracing::warn!(?error, "session 落库失败");
         }
         drop(recorder);
 
@@ -274,7 +274,7 @@ async fn forward_runner_events(
                         }
                     }
                     Err(error) => {
-                        tracing::error!(%error, "agent run failed");
+                        tracing::error!(?error, "agent run failed");
                         notify(format!("{error:#}"));
                         run_finished();
                     }
@@ -289,7 +289,7 @@ async fn forward_runner_events(
                         notify(NOTHING_TO_COMPACT.to_string());
                     }
                     Err(error) => {
-                        tracing::error!(%error, "compact failed");
+                        tracing::error!(?error, "compact failed");
                         notify(format!("{error:#}"));
                     }
                 }
@@ -301,7 +301,7 @@ async fn forward_runner_events(
                     notify(NOTHING_TO_CONTINUE.to_string());
                 }
                 Err(error) => {
-                    tracing::error!(%error, "continue failed");
+                    tracing::error!(?error, "continue failed");
                     notify(format!("{error:#}"));
                     run_finished();
                 }
@@ -321,7 +321,7 @@ fn drain_queue(session: &Arc<SessionRuntime>) {
         text: message.text,
         images: message.images,
     }) {
-        tracing::error!(%error, "queue drain 提交失败");
+        tracing::error!(?error, "queue drain 提交失败");
     }
 }
 

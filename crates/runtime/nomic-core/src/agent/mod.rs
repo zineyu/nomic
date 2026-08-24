@@ -303,7 +303,7 @@ impl Agent {
         self.emit_message_end(user);
 
         if let Err(error) = self.run_loop(&mut new_messages, cancel).await {
-            tracing::error!(%error, "agent run failed");
+            tracing::error!(?error, "agent run failed");
             return Err(error);
         }
 
@@ -359,7 +359,7 @@ impl Agent {
         tracing::debug!("agent continue started");
         self.emit(AgentEvent::AgentStart);
         if let Err(error) = self.run_loop(&mut new_messages, cancel).await {
-            tracing::error!(%error, "agent continue failed");
+            tracing::error!(?error, "agent continue failed");
             return Err(error);
         }
         self.emit(AgentEvent::AgentEnd {
@@ -386,7 +386,10 @@ impl Agent {
                 &self.config.compaction,
             ) && let Err(error) = self.compact_internal(None, cancel.clone()).await
             {
-                tracing::warn!(%error, "auto-compaction failed; continuing with full history");
+                tracing::warn!(
+                    ?error,
+                    "auto-compaction failed; continuing with full history"
+                );
             }
             self.emit(AgentEvent::TurnStart);
             let turn_start = std::time::Instant::now();
@@ -745,7 +748,7 @@ impl Agent {
             Ok(result) => (result, false),
             Err(error) => {
                 tracing::warn!("tool execution failed");
-                tracing::debug!(error = %error, "tool error detail");
+                tracing::debug!(error = ?error, "tool error detail");
                 (ToolResult::text(error.to_string()), true)
             }
         };

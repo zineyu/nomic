@@ -463,7 +463,7 @@ async fn persist_session_model(state: &AppState, session_id: &str, spec: &str) {
         )
         .await
     {
-        tracing::warn!(%error, "会话级模型选择落库失败");
+        tracing::warn!(?error, "会话级模型选择落库失败");
     }
 }
 
@@ -485,7 +485,7 @@ async fn persist_session_reasoning(
         )
         .await
     {
-        tracing::warn!(%error, "会话级思考级别落库失败");
+        tracing::warn!(?error, "会话级思考级别落库失败");
     }
 }
 

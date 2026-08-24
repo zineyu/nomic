@@ -212,7 +212,7 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
 fn warn_skill_diagnostics(skill_resolver: &SkillResolver) {
     let catalog = skill_resolver.catalog_with_diagnostics();
     for error in &catalog.errors {
-        tracing::warn!(error = %error, "跳过加载失败的 skill");
+        tracing::warn!(error = ?error, "跳过加载失败的 skill");
         eprintln!("\x1b[33m⚠ 跳过加载失败的 skill：{error}\x1b[0m");
     }
 }
@@ -242,7 +242,7 @@ fn load_prompt_templates(
     .context("初始化 prompts 目录失败")?;
     let catalog = resolver.catalog_with_diagnostics();
     for error in &catalog.errors {
-        tracing::warn!(error = %error, "跳过加载失败的 prompt template");
+        tracing::warn!(error = ?error, "跳过加载失败的 prompt template");
     }
     Ok(catalog.templates)
 }

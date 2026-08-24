@@ -118,7 +118,7 @@ fn persist_model_selection(session: &SessionBinding, spec: String) {
             .set_config(model::CONFIG_KEY_MODEL, &serde_json::Value::String(spec))
             .await
         {
-            tracing::warn!(error = %error, "模型选择落库失败");
+            tracing::warn!(error = ?error, "模型选择落库失败");
         }
     });
 }
@@ -137,7 +137,7 @@ fn persist_reasoning(session: &SessionBinding, level: Option<ThinkingLevel>) {
             )
             .await
         {
-            tracing::warn!(error = %error, "思考级别落库失败");
+            tracing::warn!(error = ?error, "思考级别落库失败");
         }
     });
 }

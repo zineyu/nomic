@@ -175,14 +175,14 @@ pub enum ApiError {
 
 impl From<nomic_core::ActorError> for ApiError {
     fn from(error: nomic_core::ActorError) -> Self {
-        tracing::error!(%error, "agent actor 调用失败");
+        tracing::error!(?error, "agent actor 调用失败");
         Self::Internal("agent actor 已退出".to_string())
     }
 }
 
 impl From<anyhow::Error> for ApiError {
     fn from(error: anyhow::Error) -> Self {
-        tracing::error!(%error, "内部错误");
+        tracing::error!(?error, "内部错误");
         Self::Internal(format!("{error:#}"))
     }
 }
@@ -278,7 +278,7 @@ async fn ws_session(
                                 }
                             }
                             Err(error) => {
-                                tracing::warn!(%error, "解析客户端事件失败");
+                                tracing::warn!(?error, "解析客户端事件失败");
                                 let msg = serde_json::json!({
                                     "type": "error",
                                     "message": format!("事件解析失败: {error}")

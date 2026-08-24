@@ -171,7 +171,7 @@ pub fn select_startup_model(
                 return Ok(model);
             }
             Err(error) => {
-                tracing::warn!(selection = %selection.spec(), error = %error, "db model selection invalid, falling back");
+                tracing::warn!(selection = %selection.spec(), error = ?error, "db model selection invalid, falling back");
                 eprintln!(
                     "\x1b[33m⚠ 模型选择 {} 已失效（{error:#}），回退到更早的选择\x1b[0m",
                     selection.spec()

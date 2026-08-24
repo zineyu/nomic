@@ -89,6 +89,9 @@ export function useChat() {
   const sessionId = state.sessionId
   const sessionIdRef = useRef<string | null>(sessionId)
   sessionIdRef.current = sessionId
+  // 会话列表镜像（事件回调内读取最新值，避免订阅随列表变化重建）
+  const sessionsRef = useRef<SessionSummary[]>(state.sessions)
+  sessionsRef.current = state.sessions
 
   // 用快照初始化/刷新当前 session 的状态（快照中的 session 字段携带真实 id）
   const applySnapshot = useCallback((snapshot: SnapshotView) => {
@@ -194,6 +197,15 @@ export function useChat() {
     }
   }, [])
 
+  // 回到启动页（当前查看的 session 被删除时）；保留已拉取的列表
+  const resetView = useCallback(() => {
+    setState((prev) => ({
+      ...initialState,
+      sessions: prev.sessions,
+      workspaces: prev.workspaces,
+    }))
+  }, [])
+
   // 事件订阅（mount 时注册一次，整个生命周期有效）
   useEffect(() => {
     return api.subscribe((event) => {
@@ -209,6 +221,34 @@ export function useChat() {
         // 新 session 创建：刷新会话列表（可能伴随新 workspace，一并刷新）
         void refreshSessions()
         void refreshWorkspaces()
+      } else if (event.type === 'session_deleted') {
+        // 会话被删除（含 workspace 级联）：刷新列表；正在查看则回启动页
+        void refreshSessions()
+        void refreshWorkspaces()
+        if (sessionIdRef.current === event.id) resetView()
+      } else if (event.type === 'session_renamed') {
+        // 重命名：刷新列表；当前查看的 session 同步顶栏标题
+        void refreshSessions()
+        if (sessionIdRef.current === event.id) {
+          setState((prev) =>
+            prev.session
+              ? { ...prev, session: { id: prev.session.id, title: event.title } }
+              : prev,
+          )
+        }
+      } else if (event.type === 'workspace_deleted') {
+        // 工作区被删除：刷新列表；当前查看的 session 属于该 workspace 时回启动页
+        // （其 session 已打开时另有 session_deleted 广播兜底，此处覆盖未打开
+        // 但仍在列表中的情况）
+        void refreshSessions()
+        void refreshWorkspaces()
+        const sid = sessionIdRef.current
+        if (
+          sid &&
+          sessionsRef.current.some((s) => s.id === sid && s.workspace_id === event.id)
+        ) {
+          resetView()
+        }
       } else {
         applyEvent(event)
         // run 结束刷新会话列表（活跃度变化，workspace 排序一并刷新）
@@ -218,7 +258,7 @@ export function useChat() {
         }
       }
     })
-  }, [applyEvent, applySnapshot, refreshSessions, refreshWorkspaces])
+  }, [applyEvent, applySnapshot, refreshSessions, refreshWorkspaces, resetView])
 
   // 挂载：确保 WebSocket 连接 → 拉取会话与 workspace 列表。
   // 不加载默认 session（无默认 workspace）：启动页由用户选择 workspace 后
@@ -315,6 +355,24 @@ export function useChat() {
     [refreshWorkspaces],
   )
 
+  /** 删除 session（物理删除）；列表刷新与视图跳转经广播事件回填，
+      失败时抛出（调用方就地展示错误）。 */
+  const deleteSession = useCallback(async (id: string) => {
+    await api.deleteSession(id)
+  }, [])
+
+  /** 重命名 session（空白标题 = 清除自定义，回退派生标题）；列表与顶栏
+      标题经广播事件回填，失败时抛出（调用方就地展示错误）。 */
+  const renameSession = useCallback(async (id: string, title: string) => {
+    await api.renameSession(id, title)
+  }, [])
+
+  /** 删除 workspace（非空须 force 级联）；列表刷新与视图跳转经广播事件
+      回填，失败时抛出（调用方就地展示错误）。 */
+  const deleteWorkspace = useCallback(async (id: string, force: boolean) => {
+    await api.deleteWorkspace(id, force)
+  }, [])
+
   const resumeSession = useCallback(
     async (id: string) => {
       try {
@@ -369,6 +427,9 @@ export function useChat() {
     newSession,
     startSession,
     addWorkspace,
+    deleteSession,
+    renameSession,
+    deleteWorkspace,
     resumeSession,
     switchModel,
     answerQuestion,

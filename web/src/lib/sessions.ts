@@ -11,6 +11,8 @@ import type { SessionSummary, WorkspaceSummary } from './types'
 export interface SessionGroup {
   /** 分组键：session 所属 workspace 的规范化路径 */
   workspace: string
+  /** workspace 实体 id（删除 workspace 用；来自 workspace 列表或 session 摘要） */
+  workspaceId: string
   /** 展示名：路径最后一段（空路径回退为原值） */
   name: string
   sessions: SessionSummary[]
@@ -29,6 +31,7 @@ export function groupSessionsByWorkspace(sessions: SessionSummary[]): SessionGro
     if (!group) {
       group = {
         workspace: session.workspace,
+        workspaceId: session.workspace_id,
         name: workspaceName(session.workspace),
         sessions: [],
       }
@@ -50,13 +53,19 @@ export function groupSessionsWithWorkspaces(
   if (workspaces.length === 0) return groupSessionsByWorkspace(sessions)
   const groups = new Map<string, SessionGroup>()
   for (const ws of workspaces) {
-    groups.set(ws.path, { workspace: ws.path, name: workspaceName(ws.path), sessions: [] })
+    groups.set(ws.path, {
+      workspace: ws.path,
+      workspaceId: ws.id,
+      name: workspaceName(ws.path),
+      sessions: [],
+    })
   }
   for (const session of sessions) {
     let group = groups.get(session.workspace)
     if (!group) {
       group = {
         workspace: session.workspace,
+        workspaceId: session.workspace_id,
         name: workspaceName(session.workspace),
         sessions: [],
       }

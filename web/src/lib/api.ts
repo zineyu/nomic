@@ -34,6 +34,9 @@ type QueryEventInput =
   | { type: 'list_skills' }
   | { type: 'list_files'; session_id: string; prefix: string }
   | { type: 'create_workspace'; path: string }
+  | { type: 'delete_session'; session_id: string }
+  | { type: 'rename_session'; session_id: string; title: string }
+  | { type: 'delete_workspace'; id: string; force: boolean }
 
 class WsClient {
   private ws: WebSocket | null = null
@@ -229,6 +232,22 @@ export const api = {
   /** 登记新 workspace（查询式命令；目录不存在时 reject 服务端错误消息）。 */
   createWorkspace: (path: string) =>
     client.request<{ id: string; path: string }>({ type: 'create_workspace', path }),
+
+  /** 删除 session（查询式命令；物理删除不可恢复，列表刷新经广播事件回填）。 */
+  deleteSession: (id: string) =>
+    client.request<{ id: string }>({ type: 'delete_session', session_id: id }),
+
+  /** 重命名 session（查询式命令；title 空白 = 清除自定义标题，回退派生标题）。 */
+  renameSession: (id: string, title: string) =>
+    client.request<{ id: string; title: string | null }>({
+      type: 'rename_session',
+      session_id: id,
+      title,
+    }),
+
+  /** 删除 workspace（查询式命令；非空须 force 级联，被拒时 reject 服务端错误消息）。 */
+  deleteWorkspace: (id: string, force: boolean) =>
+    client.request<{ id: string }>({ type: 'delete_workspace', id, force }),
 
   /** skill 清单（`@skill:` 补全用；进程级解析器快照）。 */
   skills: () =>

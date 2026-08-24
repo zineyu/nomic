@@ -200,6 +200,9 @@ export type ServerEvent =
   | { type: 'switch_model_ack'; session_id: string; choice: ModelChoice }
   | { type: 'session_created'; id: string; title: string | null }
   | { type: 'workspace_created'; request_id: string; id: string; path: string }
+  | { type: 'session_deleted'; request_id?: string; id: string }
+  | { type: 'session_renamed'; request_id: string; id: string; title: string | null }
+  | { type: 'workspace_deleted'; request_id: string; id: string }
 
 /** 客户端发送给服务端的事件（纯事件驱动，无 REST） */
 export type ClientEvent =
@@ -223,6 +226,9 @@ export type ClientEvent =
   | { type: 'move_queue_entry'; session_id: string; id: string; direction: 'up' | 'down' }
   // ── 查询式命令（携带 request_id，响应/错误事件带同一 request_id）
   | { type: 'create_workspace'; request_id: string; path: string }
+  | { type: 'delete_session'; request_id: string; session_id: string }
+  | { type: 'rename_session'; request_id: string; session_id: string; title: string }
+  | { type: 'delete_workspace'; request_id: string; id: string; force: boolean }
 
 // ── REST 响应（nomic-cli web::api）────────────────────────────────────────
 

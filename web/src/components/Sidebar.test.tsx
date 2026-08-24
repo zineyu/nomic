@@ -40,6 +40,9 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
       running={false}
       onNewSession={vi.fn()}
       onAddWorkspace={vi.fn().mockResolvedValue(undefined)}
+      onRenameSession={vi.fn().mockResolvedValue(undefined)}
+      onDeleteSession={vi.fn().mockResolvedValue(undefined)}
+      onDeleteWorkspace={vi.fn().mockResolvedValue(undefined)}
       onResume={vi.fn()}
       {...overrides}
     />,
@@ -180,10 +183,9 @@ describe('Sidebar', () => {
     renderSidebar({ sessions: groupedSessions, workspace: '/home/zine/alpha' })
     const alphaGroup = screen.getByRole('region', { name: '/home/zine/alpha' })
     const sessionButton = within(alphaGroup).getByRole('button', { name: '项目 A 会话一' })
-    // 会话列表容器：缩进 + 左侧引导线
-    const list = sessionButton.parentElement
+    // 会话列表容器：缩进 + 左侧引导线（会话行内嵌操作按钮，向上追溯到列表容器）
+    const list = sessionButton.closest('.border-l')
     expect(list?.className).toContain('ml-4')
-    expect(list?.className).toContain('border-l')
     expect(list?.className).toContain('border-sidebar-border')
   })
 
@@ -276,5 +278,123 @@ describe('Sidebar', () => {
     await user.type(screen.getByRole('textbox', { name: '工作区路径' }), '/tmp{Escape}')
     expect(onAddWorkspace).not.toHaveBeenCalled()
     expect(screen.queryByRole('textbox', { name: '工作区路径' })).not.toBeInTheDocument()
+  })
+
+  // ── 会话重命名 / 删除 ────────────────────────────────────────────
+
+  it('重命名会话：行内按钮展开内联编辑，Enter 提交并关闭', async () => {
+    const user = userEvent.setup()
+    const onRenameSession = vi.fn().mockResolvedValue(undefined)
+    renderSidebar({ onRenameSession })
+
+    // 第一行（LONG_TITLE 会话）的重命名按钮
+    await user.click(screen.getAllByRole('button', { name: '重命名会话' })[0])
+    const input = screen.getByRole('textbox', { name: '会话标题' })
+    // 预填当前标题
+    expect(input).toHaveValue(LONG_TITLE)
+    await user.clear(input)
+    await user.type(input, '改名后的会话{Enter}')
+    expect(onRenameSession).toHaveBeenCalledWith('a', '改名后的会话')
+    expect(screen.queryByRole('textbox', { name: '会话标题' })).not.toBeInTheDocument()
+  })
+
+  it('重命名会话：Esc 取消不提交', async () => {
+    const user = userEvent.setup()
+    const onRenameSession = vi.fn().mockResolvedValue(undefined)
+    renderSidebar({ onRenameSession })
+
+    await user.click(screen.getAllByRole('button', { name: '重命名会话' })[0])
+    await user.type(screen.getByRole('textbox', { name: '会话标题' }), 'x{Escape}')
+    expect(onRenameSession).not.toHaveBeenCalled()
+    expect(screen.queryByRole('textbox', { name: '会话标题' })).not.toBeInTheDocument()
+  })
+
+  it('重命名会话失败时就地展示错误，输入框保留', async () => {
+    const user = userEvent.setup()
+    const onRenameSession = vi.fn().mockRejectedValue(new Error('session not found'))
+    renderSidebar({ onRenameSession })
+
+    await user.click(screen.getAllByRole('button', { name: '重命名会话' })[0])
+    await user.type(screen.getByRole('textbox', { name: '会话标题' }), '{Enter}')
+    expect(await screen.findByRole('alert')).toHaveTextContent('session not found')
+    expect(screen.getByRole('textbox', { name: '会话标题' })).toBeInTheDocument()
+  })
+
+  it('删除会话：确认对话框说明不可恢复，确认后调用删除', async () => {
+    const user = userEvent.setup()
+    const onDeleteSession = vi.fn().mockResolvedValue(undefined)
+    renderSidebar({ onDeleteSession })
+
+    await user.click(screen.getAllByRole('button', { name: '删除会话' })[0])
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('永久删除')
+    expect(dialog).toHaveTextContent('不可恢复')
+    await user.click(within(dialog).getByRole('button', { name: '删除' }))
+    expect(onDeleteSession).toHaveBeenCalledWith('a')
+    // 成功后对话框关闭
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('删除会话：取消不调用删除', async () => {
+    const user = userEvent.setup()
+    const onDeleteSession = vi.fn().mockResolvedValue(undefined)
+    renderSidebar({ onDeleteSession })
+
+    await user.click(screen.getAllByRole('button', { name: '删除会话' })[0])
+    const dialog = screen.getByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: '取消' }))
+    expect(onDeleteSession).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('删除会话失败时错误展示在对话框内，对话框保留', async () => {
+    const user = userEvent.setup()
+    const onDeleteSession = vi.fn().mockRejectedValue(new Error('session 库不可用'))
+    renderSidebar({ onDeleteSession })
+
+    await user.click(screen.getAllByRole('button', { name: '删除会话' })[0])
+    const dialog = screen.getByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: '删除' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('session 库不可用')
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  // ── 工作区删除 ──────────────────────────────────────────────────
+
+  it('删除空工作区：确认后以 force=false 删除', async () => {
+    const user = userEvent.setup()
+    const onDeleteWorkspace = vi.fn().mockResolvedValue(undefined)
+    renderSidebar({
+      sessions: [],
+      workspaces: [workspace('wc', '/home/zine/gamma')],
+      currentSessionId: null,
+      workspace: '',
+      onDeleteWorkspace,
+    })
+
+    const gammaGroup = screen.getByRole('region', { name: '/home/zine/gamma' })
+    await user.click(within(gammaGroup).getByRole('button', { name: '删除工作区 gamma' }))
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('不影响磁盘上的目录')
+    await user.click(within(dialog).getByRole('button', { name: '删除' }))
+    expect(onDeleteWorkspace).toHaveBeenCalledWith('wc', false)
+  })
+
+  it('删除非空工作区：对话框提示级联删除会话数，确认后 force 删除', async () => {
+    const user = userEvent.setup()
+    const onDeleteWorkspace = vi.fn().mockResolvedValue(undefined)
+    renderSidebar({
+      sessions: groupedSessions,
+      workspace: '/home/zine/alpha',
+      onDeleteWorkspace,
+    })
+
+    const alphaGroup = screen.getByRole('region', { name: '/home/zine/alpha' })
+    await user.click(within(alphaGroup).getByRole('button', { name: '删除工作区 alpha' }))
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('含 2 个会话')
+    expect(dialog).toHaveTextContent('不可恢复')
+    await user.click(within(dialog).getByRole('button', { name: '删除' }))
+    expect(onDeleteWorkspace).toHaveBeenCalledWith('wa', true)
   })
 })

@@ -66,6 +66,9 @@ export default function App() {
               running={chat.running}
               onNewSession={(ws) => void chat.newSession(ws)}
               onAddWorkspace={chat.addWorkspace}
+              onRenameSession={chat.renameSession}
+              onDeleteSession={chat.deleteSession}
+              onDeleteWorkspace={chat.deleteWorkspace}
               onResume={handleResume}
             />
           </div>

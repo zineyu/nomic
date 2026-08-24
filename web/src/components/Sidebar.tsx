@@ -3,17 +3,29 @@
 // 按 workspace 分组（可折叠）的会话列表，工作区组标题采用卡片样式。
 // 组标题右侧带「新建会话」按钮（在该 workspace 下创建）；「工作区」标题行带
 // 「添加工作区」按钮，展开内联输入框登记新 workspace（可无任何会话）。
+// 会话行悬停显露「重命名」（内联编辑，空白提交 = 清除自定义标题回退派生）
+// 与「删除」（物理删除不可恢复，弹确认对话框）操作。
 // 展开的会话列表缩进在组标题下方，并带竖向引导线，体现 session 对 workspace 的从属；
 // 折叠组之间保持紧凑间距，展开的组以额外下边距分隔。
 // 上下文用量由输入区环形指示器（ContextRing）展示，侧栏不再重复显示。
 // 无默认 workspace：新会话必须归属明确的 workspace（组标题按钮或启动页选择栏）。
 
-import { ChevronRight, FolderOpen, FolderPlus, Plus, Search } from 'lucide-react'
+import { ChevronRight, FolderOpen, FolderPlus, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import { useId, useState } from 'react'
 
 import { groupSessionsWithWorkspaces } from '@/lib/sessions'
 import type { SessionSummary, WorkspaceSummary } from '@/lib/types'
 import { cn } from '@/lib/utils'
+
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 
 interface SidebarProps {
   sessions: SessionSummary[]
@@ -26,8 +38,23 @@ interface SidebarProps {
   onNewSession: (workspace: string) => void
   /** 登记新 workspace；失败时抛出错误消息（就地展示在输入框下方） */
   onAddWorkspace: (path: string) => Promise<void>
+  /** 重命名会话（空白标题 = 清除自定义，回退派生标题）；失败时抛出错误消息 */
+  onRenameSession: (id: string, title: string) => Promise<void>
+  /** 删除会话（物理删除不可恢复）；失败时抛出错误消息 */
+  onDeleteSession: (id: string) => Promise<void>
+  /** 删除 workspace；`force` 级联删除名下全部会话；失败时抛出错误消息 */
+  onDeleteWorkspace: (id: string, force: boolean) => Promise<void>
   onResume: (id: string) => void
 }
+
+/** 删除确认目标（会话 / 工作区共用一个确认对话框）。 */
+type ConfirmTarget =
+  | { kind: 'session'; id: string; title: string }
+  | { kind: 'workspace'; id: string; name: string; path: string; sessionCount: number }
+
+/** 行内操作按钮样式（悬停行时由父级 group/item 控制显现）。 */
+const rowActionClass =
+  'flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 transition-all outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-90'
 
 export function Sidebar({
   sessions,
@@ -37,6 +64,9 @@ export function Sidebar({
   running,
   onNewSession,
   onAddWorkspace,
+  onRenameSession,
+  onDeleteSession,
+  onDeleteWorkspace,
   onResume,
 }: SidebarProps) {
   const groups = groupSessionsWithWorkspaces(workspaces, sessions)
@@ -73,6 +103,55 @@ export function Sidebar({
       setAddError(error instanceof Error ? error.message : String(error))
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  // 会话重命名：内联编辑（Enter 提交 / Esc 或失焦取消），失败就地展示
+  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null)
+  const [renamingSubmitting, setRenamingSubmitting] = useState(false)
+  const [renameError, setRenameError] = useState<string | null>(null)
+  const closeRename = () => {
+    setRenaming(null)
+    setRenameError(null)
+  }
+  const submitRename = async () => {
+    if (!renaming || renamingSubmitting) return
+    setRenamingSubmitting(true)
+    setRenameError(null)
+    try {
+      await onRenameSession(renaming.id, renaming.value)
+      closeRename()
+    } catch (error) {
+      setRenameError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRenamingSubmitting(false)
+    }
+  }
+
+  // 删除确认：会话与工作区共用一个对话框，失败就地展示在对话框内
+  const [confirm, setConfirm] = useState<ConfirmTarget | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  const [confirmError, setConfirmError] = useState<string | null>(null)
+  const closeConfirm = () => {
+    if (confirming) return
+    setConfirm(null)
+    setConfirmError(null)
+  }
+  const submitConfirm = async () => {
+    if (!confirm || confirming) return
+    setConfirming(true)
+    setConfirmError(null)
+    try {
+      if (confirm.kind === 'session') {
+        await onDeleteSession(confirm.id)
+      } else {
+        await onDeleteWorkspace(confirm.id, confirm.sessionCount > 0)
+      }
+      setConfirm(null)
+    } catch (error) {
+      setConfirmError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setConfirming(false)
     }
   }
 
@@ -192,6 +271,24 @@ export function Sidebar({
                   >
                     <Plus className="size-3" aria-hidden="true" />
                   </button>
+                  {/* 删除 workspace（悬停组标题时显现；含会话时确认对话框提示级联） */}
+                  <button
+                    type="button"
+                    aria-label={`删除工作区 ${group.name}`}
+                    title={`删除工作区 ${group.name}`}
+                    onClick={() =>
+                      setConfirm({
+                        kind: 'workspace',
+                        id: group.workspaceId,
+                        name: group.name,
+                        path: group.workspace,
+                        sessionCount: group.sessions.length,
+                      })
+                    }
+                    className="ml-0.5 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 opacity-0 transition-all outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-90 group-hover:opacity-100"
+                  >
+                    <Trash2 className="size-3" aria-hidden="true" />
+                  </button>
                 </h3>
                 {!isCollapsed && (
                   <div
@@ -201,33 +298,91 @@ export function Sidebar({
                     {group.sessions.map((session) => {
                       const active = session.id === currentSessionId
                       const title = session.title ?? '新会话'
+                      const renamingThis = renaming?.id === session.id
                       return (
-                        <button
-                          key={session.id}
-                          type="button"
-                          onClick={() => onResume(session.id)}
-                          aria-current={active ? 'page' : undefined}
-                          title={title}
-                          className={cn(
-                            'flex w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-                            active
-                              ? 'bg-sidebar-accent font-medium text-sidebar-foreground'
-                              : 'text-sidebar-foreground hover:bg-sidebar-accent/50 active:bg-sidebar-accent/70',
+                        <div key={session.id} className="group/item">
+                          <div className="flex items-center gap-0.5">
+                            {renamingThis ? (
+                              <input
+                                type="text"
+                                value={renaming.value}
+                                autoFocus
+                                disabled={renamingSubmitting}
+                                placeholder="留空恢复默认标题"
+                                aria-label="会话标题"
+                                aria-invalid={renameError !== null}
+                                onFocus={(e) => e.target.select()}
+                                className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-60"
+                                onChange={(e) =>
+                                  setRenaming({ id: session.id, value: e.target.value })
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') void submitRename()
+                                  else if (e.key === 'Escape') closeRename()
+                                }}
+                                onBlur={() => {
+                                  if (!renamingSubmitting) closeRename()
+                                }}
+                              />
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => onResume(session.id)}
+                                aria-current={active ? 'page' : undefined}
+                                title={title}
+                                className={cn(
+                                  'flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+                                  active
+                                    ? 'bg-sidebar-accent font-medium text-sidebar-foreground'
+                                    : 'text-sidebar-foreground hover:bg-sidebar-accent/50 active:bg-sidebar-accent/70',
+                                )}
+                              >
+                                <span
+                                  className="block min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap"
+                                  title={title}
+                                >
+                                  {title}
+                                </span>
+                                {active && running && (
+                                  <span className="relative flex size-1.5 shrink-0" aria-hidden="true">
+                                    <span className="absolute inline-flex size-full animate-ping rounded-full bg-foreground opacity-75" />
+                                    <span className="relative inline-flex size-1.5 rounded-full bg-foreground" />
+                                  </span>
+                                )}
+                              </button>
+                            )}
+                            {/* 行内操作：重命名 / 删除（悬停或键盘聚焦行时显现） */}
+                            {!renamingThis && (
+                              <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover/item:opacity-100">
+                                <button
+                                  type="button"
+                                  aria-label="重命名会话"
+                                  title="重命名会话"
+                                  className={rowActionClass}
+                                  onClick={() =>
+                                    setRenaming({ id: session.id, value: session.title ?? '' })
+                                  }
+                                >
+                                  <Pencil className="size-3" aria-hidden="true" />
+                                </button>
+                                <button
+                                  type="button"
+                                  aria-label="删除会话"
+                                  title="删除会话"
+                                  className={rowActionClass}
+                                  onClick={() => setConfirm({ kind: 'session', id: session.id, title })}
+                                >
+                                  <Trash2 className="size-3" aria-hidden="true" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                          {renamingThis && renameError && (
+                            <p role="alert" className="mt-0.5 px-1 text-xs text-destructive">
+                              {renameError}
+                            </p>
                           )}
-                        >
-                          <span
-                            className="block min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap"
-                            title={title}
-                          >
-                            {title}
-                          </span>
-                          {active && running && (
-                            <span className="relative flex size-1.5 shrink-0" aria-hidden="true">
-                              <span className="absolute inline-flex size-full animate-ping rounded-full bg-foreground opacity-75" />
-                              <span className="relative inline-flex size-1.5 rounded-full bg-foreground" />
-                            </span>
-                          )}
-                        </button>
+                        </div>
                       )
                     })}
                     {group.sessions.length === 0 && (
@@ -247,6 +402,56 @@ export function Sidebar({
           )}
         </div>
       </div>
+
+      {/* 删除确认：会话 / 工作区共用（物理删除不可恢复；非空工作区级联删除会话） */}
+      <Dialog
+        open={confirm !== null}
+        onOpenChange={(open) => {
+          if (!open) closeConfirm()
+        }}
+      >
+        <DialogContent className="sm:max-w-md" showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle className="text-base">
+              {confirm?.kind === 'workspace' ? '删除工作区' : '删除会话'}
+            </DialogTitle>
+            <DialogDescription className="break-words">
+              {confirm?.kind === 'workspace' ? (
+                confirm.sessionCount > 0 ? (
+                  <>
+                    工作区 {confirm.name}（{confirm.path}）含 {confirm.sessionCount}{' '}
+                    个会话，将一并永久删除，不可恢复。
+                  </>
+                ) : (
+                  <>
+                    工作区 {confirm.name}（{confirm.path}）将从列表移除，不影响磁盘上的目录。
+                  </>
+                )
+              ) : (
+                <>会话「{confirm?.title}」将被永久删除（含全部消息记录），不可恢复。</>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          {confirmError && (
+            <p role="alert" className="text-xs text-destructive">
+              {confirmError}
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" size="sm" disabled={confirming} onClick={closeConfirm}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={confirming}
+              onClick={() => void submitConfirm()}
+            >
+              {confirming ? '删除中…' : '删除'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

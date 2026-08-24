@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted（查询路径经 ADR-0035 修订：查询改读共享状态视图，不再走邮箱）
 
 ## Date
 

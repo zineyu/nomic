@@ -13,6 +13,7 @@
 
 mod actor;
 mod events;
+mod state;
 mod util;
 
 pub use actor::{ActorError, AgentHandle};
@@ -24,7 +25,7 @@ use std::sync::Arc;
 use nomic_ai::{
     AssistantContent, AssistantEvent, AssistantMessage, Context, ImageContent, Message, Model,
     Provider, StopReason, StreamOptions, ThinkingLevel, ToolCall, ToolResultMessage, Usage,
-    UserMessage, UserMessageContent, now_millis,
+    now_millis,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -81,6 +82,9 @@ pub struct Agent {
     tools: Vec<DynTool>,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
     injection: Option<Arc<dyn TurnInjection>>,
+    /// 共享只读状态视图（ADR-0035）：handle 查询直接读取，不经邮箱；
+    /// 由本体在状态变更点同步维护（见 `state` 模块）
+    state_view: state::SharedStateView,
     /// 会话统计信息
     stats: SessionStats,
 }
@@ -135,6 +139,7 @@ impl Agent {
         injection: Option<Arc<dyn TurnInjection>>,
     ) -> (Self, mpsc::UnboundedReceiver<AgentEvent>) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let state_view = state::shared_view(&config, &messages);
         (
             Self {
                 config,
@@ -143,6 +148,7 @@ impl Agent {
                 tools,
                 event_tx,
                 injection,
+                state_view,
                 stats: SessionStats::default(),
             },
             event_rx,
@@ -152,13 +158,6 @@ impl Agent {
     /// 当前消息历史。
     pub fn messages(&self) -> &[Message] {
         &self.messages
-    }
-
-    /// 清空消息历史（交互端「开启新对话」语义，如 TUI 的 `/new`）。
-    ///
-    /// 系统提示词、工具与配置保留；应在非运行状态（`prompt` 返回后）调用。
-    pub fn clear_messages(&mut self) {
-        self.messages.clear();
     }
 
     /// 当前模型。
@@ -174,6 +173,7 @@ impl Agent {
     /// 应在非运行状态（`prompt` 返回后）调用。静默切换，不发出事件。
     pub fn set_model(&mut self, model: Model) {
         self.config.model = model;
+        self.view_sync_meta();
     }
 
     /// 运行时切换 provider（跨 provider 的模型切换语义，如 TUI 跨 provider 的
@@ -198,38 +198,14 @@ impl Agent {
     /// 思考级别是请求参数：仅 `model.reasoning == true` 时随请求生效
     /// （见 [`nomic_ai::StreamOptions::reasoning`]）；消息历史、系统提示词
     /// 与工具保留。应在非运行状态（`prompt` 返回后）调用。静默切换，不发出事件。
-    pub const fn set_reasoning(&mut self, reasoning: Option<ThinkingLevel>) {
+    pub fn set_reasoning(&mut self, reasoning: Option<ThinkingLevel>) {
         self.config.stream_options.reasoning = reasoning;
+        self.view_sync_meta();
     }
 
     /// 当前会话统计信息（前端状态栏展示用）。
     pub const fn stats(&self) -> &SessionStats {
         &self.stats
-    }
-
-    /// 以既有消息历史整体替换当前上下文（session resume 语义，如 TUI 的 `/resume`）。
-    ///
-    /// 与 builder 的 `messages` 同样的调用契约：`messages` 按序作为上下文起点，
-    /// 调用方负责保证顺序与来源（如 session store 的 `load_messages` 输出）。
-    /// 静默替换，不发出事件（历史已在来源 session 渲染/落库）；
-    /// 应在非运行状态（`prompt` 返回后）调用。
-    pub fn restore_messages(&mut self, messages: Vec<Message>) {
-        self.messages = messages;
-    }
-
-    /// 在两轮 prompt 之间向历史注入一条 user 消息（手动载入 skill、外部指令等）。
-    ///
-    /// 与 [`Self::clear_messages`] 同样的调用契约：仅在非运行状态
-    /// （`prompt` 返回后）调用。会发出 `MessageStart`/`MessageEnd` 事件，
-    /// 交互端渲染与 session 落库经既有事件管线自动生效。
-    pub fn inject_user_message(&mut self, text: &str) {
-        let user = Message::User(UserMessage {
-            content: UserMessageContent::Text(text.to_string()),
-            timestamp: now_millis(),
-        });
-        self.emit(AgentEvent::MessageStart(Box::new(user.clone())));
-        self.messages.push(user.clone());
-        self.emit_message_end(user);
     }
 
     /// 手动压缩上下文（`/compact [instructions]` 语义）。
@@ -276,6 +252,7 @@ impl Agent {
             "context compacted"
         );
         self.messages = new_history;
+        self.view_resync();
         self.emit(AgentEvent::CompactionEnd {
             summary: compaction.summary.clone(),
             tokens_before: compaction.tokens_before,
@@ -338,6 +315,7 @@ impl Agent {
                     self.stats.llm_time_ms as f64 / self.stats.rounds as f64 * 0.1;
             }
         }
+        self.view_sync_meta();
 
         self.emit(AgentEvent::AgentEnd {
             messages: new_messages.clone(),
@@ -369,6 +347,7 @@ impl Agent {
         ) {
             self.messages.pop();
         }
+        self.view_resync();
         if !matches!(
             self.messages.last(),
             Some(Message::User(_) | Message::ToolResult(_))
@@ -804,15 +783,5 @@ impl Agent {
     fn emit(&self, event: AgentEvent) {
         // 无消费者时静默丢弃（print 模式总会消费；嵌入式可自行选择）
         let _ = self.event_tx.send(event);
-    }
-
-    /// 发出 `MessageEnd`：调用方保证消息已落史，事件附带落史后的权威
-    /// 上下文估算（锚点规则唯一定义在 `estimate_context_tokens`，
-    /// 交互端只抄不算）。
-    fn emit_message_end(&self, message: Message) {
-        self.emit(AgentEvent::MessageEnd {
-            context_tokens: estimate_context_tokens(&self.messages),
-            message: Box::new(message),
-        });
     }
 }

@@ -9,8 +9,12 @@
 //!   返回结果；
 //! - `inject_user_message` 等变更为 fire-and-forget：邮箱 FIFO 即顺序
 //!   保证，紧随其后的 `prompt` 一定跑在变更之后；
-//! - 查询（`messages` / `context_tokens` / `model` / `reasoning`）同样
-//!   走邮箱 oneshot（严格 actor，不引入共享只读快照）；
+//! - 查询（`messages` / `context_tokens` / `model` / `reasoning` / `stats`）
+//!   读 agent 本体维护的共享只读状态视图（ADR-0035），不经邮箱——run 类
+//!   命令把整轮 loop 包进一条邮箱命令，运行期间邮箱不被消费，查询若走
+//!   邮箱会排队到 run 结束（web `get_state` 超时、切不回活跃会话的根因）。
+//!   视图为快照隔离：不保证读到仍在邮箱排队的变更，读己之写先经
+//!   [`AgentHandle::flush`] 屏障；
 //! - 运行中注入源（[`crate::TurnInjection`]）由 builder 组装进 agent 本体，
 //!   turn 边界注入不经邮箱（ADR-0014）。
 
@@ -20,8 +24,9 @@ use nomic_ai::{ImageContent, Message, Model, Provider, ThinkingLevel};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::state::{SharedStateView, StateView};
 use crate::agent::{Agent, AgentError, SessionStats};
-use crate::compaction::{Compaction, CompactionError, estimate_context_tokens};
+use crate::compaction::{Compaction, CompactionError};
 
 /// actor 调用错误：actor 任务已退出，或 loop / 压缩本身失败。
 #[derive(Debug, thiserror::Error)]
@@ -73,26 +78,23 @@ enum AgentCommand {
     },
     /// 设置思考级别
     SetReasoning(Option<ThinkingLevel>),
-    /// 查询当前消息历史
-    Messages(oneshot::Sender<Vec<Message>>),
-    /// 查询当前上下文 token 估算（与自动压缩同一口径）
-    ContextTokens(oneshot::Sender<u64>),
-    /// 查询当前模型
-    Model(oneshot::Sender<Model>),
-    /// 查询当前思考级别
-    Reasoning(oneshot::Sender<Option<ThinkingLevel>>),
-    /// 查询当前会话统计信息
-    Stats(oneshot::Sender<SessionStats>),
+    /// 屏障：回执送达即此前提交的全部命令已应用（读己之写同步用）
+    Flush(oneshot::Sender<()>),
 }
 
 /// agent actor 句柄：可克隆、可在任意时机调用，命令经邮箱串行执行。
 ///
-/// 全部方法在 actor 任务退出后返回 [`ActorError::Gone`]（fire-and-forget
+/// 全部命令方法在 actor 任务退出后返回 [`ActorError::Gone`]（fire-and-forget
 /// 变更为发送失败；回执类方法为 oneshot 被丢弃）。事件流接收端在
 /// builder `build()` 时取得，不经 handle。
+///
+/// 查询方法读共享状态视图（ADR-0035），不等待邮箱：运行中即时返回最后
+/// 一次应用的状态；`flush` 屏障保证此前提交的变更全部应用后再查询。
 #[derive(Debug, Clone)]
 pub struct AgentHandle {
     cmd_tx: mpsc::UnboundedSender<AgentCommand>,
+    /// 共享只读状态视图（agent 本体单写者维护）
+    view: SharedStateView,
 }
 
 impl AgentHandle {
@@ -189,29 +191,45 @@ impl AgentHandle {
         self.send(AgentCommand::SetReasoning(reasoning))
     }
 
-    /// 查询当前消息历史。
-    pub async fn messages(&self) -> Result<Vec<Message>, ActorError> {
-        self.call(AgentCommand::Messages).await
+    /// 查询当前消息历史（读共享状态视图；快照隔离，不阻塞在途运行）。
+    pub fn messages(&self) -> Result<Vec<Message>, ActorError> {
+        self.view_read(|view| view.messages.clone())
     }
 
     /// 查询当前上下文 token 估算（与自动压缩同一口径）。
-    pub async fn context_tokens(&self) -> Result<u64, ActorError> {
-        self.call(AgentCommand::ContextTokens).await
+    pub fn context_tokens(&self) -> Result<u64, ActorError> {
+        self.view_read(|view| view.context_tokens)
     }
 
     /// 查询当前模型。
-    pub async fn model(&self) -> Result<Model, ActorError> {
-        self.call(AgentCommand::Model).await
+    pub fn model(&self) -> Result<Model, ActorError> {
+        self.view_read(|view| view.model.clone())
     }
 
     /// 查询当前思考级别。
-    pub async fn reasoning(&self) -> Result<Option<ThinkingLevel>, ActorError> {
-        self.call(AgentCommand::Reasoning).await
+    pub fn reasoning(&self) -> Result<Option<ThinkingLevel>, ActorError> {
+        self.view_read(|view| view.reasoning)
     }
 
     /// 查询当前会话统计信息（前端状态栏展示用）。
-    pub async fn stats(&self) -> Result<SessionStats, ActorError> {
-        self.call(AgentCommand::Stats).await
+    pub fn stats(&self) -> Result<SessionStats, ActorError> {
+        self.view_read(|view| view.stats.clone())
+    }
+
+    /// 屏障：等待此前提交的全部命令应用完成（邮箱 FIFO）。
+    ///
+    /// 查询读共享视图、不等邮箱——fire-and-forget 变更（`set_model` 等）
+    /// 提交后需要「读到自己的写入」时，先经本屏障同步再查询。
+    pub async fn flush(&self) -> Result<(), ActorError> {
+        self.call(AgentCommand::Flush).await
+    }
+
+    /// 读共享状态视图；actor 已退出（panic）时报告 [`ActorError::Gone`]。
+    fn view_read<T>(&self, read: impl FnOnce(&StateView) -> T) -> Result<T, ActorError> {
+        if self.cmd_tx.is_closed() {
+            return Err(ActorError::Gone);
+        }
+        Ok(read(&self.view.read().expect("state view lock")))
     }
 
     /// 发送一条 fire-and-forget 命令；邮箱关闭（actor 已退出）时报错。
@@ -239,6 +257,7 @@ impl Agent {
     /// 事件流接收端在 builder `build()` 时取得，与 spawn 无关。
     pub fn spawn(self) -> (AgentHandle, tokio::task::JoinHandle<()>) {
         tracing::debug!("spawning agent actor");
+        let view = self.state_view.clone();
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<AgentCommand>();
         let task = tokio::spawn(async move {
             let mut agent = self;
@@ -270,24 +289,12 @@ impl Agent {
                         agent.set_provider(provider, api_key);
                     }
                     AgentCommand::SetReasoning(level) => agent.set_reasoning(level),
-                    AgentCommand::Messages(reply) => {
-                        let _ = reply.send(agent.messages().to_vec());
-                    }
-                    AgentCommand::ContextTokens(reply) => {
-                        let _ = reply.send(estimate_context_tokens(agent.messages()));
-                    }
-                    AgentCommand::Model(reply) => {
-                        let _ = reply.send(agent.model().clone());
-                    }
-                    AgentCommand::Reasoning(reply) => {
-                        let _ = reply.send(agent.reasoning());
-                    }
-                    AgentCommand::Stats(reply) => {
-                        let _ = reply.send(agent.stats().clone());
+                    AgentCommand::Flush(reply) => {
+                        let _ = reply.send(());
                     }
                 }
             }
         });
-        (AgentHandle { cmd_tx }, task)
+        (AgentHandle { cmd_tx, view }, task)
     }
 }

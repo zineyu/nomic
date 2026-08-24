@@ -412,7 +412,7 @@ impl AgentSupervisor {
             drop(agents);
             result
         };
-        let message_count = handle.messages().await.map_or(0, |m| m.len());
+        let message_count = handle.messages().map_or(0, |m| m.len());
 
         Ok(AgentStatus {
             id: id.clone(),
@@ -442,7 +442,7 @@ impl AgentSupervisor {
         };
         let mut statuses = Vec::with_capacity(children.len());
         for (id, is_running, model_id, system_prompt_preview, handle) in children {
-            let message_count = handle.messages().await.map_or(0, |m| m.len());
+            let message_count = handle.messages().map_or(0, |m| m.len());
             statuses.push(AgentStatus {
                 id,
                 is_running,

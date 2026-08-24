@@ -466,9 +466,10 @@ mod tests {
 
         super::resume_session(&mut app, &mut binding, &handle, session_b.clone()).await;
 
-        // Restore 已经 actor 邮箱 FIFO 生效（紧随的查询一定看到）
+        // Restore 经 actor 邮箱 FIFO 生效；查询读快照视图，先过 flush 屏障
+        handle.flush().await.expect("屏障应成功");
         assert_eq!(
-            handle.messages().await.expect("查询应成功").len(),
+            handle.messages().expect("查询应成功").len(),
             1,
             "恢复的上下文应替换进 agent"
         );
@@ -591,9 +592,10 @@ mod tests {
 
         super::new_session(&mut app, &mut binding, &handle).await;
 
-        // Clear 已经 actor 邮箱 FIFO 生效（紧随的查询一定看到）
+        // Clear 经 actor 邮箱 FIFO 生效；查询读快照视图，先过 flush 屏障
+        handle.flush().await.expect("屏障应成功");
         assert!(
-            handle.messages().await.expect("查询应成功").is_empty(),
+            handle.messages().expect("查询应成功").is_empty(),
             "上下文应已清空"
         );
         let new_id = binding.recorder.as_ref().expect("recorder").session_id();

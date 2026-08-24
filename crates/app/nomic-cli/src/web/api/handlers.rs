@@ -313,7 +313,7 @@ pub async fn handle_switch_model(
         Ok(s) => s,
         Err(error) => return error.to_ws_response(None),
     };
-    let current = match session.handle.model().await {
+    let current = match session.handle.model() {
         Ok(m) => m,
         Err(error) => {
             return ApiError::from(error).to_ws_response(None);

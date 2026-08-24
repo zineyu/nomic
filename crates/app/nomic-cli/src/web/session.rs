@@ -342,13 +342,14 @@ pub struct Snapshot {
     pub stats: nomic_core::SessionStats,
 }
 
-/// 收集本 session 的状态快照：agent 查询（经 actor 邮箱）+ 运行时可变状态。
+/// 收集本 session 的状态快照：agent 状态（读共享视图，不阻塞在途运行，
+/// ADR-0035）+ 运行时可变状态。
 pub async fn snapshot(session: &SessionRuntime) -> Result<Snapshot> {
-    let messages = session.handle.messages().await?;
-    let model = session.handle.model().await?;
-    let reasoning = session.handle.reasoning().await?;
-    let context_tokens = session.handle.context_tokens().await?;
-    let session_stats = session.handle.stats().await?;
+    let messages = session.handle.messages()?;
+    let model = session.handle.model()?;
+    let reasoning = session.handle.reasoning()?;
+    let context_tokens = session.handle.context_tokens()?;
+    let session_stats = session.handle.stats()?;
     let running = session.runner.is_running();
     let queue = session.queue.snapshot();
     let title = nomic_session::session_title(&messages);

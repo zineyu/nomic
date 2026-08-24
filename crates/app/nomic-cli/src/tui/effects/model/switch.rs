@@ -287,10 +287,10 @@ mod tests {
 
     /// 初始状态：openai/gpt-4o + 思考级别 low；返回状态机与 actor 句柄。
     ///
-    /// 变更经 fire-and-forget 入 actor 邮箱，随后的查询命令按 FIFO 排在
-    /// 其后——`handle.model()` / `handle.reasoning()` 可见即变更已生效。
+    /// 变更经 fire-and-forget 入 actor 邮箱，flush 屏障保证应用完成——
+    /// 其后的 `handle.model()` / `handle.reasoning()` 快照查询可见即生效。
     /// dummy actor 的初始模型/级别同步为与状态机一致，断言才有意义。
-    fn switcher() -> (ModelSwitcher, AgentHandle) {
+    async fn switcher() -> (ModelSwitcher, AgentHandle) {
         let cli = Cli::parse_from(["nomic"]);
         let catalog = Catalog::parse(MODELS_DEV_FIXTURE).expect("catalog fixture");
         let models = ModelResolver::new(&cli, None, None, Some(catalog));
@@ -302,6 +302,7 @@ mod tests {
         handle
             .set_reasoning(Some(ThinkingLevel::Low))
             .expect("同步初始级别应成功");
+        handle.flush().await.expect("屏障应成功");
         (
             ModelSwitcher::new(models, current, Some(ThinkingLevel::Low)),
             handle,
@@ -311,12 +312,13 @@ mod tests {
     /// 非推理模型：直接切换（set_model 直调 + 待落库 spec），无第二步。
     #[tokio::test]
     async fn select_non_reasoning_switches_immediately() {
-        let (mut switcher, handle) = switcher();
+        let (mut switcher, handle) = switcher().await;
         let Select::Switched { notice, persist } = switcher.select("openai/gpt-4o-mini", &handle)
         else {
             panic!("非推理模型应直接切换");
         };
-        assert_eq!(handle.model().await.expect("查询应成功").id, "gpt-4o-mini");
+        handle.flush().await.expect("屏障应成功");
+        assert_eq!(handle.model().expect("查询应成功").id, "gpt-4o-mini");
         assert_eq!(persist, "openai/gpt-4o-mini");
         assert!(
             notice.contains("已切换模型为 openai/gpt-4o-mini"),
@@ -331,12 +333,12 @@ mod tests {
     /// 幂等：目标即当前模型时不切换（不发命令）；不支持思考时提示。
     #[tokio::test]
     async fn select_current_non_reasoning_is_noop() {
-        let (mut switcher, handle) = switcher();
+        let (mut switcher, handle) = switcher().await;
         let Select::AlreadyCurrent { notice } = switcher.select("gpt-4o", &handle) else {
             panic!("重选当前模型应无变化");
         };
         assert!(notice.contains("当前模型已是 GPT-4o"), "{notice}");
-        assert_eq!(handle.model().await.expect("查询应成功").id, "gpt-4o");
+        assert_eq!(handle.model().expect("查询应成功").id, "gpt-4o");
         assert_eq!(switcher.current().id, "gpt-4o");
     }
 
@@ -345,12 +347,12 @@ mod tests {
     /// 携带新连接。
     #[tokio::test]
     async fn reasoning_model_switches_on_level_confirm() {
-        let (mut switcher, handle) = switcher();
+        let (mut switcher, handle) = switcher().await;
         let Select::AwaitLevel = switcher.select("anthropic/claude-opus-4", &handle) else {
             panic!("推理模型应进入第二步");
         };
         assert_eq!(
-            handle.model().await.expect("查询应成功").id,
+            handle.model().expect("查询应成功").id,
             "gpt-4o",
             "暂存阶段不应切换"
         );
@@ -361,11 +363,12 @@ mod tests {
         else {
             panic!("确认级别应完成切换");
         };
-        let model = handle.model().await.expect("查询应成功");
+        handle.flush().await.expect("屏障应成功");
+        let model = handle.model().expect("查询应成功");
         assert_eq!(model.id, "claude-opus-4");
         assert_eq!(model.provider, "anthropic", "跨 provider 切换应生效");
         assert_eq!(
-            handle.reasoning().await.expect("查询应成功"),
+            handle.reasoning().expect("查询应成功"),
             Some(ThinkingLevel::High),
             "级别设置紧随模型切换"
         );
@@ -384,7 +387,7 @@ mod tests {
     /// 任何命令，提示「均未变化」。
     #[tokio::test]
     async fn confirm_unchanged_level_is_noop() {
-        let (mut switcher, handle) = switcher();
+        let (mut switcher, handle) = switcher().await;
         // 先切到推理模型
         let Select::AwaitLevel = switcher.select("anthropic/claude-opus-4", &handle) else {
             panic!("推理模型应进入第二步");
@@ -393,12 +396,10 @@ mod tests {
         else {
             panic!("确认级别应完成切换");
         };
+        handle.flush().await.expect("屏障应成功");
+        assert_eq!(handle.model().expect("查询应成功").id, "claude-opus-4");
         assert_eq!(
-            handle.model().await.expect("查询应成功").id,
-            "claude-opus-4"
-        );
-        assert_eq!(
-            handle.reasoning().await.expect("查询应成功"),
+            handle.reasoning().expect("查询应成功"),
             Some(ThinkingLevel::High)
         );
 
@@ -414,7 +415,7 @@ mod tests {
         assert!(persist.is_none(), "未切换则无需落库");
         assert!(notice.contains("模型与思考级别均未变化"), "{notice}");
         assert_eq!(
-            handle.reasoning().await.expect("查询应成功"),
+            handle.reasoning().expect("查询应成功"),
             Some(ThinkingLevel::High),
             "幂等确认不应改变级别"
         );
@@ -423,7 +424,7 @@ mod tests {
     /// 仅调级别：重选当前推理模型改级别，只发 set_reasoning，不发 set_model。
     #[tokio::test]
     async fn level_only_adjustment_skips_model_switch() {
-        let (mut switcher, handle) = switcher();
+        let (mut switcher, handle) = switcher().await;
         let Select::AwaitLevel = switcher.select("anthropic/claude-opus-4", &handle) else {
             panic!("推理模型应进入第二步");
         };
@@ -440,12 +441,13 @@ mod tests {
         else {
             panic!("确认级别应完成");
         };
+        handle.flush().await.expect("屏障应成功");
         assert_eq!(
-            handle.reasoning().await.expect("查询应成功"),
+            handle.reasoning().expect("查询应成功"),
             Some(ThinkingLevel::Minimal)
         );
         assert_eq!(
-            handle.model().await.expect("查询应成功").id,
+            handle.model().expect("查询应成功").id,
             "claude-opus-4",
             "仅调级别不应再切模型"
         );
@@ -457,7 +459,7 @@ mod tests {
     /// 不再应用切换。无进行中切换时放弃为无操作。
     #[tokio::test]
     async fn esc_abandons_pending_switch() {
-        let (mut switcher, handle) = switcher();
+        let (mut switcher, handle) = switcher().await;
         assert!(!switcher.cancel(), "无进行中切换时放弃为无操作");
 
         let Select::AwaitLevel = switcher.select("anthropic/claude-opus-4", &handle) else {
@@ -472,12 +474,13 @@ mod tests {
         else {
             panic!("确认级别应完成");
         };
+        handle.flush().await.expect("屏障应成功");
         assert_eq!(
-            handle.reasoning().await.expect("查询应成功"),
+            handle.reasoning().expect("查询应成功"),
             Some(ThinkingLevel::High)
         );
         assert_eq!(
-            handle.model().await.expect("查询应成功").id,
+            handle.model().expect("查询应成功").id,
             "gpt-4o",
             "放弃后不应再切换模型"
         );
@@ -489,12 +492,12 @@ mod tests {
     /// 未知模型 / 未知 provider：解析失败，状态不变。
     #[tokio::test]
     async fn select_unknown_model_fails_without_state_change() {
-        let (mut switcher, handle) = switcher();
+        let (mut switcher, handle) = switcher().await;
         let Select::Failed(warn) = switcher.select("anthropic/claude-future", &handle) else {
             panic!("未知模型应失败");
         };
         assert!(warn.contains("切换模型失败"), "{warn}");
-        assert_eq!(handle.model().await.expect("查询应成功").id, "gpt-4o");
+        assert_eq!(handle.model().expect("查询应成功").id, "gpt-4o");
         assert_eq!(switcher.current().id, "gpt-4o");
     }
 }

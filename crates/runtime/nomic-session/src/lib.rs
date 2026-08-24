@@ -24,6 +24,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use nomic_ai::{
     AssistantContent, Message, StopReason, UserContent, UserMessageContent, apply_compaction,
@@ -34,6 +35,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row as _, SqlitePool};
 
 mod config;
+#[cfg(test)]
+mod feature_tests;
 mod recorder;
 mod workspace;
 pub use recorder::SessionRecorder;
@@ -173,7 +176,8 @@ pub struct SessionStore {
 impl SessionStore {
     /// 打开（或创建）指定路径的库并执行迁移。
     ///
-    /// 自动创建父目录；连接开启 WAL 与外键约束。
+    /// 自动创建父目录；连接开启 WAL、外键约束与 busy_timeout
+    /// （5s，与 sqlx 默认一致，显式声明以防上游默认值变动）。
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, SessionError> {
         let path = path.as_ref();
         tracing::info!(path = %path.display(), "session store: opening database");
@@ -187,7 +191,8 @@ impl SessionStore {
             .filename(path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
-            .foreign_keys(true);
+            .foreign_keys(true)
+            .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePool::connect_with(options).await?;
         let store = Self::migrate(pool).await?;
         tracing::info!(path = %path.display(), "session store: database opened");
@@ -205,7 +210,8 @@ impl SessionStore {
     pub async fn in_memory() -> Result<Self, SessionError> {
         let options = SqliteConnectOptions::new()
             .in_memory(true)
-            .foreign_keys(true);
+            .foreign_keys(true)
+            .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(options)

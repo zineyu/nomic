@@ -2032,7 +2032,7 @@ dependencies = [
 
 [[package]]
 name = "nomic-ai"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dirs",
  "eventsource-stream",
@@ -2049,7 +2049,7 @@ dependencies = [
 
 [[package]]
 name = "nomic-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2087,7 +2087,7 @@ dependencies = [
 
 [[package]]
 name = "nomic-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -2104,7 +2104,7 @@ dependencies = [
 
 [[package]]
 name = "nomic-prompts"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dirs",
  "tempfile",
@@ -2114,7 +2114,7 @@ dependencies = [
 
 [[package]]
 name = "nomic-session"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dirs",
  "nomic-ai",
@@ -2131,7 +2131,7 @@ dependencies = [
 
 [[package]]
 name = "nomic-skills"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dirs",
  "tempfile",
@@ -2141,7 +2141,7 @@ dependencies = [
 
 [[package]]
 name = "nomic-tools"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "globset",

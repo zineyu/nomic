@@ -94,11 +94,14 @@ impl Runtime {
             return Err(ApiError::StoreUnavailable);
         };
         // 先摘除并关停运行时，避免删除落库后落库器继续追加（外键拒绝只告警）
-        if let Some(session) = self.sessions.lock().await.remove(session_id) {
+        let session = self.sessions.lock().await.remove(session_id);
+        if let Some(session) = session {
             session.shutdown();
         }
         if !store.delete_session(session_id).await? {
-            return Err(ApiError::NotFound(format!("session {session_id} not found")));
+            return Err(ApiError::NotFound(format!(
+                "session {session_id} not found"
+            )));
         }
         Ok(())
     }
@@ -115,9 +118,9 @@ impl Runtime {
         };
         match store.rename_session(session_id, title).await {
             Ok(title) => Ok(title),
-            Err(nomic_session::SessionError::SessionNotFound(_)) => {
-                Err(ApiError::NotFound(format!("session {session_id} not found")))
-            }
+            Err(nomic_session::SessionError::SessionNotFound(_)) => Err(ApiError::NotFound(
+                format!("session {session_id} not found"),
+            )),
             Err(error) => Err(error.into()),
         }
     }
@@ -383,7 +386,10 @@ mod tests {
         );
         // 未知 workspace 返回 NotFound
         assert!(matches!(
-            state.inner.delete_workspace("no-such-workspace", true).await,
+            state
+                .inner
+                .delete_workspace("no-such-workspace", true)
+                .await,
             Err(ApiError::NotFound(_))
         ));
     }

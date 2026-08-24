@@ -80,10 +80,7 @@ async fn rename_session_overrides_derived_title() {
         .unwrap();
 
     // 派生标题兜底
-    assert_eq!(
-        store.session_title_override(&session).await.unwrap(),
-        None
-    );
+    assert_eq!(store.session_title_override(&session).await.unwrap(), None);
     assert_eq!(
         store.list_sessions().await.unwrap()[0].title.as_deref(),
         Some("原始标题")
@@ -122,7 +119,10 @@ async fn rename_session_rejects_unknown_session() {
     ));
     // 不存在 session 的自定义标题查询为 None（不报错）
     assert_eq!(
-        store.session_title_override("no-such-session").await.unwrap(),
+        store
+            .session_title_override("no-such-session")
+            .await
+            .unwrap(),
         None
     );
 }

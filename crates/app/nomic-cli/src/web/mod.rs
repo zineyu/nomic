@@ -200,7 +200,7 @@ pub struct SessionRuntime {
 
 /// 每个 session 的两个事件转发任务（agent 事件 / runner 事件）的句柄。
 #[derive(Debug)]
-pub(crate) struct ForwardTasks {
+pub struct ForwardTasks {
     pub events: tokio::task::JoinHandle<()>,
     pub runner: tokio::task::JoinHandle<()>,
 }
@@ -221,7 +221,8 @@ impl SessionRuntime {
     /// 本体 drop，agent actor 与 runner 任务随通道关闭自然退出。
     pub(crate) fn shutdown(&self) {
         self.cancel_run();
-        if let Some(tasks) = self.tasks.lock().expect("tasks lock").take() {
+        let tasks = self.tasks.lock().expect("tasks lock").take();
+        if let Some(tasks) = tasks {
             tasks.events.abort();
             tasks.runner.abort();
         }

@@ -6,6 +6,61 @@
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，
 由 [git-cliff](https://git-cliff.org) 从 conventional commits 自动生成。
 
+## [0.3.1] - 2026-08-24
+
+### 代码风格
+
+- 归位 rustfmt 并补齐 tracing 调用缺失的分号
+- 修复存量 rustfmt/clippy 偏差（check 门禁前置修复）
+
+### 修复
+
+- **(chat)** Extract shared isEmptyAssistant check to eliminate double spacing between tool cards
+- **(web)** Create_session 对齐查询式命令（request_id 关联 + 总线广播）
+- **(core)** Agent 查询改读共享状态视图，修复运行中 session 的 get_state 超时
+
+### 文档
+
+- 新增 UI 规则（Minimalism 风格、70-20-10 配色、比例节奏、基础 token 一套）
+- ADR-0034 web steering 队列，README 同步 web 排队语义
+
+### 新功能
+
+- **(logging)** Output JSON lines for file-based log target
+- **(web)** 引入 gsap 动画适配层
+- **(web)** 消息列表入场动画
+- **(web)** 折叠面板高度动画
+- **(web)** 错误横幅与最小化提问入口入场动画
+- **(web)** 输入框支持粘贴图片附件
+- **(design)** 引入淡蓝强调色与 warning token，重调中性色与类别色板
+- **(web)** 上下文用量环增加 65–80% 琥珀警示档
+- **(web)** 工具卡片图标按类别着色（chart 类别色板）
+- Add structured tracing instrumentation across codebase
+- **(session)** 无用户消息的空 session 不保留且不计入统计
+- **(web)** 补齐 Web UI 微交互状态反馈
+- **(web)** Steering 统一消息队列与运行中转向（后端）
+- **(web)** 队列区展示排队消息并支持编辑（前端）
+- **(web)** 输入框上方展示 todo 任务清单，完成项删除线置灰
+- **(session)** SQLite 加固——全表重建为 STRICT，显式 busy_timeout，补齐特性保障测试
+- **(todopanel)** Collapse todo list by default with expand toggle
+- **(session)** 补齐 session/workspace 的删除与自定义标题
+- **(web)** Workspace/session 的删除与重命名 WS 事件
+- **(web)** 前端接线 workspace/session 的删除与重命名事件
+- **(web)** 侧栏补齐会话重命名/删除与工作区删除入口
+
+### 杂项
+
+- **(deps)** Bump ignore in the rust-dependencies group (#19)
+- **(deps)** Bump the rust-dependencies group with 3 updates (#21)
+
+### 重构
+
+- **(web)** 页面列水平内边距改为响应式（px-4 sm:px-7）
+- **(web)** 窄屏防溢出：侧栏抽屉与下拉菜单宽度约束
+- **(web)** 小屏组件适配：消息气泡放宽、操作栏可收缩
+- **(web)** Api/handlers.rs 拆出 session/workspace 生命周期子模块
+- **(session)** Workspace 列表按登记时间排序，不再随活跃度浮动
+- **(web)** 移除「当前 workspace」概念
 ## [0.3.0] - 2026-08-21
 
 ### 代码风格

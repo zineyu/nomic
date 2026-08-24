@@ -114,7 +114,10 @@ pub enum ClientEvent {
     CreateWorkspace { request_id: String, path: String },
     /// 删除 session（查询式命令：响应 `session_deleted` 或 error 事件带同一
     /// `request_id`；物理删除，entries 与会话级 config 级联清除）。
-    DeleteSession { request_id: String, session_id: String },
+    DeleteSession {
+        request_id: String,
+        session_id: String,
+    },
     /// 重命名 session（查询式命令：响应 `session_renamed` 或 error 事件；
     /// `title` 裁剪后为空 = 清除自定义标题，回退派生标题）。
     RenameSession {

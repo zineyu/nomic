@@ -43,8 +43,10 @@ fn read_context_file(path: &Path) -> Option<ContextFile> {
             content,
         }),
         Err(error) => {
-            eprintln!(
-                "\x1b[33m⚠ 读取 {} 失败，已跳过：{error}\x1b[0m",
+            tracing::warn!(
+                path = %path.display(),
+                error = ?error,
+                "读取 {} 失败，已跳过：{error}",
                 path.display()
             );
             None

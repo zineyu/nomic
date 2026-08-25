@@ -11,11 +11,16 @@
 //!
 //! 过滤规则优先级：`--log-level` > `RUST_LOG` 环境变量 > [`DEFAULT_FILTER`]。
 //! 日志永不写 stdout，print 模式的管道输出不受污染。
+//!
+//! 用户警告统一走 [`tracing::warn!`]；`file` 目标下仍会额外将 WARN 及以上事件
+//! 镜像到 stderr（TUI 模式关闭镜像，避免破坏终端画面），保证非交互场景下警告
+//! 对用户可见。
 
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 use clap::ValueEnum;
+use tracing_subscriber::prelude::*;
 
 /// 日志输出目标（`--log` 的取值）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
@@ -32,6 +37,9 @@ pub enum LogTarget {
 /// 内置默认过滤规则：自身 crate 开到 debug，第三方保持 info。
 const DEFAULT_FILTER: &str = "nomic=debug,info";
 
+/// 用户警告始终镜像到 stderr 的最小过滤规则（`file` 目标下使用）。
+const STDERR_FILTER: &str = "nomic=warn";
+
 /// 日志 guard：持有期间非阻塞 writer 的后台线程持续刷写，
 /// 必须在进程退出前保持存活（drop 时刷完剩余缓冲）。
 #[derive(Debug)]
@@ -41,9 +49,17 @@ pub struct LogGuard {
 
 /// 按 CLI 参数初始化全局日志；`level` 为 `--log-level` 的原始取值。
 ///
+/// `mirror_warnings_to_stderr` 控制在 `LogTarget::File` 下是否将 WARN 及以上事件
+/// 额外输出到 stderr。TUI 模式应关闭，避免破坏终端画面；print / web / 子命令模式
+/// 建议开启，保证用户警告可见。
+///
 /// 文件日志目录创建失败时硬报错：静默降级为无日志会让
 /// 「为什么没有日志文件」难以排查。
-pub fn init(target: LogTarget, level: Option<&str>) -> Result<LogGuard> {
+pub fn init(
+    target: LogTarget,
+    level: Option<&str>,
+    mirror_warnings_to_stderr: bool,
+) -> Result<LogGuard> {
     let filter = resolve_filter(level);
     match target {
         LogTarget::File => {
@@ -52,11 +68,27 @@ pub fn init(target: LogTarget, level: Option<&str>) -> Result<LogGuard> {
                 .with_context(|| format!("创建日志目录失败：{}", dir.display()))?;
             let appender = tracing_appender::rolling::daily(&dir, "nomic.log");
             let (writer, guard) = tracing_appender::non_blocking(appender);
-            tracing_subscriber::fmt()
+
+            let file_layer = tracing_subscriber::fmt::layer()
                 .json()
-                .with_env_filter(filter)
                 .with_writer(writer)
-                .init();
+                .with_filter(filter);
+
+            if mirror_warnings_to_stderr {
+                let stderr_layer = tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::stderr)
+                    .without_time()
+                    .with_level(false)
+                    .with_target(false)
+                    .with_filter(tracing_subscriber::EnvFilter::new(STDERR_FILTER));
+                tracing_subscriber::registry()
+                    .with(file_layer)
+                    .with(stderr_layer)
+                    .init();
+            } else {
+                tracing_subscriber::registry().with(file_layer).init();
+            }
+
             tracing::debug!(dir = %dir.display(), "日志写入文件");
             Ok(LogGuard { _file: Some(guard) })
         }

@@ -235,8 +235,7 @@ async fn drain_events(
         if let Some(recorder) = &mut recorder
             && let Err(error) = recorder.record(&event).await
         {
-            tracing::warn!(error = ?error, "session record failed");
-            eprintln!("\x1b[33m⚠ session 落库失败：{error}\x1b[0m");
+            tracing::warn!(error = ?error, "session 落库失败：{error}");
         }
         match event {
             AgentEvent::MessageUpdate(AssistantEvent::TextDelta { delta, .. }) => {

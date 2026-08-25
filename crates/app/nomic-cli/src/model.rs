@@ -102,7 +102,7 @@ pub async fn db_model_history(store: Option<&SessionStore>) -> Vec<ModelSelectio
     let values = match store.config_history(CONFIG_KEY_MODEL).await {
         Ok(values) => values,
         Err(error) => {
-            eprintln!("\x1b[33m⚠ 读取模型选择配置失败：{error}\x1b[0m");
+            tracing::warn!(error = ?error, "读取模型选择配置失败：{error}");
             return Vec::new();
         }
     };
@@ -116,8 +116,10 @@ pub async fn db_model_history(store: Option<&SessionStore>) -> Vec<ModelSelectio
             match parsed {
                 Ok(selection) => Some(selection),
                 Err(error) => {
-                    eprintln!(
-                        "\x1b[33m⚠ 跳过非法的模型选择配置（{error:#}），回退到更早的选择\x1b[0m"
+                    tracing::warn!(
+                        value = %value,
+                        error = ?error,
+                        "跳过非法的模型选择配置（{error:#}），回退到更早的选择"
                     );
                     None
                 }
@@ -171,9 +173,10 @@ pub fn select_startup_model(
                 return Ok(model);
             }
             Err(error) => {
-                tracing::warn!(selection = %selection.spec(), error = ?error, "db model selection invalid, falling back");
-                eprintln!(
-                    "\x1b[33m⚠ 模型选择 {} 已失效（{error:#}），回退到更早的选择\x1b[0m",
+                tracing::warn!(
+                    selection = %selection.spec(),
+                    error = ?error,
+                    "模型选择 {} 已失效（{error:#}），回退到更早的选择",
                     selection.spec()
                 );
             }
@@ -247,7 +250,7 @@ pub async fn load_catalog_unless_complete(
     }
     let catalog = nomic_ai::models_dev::load().await;
     if catalog.is_none() {
-        eprintln!("\x1b[33m⚠ models.dev 目录不可用，模型规格回落到中性兜底值\x1b[0m");
+        tracing::warn!("models.dev 目录不可用，模型规格回落到中性兜底值");
     }
     catalog
 }

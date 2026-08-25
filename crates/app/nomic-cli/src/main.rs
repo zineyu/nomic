@@ -155,7 +155,8 @@ async fn main() -> Result<()> {
     // 与工具相对路径解析都基于该目录（进程级 cwd，见 enter_workdir）
     enter_workdir(cli.cwd.as_deref())?;
     // guard 必须活到进程退出，否则非阻塞 writer 尾部缓冲丢失
-    let _log_guard = logging::init(cli.log, cli.log_level.as_deref())?;
+    let mirror_warnings_to_stderr = cli.print.is_some() || cli.web || cli.command.is_some();
+    let _log_guard = logging::init(cli.log, cli.log_level.as_deref(), mirror_warnings_to_stderr)?;
     tracing::debug!(
         version = env!("CARGO_PKG_VERSION"),
         args = ?std::env::args().collect::<Vec<_>>(),

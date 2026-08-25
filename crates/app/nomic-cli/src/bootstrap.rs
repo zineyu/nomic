@@ -208,12 +208,10 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
 }
 
 /// 启动时把 skill 加载诊断对用户可见：坏 skill 被静默跳过会让人无从排查。
-/// stderr 黄色告警 + tracing 日志（与 session 库告警同一口径）。
 fn warn_skill_diagnostics(skill_resolver: &SkillResolver) {
     let catalog = skill_resolver.catalog_with_diagnostics();
     for error in &catalog.errors {
-        tracing::warn!(error = ?error, "跳过加载失败的 skill");
-        eprintln!("\x1b[33m⚠ 跳过加载失败的 skill：{error}\x1b[0m");
+        tracing::warn!(error = ?error, "跳过加载失败的 skill：{error}");
     }
 }
 
@@ -291,7 +289,7 @@ async fn open_store(cli: &Cli) -> Result<Option<SessionStore>> {
             if resume {
                 return Err(error).context("打开 session 库失败，无法恢复会话");
             }
-            eprintln!("\x1b[33m⚠ 打开 session 库失败，本次运行不持久化：{error}\x1b[0m");
+            tracing::warn!(error = ?error, "打开 session 库失败，本次运行不持久化：{error}");
             Ok(None)
         }
     }
@@ -337,7 +335,7 @@ async fn init_session_in(
             history: Vec::new(),
         })),
         Err(error) => {
-            eprintln!("\x1b[33m⚠ 创建 session 失败，本次运行不持久化：{error}\x1b[0m");
+            tracing::warn!(error = ?error, "创建 session 失败，本次运行不持久化：{error}");
             Ok(None)
         }
     }
@@ -376,8 +374,8 @@ async fn warn_if_cross_cwd(store: &SessionStore, id: &str, cwd: &Path) {
     if let Some(summary) = sessions.iter().find(|s| s.id == id)
         && normalize_path(&summary.workspace) != normalize_path(cwd)
     {
-        eprintln!(
-            "\x1b[33m⚠ session 属于 {}，与当前目录不同\x1b[0m",
+        tracing::warn!(
+            "session 属于 {}，与当前目录不同",
             summary.workspace.display()
         );
     }

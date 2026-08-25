@@ -354,7 +354,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
         "\x1b[2m  cwd: {} · 前端: 内嵌（web/dist 编译期打包）\x1b[0m",
         std::env::current_dir().map_or_else(|_| "?".into(), |p| p.display().to_string()),
     );
-    tracing::info!(%local, "nomic web UI 启动");
+    tracing::info!(%local, "nomic web UI started");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(state))
@@ -430,12 +430,12 @@ async fn shutdown_signal(state: AppState) {
     tokio::select! {
         result = tokio::signal::ctrl_c() => {
             if result.is_ok() {
-                tracing::info!("收到 Ctrl+C，取消运行并关闭服务");
+                tracing::info!("received Ctrl+C, cancelling run and stopping server");
                 cancel_all(&state).await;
             }
         }
         _ = &mut quit_rx => {
-            tracing::info!("收到退出键，取消运行并关闭服务");
+            tracing::info!("received quit key, cancelling run and stopping server");
             cancel_all(&state).await;
         }
     }

@@ -139,7 +139,7 @@ pub async fn handle_prompt(
 ) -> ServerEvent {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return ApiError::BadRequest("prompt 为空".to_string()).to_ws_response(None);
+        return ApiError::BadRequest("prompt is empty".to_string()).to_ws_response(None);
     }
     let session = match open_session(state, session_id).await {
         Ok(s) => s,
@@ -245,7 +245,7 @@ pub async fn handle_move_queue_entry(
 /// 解析斜杠命令体（已去掉前导 `/`）；未知命令或参数非法时返回带用法
 /// 提示的错误。web 支持的命令子集：`/compact [聚焦指令]`、`/continue`。
 fn parse_slash_command(rest: &str) -> Result<nomic_core::SessionJob, ApiError> {
-    const USAGE: &str = "可用命令：/compact [聚焦指令]（压缩上下文）、/continue（续跑上次运行）";
+    const USAGE: &str = "available commands: /compact [focus instruction] (compress context), /continue (resume last run)";
     // 命令名取到首个 `:` 或空白为止；其余部分为参数（`compact 指令` 与
     // `compact:指令` 两种形式等价，冒号形式与 TUI 命令语法对齐）
     let (name, arg) = match rest.find(|c: char| c == ':' || c.is_whitespace()) {
@@ -463,7 +463,7 @@ async fn persist_session_model(state: &AppState, session_id: &str, spec: &str) {
         )
         .await
     {
-        tracing::warn!(?error, "会话级模型选择落库失败");
+        tracing::warn!(?error, "failed to persist session-level model selection");
     }
 }
 
@@ -485,7 +485,7 @@ async fn persist_session_reasoning(
         )
         .await
     {
-        tracing::warn!(?error, "会话级思考级别落库失败");
+        tracing::warn!(?error, "failed to persist session-level reasoning level");
     }
 }
 

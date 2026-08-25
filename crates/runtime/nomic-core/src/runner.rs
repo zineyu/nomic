@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 use nomic_ai::{ImageContent, Message, StopReason};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::agent::{ActorError, AgentHandle};
 use crate::compaction::Compaction;
@@ -187,6 +188,21 @@ impl SessionRunner {
         mpsc::UnboundedReceiver<RunnerEvent>,
         tokio::task::JoinHandle<()>,
     ) {
+        Self::spawn_with_span(handle, None)
+    }
+
+    /// 启动 session runner，并把所有内部日志挂到指定 span 下。
+    ///
+    /// `parent` 为 `None` 时继承调用者当前 span。
+    pub fn spawn_with_span(
+        handle: AgentHandle,
+        parent: Option<&tracing::Span>,
+    ) -> (
+        Self,
+        mpsc::UnboundedReceiver<RunnerEvent>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let span = parent.cloned().unwrap_or_else(tracing::Span::current);
         let (job_tx, mut job_rx) = mpsc::unbounded_channel::<(SessionJob, CancellationToken)>();
         let (event_tx, event_rx) = mpsc::unbounded_channel::<RunnerEvent>();
         let shared = Arc::new(Shared {
@@ -195,22 +211,25 @@ impl SessionRunner {
             executing: AtomicBool::new(false),
         });
         let task_shared = shared.clone();
-        let task = tokio::spawn(async move {
-            while let Some((job, token)) = job_rx.recv().await {
-                task_shared.queued.fetch_sub(1, Ordering::SeqCst);
-                *task_shared.current.lock().expect("lock") = Some(token.clone());
-                task_shared.executing.store(true, Ordering::SeqCst);
-                if event_tx.send(RunnerEvent::Started(job.kind())).is_err() {
-                    return;
-                }
-                let outcome = run_job(&handle, job, &token).await;
-                task_shared.executing.store(false, Ordering::SeqCst);
-                task_shared.current.lock().expect("lock").take();
-                if event_tx.send(RunnerEvent::Finished(outcome)).is_err() {
-                    return;
+        let task = tokio::spawn(
+            async move {
+                while let Some((job, token)) = job_rx.recv().await {
+                    task_shared.queued.fetch_sub(1, Ordering::SeqCst);
+                    *task_shared.current.lock().expect("lock") = Some(token.clone());
+                    task_shared.executing.store(true, Ordering::SeqCst);
+                    if event_tx.send(RunnerEvent::Started(job.kind())).is_err() {
+                        return;
+                    }
+                    let outcome = run_job(&handle, job, &token).await;
+                    task_shared.executing.store(false, Ordering::SeqCst);
+                    task_shared.current.lock().expect("lock").take();
+                    if event_tx.send(RunnerEvent::Finished(outcome)).is_err() {
+                        return;
+                    }
                 }
             }
-        });
+            .instrument(span),
+        );
         (Self { job_tx, shared }, event_rx, task)
     }
 

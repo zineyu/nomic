@@ -211,7 +211,7 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
 fn warn_skill_diagnostics(skill_resolver: &SkillResolver) {
     let catalog = skill_resolver.catalog_with_diagnostics();
     for error in &catalog.errors {
-        tracing::warn!(error = ?error, "跳过加载失败的 skill：{error}");
+        tracing::warn!(error = ?error, "skipping failed skill: {error}");
     }
 }
 
@@ -240,7 +240,7 @@ fn load_prompt_templates(
     .context("初始化 prompts 目录失败")?;
     let catalog = resolver.catalog_with_diagnostics();
     for error in &catalog.errors {
-        tracing::warn!(error = ?error, "跳过加载失败的 prompt template");
+        tracing::warn!(error = ?error, "skipping failed prompt template");
     }
     Ok(catalog.templates)
 }
@@ -289,7 +289,7 @@ async fn open_store(cli: &Cli) -> Result<Option<SessionStore>> {
             if resume {
                 return Err(error).context("打开 session 库失败，无法恢复会话");
             }
-            tracing::warn!(error = ?error, "打开 session 库失败，本次运行不持久化：{error}");
+            tracing::warn!(error = ?error, "failed to open session store, persistence disabled for this run: {error}");
             Ok(None)
         }
     }
@@ -335,7 +335,7 @@ async fn init_session_in(
             history: Vec::new(),
         })),
         Err(error) => {
-            tracing::warn!(error = ?error, "创建 session 失败，本次运行不持久化：{error}");
+            tracing::warn!(error = ?error, "failed to create session, persistence disabled for this run: {error}");
             Ok(None)
         }
     }
@@ -375,7 +375,7 @@ async fn warn_if_cross_cwd(store: &SessionStore, id: &str, cwd: &Path) {
         && normalize_path(&summary.workspace) != normalize_path(cwd)
     {
         tracing::warn!(
-            "session 属于 {}，与当前目录不同",
+            "session belongs to {}, different from current cwd",
             summary.workspace.display()
         );
     }

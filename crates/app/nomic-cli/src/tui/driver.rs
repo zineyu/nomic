@@ -39,6 +39,7 @@ use crate::model::ModelResolver;
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_driver(
     agent: Agent,
+    session_id: Option<&str>,
     recorder: Option<SessionRecorder>,
     base: nomic_tools::BaseDir,
     models: ModelResolver,
@@ -48,8 +49,15 @@ pub(super) fn spawn_driver(
     todos: TodoStore,
     questions: std::sync::Arc<QuestionRegistry>,
 ) -> (Driver, mpsc::UnboundedReceiver<RunnerEvent>) {
-    let (handle, actor_task) = agent.spawn();
-    let (runner, runner_events, runner_task) = SessionRunner::spawn(handle.clone());
+    let session_span = session_id.map(|id| tracing::info_span!("session", session_id = %id));
+    let (handle, actor_task) = match session_span.as_ref() {
+        Some(span) => agent.spawn_with_span(Some(span)),
+        None => agent.spawn(),
+    };
+    let (runner, runner_events, runner_task) = match session_span.as_ref() {
+        Some(span) => SessionRunner::spawn_with_span(handle.clone(), Some(span)),
+        None => SessionRunner::spawn(handle.clone()),
+    };
     let driver = Driver {
         runner,
         handle,
@@ -202,7 +210,7 @@ pub(super) async fn handle_wake(
         Wake::Tick => app.tick(),
         Wake::Redraw => {}
         Wake::DriverFailed(detail) => {
-            tracing::error!(detail, "agent driver 任务意外退出");
+            tracing::error!(detail, "agent driver task exited unexpectedly");
             // 进行中的一轮永远不会回执：回到空闲态，避免 spinner 空转
             if app.is_running() {
                 app.finish_run(None);

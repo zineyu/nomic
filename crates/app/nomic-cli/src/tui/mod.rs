@@ -154,12 +154,15 @@ pub async fn run(cli: &Cli) -> Result<()> {
         None => None,
     };
 
+    let session_id = recorder.as_ref().map(|r| r.session_id().to_string());
+
     let _guard = TerminalGuard::enter().context("初始化终端失败")?;
     let mut terminal =
         Terminal::new(CrosstermBackend::new(io::stdout())).context("创建终端后端失败")?;
 
     let (mut driver, mut done_rx) = spawn_driver(
         agent,
+        session_id.as_deref(),
         recorder,
         base_dir,
         boot.models,

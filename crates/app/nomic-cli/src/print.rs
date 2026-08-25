@@ -14,6 +14,7 @@ use nomic_core::{Agent, AgentEvent, ToolError};
 use nomic_session::SessionRecorder;
 use nomic_tools::{AskUserAnswer, AskUserQuestion, CUSTOM_OPTION, QuestionKind, QuestionSink};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::{Cli, agent_recipe, bootstrap};
 
@@ -57,8 +58,17 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
         .stream_options(boot.stream_options)
         .compaction(boot.compaction)
         .build();
+    // session span：让 agent / provider 日志自动携带 session_id。
+    let session_span = boot
+        .session
+        .as_ref()
+        .map(|(_, id)| tracing::info_span!("session", session_id = %id));
+
     // actor 模型（ADR-0022）：agent 本体移入专属任务，经 handle 驱动
-    let (handle, _actor_task) = agent.spawn();
+    let (handle, _actor_task) = match session_span.as_ref() {
+        Some(span) => agent.spawn_with_span(Some(span)),
+        None => agent.spawn(),
+    };
 
     let cancel = CancellationToken::new();
     let cancel_on_sigint = cancel.clone();
@@ -69,11 +79,15 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
     });
 
     let cancel_for_prompt = cancel.clone();
-    let run = tokio::spawn(async move {
-        handle
-            .prompt_with_images(&prompt, &images, cancel_for_prompt)
-            .await
-    });
+    let prompt_span = session_span.clone().unwrap_or_else(tracing::Span::current);
+    let run = tokio::spawn(
+        async move {
+            handle
+                .prompt_with_images(&prompt, &images, cancel_for_prompt)
+                .await
+        }
+        .instrument(prompt_span),
+    );
 
     let mut recorder = boot
         .session
@@ -235,7 +249,7 @@ async fn drain_events(
         if let Some(recorder) = &mut recorder
             && let Err(error) = recorder.record(&event).await
         {
-            tracing::warn!(error = ?error, "session 落库失败：{error}");
+            tracing::warn!(error = ?error, "session persistence failed: {error}");
         }
         match event {
             AgentEvent::MessageUpdate(AssistantEvent::TextDelta { delta, .. }) => {

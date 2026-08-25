@@ -28,6 +28,7 @@ use axum::routing::get;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
+use tracing::Instrument as _;
 
 use crate::web::{AppState, ServerEvent, assets};
 
@@ -177,14 +178,14 @@ pub enum ApiError {
 
 impl From<nomic_core::ActorError> for ApiError {
     fn from(error: nomic_core::ActorError) -> Self {
-        tracing::error!(?error, "agent actor 调用失败");
-        Self::Internal("agent actor 已退出".to_string())
+        tracing::error!(?error, "agent actor call failed");
+        Self::Internal("agent actor has exited".to_string())
     }
 }
 
 impl From<anyhow::Error> for ApiError {
     fn from(error: anyhow::Error) -> Self {
-        tracing::error!(?error, "内部错误");
+        tracing::error!(?error, "internal error");
         Self::Internal(format!("{error:#}"))
     }
 }
@@ -202,7 +203,7 @@ impl IntoResponse for ApiError {
             Self::Session(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
             Self::StoreUnavailable => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "session 库不可用".to_string(),
+                "session store unavailable".to_string(),
             ),
             Self::NotFound(m) => (StatusCode::NOT_FOUND, m.clone()),
             Self::BadRequest(m) => (StatusCode::BAD_REQUEST, m.clone()),
@@ -216,7 +217,7 @@ impl ApiError {
         let message = match self {
             Self::Internal(m) | Self::NotFound(m) | Self::BadRequest(m) => m.clone(),
             Self::Session(e) => format!("{e:#}"),
-            Self::StoreUnavailable => "session 库不可用".to_string(),
+            Self::StoreUnavailable => "session store unavailable".to_string(),
         };
         ServerEvent::Error {
             session_id: None,
@@ -263,7 +264,7 @@ async fn ws_session(
                         send_ws_response(&mut socket, &event).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(%skipped, "WebSocket 客户端落后，发送刷新提示");
+                        tracing::warn!(%skipped, "WebSocket client lagged, sending refresh hint");
                         send_ws_response(&mut socket, &ServerEvent::Refresh).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -280,10 +281,10 @@ async fn ws_session(
                                 }
                             }
                             Err(error) => {
-                                tracing::warn!(?error, "解析客户端事件失败");
+                                tracing::warn!(?error, "failed to parse client event");
                                 let msg = serde_json::json!({
                                     "type": "error",
-                                    "message": format!("事件解析失败: {error}")
+                                    "message": format!("event parse failed: {error}")
                                 }).to_string();
                                 let _ = socket.send(ws::Message::Text(msg.into())).await;
                             }
@@ -310,84 +311,140 @@ async fn send_ws_response(socket: &mut WebSocket, event: &ServerEvent) {
 ///
 /// 命令/查询事件通过 `session_id` 路由到目标 session。
 async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
+    let span = client_event_span(&event);
+    async move {
+        match event {
+            // ── 查询类（携带 request_id，响应也带同一 request_id）──
+            ClientEvent::GetState {
+                session_id,
+                request_id,
+            } => Some(handlers::handle_get_state(state, &session_id, &request_id).await),
+            ClientEvent::ListModels { request_id } => {
+                Some(handlers::handle_list_models(state, &request_id))
+            }
+            ClientEvent::ListSessions { request_id } => {
+                Some(handlers::handle_list_sessions(state, &request_id).await)
+            }
+            ClientEvent::ListWorkspaces { request_id } => {
+                Some(handlers::handle_list_workspaces(state, &request_id).await)
+            }
+            ClientEvent::ListSkills { request_id } => {
+                Some(handlers::handle_list_skills(state, &request_id))
+            }
+            ClientEvent::ListFiles {
+                session_id,
+                prefix,
+                request_id,
+            } => Some(handlers::handle_list_files(state, &session_id, &prefix, &request_id).await),
+
+            // ── 命令类（fire-and-forget，返回 ack 或由后续事件驱动）──
+            ClientEvent::Prompt {
+                session_id,
+                text,
+                images,
+            } => Some(handlers::handle_prompt(state, &session_id, text, images).await),
+            ClientEvent::UpdateQueueEntry {
+                session_id,
+                id,
+                text,
+            } => handlers::handle_update_queue_entry(state, &session_id, &id, text).await,
+            ClientEvent::RemoveQueueEntry { session_id, id } => {
+                handlers::handle_remove_queue_entry(state, &session_id, &id).await
+            }
+            ClientEvent::MoveQueueEntry {
+                session_id,
+                id,
+                direction,
+            } => handlers::handle_move_queue_entry(state, &session_id, &id, direction).await,
+            ClientEvent::Cancel { session_id } => {
+                Some(handlers::handle_cancel(state, &session_id).await)
+            }
+            ClientEvent::AnswerQuestion {
+                session_id,
+                id,
+                answers,
+                custom,
+            } => Some(
+                handlers::handle_answer_question(state, &session_id, id, answers, custom).await,
+            ),
+            ClientEvent::SwitchModel {
+                session_id,
+                spec,
+                reasoning,
+            } => Some(handlers::handle_switch_model(state, &session_id, spec, reasoning).await),
+            ClientEvent::CreateSession {
+                request_id,
+                workspace,
+            } => Some(handlers::handle_create_session(state, &request_id, workspace).await),
+            ClientEvent::CreateWorkspace { request_id, path } => {
+                Some(handlers::handle_create_workspace(state, &request_id, path).await)
+            }
+            ClientEvent::DeleteSession {
+                request_id,
+                session_id,
+            } => Some(handlers::handle_delete_session(state, &request_id, &session_id).await),
+            ClientEvent::RenameSession {
+                request_id,
+                session_id,
+                title,
+            } => {
+                Some(handlers::handle_rename_session(state, &request_id, &session_id, &title).await)
+            }
+            ClientEvent::DeleteWorkspace {
+                request_id,
+                id,
+                force,
+            } => Some(handlers::handle_delete_workspace(state, &request_id, &id, force).await),
+        }
+    }
+    .instrument(span)
+    .await
+}
+
+/// 为当前客户端事件创建 tracing span，让 handler 及后续日志自动携带
+/// `session_id` / `request_id`。
+fn client_event_span(event: &ClientEvent) -> tracing::Span {
     match event {
-        // ── 查询类（携带 request_id，响应也带同一 request_id）──
         ClientEvent::GetState {
             session_id,
             request_id,
-        } => Some(handlers::handle_get_state(state, &session_id, &request_id).await),
-        ClientEvent::ListModels { request_id } => {
-            Some(handlers::handle_list_models(state, &request_id))
         }
-        ClientEvent::ListSessions { request_id } => {
-            Some(handlers::handle_list_sessions(state, &request_id).await)
-        }
-        ClientEvent::ListWorkspaces { request_id } => {
-            Some(handlers::handle_list_workspaces(state, &request_id).await)
-        }
-        ClientEvent::ListSkills { request_id } => {
-            Some(handlers::handle_list_skills(state, &request_id))
-        }
-        ClientEvent::ListFiles {
+        | ClientEvent::ListFiles {
             session_id,
-            prefix,
             request_id,
-        } => Some(handlers::handle_list_files(state, &session_id, &prefix, &request_id).await),
-
-        // ── 命令类（fire-and-forget，返回 ack 或由后续事件驱动）──
-        ClientEvent::Prompt {
-            session_id,
-            text,
-            images,
-        } => Some(handlers::handle_prompt(state, &session_id, text, images).await),
-        ClientEvent::UpdateQueueEntry {
-            session_id,
-            id,
-            text,
-        } => handlers::handle_update_queue_entry(state, &session_id, &id, text).await,
-        ClientEvent::RemoveQueueEntry { session_id, id } => {
-            handlers::handle_remove_queue_entry(state, &session_id, &id).await
+            ..
         }
-        ClientEvent::MoveQueueEntry {
+        | ClientEvent::DeleteSession {
             session_id,
-            id,
-            direction,
-        } => handlers::handle_move_queue_entry(state, &session_id, &id, direction).await,
-        ClientEvent::Cancel { session_id } => {
-            Some(handlers::handle_cancel(state, &session_id).await)
+            request_id,
         }
-        ClientEvent::AnswerQuestion {
+        | ClientEvent::RenameSession {
             session_id,
-            id,
-            answers,
-            custom,
-        } => Some(handlers::handle_answer_question(state, &session_id, id, answers, custom).await),
-        ClientEvent::SwitchModel {
-            session_id,
-            spec,
-            reasoning,
-        } => Some(handlers::handle_switch_model(state, &session_id, spec, reasoning).await),
-        ClientEvent::CreateSession {
             request_id,
-            workspace,
-        } => Some(handlers::handle_create_session(state, &request_id, workspace).await),
-        ClientEvent::CreateWorkspace { request_id, path } => {
-            Some(handlers::handle_create_workspace(state, &request_id, path).await)
+            ..
+        } => tracing::info_span!(
+            "client_event",
+            session_id = %session_id,
+            request_id = %request_id
+        ),
+        ClientEvent::ListModels { request_id }
+        | ClientEvent::ListSessions { request_id }
+        | ClientEvent::ListWorkspaces { request_id }
+        | ClientEvent::ListSkills { request_id }
+        | ClientEvent::CreateSession { request_id, .. }
+        | ClientEvent::CreateWorkspace { request_id, .. }
+        | ClientEvent::DeleteWorkspace { request_id, .. } => {
+            tracing::info_span!("client_event", request_id = %request_id)
         }
-        ClientEvent::DeleteSession {
-            request_id,
-            session_id,
-        } => Some(handlers::handle_delete_session(state, &request_id, &session_id).await),
-        ClientEvent::RenameSession {
-            request_id,
-            session_id,
-            title,
-        } => Some(handlers::handle_rename_session(state, &request_id, &session_id, &title).await),
-        ClientEvent::DeleteWorkspace {
-            request_id,
-            id,
-            force,
-        } => Some(handlers::handle_delete_workspace(state, &request_id, &id, force).await),
+        ClientEvent::Prompt { session_id, .. }
+        | ClientEvent::UpdateQueueEntry { session_id, .. }
+        | ClientEvent::RemoveQueueEntry { session_id, .. }
+        | ClientEvent::MoveQueueEntry { session_id, .. }
+        | ClientEvent::Cancel { session_id }
+        | ClientEvent::AnswerQuestion { session_id, .. }
+        | ClientEvent::SwitchModel { session_id, .. } => {
+            tracing::info_span!("client_event", session_id = %session_id)
+        }
     }
 }
 
@@ -408,7 +465,7 @@ async fn reject_foreign_origin(request: axum::http::Request<Body>, next: Next) -
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default();
         if !origin.is_empty() && !origin_allowed(origin, host) {
-            tracing::warn!(%origin, "拒绝跨源请求（CSRF 防护）");
+            tracing::warn!(%origin, "cross-origin request rejected (CSRF protection)");
             return (
                 StatusCode::FORBIDDEN,
                 "cross-origin request rejected".to_string(),

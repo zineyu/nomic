@@ -17,6 +17,7 @@ use nomic_session::{SessionRecorder, SessionStore};
 use nomic_skills::SkillResolver;
 use nomic_tools::{AskUserQuestion, QuestionRegistry};
 use tokio::sync::{Mutex, broadcast, mpsc};
+use tracing::Instrument as _;
 
 use super::{MessageQueue, QueueEntryView, ServerEvent, SessionRuntime};
 use crate::model::ModelResolver;
@@ -155,6 +156,8 @@ impl SessionFactory {
             available_models: self.available_models.clone(),
             turn_injection: Some(Arc::new(queue.clone())),
         });
+        let session_span = tracing::info_span!("session", session_id = %id);
+
         let (agent, events_rx) = recipe
             .apply(
                 Agent::builder()
@@ -166,8 +169,9 @@ impl SessionFactory {
             .stream_options(resolved.options)
             .compaction(self.compaction)
             .build();
-        let (handle, _actor_task) = agent.spawn();
-        let (runner, runner_events, _runner_task) = SessionRunner::spawn(handle.clone());
+        let (handle, _actor_task) = agent.spawn_with_span(Some(&session_span));
+        let (runner, runner_events, _runner_task) =
+            SessionRunner::spawn_with_span(handle.clone(), Some(&session_span));
 
         let session = Arc::new(SessionRuntime {
             id,
@@ -180,8 +184,12 @@ impl SessionFactory {
             workspace,
             tasks: std::sync::Mutex::new(None),
         });
-        let events_task = tokio::spawn(forward_events(session.clone(), events_rx));
-        let runner_task = tokio::spawn(forward_runner_events(session.clone(), runner_events));
+        let events_task = tokio::spawn(
+            forward_events(session.clone(), events_rx).instrument(session_span.clone()),
+        );
+        let runner_task = tokio::spawn(
+            forward_runner_events(session.clone(), runner_events).instrument(session_span),
+        );
         session.set_forward_tasks(super::ForwardTasks {
             events: events_task,
             runner: runner_task,
@@ -201,7 +209,7 @@ async fn forward_events(
         if let Some(recorder) = &mut *recorder
             && let Err(error) = recorder.record(&event).await
         {
-            tracing::warn!(?error, "session 落库失败");
+            tracing::warn!(?error, "session persistence failed");
         }
         drop(recorder);
 
@@ -321,7 +329,7 @@ fn drain_queue(session: &Arc<SessionRuntime>) {
         text: message.text,
         images: message.images,
     }) {
-        tracing::error!(?error, "queue drain 提交失败");
+        tracing::error!(?error, "queue drain submit failed");
     }
 }
 

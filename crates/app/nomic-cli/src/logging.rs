@@ -72,6 +72,8 @@ pub fn init(
             let file_layer = tracing_subscriber::fmt::layer()
                 .json()
                 .with_writer(writer)
+                .with_current_span(true)
+                .with_span_list(true)
                 .with_filter(filter);
 
             if mirror_warnings_to_stderr {
@@ -89,7 +91,7 @@ pub fn init(
                 tracing_subscriber::registry().with(file_layer).init();
             }
 
-            tracing::debug!(dir = %dir.display(), "日志写入文件");
+            tracing::debug!(dir = %dir.display(), "logging to file");
             Ok(LogGuard { _file: Some(guard) })
         }
         LogTarget::Terminal => {

@@ -62,9 +62,9 @@ impl SessionBinding {
 /// 物理清除空壳 session（无 user 消息）；失败仅记录日志（store 非权威源）。
 async fn discard_empty_session(store: &SessionStore, session_id: &str) {
     match store.delete_if_no_user_message(session_id).await {
-        Ok(true) => tracing::info!(session_id, "已清除无 user 消息的空 session"),
+        Ok(true) => tracing::info!(session_id, "deleted empty session with no user messages"),
         Ok(false) => {}
-        Err(error) => tracing::warn!(?error, session_id, "清除空 session 失败"),
+        Err(error) => tracing::warn!(?error, session_id, "failed to delete empty session"),
     }
 }
 

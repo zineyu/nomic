@@ -23,6 +23,7 @@ use std::sync::Arc;
 use nomic_ai::{ImageContent, Message, Model, Provider, ThinkingLevel};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::agent::state::{SharedStateView, StateView};
 use crate::agent::{Agent, AgentError, SessionStats};
@@ -256,45 +257,63 @@ impl Agent {
     /// 调用返回 [`ActorError::Gone`]，事件通道随 agent 丢弃而关闭。
     /// 事件流接收端在 builder `build()` 时取得，与 spawn 无关。
     pub fn spawn(self) -> (AgentHandle, tokio::task::JoinHandle<()>) {
-        tracing::debug!("spawning agent actor");
+        self.spawn_with_span(None)
+    }
+
+    /// 启动 agent actor，并把所有内部日志挂到指定 span 下。
+    ///
+    /// `parent` 为 `None` 时继承调用者当前 span；这保证默认 `spawn` 行为
+    /// 不变，而调用方显式传入 session/request span 后 actor 内所有日志
+    /// 自动携带对应字段。
+    pub fn spawn_with_span(
+        self,
+        parent: Option<&tracing::Span>,
+    ) -> (AgentHandle, tokio::task::JoinHandle<()>) {
+        let span = parent.cloned().unwrap_or_else(tracing::Span::current);
+        tracing::debug!(parent = %span.is_none(), "spawning agent actor");
         let view = self.state_view.clone();
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<AgentCommand>();
-        let task = tokio::spawn(async move {
-            let mut agent = self;
-            while let Some(command) = cmd_rx.recv().await {
-                match command {
-                    AgentCommand::Prompt {
-                        text,
-                        images,
-                        cancel,
-                        reply,
-                    } => {
-                        let _ = reply.send(agent.prompt_with_images(&text, &images, cancel).await);
-                    }
-                    AgentCommand::Continue { cancel, reply } => {
-                        let _ = reply.send(agent.continue_run(cancel).await);
-                    }
-                    AgentCommand::Compact {
-                        instructions,
-                        cancel,
-                        reply,
-                    } => {
-                        let _ = reply.send(agent.compact(instructions.as_deref(), cancel).await);
-                    }
-                    AgentCommand::InjectUserMessage(text) => agent.inject_user_message(&text),
-                    AgentCommand::ClearMessages => agent.clear_messages(),
-                    AgentCommand::RestoreMessages(messages) => agent.restore_messages(messages),
-                    AgentCommand::SetModel(model) => agent.set_model(model),
-                    AgentCommand::SetProvider { provider, api_key } => {
-                        agent.set_provider(provider, api_key);
-                    }
-                    AgentCommand::SetReasoning(level) => agent.set_reasoning(level),
-                    AgentCommand::Flush(reply) => {
-                        let _ = reply.send(());
+        let task = tokio::spawn(
+            async move {
+                let mut agent = self;
+                while let Some(command) = cmd_rx.recv().await {
+                    match command {
+                        AgentCommand::Prompt {
+                            text,
+                            images,
+                            cancel,
+                            reply,
+                        } => {
+                            let _ =
+                                reply.send(agent.prompt_with_images(&text, &images, cancel).await);
+                        }
+                        AgentCommand::Continue { cancel, reply } => {
+                            let _ = reply.send(agent.continue_run(cancel).await);
+                        }
+                        AgentCommand::Compact {
+                            instructions,
+                            cancel,
+                            reply,
+                        } => {
+                            let _ =
+                                reply.send(agent.compact(instructions.as_deref(), cancel).await);
+                        }
+                        AgentCommand::InjectUserMessage(text) => agent.inject_user_message(&text),
+                        AgentCommand::ClearMessages => agent.clear_messages(),
+                        AgentCommand::RestoreMessages(messages) => agent.restore_messages(messages),
+                        AgentCommand::SetModel(model) => agent.set_model(model),
+                        AgentCommand::SetProvider { provider, api_key } => {
+                            agent.set_provider(provider, api_key);
+                        }
+                        AgentCommand::SetReasoning(level) => agent.set_reasoning(level),
+                        AgentCommand::Flush(reply) => {
+                            let _ = reply.send(());
+                        }
                     }
                 }
             }
-        });
+            .instrument(span),
+        );
         (AgentHandle { cmd_tx, view }, task)
     }
 }

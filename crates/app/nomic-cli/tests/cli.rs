@@ -211,7 +211,10 @@ async fn explicit_session_crosses_directory_with_warning() {
     // 标题「from a」证明显式 --session 选中的是 A；id 不展示
     assert!(err.contains("from a"), "显式 --session 应选 A：{err}");
     assert!(!err.contains(&session_a), "不应展示 session id：{err}");
-    assert!(err.contains("与当前目录不同"), "跨目录恢复应有提示：{err}");
+    assert!(
+        err.contains("different from current cwd"),
+        "cross-directory resume should warn: {err}"
+    );
 }
 
 #[tokio::test]

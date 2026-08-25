@@ -191,7 +191,7 @@ fn install_panic_hook() {
             TerminalGuard::restore();
             default_hook(info);
         } else {
-            tracing::error!(%info, "任务线程 panic");
+            tracing::error!(%info, "task thread panicked");
         }
     }));
 }

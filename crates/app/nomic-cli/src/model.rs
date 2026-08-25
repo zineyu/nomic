@@ -102,7 +102,7 @@ pub async fn db_model_history(store: Option<&SessionStore>) -> Vec<ModelSelectio
     let values = match store.config_history(CONFIG_KEY_MODEL).await {
         Ok(values) => values,
         Err(error) => {
-            tracing::warn!(error = ?error, "读取模型选择配置失败：{error}");
+            tracing::warn!(error = ?error, "failed to read model selection config: {error}");
             return Vec::new();
         }
     };
@@ -119,7 +119,7 @@ pub async fn db_model_history(store: Option<&SessionStore>) -> Vec<ModelSelectio
                     tracing::warn!(
                         value = %value,
                         error = ?error,
-                        "跳过非法的模型选择配置（{error:#}），回退到更早的选择"
+                        "skipping invalid model selection config ({error:#}), falling back to earlier selection"
                     );
                     None
                 }
@@ -176,7 +176,7 @@ pub fn select_startup_model(
                 tracing::warn!(
                     selection = %selection.spec(),
                     error = ?error,
-                    "模型选择 {} 已失效（{error:#}），回退到更早的选择",
+                    "model selection {} is stale ({error:#}), falling back to earlier selection",
                     selection.spec()
                 );
             }
@@ -250,7 +250,9 @@ pub async fn load_catalog_unless_complete(
     }
     let catalog = nomic_ai::models_dev::load().await;
     if catalog.is_none() {
-        tracing::warn!("models.dev 目录不可用，模型规格回落到中性兜底值");
+        tracing::warn!(
+            "models.dev catalog unavailable, falling back to neutral model spec defaults"
+        );
     }
     catalog
 }

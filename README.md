@@ -349,10 +349,15 @@ models.dev 目录按模型 id 查询（约 3MB 的 api.json），缓存到平台
 
 ### AGENTS.md
 
-启动时从当前目录一路向上走到文件系统根，加载沿途每个目录的 `AGENTS.md`，
-作为系统提示词的一部分注入（`<project_instructions path="...">` 块）。
-按**根到叶**排序：越靠近当前目录的指令越靠后，可细化上层（如工作区级）约定。
+从 session 的 workspace（操作基准目录）一路向上走到文件系统根，加载沿途
+每个目录的 `AGENTS.md`，作为系统提示词的一部分注入
+（`<project_instructions path="...">` 块）。按**根到叶**排序：越靠近
+workspace 的指令越靠后，可细化上层（如工作区级）约定。
 缺失或空白文件跳过；文件不可读时告警后继续，不阻断启动。
+
+启动、`--session` 跨目录恢复、TUI `/resume` 切换与 web 按 workspace 创建
+session 时，提示词（含末尾的 cwd 脚注）都以该 session 的 workspace 为基准
+构建——与工具相对路径同一口径（workspace 严格归属）。
 
 ```markdown
 # 项目根 AGENTS.md 示例

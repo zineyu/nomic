@@ -21,6 +21,8 @@ pub struct MockProvider {
     scripts: Mutex<VecDeque<Vec<AssistantEvent>>>,
     /// 每次 stream 调用收到的上下文消息数（验证历史注入）
     context_lens: Mutex<Vec<usize>>,
+    /// 每次 stream 调用收到的系统提示词（验证提示词替换后随请求生效）
+    system_prompts: Mutex<Vec<Option<String>>>,
     /// 每次 stream 调用收到的思考级别（验证 stream options 传递）
     reasonings: Mutex<Vec<Option<ThinkingLevel>>>,
     /// 每次 stream 调用收到的 api_key（验证 provider 切换后 key 一并替换）
@@ -32,6 +34,7 @@ impl MockProvider {
         Arc::new(Self {
             scripts: Mutex::new(scripts.into()),
             context_lens: Mutex::new(Vec::new()),
+            system_prompts: Mutex::new(Vec::new()),
             reasonings: Mutex::new(Vec::new()),
             api_keys: Mutex::new(Vec::new()),
         })
@@ -40,6 +43,13 @@ impl MockProvider {
     /// 各次 stream 调用收到的上下文消息数
     pub fn context_lens(&self) -> Vec<usize> {
         self.context_lens.lock().expect("lock").clone()
+    }
+
+    /// 各次 stream 调用收到的系统提示词
+    // actor 测试专用断言入口；agent_loop 不断言系统提示词
+    #[allow(dead_code)]
+    pub fn system_prompts(&self) -> Vec<Option<String>> {
+        self.system_prompts.lock().expect("lock").clone()
     }
 
     /// 各次 stream 调用收到的思考级别
@@ -65,6 +75,10 @@ impl Provider for MockProvider {
             .lock()
             .expect("lock")
             .push(context.messages.len());
+        self.system_prompts
+            .lock()
+            .expect("lock")
+            .push(context.system_prompt.clone());
         self.reasonings
             .lock()
             .expect("lock")

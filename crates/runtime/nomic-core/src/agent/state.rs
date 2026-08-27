@@ -11,7 +11,7 @@
 //! - 消息落史（与 `MessageEnd` 事件同一点）增量推入；
 //! - 历史整体替换 / 弹出（压缩、restore、清空、continue 弹出失败尾）
 //!   全量重同步；
-//! - 模型 / 思考级别 / 统计变更只同步元信息。
+//! - 模型 / 系统提示词 / 思考级别 / 统计变更只同步元信息。
 //!
 //! [`AgentHandle`](crate::AgentHandle) 的查询方法直接读视图（快照隔离）：
 //! 运行中即时返回「最后一次应用的状态」，不保证读到仍在邮箱排队的
@@ -36,6 +36,8 @@ pub struct StateView {
     pub messages: Vec<Message>,
     /// 当前模型
     pub model: Model,
+    /// 当前系统提示词
+    pub system_prompt: String,
     /// 当前思考级别
     pub reasoning: Option<ThinkingLevel>,
     /// 上下文 token 估算（与自动压缩同一口径，消息落史 / 压缩时更新）
@@ -49,10 +51,15 @@ pub struct StateView {
 pub type SharedStateView = Arc<RwLock<StateView>>;
 
 /// 以 agent 的初始状态构建共享视图（历史来自 resume 等，token 估算一次）。
-pub fn shared_view(config: &AgentConfig, messages: &[Message]) -> SharedStateView {
+pub fn shared_view(
+    config: &AgentConfig,
+    messages: &[Message],
+    system_prompt: &str,
+) -> SharedStateView {
     Arc::new(RwLock::new(StateView {
         messages: messages.to_vec(),
         model: config.model.clone(),
+        system_prompt: system_prompt.to_string(),
         reasoning: config.stream_options.reasoning,
         context_tokens: estimate_context_tokens(messages),
         stats: SessionStats::default(),
@@ -75,16 +82,19 @@ impl Agent {
         *view = StateView {
             messages: self.messages.clone(),
             model: self.config.model.clone(),
+            system_prompt: self.system_prompt.clone(),
             reasoning: self.config.stream_options.reasoning,
             context_tokens: estimate_context_tokens(&self.messages),
             stats: self.stats.clone(),
         };
     }
 
-    /// 视图元信息同步：模型 / 思考级别 / 统计变更（消息与 token 不变）。
+    /// 视图元信息同步：模型 / 系统提示词 / 思考级别 / 统计变更（消息与
+    /// token 不变）。
     pub(super) fn view_sync_meta(&self) {
         let mut view = self.state_view.write().expect("state view lock");
         view.model = self.config.model.clone();
+        view.system_prompt.clone_from(&self.system_prompt);
         view.reasoning = self.config.stream_options.reasoning;
         view.stats = self.stats.clone();
     }

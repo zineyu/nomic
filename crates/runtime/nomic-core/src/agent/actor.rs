@@ -7,9 +7,10 @@
 //!
 //! - `prompt` / `continue_run` / `compact` 携带本轮取消令牌，经 oneshot 回执
 //!   返回结果；
-//! - `inject_user_message` 等变更为 fire-and-forget：邮箱 FIFO 即顺序
-//!   保证，紧随其后的 `prompt` 一定跑在变更之后；
-//! - 查询（`messages` / `context_tokens` / `model` / `reasoning` / `stats`）
+//! - `inject_user_message`、`set_system_prompt` 等变更为 fire-and-forget：
+//!   邮箱 FIFO 即顺序保证，紧随其后的 `prompt` 一定跑在变更之后；
+//! - 查询（`messages` / `context_tokens` / `model` / `system_prompt` /
+//!   `reasoning` / `stats`）
 //!   读 agent 本体维护的共享只读状态视图（ADR-0035），不经邮箱——run 类
 //!   命令把整轮 loop 包进一条邮箱命令，运行期间邮箱不被消费，查询若走
 //!   邮箱会排队到 run 结束（web `get_state` 超时、切不回活跃会话的根因）。
@@ -70,6 +71,9 @@ enum AgentCommand {
     ClearMessages,
     /// 以既有消息历史整体替换当前上下文（session resume 语义）
     RestoreMessages(Vec<Message>),
+    /// 运行时整体替换系统提示词（跨 workspace 恢复 session 后按新
+    /// workspace 重建）
+    SetSystemPrompt(String),
     /// 运行时切换模型（上下文保留）
     SetModel(Model),
     /// 运行时切换 provider（跨 provider 的模型切换，附分层后的 api_key）
@@ -172,6 +176,13 @@ impl AgentHandle {
         self.send(AgentCommand::RestoreMessages(messages))
     }
 
+    /// 运行时整体替换系统提示词（消息历史、工具与配置保留；下一次请求
+    /// 即携带新提示词）。fire-and-forget：紧随其后的 `prompt` 一定看到
+    /// 新提示词（邮箱 FIFO）。
+    pub fn set_system_prompt(&self, prompt: String) -> Result<(), ActorError> {
+        self.send(AgentCommand::SetSystemPrompt(prompt))
+    }
+
     /// 运行时切换模型（消息历史、系统提示词与工具保留）。
     pub fn set_model(&self, model: Model) -> Result<(), ActorError> {
         self.send(AgentCommand::SetModel(model))
@@ -205,6 +216,11 @@ impl AgentHandle {
     /// 查询当前模型。
     pub fn model(&self) -> Result<Model, ActorError> {
         self.view_read(|view| view.model.clone())
+    }
+
+    /// 查询当前系统提示词。
+    pub fn system_prompt(&self) -> Result<String, ActorError> {
+        self.view_read(|view| view.system_prompt.clone())
     }
 
     /// 查询当前思考级别。
@@ -301,6 +317,7 @@ impl Agent {
                         AgentCommand::InjectUserMessage(text) => agent.inject_user_message(&text),
                         AgentCommand::ClearMessages => agent.clear_messages(),
                         AgentCommand::RestoreMessages(messages) => agent.restore_messages(messages),
+                        AgentCommand::SetSystemPrompt(prompt) => agent.set_system_prompt(prompt),
                         AgentCommand::SetModel(model) => agent.set_model(model),
                         AgentCommand::SetProvider { provider, api_key } => {
                             agent.set_provider(provider, api_key);

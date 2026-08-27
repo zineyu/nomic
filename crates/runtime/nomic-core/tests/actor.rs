@@ -85,6 +85,38 @@ async fn mutations_apply_in_mailbox_order() {
     );
 }
 
+/// 系统提示词变更经快照视图可见（flush 屏障后），并随后续请求生效。
+#[tokio::test]
+async fn system_prompt_change_applies_to_next_request() {
+    let provider = MockProvider::new(vec![text_done("ok")]);
+    let (agent, _events) = make_agent(provider.clone(), vec![]);
+    let (handle, _task) = agent.spawn();
+
+    assert_eq!(
+        handle.system_prompt().expect("查询应成功"),
+        "test system prompt",
+        "初始提示词来自 builder"
+    );
+    handle
+        .set_system_prompt("重建后的系统提示词".to_string())
+        .expect("替换应成功");
+    handle.flush().await.expect("屏障应成功");
+    assert_eq!(
+        handle.system_prompt().expect("查询应成功"),
+        "重建后的系统提示词"
+    );
+
+    handle
+        .prompt("hi", CancellationToken::new())
+        .await
+        .expect("prompt 应成功");
+    assert_eq!(
+        provider.system_prompts(),
+        vec![Some("重建后的系统提示词".to_string())],
+        "后续请求携带新系统提示词"
+    );
+}
+
 /// 模型与思考级别变更经快照视图可见（flush 屏障后），并随后续请求生效。
 #[tokio::test]
 async fn config_changes_visible_via_queries() {

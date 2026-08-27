@@ -139,7 +139,7 @@ impl Agent {
         injection: Option<Arc<dyn TurnInjection>>,
     ) -> (Self, mpsc::UnboundedReceiver<AgentEvent>) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let state_view = state::shared_view(&config, &messages);
+        let state_view = state::shared_view(&config, &messages, &system_prompt);
         (
             Self {
                 config,
@@ -191,6 +191,16 @@ impl Agent {
     /// 当前思考级别（`StreamOptions::reasoning`）。
     pub const fn reasoning(&self) -> Option<ThinkingLevel> {
         self.config.stream_options.reasoning
+    }
+
+    /// 运行时整体替换系统提示词（交互端跨 workspace 恢复 session 后按新
+    /// workspace 重建提示词的语义，如 TUI 的 `/resume`）。
+    ///
+    /// 下一次请求即携带新提示词；消息历史、工具与配置保留。应在非运行
+    /// 状态（`prompt` 返回后）调用。静默替换，不发出事件。
+    pub fn set_system_prompt(&mut self, prompt: String) {
+        self.system_prompt = prompt;
+        self.view_sync_meta();
     }
 
     /// 运行时设置思考级别（交互端 `/models` 级别选择器语义）。

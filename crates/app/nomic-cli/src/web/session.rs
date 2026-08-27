@@ -33,7 +33,9 @@ pub struct ResolvedSessionModel {
 /// 构建新 [`SessionRuntime`] 所需的 bootstrap 输入（进程级共享、不可变）。
 pub struct SessionFactory {
     pub models: Arc<ModelResolver>,
-    pub system_prompt: String,
+    /// 系统提示词配方：按各 session 的 workspace 构建（AGENTS.md 祖先链
+    /// 与 cwd 脚注跟随 workspace，严格归属；见 bootstrap 模块）
+    pub prompt_recipe: crate::bootstrap::SystemPromptRecipe,
     pub skill_resolver: SkillResolver,
     pub stream_options: StreamOptions,
     pub compaction: nomic_core::CompactionSettings,
@@ -163,7 +165,9 @@ impl SessionFactory {
                 Agent::builder()
                     .model(resolved.model)
                     .provider(resolved.provider)
-                    .system_prompt(self.system_prompt.clone()),
+                    // 系统提示词按本 session 的 workspace 构建：AGENTS.md
+                    // 祖先链与 cwd 脚注与工具基准同口径（严格归属）
+                    .system_prompt(self.prompt_recipe.build(&workspace, &self.skill_resolver)),
             )
             .messages(history)
             .stream_options(resolved.options)

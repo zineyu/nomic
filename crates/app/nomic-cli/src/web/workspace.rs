@@ -223,6 +223,35 @@ mod tests {
         assert_eq!(first.expect("workspace").id, second.expect("workspace").id,);
     }
 
+    /// 系统提示词按 session 的 workspace 构建：workspace 祖先链上的
+    /// AGENTS.md 注入提示词，cwd 脚注同为 workspace（严格归属）。
+    #[tokio::test]
+    async fn create_session_builds_system_prompt_from_workspace() {
+        let state = test_state().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("AGENTS.md"), "workspace 专属规则").expect("write");
+        let created = state
+            .inner
+            .create_session(dir.path())
+            .await
+            .expect("create session");
+        // 提示词在 build 时构建完毕并随 agent 初始状态进入共享视图，
+        // 查询无需 flush 屏障
+        let prompt = created.handle.system_prompt().expect("查询应成功");
+        assert!(
+            prompt.contains("workspace 专属规则"),
+            "workspace 的 AGENTS.md 应注入：{prompt}"
+        );
+        let canonical = std::fs::canonicalize(dir.path()).expect("canonical");
+        assert!(
+            prompt.contains(&format!(
+                "Current working directory: {}",
+                canonical.display()
+            )),
+            "cwd 脚注应为 session 的 workspace：{prompt}"
+        );
+    }
+
     #[tokio::test]
     async fn create_session_rejects_missing_dir() {
         let state = test_state().await;

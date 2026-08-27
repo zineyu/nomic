@@ -363,11 +363,14 @@ async fn session_store(recorder: Option<&SessionRecorder>) -> Result<SessionStor
 }
 
 /// 恢复选中 session：加载历史 → 替换 agent 上下文与聊天区 → recorder
-/// 换绑该 session（父指针为默认分支末端）。
+/// 换绑该 session（父指针为默认分支末端）。操作基准与系统提示词一同
+/// 切到该 session 的 workspace（严格归属）。
 pub(in crate::tui) async fn resume_session(
     app: &mut App,
     session: &mut SessionBinding,
     handle: &AgentHandle,
+    recipe: &crate::bootstrap::SystemPromptRecipe,
+    skills: &nomic_skills::SkillResolver,
     id: String,
 ) {
     // 恢复成功后旧 session 若为空壳（从未发送消息）会被清除，先记下 id
@@ -403,6 +406,10 @@ pub(in crate::tui) async fn resume_session(
             // 所恢复 session 的 workspace；句柄与工具共享，下一次执行即生效
             let previous = session.base_dir();
             session.base.set(workspace.clone());
+            // 系统提示词随 workspace 重建：AGENTS.md 祖先链与 cwd 脚注以新
+            // workspace 为基准（即使路径不变，磁盘内容也可能已更新）。
+            // fire-and-forget：邮箱 FIFO 保证先于紧随的 prompt 生效
+            let _ = handle.set_system_prompt(recipe.build(&workspace, skills));
             match &mut session.recorder {
                 Some(recorder) => recorder.switch(id.clone(), tip),
                 None => {
@@ -434,15 +441,29 @@ pub(in crate::tui) async fn resume_session(
 #[cfg(test)]
 mod tests {
     use super::{App, BaseDir, SessionBinding, SessionRecorder, SessionStore, tree_rows};
+    use crate::bootstrap::SystemPromptRecipe;
     use nomic_ai::{Message, UserMessage, UserMessageContent};
     use nomic_session::TreeEntry;
 
+    /// 空 skill 解析器：配方构建提示词用（目录不参与断言）。
+    fn empty_skills() -> nomic_skills::SkillResolver {
+        nomic_skills::SkillResolver::new(
+            std::path::Path::new("/repo"),
+            nomic_skills::ProjectDiscovery::Roots(Vec::new()),
+            Vec::new(),
+        )
+        .expect("empty skill resolver")
+    }
+
     /// `resume` 跨 workspace：recorder 换绑目标 session，操作基准（工具与
     /// mention 共用的句柄）切到该 session 的 workspace，并给出可见提示。
+    /// 系统提示词随 workspace 重建：目标 workspace 祖先链上的 AGENTS.md
+    /// 注入提示词，cwd 脚注同为该 workspace。
     #[tokio::test]
     async fn resume_switches_base_dir_to_session_workspace() {
         let dir_a = tempfile::tempdir().expect("tempdir a");
         let dir_b = tempfile::tempdir().expect("tempdir b");
+        std::fs::write(dir_b.path().join("AGENTS.md"), "b workspace rules").expect("write b");
         let store = SessionStore::in_memory().await.expect("store");
         let session_a = store.create_session(dir_a.path()).await.expect("create a");
         let session_b = store.create_session(dir_b.path()).await.expect("create b");
@@ -463,10 +484,20 @@ mod tests {
             SessionBinding::new(Some(SessionRecorder::new(store, session_a)), base.clone());
         let mut app = App::new("test-model".to_string(), None, 200_000);
         let handle = crate::tui::driver::dummy_handle();
+        let skills = empty_skills();
 
-        super::resume_session(&mut app, &mut binding, &handle, session_b.clone()).await;
+        super::resume_session(
+            &mut app,
+            &mut binding,
+            &handle,
+            &SystemPromptRecipe::default(),
+            &skills,
+            session_b.clone(),
+        )
+        .await;
 
-        // Restore 经 actor 邮箱 FIFO 生效；查询读快照视图，先过 flush 屏障
+        // Restore 与提示词替换经 actor 邮箱 FIFO 生效；查询读快照视图，
+        // 先过 flush 屏障
         handle.flush().await.expect("屏障应成功");
         assert_eq!(
             handle.messages().expect("查询应成功").len(),
@@ -482,6 +513,20 @@ mod tests {
             binding.base_dir(),
             std::fs::canonicalize(dir_b.path()).expect("canonicalize"),
             "操作基准应切到所恢复 session 的 workspace"
+        );
+        let prompt = handle.system_prompt().expect("查询应成功");
+        assert!(
+            prompt.contains("b workspace rules"),
+            "系统提示词应注入新 workspace 的 AGENTS.md：{prompt}"
+        );
+        assert!(
+            prompt.contains(&format!(
+                "Current working directory: {}",
+                std::fs::canonicalize(dir_b.path())
+                    .expect("canonicalize")
+                    .display()
+            )),
+            "cwd 脚注应切到新 workspace：{prompt}"
         );
     }
 
@@ -566,8 +611,17 @@ mod tests {
         );
         let mut app = App::new("test-model".to_string(), None, 200_000);
         let handle = crate::tui::driver::dummy_handle();
+        let skills = empty_skills();
 
-        super::resume_session(&mut app, &mut binding, &handle, session_b).await;
+        super::resume_session(
+            &mut app,
+            &mut binding,
+            &handle,
+            &SystemPromptRecipe::default(),
+            &skills,
+            session_b,
+        )
+        .await;
 
         let store = binding.recorder.as_ref().expect("recorder").store().clone();
         let result = store.load_messages(&empty_a).await;

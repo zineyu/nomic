@@ -4,9 +4,9 @@
 //! （ADR-0033）；driver 只保留 TUI 侧适配：goal 模式追问与消息队列
 //! （ADR-0014）、事件循环的唤醒处理（[`handle_wake`] / [`handle_prompt_done`] /
 //! [`next_wake`]）与按键映射（[`map_key`]）、Effect 外部资源接线
-//! （[`execute_effect`]）。注入 / 清空 / 恢复 / 模型切换等 fire-and-forget
-//! 变更不是 runner job，经 [`AgentHandle`] 直调（邮箱 FIFO 保证其先于
-//! 紧随的 job 生效）。
+//! （[`execute_effect`]）。注入 / 清空 / 恢复 / 系统提示词替换 / 模型切换等
+//! fire-and-forget 变更不是 runner job，经 [`AgentHandle`] 直调（邮箱 FIFO
+//! 保证其先于紧随的 job 生效）。
 
 use anyhow::Result;
 use crossterm::event::{
@@ -45,6 +45,7 @@ pub(super) fn spawn_driver(
     models: ModelResolver,
     model: Model,
     skill_resolver: SkillResolver,
+    prompt_recipe: crate::bootstrap::SystemPromptRecipe,
     reasoning: Option<ThinkingLevel>,
     todos: TodoStore,
     questions: std::sync::Arc<QuestionRegistry>,
@@ -69,6 +70,7 @@ pub(super) fn spawn_driver(
         session: SessionBinding::new(recorder, base),
         model: ModelSwitcher::new(models, model, reasoning),
         skill_resolver,
+        prompt_recipe,
         goal: GoalNudger::new(todos),
     };
     (driver, runner_events)
@@ -107,6 +109,8 @@ pub(super) struct Driver {
     model: ModelSwitcher,
     /// skill 解析器（ListSkills/LoadSkill 接线用，仅本文件访问）
     skill_resolver: SkillResolver,
+    /// 系统提示词配方（`/resume` 跨 workspace 时按新 workspace 重建）
+    prompt_recipe: crate::bootstrap::SystemPromptRecipe,
     /// goal 模式自动追问（todo 清单与连续追问计数、上限与清零时机收在其中）
     goal: GoalNudger,
 }
@@ -449,7 +453,15 @@ pub(super) async fn execute_effect(
         Effect::OpenEditor => edit_input_in_editor(app, terminal).await,
         Effect::ListSessions => effects::list_sessions(app, &driver.session).await,
         Effect::Resume(id) => {
-            effects::resume_session(app, &mut driver.session, &driver.handle, id).await;
+            effects::resume_session(
+                app,
+                &mut driver.session,
+                &driver.handle,
+                &driver.prompt_recipe,
+                &driver.skill_resolver,
+                id,
+            )
+            .await;
         }
         Effect::ListTree => effects::list_tree(app, &driver.session).await,
         Effect::BranchTo(entry_id) => {

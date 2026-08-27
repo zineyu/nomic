@@ -376,7 +376,7 @@ fn build_app_state(boot: Bootstrap) -> AppState {
     let (events, _) = broadcast::channel::<ServerEvent>(1024);
     let factory = SessionFactory {
         models: models.clone(),
-        system_prompt: boot.system_prompt,
+        prompt_recipe: boot.prompt_recipe,
         skill_resolver: boot.skill_resolver,
         stream_options: boot.stream_options,
         compaction: boot.compaction,
@@ -525,7 +525,7 @@ mod tests {
         let (events, _) = broadcast::channel::<ServerEvent>(64);
         let factory = SessionFactory {
             models: models.clone(),
-            system_prompt: "test".to_string(),
+            prompt_recipe: bootstrap::SystemPromptRecipe::default(),
             skill_resolver: SkillResolver::new(
                 Path::new("/repo"),
                 nomic_skills::ProjectDiscovery::Roots(Vec::new()),

@@ -50,6 +50,10 @@ pub struct Bootstrap {
     pub workspace: PathBuf,
     /// resume 恢复的历史消息（新会话为空）
     pub history: Vec<Message>,
+    /// 系统提示词配方（workspace 无关部分）：`system_prompt` 已按
+    /// `workspace` 构建；web 按 session workspace 构建、TUI `/resume` 跨
+    /// workspace 重建时经配方重新生成
+    pub prompt_recipe: SystemPromptRecipe,
     /// skill 解析器（同时注入 read 工具）
     pub skill_resolver: SkillResolver,
     /// 可用的 prompt templates（`/name` 调用展开用，已按覆盖规则去重）
@@ -140,7 +144,6 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
         .as_deref()
         .or_else(|| models.config().and_then(|c| c.append_system.as_deref()));
     let cwd = std::env::current_dir().context("get cwd")?;
-    let context_files = discover_agents_files(&cwd);
     let skill_resolver = SkillResolver::for_cwd(&cwd).context("初始化 skills 目录失败")?;
     warn_skill_diagnostics(&skill_resolver);
     let active_skills = cli
@@ -152,18 +155,24 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
                 .with_context(|| format!("激活 skill {name:?} 失败"))
         })
         .collect::<Result<Vec<_>>>()?;
-    let system_prompt = build_system_prompt(
-        &cwd,
-        append_system,
-        &context_files,
-        &skill_resolver,
-        &active_skills,
-    );
+    // 提示词配方（workspace 无关部分）；AGENTS.md 发现与 cwd 脚注在
+    // session 的 workspace 确定后以其为基准构建
+    let prompt_recipe = SystemPromptRecipe {
+        append_system: append_system.map(str::to_string),
+        active_skills,
+    };
     let prompt_templates = load_prompt_templates(cli, &cwd, models.config())?;
     let session = match policy {
         SessionPolicy::Init => init_session(cli, &cwd, store.clone()).await?,
         SessionPolicy::OpenStoreOnly => None,
     };
+    let workspace = session
+        .as_ref()
+        .map_or_else(|| normalize_path(&cwd), |init| init.workspace.clone());
+    // AGENTS.md 与 cwd 脚注以 session 的 workspace 为基准（workspace 严格
+    // 归属，与工具基准同口径）：--session 跨目录恢复时提示词跟随目标
+    // workspace 而非进程 cwd
+    let system_prompt = prompt_recipe.build(&workspace, &skill_resolver);
     tracing::debug!(
         session_id = session.as_ref().map_or("none", |s| s.id.as_str()),
         history = session.as_ref().map_or(0, |s| s.history.len()),
@@ -199,8 +208,9 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
         session: session
             .as_ref()
             .map(|init| (init.store.clone(), init.id.clone())),
-        workspace: session.map_or_else(|| normalize_path(&cwd), |init| init.workspace),
+        workspace,
         history,
+        prompt_recipe,
         skill_resolver,
         prompt_templates,
         available_models,
@@ -390,10 +400,36 @@ fn parse_reasoning(level: &str) -> Result<ThinkingLevel> {
     level.parse().context("--reasoning 取值非法")
 }
 
+/// 系统提示词配方：workspace 无关的进程级输入（`--append-system` 与
+/// `--skill` 激活）。AGENTS.md 按 session 的 workspace 祖先链发现
+///（workspace 严格归属，与工具基准同口径）；启动（TUI/print）、web 按
+/// session workspace 构建、TUI `/resume` 跨 workspace 重建，共用同一配方。
+#[derive(Debug, Clone, Default)]
+pub struct SystemPromptRecipe {
+    append_system: Option<String>,
+    active_skills: Vec<ActivatedSkill>,
+}
+
+impl SystemPromptRecipe {
+    /// 以 `workspace` 为基准构建完整系统提示词：AGENTS.md 从 workspace
+    /// 沿祖先链发现（根到叶），末尾脚注的工作目录同为 workspace。
+    pub fn build(&self, workspace: &Path, skill_resolver: &SkillResolver) -> String {
+        let context_files = discover_agents_files(workspace);
+        build_system_prompt(
+            workspace,
+            self.append_system.as_deref(),
+            &context_files,
+            skill_resolver,
+            &self.active_skills,
+        )
+    }
+}
+
 /// 系统提示词（对齐 pi 的结构与措辞）：基础契约 → AGENTS.md（根到叶）→
-/// `append_system` → 当前工作目录脚注。
+/// `append_system` → 当前工作目录脚注。`workspace` 是 session 的操作基准
+///（严格归属）：发现与脚注都以它为准，而非进程 cwd。
 fn build_system_prompt(
-    cwd: &Path,
+    workspace: &Path,
     append: Option<&str>,
     context_files: &[ContextFile],
     skill_resolver: &SkillResolver,
@@ -442,7 +478,11 @@ fn build_system_prompt(
     }
     {
         use std::fmt::Write as _;
-        let _ = write!(prompt, "\n\nCurrent working directory: {}", cwd.display());
+        let _ = write!(
+            prompt,
+            "\n\nCurrent working directory: {}",
+            workspace.display()
+        );
     }
     prompt
 }
@@ -633,6 +673,31 @@ mod tests {
         let append_at = prompt.find("额外指令").expect("append");
         let cwd_at = prompt.find("Current working directory").expect("cwd");
         assert!(base_at < ctx_at && ctx_at < append_at && append_at < cwd_at);
+    }
+
+    /// 配方以 workspace 为基准：AGENTS.md 从 workspace 沿祖先链发现
+    ///（根到叶），append_system 保留，cwd 脚注同为 workspace。
+    #[test]
+    fn recipe_discovers_agents_files_from_workspace() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let leaf = root.path().join("sub");
+        std::fs::create_dir_all(&leaf).expect("mkdir");
+        std::fs::write(root.path().join("AGENTS.md"), "root rules").expect("write root");
+        std::fs::write(leaf.join("AGENTS.md"), "leaf rules").expect("write leaf");
+
+        let recipe = SystemPromptRecipe {
+            append_system: Some("额外指令".to_string()),
+            active_skills: Vec::new(),
+        };
+        let prompt = recipe.build(&leaf, &empty_skill_resolver());
+        let root_at = prompt.find("root rules").expect("root 内容");
+        let leaf_at = prompt.find("leaf rules").expect("leaf 内容");
+        assert!(root_at < leaf_at, "根到叶顺序");
+        assert!(prompt.contains("额外指令"));
+        assert!(
+            prompt.contains(&format!("Current working directory: {}", leaf.display())),
+            "cwd 脚注应跟随 workspace"
+        );
     }
 
     #[test]

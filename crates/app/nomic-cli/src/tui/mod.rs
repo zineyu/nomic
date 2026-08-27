@@ -168,6 +168,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
         boot.models,
         boot.model,
         skill_resolver,
+        boot.prompt_recipe,
         initial_reasoning,
         todo_store,
         question_registry,

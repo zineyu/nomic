@@ -25,8 +25,8 @@ use nomic_tools::{BaseDir, QuestionSink, TodoStore};
 /// agent 看到同一份，取决于入口是否有跨 agent 的进度观察方。
 #[derive(Debug, Clone)]
 pub enum TodoPolicy {
-    /// 主/子 agent 共享同一份清单（TUI：goal 模式与界面经共享句柄观察
-    /// 进度，子 agent 写入的任务在同一清单中可见）。
+    /// 主/子 agent 共享同一份清单（TUI：子 agent 写入的任务与主 agent
+    /// 同清单，跨 agent 协作时进度互见）。
     Shared(TodoStore),
     /// 主/子 agent 各自新建独立清单（print / web：清单是各 agent 私有的
     /// 工作记忆，跨 agent 不可见）。
@@ -115,6 +115,12 @@ pub fn assemble(opts: RecipeOpts) -> AgentRecipe {
 }
 
 impl AgentRecipe {
+    /// 主 agent 工具集（`DynTool` 是 `Arc` 共享句柄，克隆廉价）：交互端
+    /// 运行期整体替换工具集（goal 模式换入换出）时以它为正常态基准。
+    pub fn tools(&self) -> &[DynTool] {
+        &self.tools
+    }
+
     /// 把产物装到 agent builder 上：设置工具集；有注入点则一并设置。
     ///
     /// tools / turn_injection 均非 typestate 必填项，`apply` 不改变
@@ -239,8 +245,7 @@ mod tests {
         .expect("todo_write 不应失败");
     }
 
-    /// 共享策略：主 agent 工具写入的 todo 经共享句柄可见（TUI goal
-    /// 模式与界面观察的正是这份清单）。
+    /// 共享策略：主 agent 工具写入的 todo 经共享句柄可见（主子同清单）。
     #[tokio::test]
     async fn shared_todo_store_observable_via_handle() {
         let store = TodoStore::new();

@@ -45,8 +45,8 @@ impl Widget for StatusBar<'_> {
             Span::styled(format!(" {} ", app.model_name()), theme::selected()),
             context_usage_span(app),
         ];
-        // goal 模式开启时给出常驻徽标：自动追问进行中用户能看到原因
-        if app.goal_mode() {
+        // 目标驱动运行进行中给出常驻徽标：自动追问进行中用户能看到原因
+        if app.goal_objective().is_some() {
             left.push(Span::styled(" goal ", theme::warn()));
         }
         if let Some(notice) = app.notice() {

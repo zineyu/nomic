@@ -37,7 +37,7 @@ impl App {
             notice: None,
             spinner: 0,
             thinking_collapsed: true,
-            goal_mode: false,
+            goal: None,
         }
     }
 

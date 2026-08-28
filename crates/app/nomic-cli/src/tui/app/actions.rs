@@ -425,17 +425,35 @@ impl App {
                     .push_system(format!("thinking 显示：{state}（thinking 命令切换）"));
                 Vec::new()
             }
-            CommandAction::Goal => {
-                self.goal_mode = !self.goal_mode;
-                let state = if self.goal_mode {
-                    "已开启：react loop 停止时若 todo 未全部完成，将自动以 user 消息追问"
-                } else {
-                    "已关闭"
-                };
-                self.chat
-                    .push_system(format!("goal 模式{state}（goal 命令切换）"));
-                Vec::new()
-            }
+            CommandAction::Goal(objective) => match objective {
+                Some(objective) => {
+                    let replacing = self.goal.is_some();
+                    self.chat.push_system(if replacing {
+                        "已替换进行中的目标：以新目标重启目标驱动运行。".to_string()
+                    } else {
+                        "已启动目标驱动运行：换入 goal_done / 换出 ask_user_question；\
+                         react loop 停止时将自动复述目标继续追问，直到 agent 调用 goal_done。"
+                            .to_string()
+                    });
+                    self.goal = Some(objective.clone());
+                    // 与 prompt 提交同一口径：先置 running 避免提交空窗期重复提交
+                    self.running = true;
+                    self.notice = None;
+                    vec![Effect::StartGoal(objective)]
+                }
+                None => {
+                    if self.goal.take().is_some() {
+                        self.chat.push_system(
+                            "已取消进行中的目标：恢复正常工具集，停止自动追问。".to_string(),
+                        );
+                        vec![Effect::CancelGoal]
+                    } else {
+                        self.chat
+                            .push_system("当前没有进行中的目标。用法：goal <目标内容>".to_string());
+                        Vec::new()
+                    }
+                }
+            },
             CommandAction::New => vec![Effect::NewSession],
             CommandAction::Tree => vec![Effect::ListTree],
         }
@@ -670,9 +688,15 @@ impl App {
         self.thinking_collapsed
     }
 
-    /// goal 模式是否开启（`goal` 命令开关，默认关闭）。
-    pub const fn goal_mode(&self) -> bool {
-        self.goal_mode
+    /// 进行中的目标原文（`goal <目标>` 启动；状态栏徽标显示用）。
+    pub fn goal_objective(&self) -> Option<&str> {
+        self.goal.as_deref()
+    }
+
+    /// 清除进行中的目标（driver 在目标完成 / 会话切换时回写；
+    /// `goal` 无参的取消路径在命令分发内已就地清除）。
+    pub fn clear_goal(&mut self) {
+        self.goal = None;
     }
 
     /// 模型展示名。

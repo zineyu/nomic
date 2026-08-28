@@ -18,10 +18,10 @@
 //! - [`widgets`]：纯渲染——组合根 [`widgets::draw`] 布局后由各区域自定义
 //!   widget（聊天区 / 输入框 / 状态栏 / 弹层 / 覆盖层）渲染
 //! - [`driver`]：agent driver 任务（专属 tokio 任务持有 `Agent`）与事件循环
-//!   的唤醒处理（按键映射、`Effect` 转发执行）；goal 模式追问的状态与
+//!   的唤醒处理（按键映射、`Effect` 转发执行）；goal 目标驱动运行的状态与
 //!   策略收在 [`goal`]（`GoalNudger`），driver 只消费判定结果
-//! - [`goal`]：goal 模式自动追问（todo 清单共享句柄 + 连续追问计数、
-//!   上限与清零时机、追问提示词）
+//! - [`goal`]：goal 目标驱动运行（与 `goal_done` 工具共享的目标会话句柄 +
+//!   连续追问计数、上限与清零时机、启动/追问提示词）
 //! - [`terminal`]：终端生命周期（raw mode / alternate screen / 键盘增强）、
 //!   panic 恢复 hook 与外部编辑器接线
 //! - 本文件：`run` 事件循环主循环
@@ -117,18 +117,21 @@ pub async fn run(cli: &Cli) -> Result<()> {
     let question_sink: std::sync::Arc<dyn QuestionSink> =
         std::sync::Arc::new(TuiQuestionSink::new(question_registry.clone(), question_tx));
     // 工具配方（组装收在 agent_recipe 模块）：TUI 的差异点——todo 清单
-    // 主/子共享（goal 模式与界面经同一句柄观察进度）、基准句柄共享
-    //（resume/new 切换 session 时原地生效）、提问走弹层通道、turn 注入
-    // 点接统一消息队列（ADR-0014，运行中 Enter 直推入队）
+    // 主/子共享（跨 agent 进度互见）、基准句柄共享（resume/new 切换
+    // session 时原地生效）、提问走弹层通道、turn 注入点接统一消息队列
+    //（ADR-0014，运行中 Enter 直推入队）
     let recipe = agent_recipe::assemble(agent_recipe::RecipeOpts {
         base: base_dir.clone(),
         skill_resolver: boot.skill_resolver.clone(),
         question_sink,
-        todo: agent_recipe::TodoPolicy::Shared(todo_store.clone()),
+        todo: agent_recipe::TodoPolicy::Shared(todo_store),
         provider: boot.provider.clone(),
         available_models: boot.available_models,
         turn_injection: Some(app.queue().handle()),
     });
+    // 正常态工具集副本：goal 命令启动目标驱动运行时以它为基准换入
+    // goal_done / 换出 ask_user_question，目标结束再换回
+    let normal_tools = recipe.tools().to_vec();
     let (agent, mut events) = recipe
         .apply(
             Agent::builder()
@@ -170,7 +173,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
         skill_resolver,
         boot.prompt_recipe,
         initial_reasoning,
-        todo_store,
+        normal_tools,
         question_registry,
     );
     let mut term_events = EventStream::new();

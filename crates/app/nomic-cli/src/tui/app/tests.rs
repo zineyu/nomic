@@ -417,7 +417,7 @@ fn parse_command_dispatches_known_unknown_and_slash_prefixed() {
     );
     assert_eq!(
         parse_command("goal"),
-        CommandParse::Known(CommandAction::Goal)
+        CommandParse::Known(CommandAction::Goal(None))
     );
     assert_eq!(
         parse_command("continue"),
@@ -494,27 +494,6 @@ fn thinking_toggles_collapse_state() {
     assert_eq!(systems, 2);
     // 本地命令：运行中也可执行
     assert!(CommandAction::Thinking.is_local());
-}
-
-#[test]
-fn goal_toggles_mode_state() {
-    let mut app = app();
-    // 默认关闭，本地命令不产生外部效果
-    assert!(!app.goal_mode());
-    assert!(app.execute_command(CommandAction::Goal).is_empty());
-    assert!(app.goal_mode());
-    assert!(app.execute_command(CommandAction::Goal).is_empty());
-    assert!(!app.goal_mode());
-    // 每次切换在聊天区留下系统提示
-    let systems = app
-        .chat
-        .items
-        .iter()
-        .filter(|item| matches!(item, ChatItem::System(_)))
-        .count();
-    assert_eq!(systems, 2);
-    // 本地命令：运行中也可执行
-    assert!(CommandAction::Goal.is_local());
 }
 
 #[test]
@@ -610,10 +589,6 @@ fn parse_command_skill_uses_colon_argument() {
     // 无参命令带参数同样报用法错误
     assert!(matches!(
         parse_command("new x"),
-        CommandParse::InvalidUsage(_)
-    ));
-    assert!(matches!(
-        parse_command("goal x"),
         CommandParse::InvalidUsage(_)
     ));
     assert!(matches!(
@@ -725,6 +700,7 @@ fn user_message_with_images_shows_placeholder() {
     assert_eq!(user_text(&text_only), "hi");
 }
 
+mod goal_tests;
 mod mention_tests;
 mod normal_tests;
 mod phase_tests;

@@ -100,12 +100,6 @@ impl TodoStore {
         self.lock().clone()
     }
 
-    /// 未完成的 todo 子树：只保留 pending / in_progress 条目，
-    /// 剪去 completed / cancelled 分支（交互端 goal 模式判定用）。
-    pub fn incomplete(&self) -> Vec<TodoItem> {
-        filter_incomplete(&self.lock())
-    }
-
     /// 全量替换清单。
     fn replace(&self, todos: Vec<TodoItem>) {
         *self.lock() = todos;
@@ -209,18 +203,6 @@ impl Counts {
         .collect::<Vec<_>>()
         .join(", ")
     }
-}
-
-/// 过滤出未完成的 todo 子树（pending / in_progress），递归裁剪子项。
-fn filter_incomplete(todos: &[TodoItem]) -> Vec<TodoItem> {
-    todos
-        .iter()
-        .filter(|todo| matches!(todo.status, TodoStatus::Pending | TodoStatus::InProgress))
-        .map(|todo| TodoItem {
-            children: filter_incomplete(&todo.children),
-            ..todo.clone()
-        })
-        .collect()
 }
 
 /// 渲染为带缩进的树形文本（回喂模型的格式）。
@@ -501,40 +483,6 @@ mod tests {
         assert!(
             error.to_string().contains("title must not be empty"),
             "{error}"
-        );
-    }
-
-    #[tokio::test]
-    async fn incomplete_filters_to_pending_and_in_progress() {
-        let store = TodoStore::new();
-        let write_tool = TodoWriteTool::new(store.clone());
-        write(
-            &write_tool,
-            vec![
-                item(
-                    "父任务",
-                    TodoStatus::InProgress,
-                    vec![
-                        item("已完成子项", TodoStatus::Completed, vec![]),
-                        item("待办子项", TodoStatus::Pending, vec![]),
-                    ],
-                ),
-                item("已完成任务", TodoStatus::Completed, vec![]),
-                item("已取消任务", TodoStatus::Cancelled, vec![]),
-            ],
-        )
-        .await
-        .expect("写入应成功");
-
-        let incomplete = store.incomplete();
-        assert_eq!(incomplete.len(), 1, "completed/cancelled 分支剪去");
-        assert_eq!(incomplete[0].title, "父任务");
-        assert_eq!(incomplete[0].children.len(), 1);
-        assert_eq!(incomplete[0].children[0].title, "待办子项");
-        let rendered = render_todos(&incomplete);
-        assert!(
-            rendered.contains("2 todo(s) (1 pending, 1 in progress)"),
-            "{rendered}"
         );
     }
 

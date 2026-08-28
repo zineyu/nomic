@@ -134,8 +134,8 @@ pub(super) const COMMANDS: &[Command] = &[
     Command {
         name: "goal",
         aliases: &[],
-        summary: "开关 goal 模式（默认关闭）：开启后 react loop 停止时若 todo 未全部完成，自动以 user 消息追问",
-        usage: "goal",
+        summary: "目标驱动运行：goal <目标> 启动（agent 持续工作直到调用 goal_done 汇报完成；期间换出 ask_user_question）；goal 无参取消进行中的目标",
+        usage: "goal <目标内容>（goal 无参取消）",
     },
     Command {
         name: "quit",
@@ -189,8 +189,8 @@ pub(super) enum CommandAction {
     Copy,
     /// `thinking` 切换 thinking 内容折叠/展开显示
     Thinking,
-    /// `goal` 开关 goal 模式（loop 停止且 todo 未完成时自动追问）
-    Goal,
+    /// `goal <目标>` 启动目标驱动运行；`goal` 无参取消进行中的目标
+    Goal(Option<String>),
 }
 
 impl CommandAction {
@@ -198,8 +198,10 @@ impl CommandAction {
     /// 运行中（含工具执行中）可安全执行，不被工具调用阻塞。
     ///
     /// 会话命令（`new` `resume` `tree` `compact` `continue` `models`
-    /// `skill:<name>`）都要经 driver 串行修改 agent 上下文，而 agent 方法
-    /// 的调用契约要求非运行状态，因此仍须等本轮结束。
+    /// `skill:<name>` `goal <目标>`）都要经 driver 串行修改 agent 上下文，
+    /// 而 agent 方法的调用契约要求非运行状态，因此仍须等本轮结束。
+    /// `goal` 无参（取消）只换工具集与追问状态，经 actor 邮箱
+    /// fire-and-forget 生效，运行中可安全执行。
     const fn is_local(&self) -> bool {
         matches!(
             self,
@@ -207,7 +209,7 @@ impl CommandAction {
                 | Self::Quit
                 | Self::Copy
                 | Self::Thinking
-                | Self::Goal
+                | Self::Goal(None)
                 | Self::Skill(None)
                 | Self::Image(_)
         )
@@ -280,6 +282,15 @@ fn parse_command(input: &str) -> CommandParse {
             CommandParse::Known(CommandAction::Models(Some(id.to_string())))
         };
     }
+    // `goal` 特判：参数是目标原文（可含空格），`goal 目标` 与 `goal:目标`
+    // 两种形式都接受；无参表示取消进行中的目标
+    if let Some(tail) = command_tail(rest, "goal") {
+        let objective = match tail {
+            CommandTail::Bare => None,
+            CommandTail::Arg(text) => Some(text.trim()).filter(|text| !text.is_empty()),
+        };
+        return CommandParse::Known(CommandAction::Goal(objective.map(str::to_string)));
+    }
     let (name, arg, junk) = if let Some((name, arg)) = rest.split_once(':') {
         (
             name.trim(),
@@ -322,7 +333,6 @@ fn parse_command(input: &str) -> CommandParse {
                 "continue" if !junk && arg.is_none() => CommandAction::Continue,
                 "copy" if !junk && arg.is_none() => CommandAction::Copy,
                 "thinking" if !junk && arg.is_none() => CommandAction::Thinking,
-                "goal" if !junk && arg.is_none() => CommandAction::Goal,
                 "quit" if !junk && arg.is_none() => CommandAction::Quit,
                 _ => return CommandParse::InvalidUsage(command.usage),
             };
@@ -500,10 +510,17 @@ pub(super) enum Effect {
     /// 提问弹层取消（Esc）：事件循环丢弃注册表条目，工具侧收到通道
     /// 关闭转为错误结果回喂模型
     CancelQuestion,
+    /// `goal <目标>`：启动目标驱动运行——driver 换入 goal 工具集
+    ///（goal_done 换入、ask_user_question 换出），把目标包装为提示词
+    /// 提交一轮 prompt（`running` 已置位）
+    StartGoal(String),
+    /// `goal` 无参：取消进行中的目标——driver 换回正常工具集并停止
+    /// 自动追问（目标完成时 driver 同样换回，不经此效果）
+    CancelGoal,
 }
 
 /// TUI 应用状态：各关注点状态的组合 + 模式路由。
-// 布尔字段均为相互独立的 UI 开关（运行态/退出/thinking 折叠/goal 模式），
+// 布尔字段均为相互独立的 UI 开关（运行态/退出/thinking 折叠），
 // 两态语义清晰，无需状态机
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
@@ -555,9 +572,9 @@ pub(super) struct App {
     spinner: usize,
     /// thinking 内容是否折叠显示（默认折叠，`thinking` 切换）
     thinking_collapsed: bool,
-    /// goal 模式（默认关闭，`goal` 开关）：开启后 react loop 停止且
-    /// todo 未全部完成时，由事件循环自动以 user 消息追问
-    goal_mode: bool,
+    /// 进行中的目标（`goal <目标>` 启动，driver 经 goal_done 汇报 / `goal`
+    /// 无参 / 会话切换清除；状态栏徽标显示用）
+    goal: Option<String>,
 }
 
 fn image_usage() -> &'static str {

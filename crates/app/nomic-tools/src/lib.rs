@@ -53,7 +53,7 @@ pub use write::WriteTool;
 /// 创建默认工具集的 [`nomic_core::DynTool`] 列表。
 ///
 /// todo 工具共享调用方持有的 [`TodoStore`]（clone 即共享同一份数据），
-/// 交互端可据此在 run 结束后检查未完成的 todo（goal 模式）；
+/// 交互端可持有句柄观察 agent 写入的任务清单；
 /// ask_user_question 经调用方提供的 [`QuestionSink`] 与用户交互。
 /// 相对路径以进程 cwd 为基准；workspace 归属场景用 [`default_tools_in`]。
 pub fn default_tools(

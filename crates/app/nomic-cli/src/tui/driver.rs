@@ -1,8 +1,8 @@
 //! agent driver：薄适配层——agent 本体由 core 的 actor 任务持有
 //! （[`Agent::spawn`]，ADR-0022），run 类 job（prompt / 压缩 / 续跑）的
 //! 串行消费、取消与生命周期翻译由 core 的 [`SessionRunner`] 持有
-//! （ADR-0033）；driver 只保留 TUI 侧适配：goal 模式追问与消息队列
-//! （ADR-0014）、事件循环的唤醒处理（[`handle_wake`] / [`handle_prompt_done`] /
+//! （ADR-0033）；driver 只保留 TUI 侧适配：goal 目标驱动运行的追问与消息
+//! 队列（ADR-0014）、事件循环的唤醒处理（[`handle_wake`] / [`handle_prompt_done`] /
 //! [`next_wake`]）与按键映射（[`map_key`]）、Effect 外部资源接线
 //! （[`execute_effect`]）。注入 / 清空 / 恢复 / 系统提示词替换 / 模型切换等
 //! fire-and-forget 变更不是 runner job，经 [`AgentHandle`] 直调（邮箱 FIFO
@@ -15,18 +15,18 @@ use crossterm::event::{
 use futures::StreamExt as _;
 use nomic_ai::{Model, ThinkingLevel};
 use nomic_core::{
-    Agent, AgentEvent, AgentHandle, CompactOutcome, ContinueOutcome, JobOutcome,
+    Agent, AgentEvent, AgentHandle, CompactOutcome, ContinueOutcome, DynTool, JobOutcome,
     NOTHING_TO_COMPACT, NOTHING_TO_CONTINUE, PromptOutcome, RunnerEvent, SessionJob, SessionRunner,
 };
 use nomic_session::SessionRecorder;
 use nomic_skills::SkillResolver;
-use nomic_tools::{QuestionRegistry, TodoStore};
+use nomic_tools::{GoalSession, QuestionRegistry, goal_tools};
 use tokio::sync::mpsc;
 
 use super::app::{App, Effect, Key, SkillEntry};
 use super::ask::PendingQuestion;
 use super::effects::{self, ModelSwitcher, SessionBinding};
-use super::goal::{GoalNudger, Nudge};
+use super::goal::{GoalNudger, Nudge, goal_prompt};
 use super::terminal::edit_input_in_editor;
 use super::{TuiTerminal, panic_payload_text};
 use crate::mention;
@@ -47,7 +47,7 @@ pub(super) fn spawn_driver(
     skill_resolver: SkillResolver,
     prompt_recipe: crate::bootstrap::SystemPromptRecipe,
     reasoning: Option<ThinkingLevel>,
-    todos: TodoStore,
+    normal_tools: Vec<DynTool>,
     questions: std::sync::Arc<QuestionRegistry>,
 ) -> (Driver, mpsc::UnboundedReceiver<RunnerEvent>) {
     let session_span = session_id.map(|id| tracing::info_span!("session", session_id = %id));
@@ -71,7 +71,8 @@ pub(super) fn spawn_driver(
         model: ModelSwitcher::new(models, model, reasoning),
         skill_resolver,
         prompt_recipe,
-        goal: GoalNudger::new(todos),
+        normal_tools,
+        goal: GoalNudger::new(),
     };
     (driver, runner_events)
 }
@@ -111,7 +112,10 @@ pub(super) struct Driver {
     skill_resolver: SkillResolver,
     /// 系统提示词配方（`/resume` 跨 workspace 时按新 workspace 重建）
     prompt_recipe: crate::bootstrap::SystemPromptRecipe,
-    /// goal 模式自动追问（todo 清单与连续追问计数、上限与清零时机收在其中）
+    /// 正常态工具集（goal 模式换出/换回的基准；`DynTool` 是 `Arc` 共享
+    /// 句柄，克隆廉价）
+    normal_tools: Vec<DynTool>,
+    /// goal 模式自动追问（目标会话与连续追问计数、上限与清零时机收在其中）
     goal: GoalNudger,
 }
 
@@ -232,7 +236,8 @@ pub(super) async fn handle_wake(
 /// 队列非空时，正常结束即取出队首自动提交（QUEUE 模式打开期间冻结，
 /// 退出 QUEUE 时恢复）；被取消/失败等异常结束则队列暂停保留，
 /// 用户可空闲 Enter 或 Esc→m 恢复。队列为空时交给 [`GoalNudger`] 判定
-/// goal 追问（追问提示词作为 user 消息提交；达到上限则暂停）。
+/// goal 追问（复述目标的提示词作为 user 消息提交；目标完成则换回正常
+/// 工具集；连续追问达到上限则暂停）。
 pub(super) async fn handle_prompt_done(
     app: &mut App,
     driver: &mut Driver,
@@ -263,8 +268,16 @@ pub(super) async fn handle_prompt_done(
         }
         return;
     }
-    match driver.goal.next(end.ended_normally() && app.goal_mode()) {
+    match driver.goal.next(end.ended_normally()) {
         Nudge::Quiet => app.finish_run(None),
+        Nudge::Done => {
+            // 目标完成（goal_done 已落账）：换回正常工具集，清除状态栏徽标
+            restore_normal_tools(driver);
+            app.clear_goal();
+            app.finish_run(Some(
+                "目标已完成（goal_done 已汇报），恢复正常工具集。".to_string(),
+            ));
+        }
         Nudge::Capped(notice) => app.finish_run(Some(notice)),
         Nudge::Remind(reminder) => {
             if driver
@@ -429,6 +442,8 @@ pub(super) async fn execute_effect(
 ) {
     match effect {
         Effect::Prompt { text, images } => submit_prompt(app, driver, &text, images),
+        Effect::StartGoal(objective) => start_goal(app, driver, &objective),
+        Effect::CancelGoal => cancel_goal(driver),
         Effect::Compact(instructions) => {
             if driver
                 .runner
@@ -453,6 +468,7 @@ pub(super) async fn execute_effect(
         Effect::OpenEditor => edit_input_in_editor(app, terminal).await,
         Effect::ListSessions => effects::list_sessions(app, &driver.session).await,
         Effect::Resume(id) => {
+            cancel_goal_on_session_switch(app, driver);
             effects::resume_session(
                 app,
                 &mut driver.session,
@@ -465,6 +481,7 @@ pub(super) async fn execute_effect(
         }
         Effect::ListTree => effects::list_tree(app, &driver.session).await,
         Effect::BranchTo(entry_id) => {
+            cancel_goal_on_session_switch(app, driver);
             effects::branch_to(app, &mut driver.session, &driver.handle, entry_id).await;
         }
         Effect::ListModels => effects::list_models(app, &driver.model),
@@ -524,21 +541,85 @@ pub(super) async fn execute_effect(
             discard_pending_question(driver);
         }
         Effect::NewSession => {
+            cancel_goal_on_session_switch(app, driver);
             effects::new_session(app, &mut driver.session, &driver.handle).await;
         }
     }
 }
 
-/// `Effect::Prompt` 的实现：用户主动提交 prompt（重置 goal 计数、丢弃
-/// 上一轮残留的在途问题、展开 mention、提交 runner job）。
+/// `Effect::StartGoal` 的实现：创建目标会话（与 `goal_done` 工具共享），
+/// 换入 goal 工具集（goal_done 换入、ask_user_question 换出），把目标
+/// 包装为提示词提交一轮 prompt。
+fn start_goal(app: &mut App, driver: &mut Driver, objective: &str) {
+    // 发送前展开有效 `@skill:` / `@file:` mention（与用户 prompt 同一口径；
+    // 无效标记原样保留）
+    let objective = mention::expand_mentions(
+        objective,
+        &driver.skill_resolver,
+        &driver.session.base_dir(),
+    );
+    let session = GoalSession::new(objective.clone());
+    if driver
+        .handle
+        .set_tools(goal_tools(&driver.normal_tools, &session))
+        .is_err()
+    {
+        app.clear_goal();
+        app.finish_run(Some("内部错误：agent 任务已退出，目标未启动。".to_string()));
+        return;
+    }
+    driver.goal.arm(session);
+    if driver
+        .runner
+        .submit(SessionJob::Prompt {
+            text: goal_prompt(&objective),
+            images: Vec::new(),
+        })
+        .is_err()
+    {
+        // runner 已退出：不会有回执，解除目标并回到空闲态
+        driver.goal.disarm();
+        restore_normal_tools(driver);
+        app.clear_goal();
+        app.finish_run(Some("内部错误：agent 任务已退出，消息未发送。".to_string()));
+    }
+}
+
+/// `Effect::CancelGoal` 的实现（`goal` 无参）：换回正常工具集并停止自动
+/// 追问。运行中取消同样安全：追问状态立即解除（本轮结束后不再追问），
+/// 工具集经 actor 邮箱 FIFO 在本轮结束后替换。
+fn cancel_goal(driver: &mut Driver) {
+    driver.goal.disarm();
+    restore_normal_tools(driver);
+}
+
+/// 换回正常态工具集（fire-and-forget，紧随的 prompt 一定用新工具集）。
+fn restore_normal_tools(driver: &Driver) {
+    let _ = driver.handle.set_tools(driver.normal_tools.clone());
+}
+
+/// 会话切换（new / resume / tree 分支）取消进行中的目标：目标属于旧
+/// 对话的上下文，切换后不再复述追问；工具集换回正常态。
+fn cancel_goal_on_session_switch(app: &mut App, driver: &mut Driver) {
+    if app.goal_objective().is_none() {
+        return;
+    }
+    cancel_goal(driver);
+    app.clear_goal();
+    app.chat_mut()
+        .push_system("进行中的目标已随会话切换取消，恢复正常工具集。".to_string());
+}
+
+/// `Effect::Prompt` 的实现：用户主动提交 prompt（重置 goal 连续追问
+/// 计数、丢弃上一轮残留的在途问题、展开 mention、提交 runner job）。
 fn submit_prompt(
     app: &mut App,
     driver: &mut Driver,
     text: &str,
     images: Vec<nomic_ai::ImageContent>,
 ) {
-    // 用户主动提交：重置 goal 模式连续追问计数；丢弃上一轮残留的
-    // 在途问题（防御：正常路径弹层已随运行结束关闭）
+    // 用户主动提交：重置 goal 连续追问计数（目标仍进行中）；丢弃上一轮
+    // 残留的在途问题（防御：正常路径弹层已随运行结束关闭）
     driver.goal.reset();
     discard_pending_question(driver);
     // 发送前展开有效 `@skill:` / `@file:` mention；无效标记原样保留

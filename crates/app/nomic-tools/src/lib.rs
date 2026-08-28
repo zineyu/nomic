@@ -5,6 +5,8 @@
 //! watcher 保持新鲜，重复搜索近即时），
 //! todo_read/todo_write 提供带父子层级的任务清单（共享内存态 [`TodoStore`]），
 //! ask_user_question 经 [`QuestionSink`] 向用户提问（单选/多选/填空），
+//! goal_done 是 goal 模式的完成汇报通道（经共享 [`GoalSession`] 通知交互端，
+//! 见 [`goal_tools`] 的工具集变换），
 //! 宿主侧的在途提问生命周期（登记/应答/丢弃/快照）收在 [`QuestionRegistry`]。
 //!
 //! 工具的输出格式与引导提示（截断翻页、diff 详情、错误文本）是与模型的
@@ -15,6 +17,7 @@ mod base;
 mod bash;
 mod edit;
 mod find;
+mod goal;
 mod grep;
 pub mod multi_agent;
 mod mutation_queue;
@@ -33,6 +36,7 @@ pub use base::BaseDir;
 pub use bash::BashTool;
 pub use edit::EditTool;
 pub use find::FindTool;
+pub use goal::{GoalDoneParams, GoalDoneTool, GoalSession, goal_tools};
 pub use grep::GrepTool;
 pub use question_registry::QuestionRegistry;
 pub use read::ReadTool;

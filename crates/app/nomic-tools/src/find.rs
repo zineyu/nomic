@@ -1,6 +1,13 @@
-//! `find` 工具：fd 语义的文件 / 目录查找（glob 匹配、gitignore 感知）。
+//! `find` 工具：基于 fff 常驻索引的文件 / 目录查找（glob 匹配、gitignore 感知）。
+//!
+//! 文件枚举走 fff 的常驻索引（后台扫描 + watcher 保持新鲜），不再逐次遍历
+//! 文件系统；glob 过滤与排序在输出侧完成，语义与旧的 fd 风格实现一致。
+//!
+//! fff 语义差异：git 仓库内索引隐藏文件（`.git`/`.jj` 输出侧过滤）；
+//! 非 git 目录跳过隐藏文件，且 .gitignore 不生效（fff 以硬编码的重型
+//! 目录清单替代）。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use nomic_core::{AgentTool, ToolError, ToolResult, ToolUpdateCallback};
@@ -23,8 +30,6 @@ pub struct FindParams {
     pub kind: Option<FindKind>,
     /// Maximum number of results to return (default 200)
     pub limit: Option<usize>,
-    /// Also include hidden files and directories
-    pub include_hidden: Option<bool>,
 }
 
 /// 结果类型过滤。
@@ -70,9 +75,10 @@ const LABEL: &str = "find";
 
 const DESCRIPTION: &str = "Find files and directories by glob pattern, fd-style. A pattern without \"/\" matches \
          file names at any depth (\"*.toml\"); a pattern with \"/\" matches paths relative to the \
-         search root (\"crates/*/src\"). Respects .gitignore and skips hidden files unless \
-         include_hidden is set. Returns paths sorted alphabetically, capped at 200 results \
-         (raise with `limit`). Prefer this over running find/fd/ls via bash.";
+         search root (\"crates/*/src\"). Backed by the fff index (watched, always fresh). Respects \
+         .gitignore inside git repositories; hidden files are included inside git repositories \
+         only. Returns paths sorted alphabetically, capped at 200 results (raise with `limit`). \
+         Prefer this over running find/fd/ls via bash.";
 
 #[async_trait]
 impl AgentTool for FindTool {
@@ -115,16 +121,15 @@ impl AgentTool for FindTool {
                 root.display()
             )));
         }
-        let include_hidden = params.include_hidden.unwrap_or(false);
         let kind = params.kind;
         tracing::debug!(pattern = %params.pattern, root = %root.display(), limit, "find");
 
+        let picker = crate::picker::picker_for(&root)?;
         let find_root = root.clone();
-        let found = tokio::task::spawn_blocking(move || {
-            find(&find_root, &matcher, kind, include_hidden, limit)
-        })
-        .await
-        .map_err(|e| ToolError::new(format!("Find task failed: {e}")))?;
+        let found =
+            tokio::task::spawn_blocking(move || find(&picker, &find_root, &matcher, kind, limit))
+                .await
+                .map_err(|e| ToolError::new(format!("Find task failed: {e}")))??;
 
         if found.paths.is_empty() {
             return Ok(ToolResult::text(format!(
@@ -157,40 +162,55 @@ struct Found {
     truncated: bool,
 }
 
-/// 遍历 root 并匹配 glob，结果按字典序排序后截断到 limit。
+/// 在 fff 索引上匹配 glob（文件 + 目录），按字典序排序后截断到 limit。
 fn find(
-    root: &Path,
+    picker: &fff_search::SharedFilePicker,
+    root: &std::path::Path,
     matcher: &globset::GlobMatcher,
     kind: Option<FindKind>,
-    include_hidden: bool,
     limit: usize,
-) -> Found {
-    let mut paths: Vec<String> = crate::walk::walk(root, include_hidden)
-        .into_iter()
-        .filter(|entry| match (kind, entry.file_type()) {
-            (Some(FindKind::File), Some(t)) => t.is_file(),
-            (Some(FindKind::Dir), Some(t)) => t.is_dir(),
-            _ => true,
-        })
-        .filter(|entry| {
-            let relative = entry
-                .path()
-                .strip_prefix(root)
-                .unwrap_or_else(|_| entry.path());
-            matcher.is_match(relative)
-        })
-        .map(|entry| {
-            let text = entry.path().display().to_string();
-            match text.strip_prefix("./") {
-                Some(stripped) => stripped.to_string(),
-                None => text,
-            }
-        })
-        .collect();
+) -> Result<Found, ToolError> {
+    let guard = picker
+        .read()
+        .map_err(|e| ToolError::new(format!("Index unavailable: {e}")))?;
+    let picker = guard
+        .as_ref()
+        .ok_or_else(|| ToolError::new("Index not initialized"))?;
+
+    let want_files = !matches!(kind, Some(FindKind::Dir));
+    let want_dirs = !matches!(kind, Some(FindKind::File));
+    let mut paths = Vec::new();
+    if want_files {
+        paths.extend(
+            picker
+                .get_files()
+                .iter()
+                .filter(|f| !f.is_deleted())
+                .map(|f| f.relative_path(picker))
+                .filter(|rel| !crate::picker::is_vcs_internal_path(rel))
+                .filter(|rel| matcher.is_match(rel.as_str()))
+                .map(|rel| display_path(root, &rel)),
+        );
+    }
+    if want_dirs {
+        paths.extend(
+            picker
+                .get_dirs()
+                .iter()
+                .filter(|d| !d.is_deleted())
+                .map(|d| d.relative_path(picker))
+                // 索引内目录路径以 `/` 结尾，匹配与展示前去掉
+                .map(|rel| rel.trim_end_matches('/').to_string())
+                .filter(|rel| !rel.is_empty() && !crate::picker::is_vcs_internal_path(rel))
+                .filter(|rel| matcher.is_match(rel.as_str()))
+                .map(|rel| display_path(root, &rel)),
+        );
+    }
     paths.sort();
+    drop(guard);
     let truncated = paths.len() > limit;
     paths.truncate(limit);
-    Found { paths, truncated }
+    Ok(Found { paths, truncated })
 }
 
 /// 构造 glob 匹配器：纯文件名模式（不含 `/`）等价于任意深度匹配。
@@ -205,4 +225,13 @@ fn build_matcher(pattern: &str) -> Result<globset::GlobMatcher, ToolError> {
         .build()
         .map_err(|e| ToolError::new(format!("Invalid glob {pattern:?}: {e}")))?;
     Ok(glob.compile_matcher())
+}
+
+/// 展示路径：搜索根为 `.` 时拼接结果带 `./` 前缀，去掉以保持简洁。
+fn display_path(root: &std::path::Path, relative: &str) -> String {
+    let text = root.join(relative).display().to_string();
+    match text.strip_prefix("./") {
+        Some(stripped) => stripped.to_string(),
+        None => text,
+    }
 }

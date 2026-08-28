@@ -103,13 +103,14 @@ similar = "3"
 unicode-normalization = "0.1"
 
 # ── 内容搜索与文件查找（nomic-tools 的 grep/find 工具）──────────────────────
-# grep-regex/grep-searcher 是 ripgrep 官方的搜索引擎库（行匹配、二进制检测、
-# 编码处理）；ignore/globset 是 ripgrep 与 fd 共用的遍历与 glob 匹配库。
+# fff-search：常驻索引 + 文件系统监听的高性能文件/内容搜索引擎
+#（SIMD 匹配、frecency 排序），替代逐次全盘遍历的 ripgrep/fd 语义实现。
 # 全部以库形式集成，无需外部二进制（与 ADR 0006 的 nix 打包目标一致）
-grep-regex = "0.1"
-grep-searcher = "0.1"
-ignore = "0.4"
+fff-search = "0.10"
+# globset：find 的输出侧 glob 过滤与 grep 的 glob 校验；regex：grep 的
+# 正则预校验与单文件搜索（均为 fff-search 的传递依赖，不引入额外依赖树）
 globset = "0.4"
+regex = "1"
 
 # ── 进程组管理（nomic-tools 的 bash 工具超时强杀）───────────────────────────
 # killpg 是 safe 封装（workspace 禁用 unsafe_code）；仅启用所需 feature

@@ -1,7 +1,8 @@
 //! nomic-tools：编码 agent 的基础工具（对应 pi-coding-agent 的工具层）。
 //!
 //! 八个工具：read/write/edit/bash 负责文件读写与命令执行，
-//! grep/find 提供 ripgrep/fd 语义的内容搜索与文件查找，
+//! grep/find 提供内容搜索与文件查找（基于 fff 常驻索引：后台扫描 +
+//! watcher 保持新鲜，重复搜索近即时），
 //! todo_read/todo_write 提供带父子层级的任务清单（共享内存态 [`TodoStore`]），
 //! ask_user_question 经 [`QuestionSink`] 向用户提问（单选/多选/填空），
 //! 宿主侧的在途提问生命周期（登记/应答/丢弃/快照）收在 [`QuestionRegistry`]。
@@ -17,11 +18,11 @@ mod find;
 mod grep;
 pub mod multi_agent;
 mod mutation_queue;
+mod picker;
 mod question_registry;
 mod read;
 mod todo;
 mod truncate;
-mod walk;
 mod write;
 
 pub use ask::{

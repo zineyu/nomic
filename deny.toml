@@ -9,7 +9,11 @@ feature-depth = 1
 
 [advisories]
 # 默认使用 RustSec advisory-db；已知无修复方案且可接受的漏洞在此忽略
-ignore = []
+ignore = [
+  # bincode 1.x 标记为 unmaintained（非安全漏洞）：fff-search 经 heed-types
+  # 引入，上游未迁移前无替代路径；仅用于本地索引缓存的序列化。
+  "RUSTSEC-2025-0141",
+]
 yanked = "deny"
 
 [licenses]

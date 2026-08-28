@@ -521,7 +521,7 @@ Web 侧也可单独执行：`web-check`（完整）、`web-dev`（vite dev serve
 - `crates/runtime/nomic-session`：SQLite session 存储（树形 entries、resume、分支浏览/加载、sqlite 配置表、`sessions list`）
 - `crates/app/nomic-skills`：skill 发现、frontmatter 元数据、覆盖规则与显式激活
 - `crates/app/nomic-prompts`：prompt template 发现、frontmatter 元数据、覆盖规则与参数展开
-- `crates/app/nomic-tools`：内建工具——`read` / `write` / `edit` / `bash`（截断、模糊匹配、BOM/CRLF 保留、文件变更队列、超时强杀进程组）、`grep` / `find`（ripgrep/fd 语义，纯库实现）、`todo_read` / `todo_write`（父子嵌套任务列表）
+- `crates/app/nomic-tools`：内建工具——`read` / `write` / `edit` / `bash`（截断、模糊匹配、BOM/CRLF 保留、文件变更队列、超时强杀进程组）、`grep` / `find`（基于 fff 常驻索引，纯库实现）、`todo_read` / `todo_write`（父子嵌套任务列表）
 - `crates/app/nomic-cli`：`nomic` 二进制（print 模式 + ratatui 交互 TUI + `--web` 内置服务 + resume/sessions 子命令 + tracing 日志）
 - `web/`：Web UI 前端（React + Vite + TypeScript + TailwindCSS + shadcn/ui；Vitest 单测、Storybook 组件开发；`npm run build` 产物由 `nomic --web` 伺服）
 - `docs/adr/`：架构决策记录（0001–0030）

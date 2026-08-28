@@ -20,10 +20,11 @@ describe('toolCategory', () => {
     expect(toolCategory('edit')).toBe('modify')
   })
 
-  it('todo/ask 归入交互类', () => {
+  it('todo/ask/goal_done 归入交互类', () => {
     expect(toolCategory('todo_read')).toBe('interact')
     expect(toolCategory('todo_write')).toBe('interact')
     expect(toolCategory('ask_user_question')).toBe('interact')
+    expect(toolCategory('goal_done')).toBe('interact')
   })
 
   it('agent 系列归入代理类', () => {

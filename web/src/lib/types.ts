@@ -186,6 +186,13 @@ export type ServerEvent =
   | { type: 'refresh' }
   // ── steering 队列变更（全量快照：入队 / turn 边界注入弹出 / 编辑 / 删除 / 换位）
   | { type: 'queue_changed'; session_id: string; queue: QueueEntry[] }
+  // ── goal 状态变化（/goal <目标> 启动 / 目标完成 / 取消；徽标用）
+  | {
+      type: 'goal_changed'
+      session_id: string
+      status: 'started' | 'completed' | 'cancelled'
+      objective?: string
+    }
   // ── 查询响应事件（携带 request_id）
   | { type: 'state_snapshot'; session_id: string; request_id: string; snapshot: SnapshotView }
   | { type: 'models_list'; request_id: string; candidates: ModelChoice[] }
@@ -312,6 +319,8 @@ export interface StateResponse {
   session: { id: string; title: string | null } | null
   pending_question: { id: string; question: AskUserQuestion } | null
   workspace: string
+  /** 进行中的目标原文（/goal <目标> 启动；目标驱动运行徽标用） */
+  goal: string | null
   /** 会话统计信息 */
   rounds: number
   total_steps: number

@@ -50,6 +50,8 @@ export interface ChatState {
   workspaces: WorkspaceSummary[]
   question: QuestionState | null
   error: string | null
+  /** 进行中的目标原文（/goal <目标> 启动；目标驱动运行徽标用） */
+  goal: string | null
   stats: SessionStats
 }
 
@@ -79,6 +81,7 @@ const initialState: ChatState = {
   workspaces: [],
   question: null,
   error: null,
+  goal: null,
   stats: defaultStats,
 }
 
@@ -104,6 +107,7 @@ export function useChat() {
       session: snapshot.session,
       question: snapshot.pending_question ?? null,
       error: null,
+      goal: snapshot.goal ?? null,
       stats: {
         rounds: snapshot.rounds ?? 0,
         total_steps: snapshot.total_steps ?? 0,
@@ -142,6 +146,14 @@ export function useChat() {
         case 'queue_changed':
           // steering 队列全量快照：整体替换（队列短小，免增量合并）
           return { ...prev, items, queue: event.queue }
+        case 'goal_changed':
+          // goal 状态：启动携带目标原文；完成/取消清除徽标（完成汇报经
+          // goal_done 工具卡片在消息流中可见）
+          return {
+            ...prev,
+            items,
+            goal: event.status === 'started' ? (event.objective ?? null) : null,
+          }
         case 'question':
           return { ...prev, items, question: { id: event.id, question: event.question } }
         case 'question_cancelled':

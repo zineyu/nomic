@@ -80,6 +80,7 @@ export function ChatView({
     queue,
     question,
     error,
+    goal,
     session,
     sessionId,
     model,
@@ -179,6 +180,15 @@ export function ChatView({
 
       {/* todo 任务清单（输入框上方；空清单不渲染） */}
       <TodoPanel todos={todos} />
+
+      {/* 目标驱动运行徽标（输入框上方；无进行中目标不渲染） */}
+      {goal && (
+        <div data-slot="goal-hint" className="mx-auto w-full max-w-page px-4 pb-0.5 sm:px-7">
+          <span className="block truncate font-mono text-xs text-muted-foreground" title={goal}>
+            目标：{goal}（/goal 取消）
+          </span>
+        </div>
+      )}
 
       {/* 运行状态提示（输入框上方；空闲时不渲染） */}
       <RunHint phase={runPhase(items, running)} />

@@ -15,6 +15,7 @@ const CATEGORY_BY_TOOL: Record<string, ToolCategory> = {
   todo_read: 'interact',
   todo_write: 'interact',
   ask_user_question: 'interact',
+  goal_done: 'interact',
   create_agent: 'agent',
   send_message: 'agent',
   wait_result: 'agent',

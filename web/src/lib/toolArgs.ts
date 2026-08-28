@@ -10,6 +10,7 @@ export function briefArgs(toolName: string, args: Record<string, unknown>): stri
     grep: 'pattern',
     find: 'pattern',
     ask_user_question: 'question',
+    goal_done: 'summary',
   }
   const field = keyField[toolName]
   let text: string

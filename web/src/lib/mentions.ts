@@ -64,6 +64,11 @@ export interface SlashCommand {
 export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/compact', usage: '/compact [聚焦指令]', description: '压缩上下文' },
   { name: '/continue', usage: '/continue', description: '续跑上次运行' },
+  {
+    name: '/goal',
+    usage: '/goal <目标>',
+    description: '目标驱动运行：持续工作直到完成（/goal 取消）',
+  },
 ]
 
 /**

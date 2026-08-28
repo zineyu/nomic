@@ -57,9 +57,10 @@ describe('mentionTypeCandidates', () => {
 
 describe('commandCandidates', () => {
   it('按 `/` 前缀匹配命令', () => {
-    expect(commandCandidates('/').map((c) => c.name)).toEqual(['/compact', '/continue'])
+    expect(commandCandidates('/').map((c) => c.name)).toEqual(['/compact', '/continue', '/goal'])
     expect(commandCandidates('/com').map((c) => c.name)).toEqual(['/compact'])
     expect(commandCandidates('/continue').map((c) => c.name)).toEqual(['/continue'])
+    expect(commandCandidates('/go').map((c) => c.name)).toEqual(['/goal'])
     expect(commandCandidates('/xyz')).toEqual([])
   })
 

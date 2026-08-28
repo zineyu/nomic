@@ -2,7 +2,8 @@
 //! `list_workspaces`）与命令类（`prompt` / `cancel` / `answer_question` /
 //! `switch_model`）的具体实现，以及共享类型与辅助函数。
 //! session / workspace 生命周期命令收在 [`crud`] 子模块（查询式命令携带
-//! `request_id` 关联响应；800 行封顶拆分）。
+//! `request_id` 关联响应）、斜杠命令解析与 goal 命令处置收在 [`commands`]
+//! 子模块（800 行封顶拆分）。
 
 use std::sync::Arc;
 
@@ -14,7 +15,10 @@ use super::ApiError;
 use crate::model::ModelChoice;
 use crate::web::{AppState, ServerEvent, Snapshot};
 
+mod commands;
 mod crud;
+
+use commands::{SlashCommand, goal_command, parse_slash_command};
 
 pub use crud::{
     handle_create_session, handle_create_workspace, handle_delete_session, handle_delete_workspace,
@@ -123,8 +127,10 @@ const MAX_FILE_CANDIDATES: usize = 100;
 
 /// 提交 prompt；返回 ack 携带排队状态。
 ///
-/// `/` 开头的输入按斜杠命令解析（`/compact [聚焦指令]`、`/continue`），
-/// 走 runner 串行 job 队列（运行中排队等待本轮结束，ADR-0033）。
+/// `/` 开头的输入按斜杠命令解析（`/compact [聚焦指令]`、`/continue`、
+/// `/goal <目标>`）：runner job 类命令走 runner 串行 job 队列（运行中
+/// 排队等待本轮结束，ADR-0033）；`/goal <目标>` 启动目标驱动运行（须空闲，
+/// 与 TUI「启动属会话命令」同一口径），`/goal` 无参取消进行中的目标。
 ///
 /// 普通文本：运行中入 steering 统一消息队列（ADR-0014），core 在 turn
 /// 边界弹出注入本轮运行（队列存原文，`@skill:` / `@file:` mention 在
@@ -146,19 +152,29 @@ pub async fn handle_prompt(
         Err(error) => return error.to_ws_response(None),
     };
     if let Some(rest) = trimmed.strip_prefix('/') {
-        let job = match parse_slash_command(rest) {
-            Ok(job) => job,
+        match parse_slash_command(rest) {
             Err(error) => return error.to_ws_response(None),
-        };
-        // runner 串行消费（提交时已在运行则排队）；提交前读运行态作 ack
-        let queued = session.runner.is_running();
-        if let Err(error) = session.runner.submit(job) {
-            return ApiError::Internal(error.to_string()).to_ws_response(None);
+            Ok(SlashCommand::Job(job)) => {
+                // runner 串行消费（提交时已在运行则排队）；提交前读运行态作 ack
+                let queued = session.runner.is_running();
+                if let Err(error) = session.runner.submit(job) {
+                    return ApiError::Internal(error.to_string()).to_ws_response(None);
+                }
+                return ServerEvent::PromptAck {
+                    session_id: session_id.to_string(),
+                    queued,
+                };
+            }
+            Ok(SlashCommand::Goal(objective)) => {
+                return match goal_command(state, &session, objective) {
+                    Ok(()) => ServerEvent::PromptAck {
+                        session_id: session_id.to_string(),
+                        queued: false,
+                    },
+                    Err(error) => error.to_ws_response(None),
+                };
+            }
         }
-        return ServerEvent::PromptAck {
-            session_id: session_id.to_string(),
-            queued,
-        };
     }
     // 运行中：入 steering 队列（含 runner 尚有排队 job 的窗口），turn 边界
     // 注入本轮；入队即广播 queue_changed 驱动前端队列区
@@ -240,32 +256,6 @@ pub async fn handle_move_queue_entry(
     };
     session.queue.move_by(id, delta);
     None
-}
-
-/// 解析斜杠命令体（已去掉前导 `/`）；未知命令或参数非法时返回带用法
-/// 提示的错误。web 支持的命令子集：`/compact [聚焦指令]`、`/continue`。
-fn parse_slash_command(rest: &str) -> Result<nomic_core::SessionJob, ApiError> {
-    const USAGE: &str = "available commands: /compact [focus instruction] (compress context), /continue (resume last run)";
-    // 命令名取到首个 `:` 或空白为止；其余部分为参数（`compact 指令` 与
-    // `compact:指令` 两种形式等价，冒号形式与 TUI 命令语法对齐）
-    let (name, arg) = match rest.find(|c: char| c == ':' || c.is_whitespace()) {
-        Some(index) => {
-            let (name, tail) = rest.split_at(index);
-            let delimiter = tail.chars().next().expect("find 命中必有字符");
-            (
-                name,
-                Some(tail[delimiter.len_utf8()..].trim()).filter(|arg| !arg.is_empty()),
-            )
-        }
-        None => (rest, None),
-    };
-    match name {
-        "compact" => Ok(nomic_core::SessionJob::Compact {
-            instructions: arg.map(str::to_string),
-        }),
-        "continue" if arg.is_none() => Ok(nomic_core::SessionJob::Continue),
-        _ => Err(ApiError::BadRequest(format!("未知命令 /{rest}。{USAGE}"))),
-    }
 }
 
 /// 取消当前轮运行。
@@ -418,6 +408,8 @@ pub struct SnapshotView {
     pub pending_question: Option<(String, AskUserQuestion)>,
     /// 本 session 的 workspace 路径（操作基准）
     pub workspace: String,
+    /// 进行中的目标原文（`/goal <目标>` 启动；前端徽标用）
+    pub goal: Option<String>,
     /// 会话统计信息（前端状态栏展示用）
     #[serde(flatten)]
     pub stats: nomic_core::SessionStats,
@@ -435,6 +427,7 @@ impl SnapshotView {
             session: snap.session,
             pending_question: snap.pending_question,
             workspace: snap.workspace.display().to_string(),
+            goal: snap.goal,
             stats: snap.stats,
         }
     }
@@ -497,47 +490,6 @@ fn parse_thinking_level(level: &str) -> Result<Option<ThinkingLevel>, ApiError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_slash_command_compact_and_continue() {
-        assert!(matches!(
-            parse_slash_command("compact").expect("compact"),
-            nomic_core::SessionJob::Compact { instructions: None }
-        ));
-        // 自由文本指令（空格形式）
-        let Ok(nomic_core::SessionJob::Compact {
-            instructions: Some(instructions),
-        }) = parse_slash_command("compact 专注 测试 部分")
-        else {
-            panic!("compact 带指令应解析成功");
-        };
-        assert_eq!(instructions, "专注 测试 部分");
-        // 冒号形式（与 TUI 命令语法对齐）
-        let Ok(nomic_core::SessionJob::Compact {
-            instructions: Some(instructions),
-        }) = parse_slash_command("compact:focus on tests")
-        else {
-            panic!("compact:指令 应解析成功");
-        };
-        assert_eq!(instructions, "focus on tests");
-        assert!(matches!(
-            parse_slash_command("continue").expect("continue"),
-            nomic_core::SessionJob::Continue
-        ));
-    }
-
-    #[test]
-    fn parse_slash_command_rejects_unknown_and_invalid_usage() {
-        let Err(ApiError::BadRequest(message)) = parse_slash_command("quit") else {
-            panic!("未知命令应报错");
-        };
-        assert!(message.contains("/compact"), "{message}");
-        assert!(message.contains("/continue"), "{message}");
-        // continue 不接受参数
-        assert!(parse_slash_command("continue extra").is_err());
-        // 空命令名
-        assert!(parse_slash_command("").is_err());
-    }
 
     /// `list_files` 以目标 session 的 workspace 为基准做前缀匹配（测试
     /// session 的 workspace 是 crate 根目录）。

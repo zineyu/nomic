@@ -322,6 +322,7 @@ pub fn brief_args(tool_name: &str, args: &serde_json::Value) -> String {
         "read" | "write" | "edit" => args.get("path").and_then(|v| v.as_str()),
         "grep" | "find" => args.get("pattern").and_then(|v| v.as_str()),
         "ask_user_question" => args.get("question").and_then(|v| v.as_str()),
+        "goal_done" => args.get("summary").and_then(|v| v.as_str()),
         _ => None,
     };
     let text = match (tool_name, key_field) {

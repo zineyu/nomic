@@ -95,6 +95,15 @@ pub enum ServerEvent {
         session_id: String,
         queue: Vec<QueueEntryView>,
     },
+    /// goal 状态变化（`/goal <目标>` 启动 / 目标完成 / 取消；前端徽标用，
+    /// 断线重连后的状态以快照的 `goal` 字段为准）
+    GoalChanged {
+        session_id: String,
+        status: GoalStatus,
+        /// 目标原文（仅 `started` 携带）
+        #[serde(skip_serializing_if = "Option::is_none")]
+        objective: Option<String>,
+    },
 
     // ── 查询响应事件（携带 request_id）───────────────────────────────
     /// 会话快照响应（`get_state` 查询的回复）
@@ -174,6 +183,18 @@ pub enum ServerEvent {
     WorkspaceDeleted { request_id: String, id: String },
 }
 
+/// goal 状态变化种类（`/goal <目标>` 命令驱动；serde snake_case）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalStatus {
+    /// 启动 / 替换目标（携带目标原文）
+    Started,
+    /// 目标完成（agent 已调用 `goal_done`）
+    Completed,
+    /// 目标被取消（`/goal` 无参）
+    Cancelled,
+}
+
 /// 单个 session 的运行时：自持 agent actor、session runner（串行 job
 /// 队列与取消，ADR-0033）、事件广播、提问注册表与落库器。并行执行的单位。
 #[derive(Debug)]
@@ -198,6 +219,12 @@ pub struct SessionRuntime {
     /// 本 session 的操作基准（workspace 严格归属）：工具相对路径以它解析，
     /// 快照展示给用户
     pub workspace: PathBuf,
+    /// 正常态工具集（goal 模式换出/换回的基准；`DynTool` 是 `Arc` 共享
+    /// 句柄，克隆廉价）
+    pub normal_tools: Vec<nomic_core::DynTool>,
+    /// goal 目标驱动运行的追问状态（与 `goal_done` 工具共享的会话句柄 +
+    /// 连续追问计数；策略收在 nomic-tools 的 `GoalNudger`，与 TUI 同一口径）
+    pub goal: std::sync::Mutex<nomic_tools::GoalNudger>,
     /// 事件转发任务句柄（删除 session 时 abort：释放任务持有的
     /// `Arc<SessionRuntime>` 引用，actor / runner 任务随后随通道关闭退出）
     tasks: std::sync::Mutex<Option<ForwardTasks>>,
@@ -219,6 +246,57 @@ impl SessionRuntime {
     /// 回答一个提问：经注册表回填；提问不存在或已被取消返回 `false`。
     pub fn answer_question(&self, id: &str, answer: AskUserAnswer) -> bool {
         self.questions.answer(id, answer)
+    }
+
+    /// 启动 / 替换目标驱动运行（`/goal <目标>`）：创建目标会话（与
+    /// `goal_done` 工具共享），换入 goal 工具集（goal_done 换入、
+    /// ask_user_question 换出），把目标包装为提示词提交一轮 prompt。
+    /// 调用方保证空闲（与 TUI「启动属会话命令」同一口径）且目标文本
+    /// 已展开 mention。
+    pub fn start_goal(&self, objective: String) -> Result<(), ApiError> {
+        let session = nomic_tools::GoalSession::new(objective.clone());
+        self.handle
+            .set_tools(nomic_tools::goal_tools(&self.normal_tools, &session))
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        self.goal.lock().expect("goal lock").arm(session);
+        self.runner
+            .submit(nomic_core::SessionJob::Prompt {
+                text: nomic_tools::goal_prompt(&objective),
+                images: Vec::new(),
+            })
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        let _ = self.events.send(ServerEvent::GoalChanged {
+            session_id: self.id.clone(),
+            status: GoalStatus::Started,
+            objective: Some(objective),
+        });
+        Ok(())
+    }
+
+    /// 取消进行中的目标（`/goal` 无参）：换回正常工具集并停止自动追问。
+    /// 运行中取消同样安全：追问状态立即解除（本轮结束后不再追问），工具集
+    /// 经 actor 邮箱 FIFO 在本轮结束后替换。无进行中目标时返回 `false`。
+    pub fn cancel_goal(&self) -> bool {
+        if self.goal.lock().expect("goal lock").session().is_none() {
+            return false;
+        }
+        self.goal.lock().expect("goal lock").disarm();
+        let _ = self.handle.set_tools(self.normal_tools.clone());
+        let _ = self.events.send(ServerEvent::GoalChanged {
+            session_id: self.id.clone(),
+            status: GoalStatus::Cancelled,
+            objective: None,
+        });
+        true
+    }
+
+    /// 进行中的目标原文（快照携带，前端徽标与断线重放用）。
+    pub fn goal_objective(&self) -> Option<String> {
+        self.goal
+            .lock()
+            .expect("goal lock")
+            .session()
+            .map(|session| session.objective().to_string())
     }
 
     /// 关停本 session（删除时调用）：取消在途运行并 abort 事件转发任务。

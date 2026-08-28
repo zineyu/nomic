@@ -158,6 +158,9 @@ impl SessionFactory {
             available_models: self.available_models.clone(),
             turn_injection: Some(Arc::new(queue.clone())),
         });
+        // 正常态工具集副本：goal 命令启动目标驱动运行时以它为基准换入
+        // goal_done / 换出 ask_user_question，目标结束再换回（与 TUI 同一口径）
+        let normal_tools = recipe.tools().to_vec();
         let session_span = tracing::info_span!("session", session_id = %id);
 
         let (agent, events_rx) = recipe
@@ -186,6 +189,8 @@ impl SessionFactory {
             questions,
             queue,
             workspace,
+            normal_tools,
+            goal: std::sync::Mutex::new(nomic_tools::GoalNudger::new()),
             tasks: std::sync::Mutex::new(None),
         });
         let events_task = tokio::spawn(
@@ -278,14 +283,23 @@ async fn forward_runner_events(
             RunnerEvent::Finished(JobOutcome::Prompt(result)) => {
                 match result {
                     Ok(outcome) => {
-                        // 队列 drain（ADR-0014）：正常结束但队列仍非空
-                        //（注入点查询后的滞后入队竞态），弹出队首作为下
-                        // 一轮 prompt；异常结束（取消/失败）队列暂停保留
+                        // 队列 drain（ADR-0014）优先于 goal 追问（与 TUI 同一
+                        // 口径）：正常结束但队列仍非空（注入点查询后的滞后
+                        // 入队竞态），弹出队首作为下一轮 prompt；异常结束
+                        //（取消/失败）队列暂停保留
                         if outcome.ended_normally() {
-                            drain_queue(&session);
+                            if session.queue.is_empty() {
+                                nudge_goal(&session);
+                            } else {
+                                session.goal.lock().expect("goal lock").reset();
+                                drain_queue(&session);
+                            }
+                        } else {
+                            session.goal.lock().expect("goal lock").reset();
                         }
                     }
                     Err(error) => {
+                        session.goal.lock().expect("goal lock").reset();
                         tracing::error!(?error, "agent run failed");
                         notify(format!("{error:#}"));
                         run_finished();
@@ -337,6 +351,41 @@ fn drain_queue(session: &Arc<SessionRuntime>) {
     }
 }
 
+/// prompt run 正常结束且队列已空时的 goal 推进（与 TUI `handle_prompt_done`
+/// 同一口径，策略收在 nomic-tools 的 [`nomic_tools::GoalNudger`]）：目标完成
+///（goal_done 落账）→ 换回正常工具集并广播；未完成 → 以复述目标的提示词
+/// 提交下一轮 prompt；连续追问达上限 → 暂停并提示。追问提交的 prompt 触发
+/// 新一轮 RunStarted/RunFinished，各轮追问经 runner 串行首尾相接成链。
+fn nudge_goal(session: &Arc<SessionRuntime>) {
+    let nudge = session.goal.lock().expect("goal lock").next(true);
+    match nudge {
+        nomic_tools::Nudge::Quiet => {}
+        nomic_tools::Nudge::Done => {
+            let _ = session.handle.set_tools(session.normal_tools.clone());
+            let _ = session.events.send(ServerEvent::GoalChanged {
+                session_id: session.id.clone(),
+                status: super::GoalStatus::Completed,
+                objective: None,
+            });
+        }
+        nomic_tools::Nudge::Capped(notice) => {
+            let _ = session.events.send(ServerEvent::Error {
+                session_id: Some(session.id.clone()),
+                request_id: None,
+                message: notice,
+            });
+        }
+        nomic_tools::Nudge::Remind(text) => {
+            if let Err(error) = session.runner.submit(SessionJob::Prompt {
+                text,
+                images: Vec::new(),
+            }) {
+                tracing::error!(?error, "goal nudge submit failed");
+            }
+        }
+    }
+}
+
 /// 当前状态快照的各部分（api 层拼装成响应）。
 pub struct Snapshot {
     pub messages: Vec<Message>,
@@ -350,6 +399,8 @@ pub struct Snapshot {
     pub pending_question: Option<(String, AskUserQuestion)>,
     /// 本 session 的 workspace 路径（操作基准）
     pub workspace: PathBuf,
+    /// 进行中的目标原文（`/goal <目标>` 启动；前端徽标用）
+    pub goal: Option<String>,
     /// 会话统计信息
     pub stats: nomic_core::SessionStats,
 }
@@ -381,6 +432,7 @@ pub async fn snapshot(session: &SessionRuntime) -> Result<Snapshot> {
     };
     let title = custom.or(title);
     let pending_question = session.questions.current();
+    let goal = session.goal_objective();
     Ok(Snapshot {
         messages,
         model,
@@ -391,6 +443,7 @@ pub async fn snapshot(session: &SessionRuntime) -> Result<Snapshot> {
         session: Some((session.id.clone(), title)),
         pending_question,
         workspace: session.workspace.clone(),
+        goal,
         stats: session_stats,
     })
 }
@@ -439,5 +492,96 @@ mod tests {
 
         super::drain_queue(&session);
         assert!(!session.runner.is_running(), "空队列不应产生 job");
+    }
+
+    /// goal 追问：run 正常结束且队列已空而目标未完成时，以复述目标的
+    /// 提示词提交下一轮 prompt（与 TUI 同一口径；测试在 job 出队前取消，
+    /// 不发起真实请求）。
+    #[tokio::test]
+    async fn nudge_goal_submits_reminder_when_objective_unmet() {
+        let (state, session_id) = crate::web::tests::test_state_with_session().await;
+        let session = state
+            .inner
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        assert!(!session.runner.is_running(), "预置 session 应空闲");
+
+        session
+            .goal
+            .lock()
+            .expect("goal lock")
+            .arm(nomic_tools::GoalSession::new("目标"));
+        super::nudge_goal(&session);
+        assert!(
+            session.runner.is_running(),
+            "追问应提交下一轮 prompt（submit 同步入队，无调度点）"
+        );
+        session.cancel_run();
+    }
+
+    /// 无进行中目标：run 结束后不追问（不产生新 job）。
+    #[tokio::test]
+    async fn nudge_goal_quiet_without_armed_goal() {
+        let (state, session_id) = crate::web::tests::test_state_with_session().await;
+        let session = state
+            .inner
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .expect("session")
+            .clone();
+
+        super::nudge_goal(&session);
+        assert!(!session.runner.is_running(), "无目标不应产生 job");
+    }
+
+    /// goal 完成：goal_done 落账后 run 结束 → 解除追问状态并广播
+    /// goal_changed(completed)，不再追问。
+    #[tokio::test]
+    async fn nudge_goal_disarms_and_broadcasts_when_done() {
+        let (state, session_id) = crate::web::tests::test_state_with_session().await;
+        let session = state
+            .inner
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        let mut events = state.inner.events.subscribe();
+
+        session
+            .goal
+            .lock()
+            .expect("goal lock")
+            .arm(nomic_tools::GoalSession::new("目标"));
+        let goal_session = session
+            .goal
+            .lock()
+            .expect("goal lock")
+            .session()
+            .cloned()
+            .expect("armed");
+        goal_session.mark_done();
+
+        super::nudge_goal(&session);
+
+        assert_eq!(session.goal_objective(), None, "完成后目标应解除");
+        assert!(!session.runner.is_running(), "完成后不应再追问");
+        assert!(
+            matches!(
+                events.try_recv().expect("goal_changed"),
+                crate::web::ServerEvent::GoalChanged {
+                    status: crate::web::GoalStatus::Completed,
+                    ..
+                }
+            ),
+            "完成应广播 goal_changed(completed)"
+        );
     }
 }

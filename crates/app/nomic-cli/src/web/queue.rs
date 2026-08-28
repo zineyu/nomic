@@ -112,6 +112,11 @@ impl MessageQueue {
         })
     }
 
+    /// 队列是否为空（run 结束时「队列优先于 goal 追问」的判定用）。
+    pub fn is_empty(&self) -> bool {
+        self.lock().is_empty()
+    }
+
     /// 队列内容快照（会话快照与变更广播用；队列短小，逐次克隆可接受）。
     pub fn snapshot(&self) -> Vec<QueueEntryView> {
         self.lock()

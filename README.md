@@ -196,7 +196,9 @@ nomic --cwd /path/to/project
 - **mention 与命令**：输入 `@` 弹出行内补全（`@skill:` 引用 skill、`@file:` 引用
   当前 session workspace 内的文件，发送时由服务端展开有效标记，与 TUI 同一口径）；
   输入 `/` 弹出命令补全——`/compact [聚焦指令]` 压缩上下文、`/continue` 续跑上次
-  运行（命令走 runner 串行队列，运行中提交则等本轮结束）
+  运行（命令走 runner 串行队列，运行中提交则等本轮结束）、`/goal <目标>` 启动
+  目标驱动运行（与 TUI 同一语义：`goal_done` 汇报完成前持续追问；运行期间输入框
+  上方显示目标徽标；`/goal` 无参取消）
 
 ```bash
 nomic --web [--port N] [--host H]

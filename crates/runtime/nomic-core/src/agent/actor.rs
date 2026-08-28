@@ -26,6 +26,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
 
+use crate::DynTool;
 use crate::agent::state::{SharedStateView, StateView};
 use crate::agent::{Agent, AgentError, SessionStats};
 use crate::compaction::{Compaction, CompactionError};
@@ -83,6 +84,9 @@ enum AgentCommand {
     },
     /// 设置思考级别
     SetReasoning(Option<ThinkingLevel>),
+    /// 运行时整体替换工具集（交互端 goal 模式换入 goal_done、换出
+    /// ask_user_question 的语义）；下一次请求即携带新工具定义
+    SetTools(Vec<DynTool>),
     /// 屏障：回执送达即此前提交的全部命令已应用（读己之写同步用）
     Flush(oneshot::Sender<()>),
 }
@@ -203,6 +207,13 @@ impl AgentHandle {
         self.send(AgentCommand::SetReasoning(reasoning))
     }
 
+    /// 运行时整体替换工具集（消息历史、系统提示词与配置保留；下一次
+    /// 请求即携带新工具定义）。fire-and-forget：紧随其后的 `prompt`
+    /// 一定使用新工具集（邮箱 FIFO）。
+    pub fn set_tools(&self, tools: Vec<DynTool>) -> Result<(), ActorError> {
+        self.send(AgentCommand::SetTools(tools))
+    }
+
     /// 查询当前消息历史（读共享状态视图；快照隔离，不阻塞在途运行）。
     pub fn messages(&self) -> Result<Vec<Message>, ActorError> {
         self.view_read(|view| view.messages.clone())
@@ -266,6 +277,15 @@ impl AgentHandle {
 }
 
 impl Agent {
+    /// 运行时整体替换工具集（交互端 goal 模式换入 goal_done、换出
+    /// ask_user_question 的语义）。
+    ///
+    /// 下一次请求即携带新工具定义；消息历史、系统提示词与配置保留。
+    /// 应在非运行状态（`prompt` 返回后）调用。静默切换，不发出事件。
+    pub fn set_tools(&mut self, tools: Vec<DynTool>) {
+        self.tools = tools;
+    }
+
     /// 启动 agent actor：本体移入专属 tokio 任务，串行处理命令邮箱。
     ///
     /// 返回句柄与任务的 `JoinHandle`：任务在全部句柄断开（邮箱关闭）
@@ -323,6 +343,7 @@ impl Agent {
                             agent.set_provider(provider, api_key);
                         }
                         AgentCommand::SetReasoning(level) => agent.set_reasoning(level),
+                        AgentCommand::SetTools(tools) => agent.set_tools(tools),
                         AgentCommand::Flush(reply) => {
                             let _ = reply.send(());
                         }

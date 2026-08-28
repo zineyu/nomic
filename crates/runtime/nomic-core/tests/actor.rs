@@ -152,6 +152,49 @@ async fn config_changes_visible_via_queries() {
     );
 }
 
+/// 工具集替换经邮箱 FIFO 生效：替换后紧随的 prompt 使用新工具集
+///（替换前调用未注册工具得到错误结果，替换后正常执行）。
+#[tokio::test]
+async fn set_tools_applies_to_next_request() {
+    let provider = MockProvider::new(vec![
+        support::tool_call_done("c1", "echo", serde_json::json!({"text": "hi"})),
+        text_done("done"),
+        support::tool_call_done("c2", "echo", serde_json::json!({"text": "hi"})),
+        text_done("done"),
+    ]);
+    let (agent, _events) = make_agent(provider, vec![]);
+    let (handle, _task) = agent.spawn();
+
+    // 替换前：echo 未注册，调用转为错误结果回喂模型
+    let before = handle
+        .prompt("hi", CancellationToken::new())
+        .await
+        .expect("prompt 应成功");
+    assert!(
+        before.iter().any(|message| matches!(
+            message,
+            Message::ToolResult(result) if result.is_error && result.tool_name == "echo"
+        )),
+        "未注册工具应得到错误结果"
+    );
+
+    handle
+        .set_tools(vec![nomic_core::DynTool::new(support::EchoTool)])
+        .expect("替换应成功");
+    // 紧随的 prompt 一定跑在替换之后（邮箱 FIFO）：echo 正常执行
+    let after = handle
+        .prompt("hi", CancellationToken::new())
+        .await
+        .expect("prompt 应成功");
+    assert!(
+        after.iter().any(|message| matches!(
+            message,
+            Message::ToolResult(result) if !result.is_error && result.tool_name == "echo"
+        )),
+        "替换后 echo 应正常执行"
+    );
+}
+
 /// token 估算查询与 core 的估算口径一致。
 #[tokio::test]
 async fn context_tokens_matches_estimate() {

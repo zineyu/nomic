@@ -6,7 +6,8 @@
 //! todo_read/todo_write 提供带父子层级的任务清单（共享内存态 [`TodoStore`]），
 //! ask_user_question 经 [`QuestionSink`] 向用户提问（单选/多选/填空），
 //! goal_done 是 goal 模式的完成汇报通道（经共享 [`GoalSession`] 通知交互端，
-//! 见 [`goal_tools`] 的工具集变换），
+//! 见 [`goal_tools`] 的工具集变换），「run 停止时复述目标」的追问策略收在
+//! [`GoalNudger`]（TUI / web 共用），
 //! 宿主侧的在途提问生命周期（登记/应答/丢弃/快照）收在 [`QuestionRegistry`]。
 //!
 //! 工具的输出格式与引导提示（截断翻页、diff 详情、错误文本）是与模型的
@@ -36,7 +37,9 @@ pub use base::BaseDir;
 pub use bash::BashTool;
 pub use edit::EditTool;
 pub use find::FindTool;
-pub use goal::{GoalDoneParams, GoalDoneTool, GoalSession, goal_tools};
+pub use goal::{
+    GoalDoneParams, GoalDoneTool, GoalNudger, GoalSession, Nudge, goal_prompt, goal_tools,
+};
 pub use grep::GrepTool;
 pub use question_registry::QuestionRegistry;
 pub use read::ReadTool;

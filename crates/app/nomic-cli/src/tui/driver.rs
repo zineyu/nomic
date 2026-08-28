@@ -20,13 +20,12 @@ use nomic_core::{
 };
 use nomic_session::SessionRecorder;
 use nomic_skills::SkillResolver;
-use nomic_tools::{GoalSession, QuestionRegistry, goal_tools};
+use nomic_tools::{GoalNudger, GoalSession, Nudge, QuestionRegistry, goal_prompt, goal_tools};
 use tokio::sync::mpsc;
 
 use super::app::{App, Effect, Key, SkillEntry};
 use super::ask::PendingQuestion;
 use super::effects::{self, ModelSwitcher, SessionBinding};
-use super::goal::{GoalNudger, Nudge, goal_prompt};
 use super::terminal::edit_input_in_editor;
 use super::{TuiTerminal, panic_payload_text};
 use crate::mention;
@@ -115,7 +114,8 @@ pub(super) struct Driver {
     /// 正常态工具集（goal 模式换出/换回的基准；`DynTool` 是 `Arc` 共享
     /// 句柄，克隆廉价）
     normal_tools: Vec<DynTool>,
-    /// goal 模式自动追问（目标会话与连续追问计数、上限与清零时机收在其中）
+    /// goal 模式自动追问（目标会话与连续追问计数、上限与清零时机收在
+    /// nomic-tools 的 [`GoalNudger`]，与 web 同一口径）
     goal: GoalNudger,
 }
 

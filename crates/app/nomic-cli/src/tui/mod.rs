@@ -18,10 +18,9 @@
 //! - [`widgets`]：纯渲染——组合根 [`widgets::draw`] 布局后由各区域自定义
 //!   widget（聊天区 / 输入框 / 状态栏 / 弹层 / 覆盖层）渲染
 //! - [`driver`]：agent driver 任务（专属 tokio 任务持有 `Agent`）与事件循环
-//!   的唤醒处理（按键映射、`Effect` 转发执行）；goal 目标驱动运行的状态与
-//!   策略收在 [`goal`]（`GoalNudger`），driver 只消费判定结果
-//! - [`goal`]：goal 目标驱动运行（与 `goal_done` 工具共享的目标会话句柄 +
-//!   连续追问计数、上限与清零时机、启动/追问提示词）
+//!   的唤醒处理（按键映射、`Effect` 转发执行）；goal 目标驱动运行的追问状态
+//!   与策略收在 nomic-tools 的 `GoalNudger`（与 web 同一口径），driver 只消费
+//!   判定结果
 //! - [`terminal`]：终端生命周期（raw mode / alternate screen / 键盘增强）、
 //!   panic 恢复 hook 与外部编辑器接线
 //! - 本文件：`run` 事件循环主循环
@@ -38,7 +37,6 @@ mod ask;
 mod chat_lines;
 mod driver;
 mod effects;
-mod goal;
 mod markdown;
 
 mod steering;

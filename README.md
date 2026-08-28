@@ -174,7 +174,7 @@ nomic --cwd /path/to/project
 | `continue` | 续跑：重发最后一条消息（user 消息或 tool result）重新请求模型 |
 | `copy` | 复制最新一条消息到剪贴板 |
 | `thinking` | 切换 thinking 内容折叠/展开显示 |
-| `goal` | 开关 goal 模式：开启后 react loop 停止时若 todo 未全部完成，自动以 user 消息追问 |
+| `goal <目标>` | 目标驱动运行：agent 持续工作直到调用 `goal_done` 汇报完成（期间换出 `ask_user_question`）；react loop 停止而目标未完成时自动复述目标继续追问；`goal` 无参取消进行中的目标 |
 | `quit`（`exit`） | 退出 TUI |
 
 运行中本地命令（`help`、`copy` 等）照常可用，不被工具调用阻塞。
@@ -556,7 +556,7 @@ release 0.2.0       # bump 版本 + 生成 CHANGELOG + check + 打 tag，推 tag
 - M3（部分）：AGENTS.md 加载（向上发现，注入系统提示词）、skills（ADR-0003）、prompt templates（ADR-0008）
 - M4：图片输入（`--image <路径>` 附件；TUI `/image <路径>` 暂存、`Ctrl+V` 剪贴板粘贴）
 - 其后迭代：`grep` / `find` / `todo` 工具、跨 provider 模型选择与 sqlite 配置（ADR-0009/0010）、
-  goal 模式、thinking 折叠、会话标题、单字母动作层交互（ADR-0011 → ADR-0021）
+  目标驱动运行（goal 命令，ADR-0037）、thinking 折叠、会话标题、单字母动作层交互（ADR-0011 → ADR-0021）
 
 待完成：
 

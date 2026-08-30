@@ -43,7 +43,7 @@ pub struct SessionFactory {
     pub default_reasoning: Option<ThinkingLevel>,
     /// 所有可用模型列表（子 agent 模型选择用）
     pub available_models: Vec<Model>,
-    /// 模型别名表（config.toml `[model_aliases]`，bootstrap 已解析为完整
+    /// 模型别名表（settings 表 `model_aliases` 键，bootstrap 已解析为完整
     /// 模型；创建子 agent 时按别名选择）
     pub model_aliases: std::collections::BTreeMap<String, Model>,
     /// 全局事件总线（所有 session 的事件统一发往此处）

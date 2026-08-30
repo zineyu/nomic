@@ -40,7 +40,7 @@ ratchet gate).
 
 ## Security & Safety
 
-- Never commit secrets, tokens, or real `.env` files; see `config.example.toml` for the template
+- Never commit secrets, tokens, or real `.env` files; settings live in SQLite (see ADR-0039, `nomic config --help`)
 - `unsafe_code` is forbidden across the whole workspace
 - Before adding a dependency, confirm license compatibility (`cargo deny`), no vulnerabilities
   (`cargo audit`), and no unused deps (`cargo-machete`); prefer existing dependencies and isolate

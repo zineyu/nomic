@@ -114,7 +114,7 @@ export function ModelPicker({
           ))}
           {candidates.length === 0 && (
             <div className="px-3 py-2 text-xs text-muted-foreground">
-              没有可用模型（检查 config.toml 的 [providers]）
+              没有可用模型（在左侧 Rail「设置」页添加 provider）
             </div>
           )}
         </DropdownMenuContent>

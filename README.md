@@ -175,6 +175,7 @@ nomic --cwd /path/to/project
 | `copy` | 复制最新一条消息到剪贴板 |
 | `thinking` | 切换 thinking 内容折叠/展开显示 |
 | `goal <目标>` | 目标驱动运行：agent 持续工作直到调用 `goal_done` 汇报完成（期间换出 `ask_user_question`）；react loop 停止而目标未完成时自动复述目标继续追问；`goal` 无参取消进行中的目标 |
+| `config <子命令>` | 查看/修改设置（`config set temperature 0.7`、`config providers set anthropic --api-key sk-...` 等，与 CLI 同一命令树） |
 | `quit`（`exit`） | 退出 TUI |
 
 运行中本地命令（`help`、`copy` 等）照常可用，不被工具调用阻塞。
@@ -192,6 +193,8 @@ nomic --cwd /path/to/project
   选定目录）；侧栏按 workspace 分组列出历史 session，支持新建 / 恢复（复用 SQLite 存储，
   与 TUI/print 共用）
 - **模型选择**：跨 provider 候选列表 + 思考级别；切换结果落库，与 TUI `/models` 同一口径
+- **设置**：左侧 Rail 的「设置」页管理 providers / 模型规格覆盖 / 标量设置
+  （走 WS 设置事件，与 CLI / TUI `config` 命令同一存储与校验；api_key 脱敏回显）
 - **提问**：`ask_user_question` 以弹层呈现（单选/多选/填空 + 自定义填写）
 - **mention 与命令**：输入 `@` 弹出行内补全（`@skill:` 引用 skill、`@file:` 引用
   当前 session workspace 内的文件，发送时由服务端展开有效标记，与 TUI 同一口径）；
@@ -255,7 +258,7 @@ X11 / Wayland。从文件管理器粘贴或拖入的图片文件路径（含 `fi
 对话逼近模型上下文窗口时自动把较早消息压缩为结构化摘要（保留近期消息原样，
 设计见 [docs/adr/0005](docs/adr/0005-context-compaction.md)）；TUI 内也可随时用
 `compact [聚焦指令]` 手动触发。压缩结果落库，resume 后保持压缩状态。
-可在配置文件的 `[compaction]` 表中调整阈值（见 `config.example.toml`）。
+阈值经设置调整（`nomic config set compaction.reserve_tokens <N>`，见下文「配置」）。
 
 ### 日志
 
@@ -274,78 +277,73 @@ X11 / Wayland。从文件管理器粘贴或拖入的图片文件路径（含 `fi
 
 ## 配置
 
-### 模型选择（sqlite）
+所有设置保存在 sqlite（session 库的 providers / model_specs / settings 表；
+设计见 [docs/adr/0039](docs/adr/0039-settings-in-sqlite.md)），**不再有配置文件**：
+`config.toml` 被完全忽略（不读取、不迁移、不报错），用户在以下三个入口
+重建配置，同一套命令语义：
 
-nomic 的配置正从配置文件逐步迁移到 sqlite（设计见 [docs/adr/0009](docs/adr/0009-sqlite-config-model-selection.md)），当前两者共存。
+- **CLI**：`nomic config ...`（`config-path` 查看数据库位置）；
+- **TUI**：命令栏 `config ...`（无 `/` 前缀，`help` 可查）；
+- **Web UI**：左侧 Rail 的「设置」页（providers / 模型规格覆盖 / 标量可视化编辑）。
 
-**模型选择**保存在 sqlite（session 库的 `config` 表）：TUI 内 `models` 命令跨 provider
-选择（`<provider>/<模型id>` 格式），选择结果追加保存；启动时按
-**CLI 参数 > sqlite 配置（从最新选择向最老逐条回退）** 解析，
-失效的选择（provider 已删除、模型已不存在）告警后自动回退到更早的选择；
-两层都没有时启动报错——没有内置默认 provider / 模型，必须显式指定。
+优先级统一为 **CLI 参数 > 环境变量 > sqlite > 协议/内置默认**；
+写路径对未知键与非法取值硬报错。
 
-### 配置文件
+### 标量设置
 
-其余配置（provider 定义、连接/请求参数、压缩阈值等）在用户级配置文件
-`nomic/config.toml`，位于平台标准配置目录下（由 `dirs` 解析：
-Linux 为 `$XDG_CONFIG_HOME`，缺省 `~/.config`；macOS 为 `~/Library/Application Support`）。
-仓库根目录的 [`config.example.toml`](config.example.toml) 是带注释的完整示例，复制后按需修改。
-全部字段可选；优先级为 CLI 参数 > 环境变量 > 配置文件 > 协议默认。
-未知键或非法取值（reasoning）会在启动时硬报错。
+`nomic config list|get|set|unset`（value 先按 JSON 解析，失败按字符串）：
 
-```toml
-# ~/.config/nomic/config.toml
-base_url = "https://your.gateway/v1"
-reasoning = "low"            # minimal / low / medium / high
-temperature = 0.7
-max_tokens = 8192
-append_system = "总是用中文回复。"
-# api_key = "..."           # 最低优先级兜底，建议优先用环境变量
-```
+| key | 取值 | 说明 |
+| --- | ---- | ---- |
+| `base_url` | 字符串 | 全局 base_url 兜底 |
+| `api_key` | 字符串 | 全局 api_key 兜底（最低优先级，建议优先用环境变量） |
+| `reasoning` | minimal / low / medium / high | 默认思考级别（仅推理模型生效） |
+| `temperature` | 数字 | 采样温度 |
+| `max_tokens` | 整数 | 最大输出 token 数 |
+| `append_system` | 字符串 | 追加到系统提示词的文本 |
+| `prompts` | JSON 数组 | 额外 prompt template 路径 |
+| `compaction.enabled` | 布尔 | 自动压缩开关 |
+| `compaction.reserve_tokens` | 整数 | 触发压缩的预留阈值 |
+| `compaction.keep_recent_tokens` | 整数 | 压缩时保留的近期 token 数 |
+| `model_aliases` | JSON 对象 | 模型别名表（别名 → `<provider>/<模型id>`），子 agent 与 `models:` 切换可用 |
 
-启动时也可用 `--provider` / `--model` 临时指定（`--model` 支持
-`<provider>/<模型id>` 全形式），优先级高于数据库中保存的选择、不写回数据库。
+### Providers 与模型规格
 
-### 多 provider 与模型规格
+没有内置 provider：`nomic config providers set anthropic --api-key sk-...` 添加
+（`anthropic` / `openai` 可按名推断 API 种类；自定义 provider 需 `--api` 显式指定）。
+api_key 建议优先用环境变量（`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`）或启动时的
+`--api-key`，避免明文落库。
 
-`[providers.<名字>]` 定义多个 provider（没有内置 provider，`models` 选择器
-只列出配置中定义的名字），`[providers.<名字>.models."<模型id>"]`
-覆盖单个模型的规格字段（全部可选，只写要覆盖的）。
-provider 与 base_url 永远来自用户指定；模型规格字段逐字段按
-**配置 > [models.dev](https://models.dev) > 中性兜底（全零）** 解析：
+模型规格覆盖用 `nomic config models set <provider> <模型id> [--context-window N ...]`：
+models.dev 目录缺字段或需修正时逐字段覆盖（没写的字段不覆盖）。规格逐字段按
+**sqlite 覆盖 > [models.dev](https://models.dev) > 中性兜底（全零）** 解析：
 
-```toml
-[providers.anthropic]
-base_url = "https://api.anthropic.com"
-# api 可省略：anthropic→anthropic_messages，openai→open_ai_completions
-
-[providers.anthropic.models."claude-sonnet-4-5"]
-reasoning = true
-context_window = 200000
-max_tokens = 64000
-cost_input = 3.0
-cost_output = 15.0
-cost_cache_read = 0.3
-cost_cache_write = 3.75
-
-# 自定义 provider：api 必填
-[providers.deepseek]
-api = "open_ai_completions"
-base_url = "https://api.deepseek.com/v1"
-api_key = "sk-..."
-
-# 只写要覆盖的字段，其余走 models.dev → 中性兜底
-[providers.deepseek.models."deepseek-chat"]
-max_tokens = 8192
+```bash
+nomic config models set anthropic claude-sonnet-4-5 --context-window 200000 \
+    --max-tokens 64000 --cost-input 3.0 --cost-output 15.0
+nomic config providers set deepseek --api open_ai_completions \
+    --base-url https://api.deepseek.com/v1 --api-key sk-...
 ```
 
 models.dev 目录按模型 id 查询（约 3MB 的 api.json），缓存到平台标准 cache 目录下的
 `nomic/models-dev-api.json`（Linux：`$XDG_CACHE_HOME`，缺省 `~/.cache`；macOS：`~/Library/Caches`；
 24h 有效期，网络失败时用过期缓存兜底）；
-配置已给全规格字段时不读缓存、不联网。models.dev 与缓存都不可用时回落到中性兜底值。
+规格覆盖已给全字段时不读缓存、不联网。models.dev 与缓存都不可用时回落到中性兜底值。
 
-模型 id 必须「存在」：命中 models.dev 目录或 `[providers.*.models]` 定义之一，
+模型 id 必须「存在」：命中 models.dev 目录或 sqlite 规格覆盖之一，
 否则启动与 `models` 切换都会报错（目录不可用、无法校验时维持回落行为）。
+
+### 模型选择（sqlite）
+
+模型选择保存在 sqlite（append-only `config` 表，
+设计见 [docs/adr/0009](docs/adr/0009-sqlite-config-model-selection.md)）：
+TUI 内 `models` 命令跨 provider 选择（`<provider>/<模型id>` 格式），
+选择结果追加保存；启动时按
+**CLI 参数 > sqlite 配置（从最新选择向最老逐条回退）** 解析，
+失效的选择（provider 已删除、模型已不存在）告警后自动回退到更早的选择；
+两层都没有时启动报错——没有内置默认 provider / 模型，必须显式指定。
+启动时也可用 `--provider` / `--model` 临时指定（`--model` 支持
+`<provider>/<模型id>` 全形式），优先级高于数据库中保存的选择、不写回数据库。
 
 ## 上下文文件
 

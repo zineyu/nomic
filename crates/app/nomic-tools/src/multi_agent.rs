@@ -26,7 +26,7 @@
 //! ## 模型选择
 //!
 //! `create_agent` 的 `model` 参数为**可选**：支持模型别名（用户经
-//! config.toml `[model_aliases]` 配置，按智力 / 多模态能力区分）或模型
+//! sqlite 设置 `model_aliases` 配置，按智力 / 多模态能力区分）或模型
 //! ID / `<provider>/<id>`；缺省时子 agent 继承主 agent 的当前模型。
 //! 可用模型与别名列表在工具构造时注入工具描述，供 LLM 参照选择。
 

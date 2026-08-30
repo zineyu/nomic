@@ -16,8 +16,8 @@
 //!
 //! 子 agent 的模型在创建时按三层解析（ADR-0038）：
 //!
-//! 1. **别名**：`create_agent` 的 `model` 参数命中别名表（config.toml
-//!    `[model_aliases]`，别名 → 模型）时直接使用对应模型；
+//! 1. **别名**：`create_agent` 的 `model` 参数命中别名表（sqlite 设置
+//!    `model_aliases`，别名 → 模型）时直接使用对应模型；
 //! 2. **模型 ID / `<provider>/<id>`**：在可用模型列表中匹配；
 //! 3. **继承**：参数缺省时继承主 agent 的当前模型（[`SharedModel`]
 //!    共享单元，主 agent 切换模型时由入口更新，继承始终跟随）。
@@ -181,7 +181,7 @@ pub struct AgentSupervisor {
     config: SupervisorConfig,
     /// 可用模型列表（传给工具用于校验和展示）。
     available_models: Vec<Model>,
-    /// 模型别名表（别名 → 模型；config.toml `[model_aliases]`，创建子
+    /// 模型别名表（别名 → 模型；sqlite 设置 `model_aliases`，创建子
     /// agent 时优先于模型 ID 匹配）。
     aliases: BTreeMap<String, Model>,
     /// 主 agent 的当前模型（子 agent 未指定模型时继承）。

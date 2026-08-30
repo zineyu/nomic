@@ -61,7 +61,7 @@ pub struct RecipeOpts {
     /// 主 agent 的当前模型：子 agent 未指定模型时继承（ADR-0038）；交互端
     /// 在主 agent 模型切换时经 [`AgentRecipe::inherited_model_cell`] 更新。
     pub default_model: Model,
-    /// 模型别名表（config.toml `[model_aliases]`，bootstrap 已解析为完整
+    /// 模型别名表（settings 表 `model_aliases` 键，bootstrap 已解析为完整
     /// 模型；创建子 agent 时按别名选择）。
     pub model_aliases: BTreeMap<String, Model>,
     /// 运行中注入源（ADR-0014，交互端自持统一消息队列，core 在 turn

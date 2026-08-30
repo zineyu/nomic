@@ -1,5 +1,5 @@
 //! 设置快照（ADR-0039）：sqlite `providers` / `model_specs` / `settings`
-//! 三表在启动时读出的内存形态，替代 config.toml。`ModelResolver` 与
+//! 三表在启动时读出的内存形态（ADR-0039）。`ModelResolver` 与
 //! bootstrap 经它做分层解析；写路径（`nomic config` / TUI `/config` /
 //! web WS 事件）落库后经 [`crate::model::ModelResolver::reload`] 刷新快照。
 //!
@@ -220,7 +220,7 @@ pub fn validate_alias(alias: &str, spec: &str) -> Result<()> {
 }
 
 /// 校验标量设置的键与取值类型（写入路径共用：CLI / TUI `/config` /
-/// web WS）。未知键硬报错（防拼写错误，与旧 config.toml
+/// web WS）。未知键硬报错（防拼写错误，与旧配置文件时代
 /// `deny_unknown_fields` 同一口径）。
 pub fn validate_scalar(key: &str, value: &serde_json::Value) -> Result<()> {
     let ok = match key {

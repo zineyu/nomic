@@ -6,6 +6,22 @@
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，
 由 [git-cliff](https://git-cliff.org) 从 conventional commits 自动生成。
 
+## [Unreleased]
+
+### 破坏性变更
+
+- **BREAKING CHANGE:** 设置全部迁入 sqlite（ADR-0039），`config.toml` 被完全忽略
+  （不读取、不迁移、不报错）；`config.example.toml` 删除。请经三个新入口重建配置：
+  CLI `nomic config ...`、TUI 命令栏 `config ...`、web Rail「设置」页。
+  优先级统一为 CLI 参数 > 环境变量 > sqlite > 协议/内置默认。
+
+### 新功能
+
+- **(session)** providers / model_specs / settings 三表（迁移 0008）与 CRUD
+- **(cli)** `nomic config` 子命令族（标量 get/set/unset、providers、models）
+- **(tui)** 命令栏 `config` 命令（与 CLI 同一命令树）
+- **(web)** WS 设置事件与 Rail 设置页（providers / 模型规格覆盖 / 标量可视化管理，api_key 脱敏）
+
 ## [0.3.1] - 2026-08-24
 
 ### 代码风格

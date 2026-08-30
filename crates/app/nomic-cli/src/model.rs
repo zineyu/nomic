@@ -129,7 +129,7 @@ pub async fn db_model_history(store: Option<&SessionStore>) -> Vec<ModelSelectio
 
 /// 从 sqlite 配置表读取上次保存的思考级别。
 ///
-/// 库不可用或读取失败返回 `None`（降级为 config.toml / CLI 默认）。
+/// 库不可用或读取失败返回 `None`（降级为 CLI 默认）。
 pub async fn db_reasoning_level(store: Option<&SessionStore>) -> Option<ThinkingLevel> {
     let store = store?;
     let value = store
@@ -486,23 +486,6 @@ impl ModelResolver {
              请检查 model / --model 拼写，或用 `nomic config models set {provider}/{model_id} ...`\
              补充该模型的规格"
         ))
-    }
-
-    /// 候选 provider 列表：providers 表定义的名字，按名排序。
-    ///
-    /// # Panics
-    ///
-    /// 设置锁中毒时 panic（锁内无 panic 路径，正常不会触发）。
-    // 消费者随 web 设置快照事件任务落地
-    #[expect(dead_code)]
-    pub fn providers(&self) -> Vec<String> {
-        self.settings
-            .read()
-            .expect("settings lock poisoned")
-            .providers
-            .keys()
-            .cloned()
-            .collect()
     }
 
     /// `/models` 选择器候选（跨 provider）：每个 provider 的 规格覆盖 ∪

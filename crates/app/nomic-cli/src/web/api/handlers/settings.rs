@@ -15,15 +15,43 @@ use super::super::{ApiError, ClientEvent};
 use crate::settings::{keys, validate_provider_patch, validate_scalar};
 use crate::web::{AppState, ServerEvent};
 
+/// provider 快照视图（脱敏：api_key 不明文下发，只给是否已设置；
+/// 编辑用补丁语义，未触碰的字段保持原值）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProviderView {
+    /// provider 名
+    pub name: String,
+    /// API 种类；`None` = 按名推断
+    pub api: Option<nomic_ai::ApiKind>,
+    /// API base URL
+    pub base_url: Option<String>,
+    /// 是否已设置 api_key
+    pub has_api_key: bool,
+    /// 最后更新时间（Unix 毫秒）
+    pub updated_at: u64,
+}
+
+impl From<ProviderRow> for ProviderView {
+    fn from(row: ProviderRow) -> Self {
+        Self {
+            name: row.name,
+            api: row.api,
+            base_url: row.base_url,
+            has_api_key: row.api_key.is_some(),
+            updated_at: row.updated_at,
+        }
+    }
+}
+
 /// 设置快照视图（`get_settings` 查询的回复负载）：providers 定义、模型
 /// 规格覆盖、标量设置全量 + 可用标量键清单（前端渲染设置表单用）。
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingsSnapshotView {
-    /// 全部 provider 定义（按名排序）
-    pub providers: Vec<ProviderRow>,
+    /// 全部 provider 定义（按名排序，api_key 已脱敏）
+    pub providers: Vec<ProviderView>,
     /// 全部模型规格覆盖（按 provider、模型 id 排序）
     pub model_specs: Vec<ModelSpecRow>,
-    /// 全部标量设置（键 → JSON 值）
+    /// 全部标量设置（键 → JSON 值；api_key 键的值已脱敏为是否已设置）
     pub settings: BTreeMap<String, serde_json::Value>,
     /// 可用标量键（写入校验同一口径）
     pub scalar_keys: &'static [&'static str],
@@ -89,10 +117,20 @@ pub async fn handle_get_settings(state: &AppState, request_id: &str) -> ServerEv
         return store_unavailable(request_id);
     };
     let result = async {
+        let mut settings = store.list_settings().await?;
+        // 全局 api_key 同样脱敏（与 providers 表同一口径）
+        if settings.contains_key(keys::API_KEY) {
+            settings.insert(keys::API_KEY.to_string(), serde_json::json!("已设置"));
+        }
         Ok::<_, ApiError>(SettingsSnapshotView {
-            providers: store.list_providers().await?,
+            providers: store
+                .list_providers()
+                .await?
+                .into_iter()
+                .map(ProviderView::from)
+                .collect(),
             model_specs: store.list_model_specs().await?,
-            settings: store.list_settings().await?,
+            settings,
             scalar_keys: keys::ALL,
         })
     }

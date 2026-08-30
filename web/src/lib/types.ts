@@ -210,6 +210,11 @@ export type ServerEvent =
   | { type: 'session_deleted'; request_id?: string; id: string }
   | { type: 'session_renamed'; request_id: string; id: string; title: string | null }
   | { type: 'workspace_deleted'; request_id: string; id: string }
+  // ── 设置（ADR-0039）
+  | { type: 'settings_snapshot'; request_id: string; snapshot: SettingsSnapshot }
+  | { type: 'settings_updated'; request_id: string }
+  // 设置写操作成功后的总线广播（无 session 维度）：客户端据此重新拉取快照
+  | { type: 'settings_changed' }
 
 /** 客户端发送给服务端的事件（纯事件驱动，无 REST） */
 export type ClientEvent =
@@ -236,6 +241,35 @@ export type ClientEvent =
   | { type: 'delete_session'; request_id: string; session_id: string }
   | { type: 'rename_session'; request_id: string; session_id: string; title: string }
   | { type: 'delete_workspace'; request_id: string; id: string; force: boolean }
+  // ── 设置（ADR-0039；upsert 为逐字段补丁三态：字段缺失 = 不更新，null = 清除）
+  | { type: 'get_settings'; request_id: string }
+  | {
+      type: 'upsert_provider'
+      request_id: string
+      name: string
+      api?: ApiKind | null
+      base_url?: string | null
+      api_key?: string | null
+    }
+  | { type: 'delete_provider'; request_id: string; name: string }
+  | {
+      type: 'upsert_model_spec'
+      request_id: string
+      provider: string
+      model_id: string
+      name?: string | null
+      reasoning?: boolean | null
+      vision?: boolean | null
+      context_window?: number | null
+      max_tokens?: number | null
+      cost_input?: number | null
+      cost_output?: number | null
+      cost_cache_read?: number | null
+      cost_cache_write?: number | null
+    }
+  | { type: 'delete_model_spec'; request_id: string; provider: string; model_id: string }
+  | { type: 'set_setting'; request_id: string; key: string; value: unknown }
+  | { type: 'unset_setting'; request_id: string; key: string }
 
 // ── REST 响应（nomic-cli web::api）────────────────────────────────────────
 
@@ -349,4 +383,59 @@ export function eventKind(event: Record<string, unknown>): string {
 /** 从外部标签形式的枚举提取变体负载 */
 export function eventPayload(event: Record<string, unknown>): unknown {
   return event[eventKind(event)] ?? {}
+}
+
+// ── 设置（ADR-0039：sqlite providers / model_specs / settings 三表）─────────
+
+/** provider 快照视图（api_key 脱敏为 has_api_key，不明文下发） */
+export interface ProviderView {
+  name: string
+  api: ApiKind | null
+  base_url: string | null
+  has_api_key: boolean
+  updated_at: number
+}
+
+/** 模型规格覆盖行（null = 未覆盖，向下回退 models.dev / 中性兜底） */
+export interface ModelSpecRow {
+  provider: string
+  model_id: string
+  name: string | null
+  reasoning: boolean | null
+  vision: boolean | null
+  context_window: number | null
+  max_tokens: number | null
+  cost_input: number | null
+  cost_output: number | null
+  cost_cache_read: number | null
+  cost_cache_write: number | null
+  updated_at: number
+}
+
+/** 设置快照（get_settings 响应负载；全局 api_key 标量已脱敏） */
+export interface SettingsSnapshot {
+  providers: ProviderView[]
+  model_specs: ModelSpecRow[]
+  settings: Record<string, unknown>
+  scalar_keys: string[]
+}
+
+/** provider 编辑补丁（缺失 = 不更新，null = 清除） */
+export interface ProviderPatch {
+  api?: ApiKind | null
+  base_url?: string | null
+  api_key?: string | null
+}
+
+/** 模型规格编辑补丁（同 ProviderPatch 三态） */
+export interface ModelSpecPatch {
+  name?: string | null
+  reasoning?: boolean | null
+  vision?: boolean | null
+  context_window?: number | null
+  max_tokens?: number | null
+  cost_input?: number | null
+  cost_output?: number | null
+  cost_cache_read?: number | null
+  cost_cache_write?: number | null
 }

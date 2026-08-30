@@ -23,6 +23,9 @@ import type {
   SkillSummary,
   SnapshotView,
   WorkspaceSummary,
+  ModelSpecPatch,
+  ProviderPatch,
+  SettingsSnapshot,
 } from './types'
 
 type EventHandler = (event: ServerEvent) => void
@@ -39,6 +42,13 @@ type QueryEventInput =
   | { type: 'delete_session'; session_id: string }
   | { type: 'rename_session'; session_id: string; title: string }
   | { type: 'delete_workspace'; id: string; force: boolean }
+  | { type: 'get_settings' }
+  | ({ type: 'upsert_provider'; name: string } & ProviderPatch)
+  | { type: 'delete_provider'; name: string }
+  | ({ type: 'upsert_model_spec'; provider: string; model_id: string } & ModelSpecPatch)
+  | { type: 'delete_model_spec'; provider: string; model_id: string }
+  | { type: 'set_setting'; key: string; value: unknown }
+  | { type: 'unset_setting'; key: string }
 
 class WsClient {
   private ws: WebSocket | null = null
@@ -338,4 +348,32 @@ export const api = {
       custom: answer.custom,
     })
   },
+
+  // ── 设置（ADR-0039，全部经 WS 查询式命令；写后服务端广播 settings_changed）──
+
+  /** 设置快照（providers + 模型规格覆盖 + 标量全量，api_key 已脱敏）。 */
+  settings: () =>
+    client.request<{ snapshot: SettingsSnapshot }>({ type: 'get_settings' }).then((r) => r.snapshot),
+
+  /** 新建或更新 provider（逐字段补丁三态）。 */
+  upsertProvider: (name: string, patch: ProviderPatch) =>
+    client.request({ type: 'upsert_provider', name, ...patch }),
+
+  /** 删除 provider（其模型规格覆盖级联清除）。 */
+  deleteProvider: (name: string) => client.request({ type: 'delete_provider', name }),
+
+  /** 新建或更新模型规格覆盖（逐字段补丁三态）。 */
+  upsertModelSpec: (provider: string, modelId: string, patch: ModelSpecPatch) =>
+    client.request({ type: 'upsert_model_spec', provider, model_id: modelId, ...patch }),
+
+  /** 删除模型规格覆盖。 */
+  deleteModelSpec: (provider: string, modelId: string) =>
+    client.request({ type: 'delete_model_spec', provider, model_id: modelId }),
+
+  /** 写入标量设置。 */
+  setSetting: (key: string, value: unknown) =>
+    client.request({ type: 'set_setting', key, value }),
+
+  /** 删除标量设置（恢复下层默认）。 */
+  unsetSetting: (key: string) => client.request({ type: 'unset_setting', key }),
 }

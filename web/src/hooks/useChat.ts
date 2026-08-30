@@ -258,6 +258,14 @@ export function useChat() {
         ) {
           resetView()
         }
+      } else if (event.type === 'switch_model_ack') {
+        // 模型切换确认：以服务端快照回填 model/reasoning（ack 只携带精简
+        // ModelChoice，不含推理级别；且切换在 ack 前已落到共享视图，
+        // 此刻快照即为权威）
+        const sid = sessionIdRef.current
+        if (sid && event.session_id === sid) {
+          void api.state(sid).then(({ snapshot }) => applySnapshot(snapshot))
+        }
       } else {
         applyEvent(event)
         // run 结束刷新会话列表（活跃度变化）

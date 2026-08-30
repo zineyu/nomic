@@ -8,6 +8,23 @@ import type { ServerEvent } from '@/lib/types'
 
 const handlers = new Set<(e: ServerEvent) => void>()
 
+// 模拟服务端权威状态：切换后快照返回新模型（handle_switch_model 在发 ack
+// 前已同步落共享视图，快照即为权威）
+let serverModel = {
+  id: 'm1',
+  name: 'M1',
+  api: 'open_ai_completions',
+  provider: 'p1',
+  base_url: '',
+  reasoning: false,
+  context_window: 1000,
+  max_tokens: 100,
+  cost_input: 0,
+  cost_output: 0,
+  cost_cache_read: 0,
+  cost_cache_write: 0,
+}
+
 vi.mock('@/lib/api', () => ({
   api: {
     connect: vi.fn(() => Promise.resolve()),
@@ -22,20 +39,7 @@ vi.mock('@/lib/api', () => ({
         session_id: 's1',
         snapshot: {
           messages: [],
-          model: {
-            id: 'm1',
-            name: 'M1',
-            api: 'open_ai_completions',
-            provider: 'p1',
-            base_url: '',
-            reasoning: false,
-            context_window: 1000,
-            max_tokens: 100,
-            cost_input: 0,
-            cost_output: 0,
-            cost_cache_read: 0,
-            cost_cache_write: 0,
-          },
+          model: serverModel,
           reasoning: null,
           context_tokens: 10,
           running: false,
@@ -65,7 +69,17 @@ function emit(event: ServerEvent) {
 }
 
 describe('useChat 探针', () => {
-  beforeEach(() => handlers.clear())
+  beforeEach(() => {
+    handlers.clear()
+    serverModel = {
+      ...serverModel,
+      id: 'm1',
+      name: 'M1',
+      provider: 'p1',
+      reasoning: false,
+      context_window: 1000,
+    }
+  })
 
   it('agent MessageEnd 事件更新 contextTokens', async () => {
     const { result } = renderHook(() => useChat())
@@ -96,6 +110,15 @@ describe('useChat 探针', () => {
     })
     expect(result.current.model?.id).toBe('m1')
 
+    // 服务端已完成切换（ack 前落共享视图），快照返回新模型
+    serverModel = {
+      ...serverModel,
+      id: 'm2',
+      name: 'M2',
+      provider: 'p2',
+      reasoning: true,
+      context_window: 2000,
+    }
     act(() => {
       emit({
         type: 'switch_model_ack',

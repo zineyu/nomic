@@ -348,8 +348,11 @@ impl ModelResolver {
     /// # Panics
     ///
     /// 设置锁中毒时 panic（锁内无 panic 路径，正常不会触发）。
-    // 消费者随 TUI `/config` 与 web 设置事件任务落地
-    #[expect(dead_code)]
+    /// 从 store 重新加载设置快照（设置写入落库后调用，运行进程立即生效）。
+    ///
+    /// # Panics
+    ///
+    /// 设置锁中毒时 panic（锁内无 panic 路径，正常不会触发）。
     pub async fn reload(&self, store: Option<&SessionStore>) {
         let settings = Settings::load(store).await;
         *self.settings.write().expect("settings lock poisoned") = settings;

@@ -127,19 +127,19 @@ pub enum ModelsCommand {
     },
 }
 
-/// 供 TUI `/config` 复用的解析入口：把命令参数序列解析为 [`ConfigCommand`]。
-// 消费者随 TUI `/config` 任务落地
-#[expect(dead_code)]
-pub fn parse_args(args: &[&str]) -> Result<ConfigCommand> {
+/// 供 TUI `config` 命令复用的解析入口：把参数序列解析为 [`ConfigCommand`]。
+pub fn parse_args(args: &[String]) -> Result<ConfigCommand> {
     use clap::Parser as _;
     #[derive(clap::Parser)]
     struct ConfigArgs {
         #[command(subcommand)]
         command: ConfigCommand,
     }
-    Ok(ConfigArgs::try_parse_from(std::iter::once("config").chain(args.iter().copied()))?.command)
+    Ok(ConfigArgs::try_parse_from(
+        std::iter::once("config").chain(args.iter().map(String::as_str)),
+    )?
+    .command)
 }
-
 /// CLI 入口：打开默认库执行并打印结果。
 pub async fn run(command: &ConfigCommand) -> Result<()> {
     let store = SessionStore::open_default()

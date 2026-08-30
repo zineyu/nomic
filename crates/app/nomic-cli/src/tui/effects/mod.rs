@@ -9,14 +9,18 @@
 //!   （定稿点落库收在 `nomic_session::SessionRecorder`）
 //! - [`clipboard`]：剪贴板与图片暂存（bracketed paste、Ctrl+V 粘贴、`copy`、
 //!   `image` 与 `--image` 附件）
+//! - [`config`]：`config` 命令——sqlite 设置的查看与修改（ADR-0039），
+//!   复用 `nomic config` 子命令的解析与执行逻辑
 
 mod clipboard;
+mod config;
 mod model;
 mod session;
 
 pub(super) use clipboard::{
     attach_image, copy_to_clipboard, handle_paste, paste_clipboard, stage_cli_images,
 };
+pub(super) use config::run as run_config;
 pub(super) use model::{
     ModelSwitcher, cancel_model_switch, list_models, select_model, set_reasoning,
 };

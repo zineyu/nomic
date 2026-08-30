@@ -36,6 +36,13 @@ pub(in crate::tui) struct ModelSwitcher {
     inherited: nomic_core::SharedModel,
 }
 
+impl ModelSwitcher {
+    /// 刷新设置快照（`config` 命令写后调用）：转发给运行时模型解析器。
+    pub(in crate::tui) async fn reload_settings(&self, store: &nomic_session::SessionStore) {
+        self.models.reload(Some(store)).await;
+    }
+}
+
 /// 第一步（选择模型）的流转结果。
 pub(super) enum Select {
     /// 目标支持推理：进入第二步（打开思考级别选择器）。

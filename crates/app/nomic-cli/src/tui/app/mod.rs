@@ -108,6 +108,12 @@ pub(super) const COMMANDS: &[Command] = &[
         usage: "models（选择器）或 models:<provider>/<模型id>",
     },
     Command {
+        name: "config",
+        aliases: &[],
+        summary: "查看与修改设置（存于 sqlite；与 nomic config 子命令同构）",
+        usage: "config [list|get|set|unset|providers|models ...]（无参 = list）",
+    },
+    Command {
         name: "skill",
         aliases: &[],
         summary: "手动载入 skill 到当前对话（skill:<name>[ args]；无参列出可用 skill）",
@@ -191,6 +197,8 @@ pub(super) enum CommandAction {
     Thinking,
     /// `goal <目标>` 启动目标驱动运行；`goal` 无参取消进行中的目标
     Goal(Option<String>),
+    /// `config [子命令行]`：查看与修改 sqlite 设置（无参 = list）
+    Config(String),
 }
 
 impl CommandAction {
@@ -212,6 +220,7 @@ impl CommandAction {
                 | Self::Goal(None)
                 | Self::Skill(None)
                 | Self::Image(_)
+                | Self::Config(_)
         )
     }
 }
@@ -290,6 +299,15 @@ fn parse_command(input: &str) -> CommandParse {
             CommandTail::Arg(text) => Some(text.trim()).filter(|text| !text.is_empty()),
         };
         return CommandParse::Known(CommandAction::Goal(objective.map(str::to_string)));
+    }
+    // `config` 特判：参数是子命令行原文（可含空格，set 的值允许多词），
+    // `config ...` 与 `config:...` 两种形式都接受；无参等价于 list
+    if let Some(tail) = command_tail(rest, "config") {
+        let args = match tail {
+            CommandTail::Bare => String::new(),
+            CommandTail::Arg(text) => text.trim().to_string(),
+        };
+        return CommandParse::Known(CommandAction::Config(args));
     }
     let (name, arg, junk) = if let Some((name, arg)) = rest.split_once(':') {
         (
@@ -517,6 +535,9 @@ pub(super) enum Effect {
     /// `goal` 无参：取消进行中的目标——driver 换回正常工具集并停止
     /// 自动追问（目标完成时 driver 同样换回，不经此效果）
     CancelGoal,
+    /// `config [子命令行]`：sqlite 设置的查看与修改（执行与输出接线在
+    /// effects::config，复用 `nomic config` 子命令的解析与执行逻辑）
+    Config(String),
 }
 
 /// TUI 应用状态：各关注点状态的组合 + 模式路由。

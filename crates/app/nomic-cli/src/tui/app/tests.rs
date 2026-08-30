@@ -427,6 +427,22 @@ fn parse_command_dispatches_known_unknown_and_slash_prefixed() {
         parse_command("foobar"),
         CommandParse::Unknown("foobar".to_string())
     );
+    // config：无参 → 空参数行（执行层按 list 处理）；参数原文保留（含空格）
+    assert_eq!(
+        parse_command("config"),
+        CommandParse::Known(CommandAction::Config(String::new()))
+    );
+    assert_eq!(
+        parse_command("config set append_system 总是 用中文"),
+        CommandParse::Known(CommandAction::Config(
+            "set append_system 总是 用中文".to_string()
+        ))
+    );
+    assert_eq!(
+        parse_command("config:get temperature"),
+        CommandParse::Known(CommandAction::Config("get temperature".to_string()))
+    );
+    assert!(CommandAction::Config(String::new()).is_local());
     // 普通文本同样是未知命令（命令栏只承载命令；模板调用由分发层展开）
     assert_eq!(
         parse_command("hello"),

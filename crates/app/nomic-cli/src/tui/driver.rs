@@ -435,6 +435,8 @@ pub(super) const fn map_key(key: KeyEvent) -> Option<Key> {
 
 /// 执行 [`App::press`] 返回的语义效果：runner job、session 库、
 /// skill resolver、图片加载等外部资源在此接线。
+// 每个 Effect 一臂的集中分发表，拆散反而割裂语义
+#[allow(clippy::too_many_lines)]
 pub(super) async fn execute_effect(
     app: &mut App,
     driver: &mut Driver,
@@ -499,6 +501,9 @@ pub(super) async fn execute_effect(
             );
         }
         Effect::CancelModelSwitch => effects::cancel_model_switch(app, &mut driver.model),
+        Effect::Config(args) => {
+            effects::run_config(app, &driver.session, &driver.model, &args).await;
+        }
         Effect::ListSkills => {
             // 列出时顺带刷新补全快照：会话期间新增的 skill 也能被 Tab 补全
             let catalog = driver.skill_resolver.catalog();

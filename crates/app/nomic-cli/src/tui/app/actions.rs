@@ -456,6 +456,7 @@ impl App {
             },
             CommandAction::New => vec![Effect::NewSession],
             CommandAction::Tree => vec![Effect::ListTree],
+            CommandAction::Config(args) => vec![Effect::Config(args)],
         }
     }
 

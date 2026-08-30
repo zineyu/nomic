@@ -6,7 +6,7 @@
 ## 背景
 
 provider/model 的**选择**早已迁入 sqlite `config` 表（`/models` 命令），
-但 provider 定义（`[providers]` 连接参数与模型规格覆盖）、请求参数
+但 provider 定义（`[providers]` 连接参数与模型覆盖）、请求参数
 （`temperature` / `max_tokens` / `append_system` 等）、`[compaction]`、
 `[model_aliases]`、`prompts` 仍在 `config.toml`。`config.rs` 的模块文档
 当时就声明二者「逐步向 sqlite 迁移期间暂时共存」——本 ADR 完成这次迁移。
@@ -37,7 +37,7 @@ CREATE TABLE providers (
     updated_at INTEGER NOT NULL
 ) STRICT;
 
--- 模型规格覆盖（替代 providers.<名>.models.<id>；NULL = 未覆盖，
+-- 模型覆盖（替代 providers.<名>.models.<id>；NULL = 未覆盖，
 -- 向下回退 models.dev / 中性兜底）
 CREATE TABLE model_specs (
     provider         TEXT NOT NULL REFERENCES providers(name) ON DELETE CASCADE,
@@ -76,7 +76,7 @@ CREATE TABLE settings (
 | --- | --- |
 | base_url | CLI > env（OPENAI_BASE_URL，仅 openai 系）> `providers.base_url` > `settings.base_url` > 协议默认 |
 | api_key | CLI > env（ANTHROPIC_API_KEY / OPENAI_API_KEY）> `providers.api_key` > `settings.api_key` |
-| 模型规格字段 | `model_specs` 行 > models.dev > 中性兜底 |
+| 模型字段 | `model_specs` 行 > models.dev > 中性兜底 |
 | temperature / max_tokens / append_system | CLI > `settings` |
 | compaction（enabled/reserve/keep_recent） | `settings` > 内置默认 |
 | model_aliases / prompts 显式路径 | `settings`（prompts 仍叠加 CLI `--prompt-template`） |
@@ -104,7 +104,7 @@ TUI `/config` 与 web REST 的写操作在落库后调用 `resolver.reload()` �
    `unset_setting`（携带 `request_id`，ack 或 error 带同一 id，同
    `create_session` 先例）；写后 reload 并广播无 session 维度的
    `settings_changed`（同 `Refresh` 先例），其他客户端收到后重新拉取
-   快照、模型候选随之刷新；React 设置页（providers / 模型规格 / 标量
+   快照、模型候选随之刷新；React 设置页（providers / 模型 / 标量
    设置的可视化管理）经同一 WS 连接读写。
 
 web 模式各 session 共享进程级 `Arc<ModelResolver>`，reload 对全部 session

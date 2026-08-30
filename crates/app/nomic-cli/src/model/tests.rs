@@ -63,8 +63,9 @@ fn cli_model_beats_db_history() {
         provider: "openai".to_string(),
         model: "other-model".to_string(),
     }];
-    let model = select_startup_model(&cli, &db_history, &resolver).expect("select");
-    assert_eq!(model.id, "gpt-5.2");
+    let startup = select_startup_model(&cli, &db_history, &resolver).expect("select");
+    assert!(startup.configured);
+    assert_eq!(startup.model.id, "gpt-5.2");
 }
 
 #[test]
@@ -81,8 +82,9 @@ fn db_history_feedback_falls_back_to_older_selection() {
             model: "gpt-5.2".to_string(),
         },
     ];
-    let model = select_startup_model(&cli(&[]), &db_history, &resolver).expect("select");
-    assert_eq!(model.id, "gpt-5.2", "第一条可解析的选择生效");
+    let startup = select_startup_model(&cli(&[]), &db_history, &resolver).expect("select");
+    assert!(startup.configured);
+    assert_eq!(startup.model.id, "gpt-5.2", "第一条可解析的选择生效");
 }
 
 #[test]
@@ -112,16 +114,48 @@ fn cli_provider_without_model_is_rejected() {
 }
 
 #[test]
-fn db_history_exhausted_requires_explicit_model() {
-    // 回退链全部失效：无内置默认模型可落，报错要求显式指定
+fn db_history_exhausted_falls_back_to_placeholder() {
+    // 回退链全部失效：无内置默认模型可落，降级为占位模型（不报错，
+    // 发消息时由占位 provider 报引导错误）
     let resolver = resolver(&cli(&[]), Settings::default(), Some(catalog()));
     let db_history = [ModelSelection {
         provider: "openai".to_string(),
         model: "gpt-retired".to_string(),
     }];
-    let error =
-        select_startup_model(&cli(&[]), &db_history, &resolver).expect_err("链尽时必须报错");
-    assert!(format!("{error:#}").contains("未指定模型"));
+    let startup = select_startup_model(&cli(&[]), &db_history, &resolver).expect("不应报错");
+    assert!(!startup.configured);
+    assert_eq!(startup.model.provider, UNCONFIGURED);
+    assert_eq!(startup.model.id, UNCONFIGURED);
+}
+
+#[test]
+fn no_cli_no_db_history_falls_back_to_placeholder() {
+    // 全新环境（sqlite 无任何配置）：占位模型继续启动
+    let resolver = resolver(&cli(&[]), Settings::default(), Some(catalog()));
+    let startup = select_startup_model(&cli(&[]), &[], &resolver).expect("不应报错");
+    assert!(!startup.configured);
+    assert_eq!(startup.model.provider, UNCONFIGURED);
+    assert!(!startup.model.reasoning);
+    assert_eq!(startup.model.context_window, 0);
+}
+
+#[tokio::test]
+async fn unconfigured_provider_errors_with_guidance() {
+    // 占位 provider 不发起请求：stream 立即以引导错误收尾（错误编码进流的契约）
+    let model = unconfigured_model();
+    let provider = provider_for(&model, None);
+    let stream = provider.stream(
+        &model,
+        &nomic_ai::Context::default(),
+        &nomic_ai::StreamOptions::default(),
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let message = stream.result().await.expect("恰一个终止事件");
+    assert_eq!(message.stop_reason, StopReason::Error);
+    assert_eq!(
+        message.error_message.as_deref(),
+        Some(UNCONFIGURED_GUIDANCE)
+    );
 }
 
 #[test]
@@ -153,9 +187,9 @@ fn cli_model_accepts_provider_qualified_form() {
         deepseek_settings(),
         Some(catalog()),
     );
-    let model = select_startup_model(&cli, &[], &resolver).expect("select");
-    assert_eq!(model.provider, "deepseek");
-    assert_eq!(model.id, "deepseek-chat");
+    let startup = select_startup_model(&cli, &[], &resolver).expect("select");
+    assert_eq!(startup.model.provider, "deepseek");
+    assert_eq!(startup.model.id, "deepseek-chat");
 }
 
 #[test]

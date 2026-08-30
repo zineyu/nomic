@@ -351,7 +351,7 @@ export const api = {
 
   // ── 设置（ADR-0039，全部经 WS 查询式命令；写后服务端广播 settings_changed）──
 
-  /** 设置快照（providers + 模型规格覆盖 + 标量全量，api_key 已脱敏）。 */
+  /** 设置快照（providers + 模型覆盖 + 标量全量，api_key 已脱敏）。 */
   settings: () =>
     client.request<{ snapshot: SettingsSnapshot }>({ type: 'get_settings' }).then((r) => r.snapshot),
 
@@ -359,14 +359,14 @@ export const api = {
   upsertProvider: (name: string, patch: ProviderPatch) =>
     client.request({ type: 'upsert_provider', name, ...patch }),
 
-  /** 删除 provider（其模型规格覆盖级联清除）。 */
+  /** 删除 provider（其模型覆盖级联清除）。 */
   deleteProvider: (name: string) => client.request({ type: 'delete_provider', name }),
 
-  /** 新建或更新模型规格覆盖（逐字段补丁三态）。 */
+  /** 新建或更新模型覆盖（逐字段补丁三态）。 */
   upsertModelSpec: (provider: string, modelId: string, patch: ModelSpecPatch) =>
     client.request({ type: 'upsert_model_spec', provider, model_id: modelId, ...patch }),
 
-  /** 删除模型规格覆盖。 */
+  /** 删除模型覆盖。 */
   deleteModelSpec: (provider: string, modelId: string) =>
     client.request({ type: 'delete_model_spec', provider, model_id: modelId }),
 

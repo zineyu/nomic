@@ -139,7 +139,7 @@ pub enum ClientEvent {
         #[serde(default)]
         force: bool,
     },
-    /// 查询设置快照（providers + 模型规格覆盖 + 标量全量；ADR-0039）。
+    /// 查询设置快照（providers + 模型覆盖 + 标量全量；ADR-0039）。
     GetSettings { request_id: String },
     /// 新建或更新 provider（查询式命令：逐字段补丁三态——字段缺失 =
     /// 不更新，null = 清除；响应 `settings_updated` 并广播 `settings_changed`）。
@@ -149,9 +149,9 @@ pub enum ClientEvent {
         #[serde(flatten)]
         patch: nomic_session::ProviderPatch,
     },
-    /// 删除 provider（其模型规格覆盖级联清除）。
+    /// 删除 provider（其模型覆盖级联清除）。
     DeleteProvider { request_id: String, name: String },
-    /// 新建或更新模型规格覆盖（逐字段补丁三态同 `upsert_provider`；所属
+    /// 新建或更新模型覆盖（逐字段补丁三态同 `upsert_provider`；所属
     /// provider 必须已定义）。
     UpsertModelSpec {
         request_id: String,
@@ -160,7 +160,7 @@ pub enum ClientEvent {
         #[serde(flatten)]
         patch: nomic_session::ModelSpecPatch,
     },
-    /// 删除模型规格覆盖。
+    /// 删除模型覆盖。
     DeleteModelSpec {
         request_id: String,
         provider: String,

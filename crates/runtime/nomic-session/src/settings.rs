@@ -44,7 +44,7 @@ pub struct ProviderPatch {
     pub api_key: Option<Option<String>>,
 }
 
-/// 模型规格覆盖行（`model_specs` 表）：`spec` 中 `None` 字段 = 未覆盖，
+/// 模型覆盖行（`model_specs` 表）：`spec` 中 `None` 字段 = 未覆盖，
 /// 向下回退 models.dev / 中性兜底。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ModelSpecRow {
@@ -232,7 +232,7 @@ impl SessionStore {
 
     // ── model_specs ─────────────────────────────────────────────────────
 
-    /// 全部模型规格覆盖（按 provider、模型 id 排序）。
+    /// 全部模型覆盖（按 provider、模型 id 排序）。
     pub async fn list_model_specs(&self) -> Result<Vec<ModelSpecRow>, SessionError> {
         let rows = sqlx::query(
             "SELECT provider, model_id, name, reasoning, vision, context_window, max_tokens, \
@@ -244,7 +244,7 @@ impl SessionStore {
         Ok(rows.iter().map(decode_model_spec_row).collect())
     }
 
-    /// 新建或更新模型规格覆盖（逐字段补丁）；返回落库后的完整行。
+    /// 新建或更新模型覆盖（逐字段补丁）；返回落库后的完整行。
     /// 所属 provider 必须存在（外键约束）。
     pub async fn upsert_model_spec(
         &self,
@@ -297,7 +297,7 @@ impl SessionStore {
         Ok(row)
     }
 
-    /// 删除模型规格覆盖；返回是否有行被删除。
+    /// 删除模型覆盖；返回是否有行被删除。
     pub async fn delete_model_spec(
         &self,
         provider: &str,

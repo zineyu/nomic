@@ -69,9 +69,7 @@ pub fn goal_command(
             if session.cancel_goal() {
                 Ok(())
             } else {
-                Err(ApiError::BadRequest(
-                    "当前没有进行中的目标（/goal <目标> 启动）".to_string(),
-                ))
+                Err(ApiError::BadRequest("当前没有进行中的目标。".to_string()))
             }
         }
     }

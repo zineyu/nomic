@@ -16,8 +16,8 @@ use nomic_skills::{ActivatedSkill, SkillResolver};
 use crate::Cli;
 use crate::context_files::{ContextFile, discover_agents_files};
 use crate::model::{
-    ModelResolver, api_key_env, build_provider, cli_model_provider, db_model_history,
-    db_reasoning_level, load_catalog_unless_complete, resolve_api_key, select_startup_model,
+    ModelResolver, api_key_env, cli_model_provider, db_model_history, db_reasoning_level,
+    load_catalog_unless_complete, resolve_api_key, select_startup_model,
 };
 use crate::settings::Settings;
 
@@ -34,6 +34,10 @@ pub enum SessionPolicy {
 /// 初始化完成的运行时上下文：构建 agent 所需的全部零件 + 持久化句柄与恢复历史。
 pub struct Bootstrap {
     pub model: Model,
+    /// 启动模型是否来自真实配置（CLI / sqlite）：`false` 时 `model` 是
+    /// 占位模型（[`crate::model::unconfigured_model`]），`provider` 是
+    /// 发消息即报引导错误的占位实现；print 模式据此快速失败
+    pub model_configured: bool,
     /// 运行时模型解析器（TUI `/models` 切换用）：与启动同一分层口径
     pub models: ModelResolver,
     pub provider: Arc<dyn Provider>,
@@ -68,9 +72,10 @@ pub struct Bootstrap {
 
 /// 按 CLI 参数与环境初始化运行时上下文。
 ///
-/// provider/model 的选择按 CLI 参数 > sqlite 配置（回退链）解析，两层都没有时
-/// 报错（无内置默认模型）；其余设置项按 CLI 参数 > 环境变量 > sqlite 设置 >
-/// 协议默认 的优先级解析（ADR-0039）。
+/// provider/model 的选择按 CLI 参数 > sqlite 配置（回退链）解析，两层都没有
+/// 可用选择时降级为占位模型（`model_configured == false`，不阻断启动，见
+/// [`crate::model::select_startup_model`]）；其余设置项按 CLI 参数 > 环境变量 >
+/// sqlite 设置 > 协议默认 的优先级解析（ADR-0039）。
 /// `policy` 决定是否在启动时创建/恢复 session（web 模式只开库不建 session）。
 #[allow(clippy::too_many_lines)]
 pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
@@ -104,11 +109,14 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
     let catalog =
         load_catalog_unless_complete(&settings, provider_hint.as_deref(), model_id_hint).await;
     let models = ModelResolver::new(cli, settings, env_openai_base_url, catalog);
-    let model = select_startup_model(cli, &db_history, &models)?;
+    let startup = select_startup_model(cli, &db_history, &models)?;
+    let model_configured = startup.configured;
+    let model = startup.model;
     tracing::info!(
         model = %model.id,
         provider = %model.provider,
         api = ?model.api,
+        configured = model_configured,
         "bootstrap: model selected"
     );
     let snapshot = models.settings();
@@ -123,7 +131,7 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
             .as_deref(),
         snapshot.api_key.as_deref(),
     );
-    let provider = build_provider(model.api, api_key.clone());
+    let provider = crate::model::provider_for(&model, api_key.clone());
     // 思考级别恢复链：CLI > sqlite 配置表
     let db_reasoning = db_reasoning_level(store.as_ref()).await;
     let reasoning = cli
@@ -203,6 +211,7 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
     );
     Ok(Bootstrap {
         model,
+        model_configured,
         models,
         provider,
         stream_options,

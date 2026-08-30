@@ -77,6 +77,12 @@ pub async fn run(cli: &Cli) -> Result<()> {
         boot.model.context_window,
     );
     app.load_history(&boot.history);
+    // 无可用模型配置（CLI 与 sqlite 都没有）：占位模型照常启动，
+    // 聊天区给出运行时选择引导（发消息时占位 provider 也会报同一引导错误）
+    if !boot.model_configured {
+        app.chat_mut()
+            .push_system(crate::model::UNCONFIGURED_GUIDANCE.to_string());
+    }
     // `--image` 附件在 TUI 模式同样生效：作为首轮消息的暂存附件
     effects::stage_cli_images(&mut app, &cli.image);
     // 工具基准（workspace 严格归属）：工具、`@file:` 补全与 session 绑定

@@ -70,7 +70,7 @@ export function QueuePanel({ queue, onUpdate, onRemove, onMove }: QueuePanelProp
     <div data-slot="queue-panel" className="mx-auto w-full max-w-page px-4 pb-2 sm:px-7">
       <div className="rounded-xl border bg-card px-3.5 py-2">
         <div className="pb-1 text-xs text-muted-foreground">
-          已排队 {queue.length} 条 · 当前步骤完成后逐条注入本轮
+          已排队 {queue.length} 条
         </div>
         <ul className="space-y-0.5">
           {queue.map((entry, index) => (
@@ -95,10 +95,10 @@ export function QueuePanel({ queue, onUpdate, onRemove, onMove }: QueuePanelProp
                     className="min-h-7 resize-none text-sm"
                   />
                   <div className="flex justify-end gap-1 pt-1">
-                    <RowButton title="保存（Enter；清空即删除）" onClick={saveEdit}>
+                    <RowButton title="保存" onClick={saveEdit}>
                       <Check className="size-3.5" />
                     </RowButton>
-                    <RowButton title="取消（Esc）" onClick={cancelEdit}>
+                    <RowButton title="取消" onClick={cancelEdit}>
                       <X className="size-3.5" />
                     </RowButton>
                   </div>

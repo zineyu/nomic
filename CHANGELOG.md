@@ -20,7 +20,12 @@
 - **(session)** providers / model_specs / settings 三表（迁移 0008）与 CRUD
 - **(cli)** `nomic config` 子命令族（标量 get/set/unset、providers、models）
 - **(tui)** 命令栏 `config` 命令（与 CLI 同一命令树）
-- **(web)** WS 设置事件与 Rail 设置页（providers / 模型规格覆盖 / 标量可视化管理，api_key 脱敏）
+- **(web)** WS 设置事件与 Rail 设置页（providers / 模型覆盖 / 标量可视化管理，api_key 脱敏）
+
+### 修复
+
+- **(cli)** sqlite 无任何模型配置时不再启动失败：TUI / web 以占位模型继续启动，
+  发消息时提示先选择模型（print 模式非交互，保持启动报错）
 
 ## [0.3.1] - 2026-08-24
 
@@ -343,7 +348,7 @@
 - TUI 渲染 assistant 输出的 Markdown（标题/列表/代码块/引用/表格/行内样式）
 - 新增 resume 子命令交互选择并恢复历史 session
 - TUI 新增 /resume 命令，交互选择并恢复历史 session
-- 模型规格分层解析（配置 → models.dev → 内置默认）
+- 模型分层解析（配置 → models.dev → 内置默认）
 - **(cli)** 基于 tracing 的日志系统，默认写入 XDG state 目录，支持 --log 切换终端输出
 - **(core,tools)** Agent loop 与工具执行的 tracing 插桩
 - **(ai)** LLM 流式请求的 tracing 插桩

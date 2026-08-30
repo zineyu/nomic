@@ -133,12 +133,9 @@ function EmptyState({ onExample }: { onExample?: (text: string) => void }) {
           data-intro
           className="mb-4 inline-block size-14 rounded-xl"
         />
-        <h2 data-intro className="mb-1 text-h2 tracking-tight">
+        <h2 data-intro className="mb-6 text-h2 tracking-tight">
           向 nomic 提问
         </h2>
-        <p data-intro className="mb-6 text-sm text-muted-foreground">
-          可调用工具、读写文件、运行命令的 AI 编程助手
-        </p>
         {onExample && (
           <div className="flex flex-wrap justify-center gap-2">
             {EXAMPLES.map((example) => (

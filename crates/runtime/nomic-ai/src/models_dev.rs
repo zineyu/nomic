@@ -22,7 +22,7 @@ const CACHE_TTL: Duration = Duration::from_hours(24);
 /// 保证首次拉取能写入缓存；命中缓存的启动不受此影响。
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 模型规格：全部字段可选，缺省时由调用方继续向下层（models.dev / 中性兜底）解析。
+/// 模型：全部字段可选，缺省时由调用方继续向下层（models.dev / 中性兜底）解析。
 ///
 /// 同时作为 sqlite `model_specs` 表的序列化形态（ADR-0039；历史上也作为
 /// config.toml `[providers.<名字>.models."<模型id>"]` 的反序列化目标），

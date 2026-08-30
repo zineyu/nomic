@@ -15,7 +15,7 @@ use crate::settings::{keys, validate_provider_name, validate_scalar};
 /// `nomic config` 子命令。
 #[derive(Debug, Clone, Subcommand)]
 pub enum ConfigCommand {
-    /// 列出全部设置（标量 + provider 定义 + 模型规格覆盖）
+    /// 列出全部设置（标量 + provider 定义 + 模型覆盖）
     List,
     /// 读取标量设置
     Get {
@@ -39,7 +39,7 @@ pub enum ConfigCommand {
         #[command(subcommand)]
         command: ProvidersCommand,
     },
-    /// 管理模型规格覆盖（`<provider>/<模型id>`，逐字段）
+    /// 管理模型覆盖（`<provider>/<模型id>`，逐字段）
     Models {
         #[command(subcommand)]
         command: ModelsCommand,
@@ -69,7 +69,7 @@ pub enum ProvidersCommand {
         #[arg(long, value_parser = ["api", "base-url", "api-key"])]
         clear: Vec<String>,
     },
-    /// 删除 provider（其模型规格覆盖级联清除）
+    /// 删除 provider（其模型覆盖级联清除）
     Unset {
         /// provider 名
         name: String,
@@ -79,9 +79,9 @@ pub enum ProvidersCommand {
 /// `nomic config models` 子命令。
 #[derive(Debug, Clone, Subcommand)]
 pub enum ModelsCommand {
-    /// 列出全部模型规格覆盖
+    /// 列出全部模型覆盖
     List,
-    /// 新建或更新模型规格覆盖（只更新显式传入的字段）
+    /// 新建或更新模型覆盖（只更新显式传入的字段）
     Set {
         /// `<provider>/<模型id>`
         spec: String,
@@ -120,7 +120,7 @@ pub enum ModelsCommand {
         )]
         clear: Vec<String>,
     },
-    /// 删除模型规格覆盖（恢复 models.dev / 中性兜底解析）
+    /// 删除模型覆盖（恢复 models.dev / 中性兜底解析）
     Unset {
         /// `<provider>/<模型id>`
         spec: String,
@@ -214,7 +214,7 @@ async fn providers(command: &ProvidersCommand, store: &SessionStore) -> Result<S
         ProvidersCommand::List => {
             let rows = store.list_providers().await?;
             if rows.is_empty() {
-                return Ok("没有 provider 定义（用 nomic config providers set 新建）。".to_string());
+                return Ok("没有 provider 定义。".to_string());
             }
             let mut out = String::new();
             for row in rows {
@@ -286,7 +286,7 @@ async fn providers(command: &ProvidersCommand, store: &SessionStore) -> Result<S
         }
         ProvidersCommand::Unset { name } => {
             if store.delete_provider(name).await? {
-                Ok(format!("已删除 provider {name}（其模型规格覆盖一并清除）"))
+                Ok(format!("已删除 provider {name}（其模型覆盖一并清除）"))
             } else {
                 Ok(format!("provider {name} 不存在"))
             }
@@ -301,10 +301,7 @@ async fn models(command: &ModelsCommand, store: &SessionStore) -> Result<String>
         ModelsCommand::List => {
             let rows = store.list_model_specs().await?;
             if rows.is_empty() {
-                return Ok(
-                    "没有模型规格覆盖（用 nomic config models set <provider>/<模型id> 新建）。"
-                        .to_string(),
-                );
+                return Ok("没有模型覆盖。".to_string());
             }
             let mut out = String::new();
             for row in rows {
@@ -368,7 +365,7 @@ async fn models(command: &ModelsCommand, store: &SessionStore) -> Result<String>
             store
                 .upsert_model_spec(&selection.provider, &selection.model, patch)
                 .await?;
-            Ok(format!("已保存模型规格覆盖 {}", selection.spec()))
+            Ok(format!("已保存模型覆盖 {}", selection.spec()))
         }
         ModelsCommand::Unset { spec } => {
             let selection = ModelSelection::parse(spec, None)
@@ -377,9 +374,9 @@ async fn models(command: &ModelsCommand, store: &SessionStore) -> Result<String>
                 .delete_model_spec(&selection.provider, &selection.model)
                 .await?
             {
-                Ok(format!("已删除模型规格覆盖 {}", selection.spec()))
+                Ok(format!("已删除模型覆盖 {}", selection.spec()))
             } else {
-                Ok(format!("模型规格覆盖 {} 不存在", selection.spec()))
+                Ok(format!("模型覆盖 {} 不存在", selection.spec()))
             }
         }
     }
@@ -400,7 +397,7 @@ async fn list_all(store: &SessionStore) -> Result<String> {
     out.push('\n');
     let _ = writeln!(out, "providers：");
     out.push_str(&providers(&ProvidersCommand::List, store).await?);
-    out.push_str("\n\n模型规格覆盖：\n");
+    out.push_str("\n\n模型覆盖：\n");
     out.push_str(&models(&ModelsCommand::List, store).await?);
     Ok(out.trim_end().to_string())
 }
@@ -563,7 +560,7 @@ mod tests {
             &store,
         )
         .await
-        .expect("模型规格可建");
+        .expect("模型可建");
         let out = execute(&ConfigCommand::List, &store).await.expect("list");
         assert!(out.contains("deepseek"), "{out}");
         assert!(out.contains("deepseek-chat"), "{out}");

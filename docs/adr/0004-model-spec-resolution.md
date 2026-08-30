@@ -1,4 +1,4 @@
-# ADR-0004: 模型规格分层解析（配置 → models.dev → 内置默认）
+# ADR-0004: 模型分层解析（配置 → models.dev → 内置默认）
 
 ## Status
 

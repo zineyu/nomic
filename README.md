@@ -12,7 +12,7 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 ## 特性
 
 - **多 provider**：Anthropic Messages 与 OpenAI Completions 兼容端点（DeepSeek、各类网关代理等），
-  模型规格分层解析（配置 > [models.dev](https://models.dev) > 中性兜底）
+  模型分层解析（配置 > [models.dev](https://models.dev) > 中性兜底）
 - **双运行模式**：ratatui 全屏交互 TUI（单字母动作层，[ADR-0021](docs/adr/0021-single-letter-action-layer.md)）+ 非交互 print 模式（管道可用）
 - **Web UI**：`--web` 内置 HTTP 服务（REST + SSE 流式 + 前端静态伺服，[ADR-0030](docs/adr/0030-web-ui.md)）；前端为 React + Vite + TailwindCSS + shadcn/ui（Vitest 单测 + Storybook 组件开发）
 - **排队输入**：运行中 `Enter` 把消息排入统一消息队列（当前步骤完成后注入本轮运行，
@@ -48,7 +48,7 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 - [配置](#配置)
   - [模型选择（sqlite）](#模型选择sqlite)
   - [配置文件](#配置文件)
-  - [多 provider 与模型规格](#多-provider-与模型规格)
+  - [多 provider 与模型](#多-provider-与模型)
 - [上下文文件](#上下文文件)
   - [AGENTS.md](#agentsmd)
   - [Skills](#skills)
@@ -193,7 +193,7 @@ nomic --cwd /path/to/project
   选定目录）；侧栏按 workspace 分组列出历史 session，支持新建 / 恢复（复用 SQLite 存储，
   与 TUI/print 共用）
 - **模型选择**：跨 provider 候选列表 + 思考级别；切换结果落库，与 TUI `/models` 同一口径
-- **设置**：左侧 Rail 的「设置」页管理 providers / 模型规格覆盖 / 标量设置
+- **设置**：左侧 Rail 的「设置」页管理 providers / 模型覆盖 / 标量设置
   （走 WS 设置事件，与 CLI / TUI `config` 命令同一存储与校验；api_key 脱敏回显）
 - **提问**：`ask_user_question` 以弹层呈现（单选/多选/填空 + 自定义填写）
 - **mention 与命令**：输入 `@` 弹出行内补全（`@skill:` 引用 skill、`@file:` 引用
@@ -284,7 +284,7 @@ X11 / Wayland。从文件管理器粘贴或拖入的图片文件路径（含 `fi
 
 - **CLI**：`nomic config ...`（`config-path` 查看数据库位置）；
 - **TUI**：命令栏 `config ...`（无 `/` 前缀，`help` 可查）；
-- **Web UI**：左侧 Rail 的「设置」页（providers / 模型规格覆盖 / 标量可视化编辑）。
+- **Web UI**：左侧 Rail 的「设置」页（providers / 模型覆盖 / 标量可视化编辑）。
 
 优先级统一为 **CLI 参数 > 环境变量 > sqlite > 协议/内置默认**；
 写路径对未知键与非法取值硬报错。
@@ -307,14 +307,14 @@ X11 / Wayland。从文件管理器粘贴或拖入的图片文件路径（含 `fi
 | `compaction.keep_recent_tokens` | 整数 | 压缩时保留的近期 token 数 |
 | `model_aliases` | JSON 对象 | 模型别名表（别名 → `<provider>/<模型id>`），子 agent 与 `models:` 切换可用 |
 
-### Providers 与模型规格
+### Providers 与模型
 
 没有内置 provider：`nomic config providers set anthropic --api-key sk-...` 添加
 （`anthropic` / `openai` 可按名推断 API 种类；自定义 provider 需 `--api` 显式指定）。
 api_key 建议优先用环境变量（`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`）或启动时的
 `--api-key`，避免明文落库。
 
-模型规格覆盖用 `nomic config models set <provider> <模型id> [--context-window N ...]`：
+模型覆盖用 `nomic config models set <provider> <模型id> [--context-window N ...]`：
 models.dev 目录缺字段或需修正时逐字段覆盖（没写的字段不覆盖）。规格逐字段按
 **sqlite 覆盖 > [models.dev](https://models.dev) > 中性兜底（全零）** 解析：
 
@@ -341,7 +341,9 @@ TUI 内 `models` 命令跨 provider 选择（`<provider>/<模型id>` 格式）�
 选择结果追加保存；启动时按
 **CLI 参数 > sqlite 配置（从最新选择向最老逐条回退）** 解析，
 失效的选择（provider 已删除、模型已不存在）告警后自动回退到更早的选择；
-两层都没有时启动报错——没有内置默认 provider / 模型，必须显式指定。
+两层都没有可用选择时不再启动失败——TUI / web 以占位模型照常启动，
+发消息时提示先经 `models:<provider>/<模型id>` 或设置页完成选择
+（无内置默认 provider / 模型）；print 模式非交互，仍在启动时报错。
 启动时也可用 `--provider` / `--model` 临时指定（`--model` 支持
 `<provider>/<模型id>` 全形式），优先级高于数据库中保存的选择、不写回数据库。
 

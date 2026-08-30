@@ -92,7 +92,7 @@ impl CompactionOverride {
 pub struct Settings {
     /// provider 定义表（`providers` 表，按名索引）
     pub providers: BTreeMap<String, ProviderRow>,
-    /// 模型规格覆盖表（`model_specs` 表，(provider, 模型id) 索引）
+    /// 模型覆盖表（`model_specs` 表，(provider, 模型id) 索引）
     pub model_specs: BTreeMap<(String, String), ModelSpec>,
     /// 全局 base_url 兜底
     pub base_url: Option<String>,
@@ -173,10 +173,13 @@ impl Settings {
 }
 
 /// 校验 provider 名：非空、不含 `/` 与空白（作为 `<provider>/<模型id>`
-/// 选择项的前段与 WS/CLI 参数传输）。
+/// 选择项的前段与 WS/CLI 参数传输）；`unconfigured` 保留给未配置占位模型。
 pub fn validate_provider_name(name: &str) -> Result<()> {
     if name.is_empty() || name.chars().any(|c| c == '/' || c.is_whitespace()) {
         bail!("provider 名 {name:?} 非法：非空且不能含 / 或空白字符");
+    }
+    if name == crate::model::UNCONFIGURED {
+        bail!("provider 名 {name:?} 是保留字（未配置占位模型的标识）");
     }
     Ok(())
 }
@@ -251,4 +254,19 @@ pub fn validate_scalar(key: &str, value: &serde_json::Value) -> Result<()> {
         bail!("设置 {key} 的取值类型非法：{value}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_provider_name;
+
+    #[test]
+    fn reserved_placeholder_provider_name_is_rejected() {
+        // `unconfigured` 保留给未配置占位模型，禁止作为真实 provider 定义
+        let error = validate_provider_name(crate::model::UNCONFIGURED).expect_err("保留字应被拒绝");
+        assert!(format!("{error:#}").contains("保留字"), "{error:#}");
+        assert!(validate_provider_name("anthropic").is_ok());
+        assert!(validate_provider_name("").is_err());
+        assert!(validate_provider_name("a/b").is_err());
+    }
 }

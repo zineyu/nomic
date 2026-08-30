@@ -1,4 +1,4 @@
-// 模型规格覆盖设置段：覆盖行列表 + 新建/编辑对话框。
+// 模型覆盖设置段：覆盖行列表 + 新建/编辑对话框。
 // 对话框所见即所得：字段留空 = 未覆盖（null，向下回退 models.dev / 中性兜底）。
 
 import { useState } from 'react'
@@ -39,13 +39,12 @@ export function ModelSpecsSection({ specs, providers, onSave, onDelete }: ModelS
   return (
     <section className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-body font-medium">模型规格覆盖</h2>
+        <h2 className="text-body font-medium">模型覆盖</h2>
         <Button
           variant="outline"
           size="sm"
           onClick={() => setEditing('new')}
           disabled={providers.length === 0}
-          title={providers.length === 0 ? '先添加 provider' : undefined}
         >
           <Plus />
           添加覆盖
@@ -57,9 +56,7 @@ export function ModelSpecsSection({ specs, providers, onSave, onDelete }: ModelS
         </p>
       )}
       {specs.length === 0 ? (
-        <p className="text-body-sm text-muted-foreground">
-          没有规格覆盖：规格按 models.dev 目录 &gt; 中性兜底解析；models.dev 缺失或需修正时在此覆盖。
-        </p>
+        <p className="text-body-sm text-muted-foreground">没有模型覆盖。</p>
       ) : (
         <ul role="list" className="flex flex-col gap-2">
           {specs.map((spec) => (
@@ -67,12 +64,9 @@ export function ModelSpecsSection({ specs, providers, onSave, onDelete }: ModelS
               key={`${spec.provider}/${spec.model_id}`}
               className="flex items-center justify-between gap-4 rounded-lg border px-4 py-3"
             >
-              <div className="flex min-w-0 flex-col gap-0.5">
-                <span className="text-body-sm font-medium">
-                  {spec.provider}/{spec.model_id}
-                </span>
-                <span className="text-caption text-muted-foreground">{summarize(spec)}</span>
-              </div>
+              <span className="min-w-0 truncate text-body-sm font-medium">
+                {spec.provider}/{spec.model_id}
+              </span>
               <div className="flex shrink-0 gap-1">
                 <Button
                   variant="ghost"
@@ -112,21 +106,6 @@ export function ModelSpecsSection({ specs, providers, onSave, onDelete }: ModelS
       )}
     </section>
   )
-}
-
-/** 单行摘要：已覆盖字段的紧凑列表。 */
-function summarize(spec: ModelSpecRow): string {
-  const parts: string[] = []
-  if (spec.name !== null) parts.push(`name=${spec.name}`)
-  if (spec.reasoning !== null) parts.push(`reasoning=${spec.reasoning}`)
-  if (spec.vision !== null) parts.push(`vision=${spec.vision}`)
-  if (spec.context_window !== null) parts.push(`context=${spec.context_window}`)
-  if (spec.max_tokens !== null) parts.push(`max_tokens=${spec.max_tokens}`)
-  if (spec.cost_input !== null) parts.push(`cost_in=${spec.cost_input}`)
-  if (spec.cost_output !== null) parts.push(`cost_out=${spec.cost_output}`)
-  if (spec.cost_cache_read !== null) parts.push(`cache_read=${spec.cost_cache_read}`)
-  if (spec.cost_cache_write !== null) parts.push(`cache_write=${spec.cost_cache_write}`)
-  return parts.length === 0 ? '（空覆盖行）' : parts.join(' · ')
 }
 
 type BoolField = 'reasoning' | 'vision'
@@ -210,7 +189,7 @@ function SpecDialog({
       <DialogContent className="max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
-            {spec ? `编辑 ${spec.provider}/${spec.model_id}` : '添加模型规格覆盖'}
+            {spec ? `编辑 ${spec.provider}/${spec.model_id}` : '添加模型覆盖'}
           </DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-4">
@@ -241,7 +220,7 @@ function SpecDialog({
             </div>
           </div>
           <div className="flex flex-col gap-2">
-            <Label htmlFor="spec-name">展示名（留空 = 未覆盖）</Label>
+            <Label htmlFor="spec-name">展示名</Label>
             <Input id="spec-name" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
           <div className="grid grid-cols-2 gap-4">

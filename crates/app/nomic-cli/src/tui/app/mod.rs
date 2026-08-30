@@ -364,7 +364,7 @@ fn parse_command(input: &str) -> CommandParse {
 fn help_text() -> String {
     use std::fmt::Write as _;
     // 命令只在 COMMAND 模式执行（ADR-0020）：NORMAL 下 `:` 打开命令栏
-    let mut text = "可用命令（Esc 进 NORMAL 后按 : 打开命令栏，Tab 补全）：".to_string();
+    let mut text = "可用命令：".to_string();
     for command in COMMANDS {
         let aliases = if command.aliases.is_empty() {
             String::new()

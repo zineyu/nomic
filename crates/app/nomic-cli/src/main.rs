@@ -67,7 +67,8 @@ pub(crate) struct Cli {
     pub(crate) provider: Option<String>,
 
     /// 模型 id，支持 `<provider>/<模型id>` 全形式跨 provider 指定
-    /// （缺省用数据库中保存的选择；都没有时启动报错，无内置默认模型）
+    /// （缺省用数据库中保存的选择；都没有时 TUI / web 以占位模型继续启动，
+    /// 发消息时提示先选择模型，print 模式启动报错——无内置默认模型）
     #[arg(long)]
     pub(crate) model: Option<String>,
 

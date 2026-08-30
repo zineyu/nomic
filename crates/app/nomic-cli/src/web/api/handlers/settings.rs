@@ -49,7 +49,7 @@ impl From<ProviderRow> for ProviderView {
 pub struct SettingsSnapshotView {
     /// 全部 provider 定义（按名排序，api_key 已脱敏）
     pub providers: Vec<ProviderView>,
-    /// 全部模型规格覆盖（按 provider、模型 id 排序）
+    /// 全部模型覆盖（按 provider、模型 id 排序）
     pub model_specs: Vec<ModelSpecRow>,
     /// 全部标量设置（键 → JSON 值；api_key 键的值已脱敏为是否已设置）
     pub settings: BTreeMap<String, serde_json::Value>,
@@ -166,7 +166,7 @@ pub async fn handle_upsert_provider(
     }
 }
 
-/// 删除 provider（其模型规格覆盖级联清除）。
+/// 删除 provider（其模型覆盖级联清除）。
 pub async fn handle_delete_provider(state: &AppState, request_id: &str, name: &str) -> ServerEvent {
     let Some(store) = store_of(state) else {
         return store_unavailable(request_id);
@@ -177,7 +177,7 @@ pub async fn handle_delete_provider(state: &AppState, request_id: &str, name: &s
     }
 }
 
-/// 新建或更新模型规格覆盖（逐字段补丁三态同 provider）；所属 provider
+/// 新建或更新模型覆盖（逐字段补丁三态同 provider）；所属 provider
 /// 必须已定义（预检给出可读错误，外键约束兜底）。
 pub async fn handle_upsert_model_spec(
     state: &AppState,
@@ -197,7 +197,7 @@ pub async fn handle_upsert_model_spec(
         }
         if store.get_provider(provider).await?.is_none() {
             return Err(ApiError::BadRequest(format!(
-                "provider {provider:?} 未定义：先创建 provider 再写模型规格覆盖"
+                "provider {provider:?} 未定义：先创建 provider 再写模型覆盖"
             )));
         }
         store.upsert_model_spec(provider, model_id, patch).await?;
@@ -210,7 +210,7 @@ pub async fn handle_upsert_model_spec(
     }
 }
 
-/// 删除模型规格覆盖。
+/// 删除模型覆盖。
 pub async fn handle_delete_model_spec(
     state: &AppState,
     request_id: &str,

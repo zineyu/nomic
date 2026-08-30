@@ -1,5 +1,5 @@
 -- 设置全部存储于 sqlite（ADR-0039，替代 config.toml）：provider 定义、
--- 模型规格覆盖、标量设置三张「当前值」语义的新表（upsert / delete），
+-- 模型覆盖、标量设置三张「当前值」语义的新表（upsert / delete），
 -- 区别于 append-only 的 config 表（模型选择 / 思考级别的回退链不变）。
 
 -- provider 定义（替代 config.toml [providers]）：api 为 NULL 时按名推断
@@ -13,7 +13,7 @@ CREATE TABLE providers (
     updated_at INTEGER NOT NULL
 ) STRICT;
 
--- 模型规格覆盖（替代 providers.<名>.models.<模型id>）：字段 NULL = 未覆盖，
+-- 模型覆盖（替代 providers.<名>.models.<模型id>）：字段 NULL = 未覆盖，
 -- 向下回退 models.dev / 中性兜底；provider 删除时级联清除。
 CREATE TABLE model_specs (
     provider         TEXT NOT NULL REFERENCES providers(name) ON DELETE CASCADE,

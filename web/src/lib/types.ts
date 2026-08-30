@@ -396,7 +396,7 @@ export interface ProviderView {
   updated_at: number
 }
 
-/** 模型规格覆盖行（null = 未覆盖，向下回退 models.dev / 中性兜底） */
+/** 模型覆盖行（null = 未覆盖，向下回退 models.dev / 中性兜底） */
 export interface ModelSpecRow {
   provider: string
   model_id: string
@@ -427,7 +427,7 @@ export interface ProviderPatch {
   api_key?: string | null
 }
 
-/** 模型规格编辑补丁（同 ProviderPatch 三态） */
+/** 模型编辑补丁（同 ProviderPatch 三态） */
 export interface ModelSpecPatch {
   name?: string | null
   reasoning?: boolean | null

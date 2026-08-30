@@ -743,8 +743,7 @@ fn is_word_char(c: char) -> bool {
 pub(super) fn skill_list_text(skills: &[SkillEntry]) -> String {
     use std::fmt::Write as _;
     if skills.is_empty() {
-        return "没有可用的 skill（查找 .nomic/skills、.agents/skills 与用户配置目录）。"
-            .to_string();
+        return "没有可用的 skill。".to_string();
     }
     let mut text = "可用 skill（skill:<name> 载入）：".to_string();
     for skill in skills {

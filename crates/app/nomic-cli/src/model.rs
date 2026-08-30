@@ -1,16 +1,19 @@
 //! provider/model 解析：启动路径与 TUI `/models` 运行时切换共用同一分层口径。
 //!
-//! provider/model 的选择按 CLI 参数 > sqlite 配置（config 表回退链）解析，
-//! 两层都没有时启动报错（无内置默认模型）；base_url / api_key 等连接参数按
+//! provider/model 的选择按 CLI 参数 > sqlite 配置（config 表回退链）解析；
+//! 两层都没有可用选择时降级为占位模型（[`unconfigured_model`]）：TUI / web
+//! 照常启动，发消息时由 [`UnconfiguredProvider`] 返回引导错误，用户经
+//! `models:<provider>/<模型id>` 或设置页在运行时完成选择（无内置默认模型）；
+//! print 模式非交互，仍在启动时报错。base_url / api_key 等连接参数按
 //! CLI 参数 > 环境变量 > providers 表 > settings 标量 > 协议默认 解析
-//! （永远来自用户指定，ADR-0039）；模型规格字段（展示名、推理能力、上下文/
+//! （永远来自用户指定，ADR-0039）；模型字段（展示名、推理能力、上下文/
 //! 输出上限、费率）逐字段按 model_specs 表 > models.dev > 中性兜底 解析。
 
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
 use nomic_ai::{
-    ApiKind, Catalog, Model, ModelSpec, Provider, ThinkingLevel,
+    ApiKind, AssistantMessage, Catalog, Model, ModelSpec, Provider, StopReason, ThinkingLevel,
     providers::{AnthropicProvider, OpenAiCompat, OpenAiProvider},
 };
 use nomic_session::{ProviderRow, SessionStore};
@@ -33,6 +36,82 @@ pub fn build_provider(api: ApiKind, api_key: Option<String>) -> Arc<dyn Provider
         ApiKind::OpenAiCompletions => {
             Arc::new(OpenAiProvider::new(api_key, OpenAiCompat::default()))
         }
+    }
+}
+
+/// 占位模型的 provider 名 / 模型 id（[`unconfigured_model`]；与真实定义不
+/// 冲突——providers 表写入校验将该名保留）。
+pub const UNCONFIGURED: &str = "unconfigured";
+
+/// 未配置模型时的引导文案：占位 provider 的流错误与 TUI 启动提示共用同一口径。
+pub const UNCONFIGURED_GUIDANCE: &str = "尚未配置模型：发送消息前请先选择模型\
+（TUI 用 models:<provider>/<模型id>，如 models:anthropic/claude-sonnet-4-5；\
+provider 由 `nomic config providers` 定义，anthropic / openai 可按名推断）。";
+
+/// print 模式无可用模型时的启动报错（非交互，无法在运行时选择，保持快速失败）。
+pub const NO_MODEL_ERROR: &str = "未指定模型：请用 --model <provider>/<模型id> 指定";
+
+/// 占位模型：CLI 与 sqlite 都没有可用模型选择时顶替启动（无内置默认模型，
+/// 仅承载「未配置」状态；spec 字段全为中性兜底值，context_window 0 = 未知）。
+/// 永不发起真实请求——配套 provider 是 [`UnconfiguredProvider`]。
+pub fn unconfigured_model() -> Model {
+    Model {
+        name: "未配置模型".to_string(),
+        id: UNCONFIGURED.to_string(),
+        api: ApiKind::OpenAiCompletions,
+        provider: UNCONFIGURED.to_string(),
+        base_url: String::new(),
+        reasoning: false,
+        vision: false,
+        context_window: 0,
+        max_tokens: 0,
+        cost_input: 0.0,
+        cost_output: 0.0,
+        cost_cache_read: 0.0,
+        cost_cache_write: 0.0,
+    }
+}
+
+/// 占位模型的配套 provider：不发起任何请求，`stream` 立即以
+/// [`UNCONFIGURED_GUIDANCE`] 为错误信息的 `Error` 终止事件收尾（错误编码进流
+/// 的 provider 契约），用户经 `models` 切换为真实模型后即恢复可用。
+pub struct UnconfiguredProvider;
+
+impl Provider for UnconfiguredProvider {
+    fn stream(
+        &self,
+        model: &Model,
+        _context: &nomic_ai::Context,
+        _options: &nomic_ai::StreamOptions,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> nomic_ai::AssistantStream {
+        let (tx, stream) = nomic_ai::channel();
+        let message = AssistantMessage {
+            content: Vec::new(),
+            api: model.api,
+            provider: model.provider.clone(),
+            model: model.id.clone(),
+            response_model: None,
+            response_id: None,
+            usage: nomic_ai::Usage::default(),
+            stop_reason: StopReason::Error,
+            error_message: Some(UNCONFIGURED_GUIDANCE.to_string()),
+            timestamp: nomic_ai::now_millis(),
+        };
+        let _ = tx.send(nomic_ai::AssistantEvent::Error {
+            message: Box::new(message),
+        });
+        stream
+    }
+}
+
+/// 按模型构造 provider 连接：占位模型配 [`UnconfiguredProvider`]（不请求），
+/// 其余按 API 种类构造真实连接（启动与 web 按 session 构建共用）。
+pub fn provider_for(model: &Model, api_key: Option<String>) -> Arc<dyn Provider> {
+    if model.provider == UNCONFIGURED {
+        Arc::new(UnconfiguredProvider)
+    } else {
+        build_provider(model.api, api_key)
     }
 }
 
@@ -142,18 +221,34 @@ pub async fn db_reasoning_level(store: Option<&SessionStore>) -> Option<Thinking
     word.parse().ok()
 }
 
-/// 启动模型选择：CLI 参数 > sqlite 配置回退链（feedback）；两层都没有时报错。
+/// 启动模型选择的结果：解析出的模型 + 是否为真实配置。
+///
+/// `configured == false` 时 `model` 是占位模型（[`unconfigured_model`]）：
+/// CLI 与 sqlite 都没有可用选择，TUI / web 照常启动、发消息时才报引导错误。
+#[derive(Debug)]
+pub struct StartupModel {
+    /// 解析出的模型（未配置时为占位模型）
+    pub model: Model,
+    /// 是否来自真实配置（CLI 参数或 sqlite 选择历史）
+    pub configured: bool,
+}
+
+/// 启动模型选择：CLI 参数 > sqlite 配置回退链（feedback）；两层都没有可用
+/// 选择时降级为占位模型（`configured == false`），不阻断启动。
 ///
 /// - `--model` 支持 `<provider>/<模型id>` 全形式（provider 部分优先于
 ///   `--provider`）；CLI 给出任一选择器时数据库选择整层不生效
 /// - 无 CLI 选择器时沿数据库回退链从最新向最老逐条解析，第一条可解析的
 ///   选择生效（provider 已删除、模型已不存在的失效选择告警后回退）
-/// - 链空或全部失效时报错：无内置默认模型，必须显式指定
+/// - 链空或全部失效时返回占位模型：无内置默认模型，用户运行时经
+///   `models:<provider>/<模型id>` 完成选择；print 模式由调用方转为报错
+/// - CLI 显式指定但解析失败（未知 provider / 模型）仍硬报错：显式输入
+///   有误应立刻暴露，不静默降级
 pub fn select_startup_model(
     cli: &Cli,
     db_history: &[ModelSelection],
     models: &ModelResolver,
-) -> Result<Model> {
+) -> Result<StartupModel> {
     if cli.provider.is_some() || cli.model.is_some() {
         let provider = cli_model_provider(cli)
             .or_else(|| cli.provider.clone())
@@ -163,13 +258,19 @@ pub fn select_startup_model(
             None => bail!("provider {provider:?} 无默认模型，请用 --model 指定模型 id"),
         };
         tracing::debug!(provider = %provider, model = %model_id, "selecting model from CLI");
-        return models.resolve(&provider, &model_id);
+        return Ok(StartupModel {
+            model: models.resolve(&provider, &model_id)?,
+            configured: true,
+        });
     }
     for selection in db_history {
         match models.resolve(&selection.provider, &selection.model) {
             Ok(model) => {
                 tracing::debug!(provider = %selection.provider, model = %selection.model, "model selected from db history");
-                return Ok(model);
+                return Ok(StartupModel {
+                    model,
+                    configured: true,
+                });
             }
             Err(error) => {
                 tracing::warn!(
@@ -181,9 +282,14 @@ pub fn select_startup_model(
             }
         }
     }
-    bail!(
-        "未指定模型：请用 --model <provider>/<模型id> 指定（provider 由 `nomic config providers` 定义）"
-    )
+    tracing::warn!(
+        "no model configured (CLI and sqlite history both empty or stale), \
+         starting with placeholder model"
+    );
+    Ok(StartupModel {
+        model: unconfigured_model(),
+        configured: false,
+    })
 }
 
 /// 解析 api_key：CLI 参数 > 环境变量 > `providers.<名字>.api_key` > 平铺配置文件。

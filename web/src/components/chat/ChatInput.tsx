@@ -398,7 +398,7 @@ export function ChatInput({
                 variant="outline"
                 onClick={onStop}
                 className="size-7 shrink-0 rounded-full"
-                title="停止当前运行（队列保留）"
+                title="停止当前运行"
               >
                 <Square className="size-3 fill-current" />
               </Button>
@@ -409,7 +409,7 @@ export function ChatInput({
                 onClick={submit}
                 disabled={!value.trim() || sendDisabled}
                 className="size-7 shrink-0 rounded-full"
-                title="发送（Enter）"
+                title="发送"
               >
                 <SendHorizontal className="size-3.5" />
               </Button>

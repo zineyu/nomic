@@ -1,4 +1,4 @@
-// 设置页测试：快照渲染（providers / 模型规格 / 标量）、编辑对话框写路径
+// 设置页测试：快照渲染（providers / 模型覆盖 / 标量）、编辑对话框写路径
 // （补丁三态：留空不改动 / 清除置 null）、删除与错误展示。
 //
 // api 模块整体 mock：useSettings 走 api.settings/connect/subscribe，
@@ -79,16 +79,13 @@ describe('SettingsView', () => {
     mocks.unsetSetting.mockResolvedValue({})
   })
 
-  it('渲染快照：provider 脱敏、规格覆盖摘要、标量当前值', async () => {
+  it('渲染快照：provider / 模型覆盖 / 标量分段', async () => {
     mocks.settings.mockResolvedValue(snapshot())
     render(<SettingsView />)
 
     await screen.findByText('anthropic')
-    // api_key 脱敏：只显示是否已设置，不明文
-    expect(screen.getByText(/api_key 已设置/)).toBeInTheDocument()
     expect(screen.getByText('anthropic/claude-sonnet-4-5')).toBeInTheDocument()
-    expect(screen.getByText(/context=200000/)).toBeInTheDocument()
-    expect(screen.getByText('0.7')).toBeInTheDocument()
+    expect(screen.getByText('采样温度')).toBeInTheDocument()
   })
 
   it('空快照展示引导文案', async () => {
@@ -96,7 +93,7 @@ describe('SettingsView', () => {
     render(<SettingsView />)
 
     await screen.findByText(/还没有 provider 定义/)
-    expect(screen.getByText(/没有规格覆盖/)).toBeInTheDocument()
+    expect(screen.getByText(/没有模型覆盖/)).toBeInTheDocument()
   })
 
   it('编辑 provider：api_key 留空不改动，勾选清除置 null', async () => {
@@ -129,7 +126,7 @@ describe('SettingsView', () => {
     mocks.settings.mockResolvedValue(snapshot())
     render(<SettingsView />)
 
-    await screen.findByText('0.7')
+    await screen.findByText('采样温度')
     await userEvent.click(screen.getByRole('button', { name: '编辑 temperature' }))
     const input = screen.getByLabelText('temperature', { exact: true })
     await userEvent.clear(input)

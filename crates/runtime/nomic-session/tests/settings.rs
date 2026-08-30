@@ -75,7 +75,7 @@ async fn delete_provider_cascades_model_specs() {
     assert!(!store.delete_provider("openai").await.unwrap());
     assert!(
         store.list_model_specs().await.unwrap().is_empty(),
-        "provider 删除后其模型规格覆盖级联清除"
+        "provider 删除后其模型覆盖级联清除"
     );
 }
 

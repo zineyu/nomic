@@ -22,6 +22,11 @@ use crate::{Cli, agent_recipe, bootstrap};
 pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
     tracing::info!(prompt_len = prompt.len(), "print mode: starting");
     let boot = bootstrap::bootstrap(cli, bootstrap::SessionPolicy::Init).await?;
+    // print 非交互（无法在运行时选择模型）：无可用模型配置时快速失败，
+    // 交互模式（TUI / web）则以占位模型继续启动
+    if !boot.model_configured {
+        bail!("{}", crate::model::NO_MODEL_ERROR);
+    }
     // `/name args` 视为 prompt template 调用：展开后发送；未知名称硬报错
     let prompt = match nomic_prompts::expand_invocation(&boot.prompt_templates, prompt) {
         Ok(expanded) => expanded.unwrap_or_else(|| prompt.to_string()),

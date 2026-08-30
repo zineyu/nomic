@@ -187,7 +187,7 @@ export function Sidebar({
               value={newPath}
               autoFocus
               disabled={submitting}
-              placeholder="目录路径，如 ~/code/proj"
+              placeholder="目录路径"
               aria-label="工作区路径"
               aria-invalid={addError !== null}
               className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-60"
@@ -298,7 +298,6 @@ export function Sidebar({
                                 value={renaming.value}
                                 autoFocus
                                 disabled={renamingSubmitting}
-                                placeholder="留空恢复默认标题"
                                 aria-label="会话标题"
                                 aria-invalid={renameError !== null}
                                 onFocus={(e) => e.target.select()}

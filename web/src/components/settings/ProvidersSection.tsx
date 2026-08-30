@@ -37,7 +37,7 @@ export function ProvidersSection({ providers, onSave, onDelete }: ProvidersSecti
   const [error, setError] = useState<string | null>(null)
 
   const handleDelete = async (name: string) => {
-    if (!window.confirm(`删除 provider「${name}」？其模型规格覆盖将一并清除。`)) return
+    if (!window.confirm(`删除 provider「${name}」？其模型覆盖将一并清除。`)) return
     try {
       await onDelete(name)
     } catch (e) {
@@ -60,10 +60,7 @@ export function ProvidersSection({ providers, onSave, onDelete }: ProvidersSecti
         </p>
       )}
       {providers.length === 0 ? (
-        <p className="text-body-sm text-muted-foreground">
-          还没有 provider 定义。添加一个，或用环境变量（ANTHROPIC_API_KEY / OPENAI_API_KEY）配合
-          anthropic / openai 两个可按名推断的 provider。
-        </p>
+        <p className="text-body-sm text-muted-foreground">还没有 provider 定义。</p>
       ) : (
         <ul role="list" className="flex flex-col gap-2">
           {providers.map((provider) => (
@@ -71,15 +68,7 @@ export function ProvidersSection({ providers, onSave, onDelete }: ProvidersSecti
               key={provider.name}
               className="flex items-center justify-between gap-4 rounded-lg border px-4 py-3"
             >
-              <div className="flex min-w-0 flex-col gap-0.5">
-                <span className="text-body-sm font-medium">{provider.name}</span>
-                <span className="text-caption text-muted-foreground">
-                  {provider.api ?? '按名推断'}
-                  {provider.base_url ? ` · ${provider.base_url}` : ''}
-                  {' · api_key '}
-                  {provider.has_api_key ? '已设置' : '未设置'}
-                </span>
-              </div>
+              <span className="min-w-0 truncate text-body-sm font-medium">{provider.name}</span>
               <div className="flex shrink-0 gap-1">
                 <Button
                   variant="ghost"
@@ -174,14 +163,14 @@ function ProviderDialog({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={API_INFER}>按名推断（anthropic / openai）</SelectItem>
+                <SelectItem value={API_INFER}>按名推断</SelectItem>
                 <SelectItem value="anthropic_messages">anthropic_messages</SelectItem>
                 <SelectItem value="open_ai_completions">open_ai_completions</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="flex flex-col gap-2">
-            <Label htmlFor="provider-base-url">base_url（留空 = 清除 / 用协议默认）</Label>
+            <Label htmlFor="provider-base-url">base_url</Label>
             <Input
               id="provider-base-url"
               value={baseUrl}
@@ -190,16 +179,14 @@ function ProviderDialog({
             />
           </div>
           <div className="flex flex-col gap-2">
-            <Label htmlFor="provider-api-key">
-              api_key（建议优先用环境变量，避免明文落库）
-            </Label>
+            <Label htmlFor="provider-api-key">api_key</Label>
             <Input
               id="provider-api-key"
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               disabled={clearApiKey}
-              placeholder={provider?.has_api_key ? '已设置（输入新值覆盖）' : 'sk-…'}
+              placeholder={provider?.has_api_key ? '已设置' : 'sk-…'}
             />
             {provider?.has_api_key && (
               <label className="flex items-center gap-2 text-body-sm text-muted-foreground">

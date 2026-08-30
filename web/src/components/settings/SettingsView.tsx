@@ -1,4 +1,4 @@
-// 设置页：providers / 模型规格覆盖 / 标量设置三段（ADR-0039）。
+// 设置页：providers / 模型覆盖 / 标量设置三段（ADR-0039）。
 // 数据唯一来源是 useSettings 快照；写操作成功后经 settings_changed 广播重拉。
 
 import { RefreshCw } from 'lucide-react'

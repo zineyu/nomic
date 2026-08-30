@@ -185,7 +185,7 @@ export function ChatView({
       {goal && (
         <div data-slot="goal-hint" className="mx-auto w-full max-w-page px-4 pb-0.5 sm:px-7">
           <span className="block truncate font-mono text-xs text-muted-foreground" title={goal}>
-            目标：{goal}（/goal 取消）
+            目标：{goal}
           </span>
         </div>
       )}

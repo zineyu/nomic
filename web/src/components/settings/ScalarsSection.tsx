@@ -33,17 +33,17 @@ interface ScalarsSectionProps {
 
 type ScalarKind = 'string' | 'number' | 'boolean' | 'json'
 
-const KEY_META: Record<string, { label: string; kind: ScalarKind; secret?: boolean; hint?: string }> = {
-  base_url: { label: '全局 base_url 兜底', kind: 'string' },
-  api_key: { label: '全局 api_key 兜底', kind: 'string', secret: true, hint: '建议优先用环境变量' },
+const KEY_META: Record<string, { label: string; kind: ScalarKind; secret?: boolean }> = {
+  base_url: { label: '全局 base_url', kind: 'string' },
+  api_key: { label: '全局 api_key', kind: 'string', secret: true },
   temperature: { label: '采样温度', kind: 'number' },
   max_tokens: { label: '最大输出 token 数', kind: 'number' },
   append_system: { label: '追加系统提示词', kind: 'string' },
-  prompts: { label: '额外 prompt template 路径', kind: 'json', hint: 'JSON 数组，如 ["prompts/review.md"]' },
+  prompts: { label: '额外 prompt template 路径', kind: 'json' },
   'compaction.enabled': { label: '自动压缩开关', kind: 'boolean' },
   'compaction.reserve_tokens': { label: '压缩预留 tokens', kind: 'number' },
   'compaction.keep_recent_tokens': { label: '压缩保留近期 tokens', kind: 'number' },
-  model_aliases: { label: '模型别名表', kind: 'json', hint: 'JSON 对象，如 {"smart":"openai/gpt-4o"}' },
+  model_aliases: { label: '模型别名表', kind: 'json' },
 }
 
 export function ScalarsSection({ values, keys, onSet, onUnset }: ScalarsSectionProps) {
@@ -67,14 +67,9 @@ export function ScalarsSection({ values, keys, onSet, onUnset }: ScalarsSectionP
               key={key}
               className="flex items-center justify-between gap-4 rounded-lg border px-4 py-3"
             >
-              <div className="flex min-w-0 flex-col gap-0.5">
-                <span className="text-body-sm font-medium">{meta?.label ?? key}</span>
-                <span className="text-caption text-muted-foreground">
-                  <code>{key}</code>
-                  {' · '}
-                  <span>{set ? formatValue(key, values[key]) : '未设置'}</span>
-                </span>
-              </div>
+              <span className="min-w-0 truncate text-body-sm font-medium">
+                {meta?.label ?? key}
+              </span>
               <div className="flex shrink-0 gap-1">
                 <Button
                   variant="ghost"
@@ -116,13 +111,6 @@ export function ScalarsSection({ values, keys, onSet, onUnset }: ScalarsSectionP
       )}
     </section>
   )
-}
-
-/** 当前值展示：字符串原样（secret 已由服务端脱敏），其余 JSON。 */
-function formatValue(key: string, value: unknown): string {
-  if (KEY_META[key]?.secret) return '已设置'
-  if (typeof value === 'string') return value
-  return JSON.stringify(value)
 }
 
 function ScalarDialog({
@@ -213,10 +201,9 @@ function ScalarDialog({
                 type={isSecret ? 'password' : kind === 'number' ? 'number' : 'text'}
                 value={text}
                 onChange={(e) => setText(e.target.value)}
-                placeholder={isSecret ? '已设置（输入新值覆盖）' : undefined}
+                placeholder={isSecret ? '已设置' : undefined}
               />
             )}
-            {meta?.hint && <p className="text-caption text-muted-foreground">{meta.hint}</p>}
           </div>
           {error && (
             <p role="alert" className="text-body-sm text-destructive">

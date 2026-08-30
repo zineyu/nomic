@@ -448,8 +448,7 @@ impl App {
                         );
                         vec![Effect::CancelGoal]
                     } else {
-                        self.chat
-                            .push_system("当前没有进行中的目标。用法：goal <目标内容>".to_string());
+                        self.chat.push_system("当前没有进行中的目标。".to_string());
                         Vec::new()
                     }
                 }

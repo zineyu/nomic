@@ -4,10 +4,13 @@
 #[path = "agent_loop/support.rs"]
 mod support;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use nomic_ai::Message;
-use nomic_core::{AgentSupervisor, CreateAgentRequest, SupervisorConfig, SupervisorError};
+use nomic_ai::{ApiKind, Message, Model};
+use nomic_core::{
+    AgentSupervisor, CreateAgentRequest, SupervisorConfig, SupervisorError, shared_model,
+};
 use support::{MockProvider, model, text_done};
 use tokio_util::sync::CancellationToken;
 
@@ -17,8 +20,29 @@ fn supervisor(max_agents: usize) -> Arc<AgentSupervisor> {
     Arc::new(AgentSupervisor::new(
         provider,
         vec![model()],
+        BTreeMap::new(),
+        shared_model(model()),
         SupervisorConfig { max_agents },
     ))
+}
+
+/// 指定 provider / id 的模型（别名与解析测试用）。
+fn named_model(provider: &str, id: &str, reasoning: bool, vision: bool) -> Model {
+    Model {
+        id: id.to_string(),
+        name: id.to_string(),
+        api: ApiKind::OpenAiCompletions,
+        provider: provider.to_string(),
+        base_url: "http://localhost".to_string(),
+        reasoning,
+        vision,
+        context_window: 128_000,
+        max_tokens: 4096,
+        cost_input: 0.0,
+        cost_output: 0.0,
+        cost_cache_read: 0.0,
+        cost_cache_write: 0.0,
+    }
 }
 
 /// 创建一个子 agent 并返回其 ID。
@@ -276,4 +300,72 @@ async fn available_models_returns_configured_list() {
     let models = sup.available_models();
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].id, "mock-model");
+}
+
+// ── 模型解析：别名 / 全形式 / 裸 id / 继承 ─────────────────────────────
+
+/// 装配含别名与多 provider 模型的 supervisor（解析测试共用）。
+fn supervisor_with_models() -> Arc<AgentSupervisor> {
+    let smart = named_model("anthropic", "claude-opus-4", true, true);
+    let fast_a = named_model("openai", "gpt-4o-mini", false, false);
+    let fast_b = named_model("azure", "gpt-4o-mini", false, false);
+    let aliases = BTreeMap::from([("smart".to_string(), smart.clone())]);
+    Arc::new(AgentSupervisor::new(
+        MockProvider::new(vec![]),
+        vec![smart, fast_a, fast_b],
+        aliases,
+        shared_model(model()),
+        SupervisorConfig { max_agents: 8 },
+    ))
+}
+
+#[tokio::test]
+async fn resolve_model_prefers_alias_then_qualified_then_bare_id() {
+    let sup = supervisor_with_models();
+    // 别名命中
+    let model = sup.resolve_model("smart").expect("alias 应命中");
+    assert_eq!(model.id, "claude-opus-4");
+    // <provider>/<id> 全形式
+    let model = sup
+        .resolve_model("openai/gpt-4o-mini")
+        .expect("全形式应命中");
+    assert_eq!(model.provider, "openai");
+    // 裸 id 歧义（两个 provider 同名模型）
+    let error = sup
+        .resolve_model("gpt-4o-mini")
+        .expect_err("裸 id 歧义应报错");
+    let message = error.to_string();
+    assert!(message.contains("ambiguous"), "{message}");
+    assert!(message.contains("openai/gpt-4o-mini"), "{message}");
+    assert!(message.contains("azure/gpt-4o-mini"), "{message}");
+}
+
+#[tokio::test]
+async fn resolve_model_unknown_lists_aliases_and_models() {
+    let sup = supervisor_with_models();
+    let error = sup.resolve_model("no-such").expect_err("未知标识应报错");
+    let message = error.to_string();
+    assert!(
+        message.contains("unknown model or alias \"no-such\""),
+        "{message}"
+    );
+    assert!(message.contains("smart"), "报错应列出别名：{message}");
+    assert!(message.contains("anthropic/claude-opus-4"), "{message}");
+}
+
+#[tokio::test]
+async fn inherited_model_follows_shared_cell_updates() {
+    let cell = shared_model(model());
+    let sup = Arc::new(AgentSupervisor::new(
+        MockProvider::new(vec![]),
+        vec![model()],
+        BTreeMap::new(),
+        cell.clone(),
+        SupervisorConfig { max_agents: 8 },
+    ));
+    assert_eq!(sup.inherited_model().id, "mock-model");
+    // 入口在主 agent 模型切换时写入共享单元，继承随之更新
+    *cell.write().expect("lock") = named_model("openai", "gpt-4o", false, true);
+    assert_eq!(sup.inherited_model().id, "gpt-4o");
+    assert!(sup.inherited_model().vision);
 }

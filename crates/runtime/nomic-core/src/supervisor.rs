@@ -14,12 +14,17 @@
 //!
 //! ## 模型选择
 //!
-//! 每个子 agent 可使用不同模型，在创建时由调用方（用户 / LLM）指定。
-//! [`CreateAgentRequest::model`] 为必填项。
+//! 子 agent 的模型在创建时按三层解析（ADR-0038）：
+//!
+//! 1. **别名**：`create_agent` 的 `model` 参数命中别名表（config.toml
+//!    `[model_aliases]`，别名 → 模型）时直接使用对应模型；
+//! 2. **模型 ID / `<provider>/<id>`**：在可用模型列表中匹配；
+//! 3. **继承**：参数缺省时继承主 agent 的当前模型（[`SharedModel`]
+//!    共享单元，主 agent 切换模型时由入口更新，继承始终跟随）。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 
 use nomic_ai::{Message, Model, Provider};
 use tokio::sync::RwLock;
@@ -42,6 +47,19 @@ impl fmt::Display for AgentId {
 }
 
 // ── 创建请求 ──────────────────────────────────────────────────────────
+
+/// 主 agent 当前模型的共享单元（继承语义的载体）。
+///
+/// supervisor 在「创建子 agent 未指定模型」时读取本单元（继承主 agent
+/// 的当前模型）；入口（TUI `/models` 切换、web `switch_model`）在主
+/// agent 模型变更时写入本单元，使继承始终跟随主 agent 的最新模型。
+/// 锁内只做即时读写、持锁时间可忽略，故用 std 锁而非 tokio 锁。
+pub type SharedModel = Arc<StdRwLock<Model>>;
+
+/// 创建主 agent 模型的共享单元（初始值为启动模型）。
+pub fn shared_model(initial: Model) -> SharedModel {
+    Arc::new(StdRwLock::new(initial))
+}
 
 /// 创建子 agent 时的配置。
 pub struct CreateAgentRequest {
@@ -129,6 +147,9 @@ pub enum SupervisorError {
     /// 子 agent 数量已达上限。
     #[error("max agents ({0}) reached")]
     MaxAgentsReached(usize),
+    /// 模型标识 / 别名无法解析为已知模型。
+    #[error("{0}")]
+    UnknownModel(String),
 }
 
 // ── 配置 ──────────────────────────────────────────────────────────────
@@ -160,6 +181,11 @@ pub struct AgentSupervisor {
     config: SupervisorConfig,
     /// 可用模型列表（传给工具用于校验和展示）。
     available_models: Vec<Model>,
+    /// 模型别名表（别名 → 模型；config.toml `[model_aliases]`，创建子
+    /// agent 时优先于模型 ID 匹配）。
+    aliases: BTreeMap<String, Model>,
+    /// 主 agent 的当前模型（子 agent 未指定模型时继承）。
+    inherited_model: SharedModel,
 }
 
 impl fmt::Debug for AgentSupervisor {
@@ -173,10 +199,15 @@ impl AgentSupervisor {
     ///
     /// - `default_provider`：子 agent 默认使用的 provider（可在创建时覆盖）。
     /// - `available_models`：可供子 agent 选择的模型列表。
+    /// - `aliases`：模型别名表（别名 → 模型；创建子 agent 时按别名选择）。
+    /// - `inherited_model`：主 agent 当前模型的共享单元（子 agent 未指定
+    ///   模型时继承；入口在主 agent 模型切换时更新）。
     /// - `config`：全局配置（最大 agent 数等）。
     pub fn new(
         default_provider: Arc<dyn Provider>,
         available_models: Vec<Model>,
+        aliases: BTreeMap<String, Model>,
+        inherited_model: SharedModel,
         config: SupervisorConfig,
     ) -> Self {
         Self {
@@ -184,12 +215,84 @@ impl AgentSupervisor {
             default_provider,
             config,
             available_models,
+            aliases,
+            inherited_model,
         }
     }
 
     /// 可用模型列表（工具展示 / 校验用）。
     pub fn available_models(&self) -> &[Model] {
         &self.available_models
+    }
+
+    /// 模型别名表（工具展示用；别名 → 模型）。
+    pub const fn aliases(&self) -> &BTreeMap<String, Model> {
+        &self.aliases
+    }
+
+    /// 主 agent 的当前模型（子 agent 未指定模型时继承）。
+    ///
+    /// 锁中毒只可能因写入方 panic，此时进程已无健康状态可言，直接 panic。
+    #[allow(clippy::missing_panics_doc)]
+    pub fn inherited_model(&self) -> Model {
+        self.inherited_model
+            .read()
+            .expect("inherited model lock")
+            .clone()
+    }
+
+    /// 按标识解析模型：别名 > `<provider>/<模型id>` > 裸模型 id。
+    ///
+    /// 裸 id 被多个 provider 的同名模型命中时按歧义报错（提示用全形式
+    /// 消歧）；全部未命中时报错并列出可用别名与模型。
+    pub fn resolve_model(&self, spec: &str) -> Result<Model, SupervisorError> {
+        let spec = spec.trim();
+        if let Some(model) = self.aliases.get(spec) {
+            return Ok(model.clone());
+        }
+        let matches: Vec<&Model> = match spec.split_once('/') {
+            Some((provider, id)) => self
+                .available_models
+                .iter()
+                .filter(|m| m.provider == provider && m.id == id)
+                .collect(),
+            None => self
+                .available_models
+                .iter()
+                .filter(|m| m.id == spec)
+                .collect(),
+        };
+        match matches.as_slice() {
+            [model] => Ok((*model).clone()),
+            [] => Err(SupervisorError::UnknownModel(
+                self.unknown_model_message(spec),
+            )),
+            _ => {
+                let specs: Vec<String> = matches
+                    .iter()
+                    .map(|m| format!("{}/{}", m.provider, m.id))
+                    .collect();
+                Err(SupervisorError::UnknownModel(format!(
+                    "ambiguous model \"{spec}\"; use a fully qualified form: [{}]",
+                    specs.join(", ")
+                )))
+            }
+        }
+    }
+
+    /// 「未知模型」报错文本：列出可用别名与模型（LLM 可据此自纠正）。
+    fn unknown_model_message(&self, spec: &str) -> String {
+        let aliases: Vec<&str> = self.aliases.keys().map(String::as_str).collect();
+        let models: Vec<String> = self
+            .available_models
+            .iter()
+            .map(|m| format!("{}/{}", m.provider, m.id))
+            .collect();
+        format!(
+            "unknown model or alias \"{spec}\"; available aliases: [{}]; available models: [{}]",
+            aliases.join(", "),
+            models.join(", ")
+        )
     }
 
     /// 创建一个新的子 agent，返回其 ID。

@@ -43,6 +43,9 @@ pub struct SessionFactory {
     pub default_reasoning: Option<ThinkingLevel>,
     /// 所有可用模型列表（子 agent 模型选择用）
     pub available_models: Vec<Model>,
+    /// 模型别名表（config.toml `[model_aliases]`，bootstrap 已解析为完整
+    /// 模型；创建子 agent 时按别名选择）
+    pub model_aliases: std::collections::BTreeMap<String, Model>,
     /// 全局事件总线（所有 session 的事件统一发往此处）
     pub events: broadcast::Sender<ServerEvent>,
 }
@@ -156,8 +159,13 @@ impl SessionFactory {
             todo: crate::agent_recipe::TodoPolicy::Isolated,
             provider: resolved.provider.clone(),
             available_models: self.available_models.clone(),
+            default_model: resolved.model.clone(),
+            model_aliases: self.model_aliases.clone(),
             turn_injection: Some(Arc::new(queue.clone())),
         });
+        // 子 agent 的继承模型单元（ADR-0038）：switch_model 切换本 session
+        // 主 agent 模型时写入，此后创建的未指定模型的子 agent 继承新模型
+        let inherited_model = recipe.inherited_model_cell();
         // 正常态工具集副本：goal 命令启动目标驱动运行时以它为基准换入
         // goal_done / 换出 ask_user_question，目标结束再换回（与 TUI 同一口径）
         let normal_tools = recipe.tools().to_vec();
@@ -190,6 +198,7 @@ impl SessionFactory {
             queue,
             workspace,
             normal_tools,
+            inherited_model,
             goal: std::sync::Mutex::new(nomic_tools::GoalNudger::new()),
             tasks: std::sync::Mutex::new(None),
         });

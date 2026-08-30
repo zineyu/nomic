@@ -45,6 +45,8 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
         todo: agent_recipe::TodoPolicy::Isolated,
         provider: boot.provider.clone(),
         available_models: boot.available_models,
+        default_model: boot.model.clone(),
+        model_aliases: boot.model_aliases,
         turn_injection: None,
     });
     let (agent, mut events) = recipe

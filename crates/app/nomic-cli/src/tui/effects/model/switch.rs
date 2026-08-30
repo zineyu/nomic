@@ -31,6 +31,9 @@ pub(in crate::tui) struct ModelSwitcher {
     /// 选择器确认（应用切换）或 Esc（放弃切换）前持有；`None` 表示无
     /// 进行中的切换（含「重选当前推理模型仅调级别」场景）
     pending: Option<Model>,
+    /// 子 agent 继承模型的共享单元（ADR-0038）：切换成功时写入新模型，
+    /// 此后创建的未指定模型的子 agent 继承新模型
+    inherited: nomic_core::SharedModel,
 }
 
 /// 第一步（选择模型）的流转结果。
@@ -64,12 +67,14 @@ impl ModelSwitcher {
         models: ModelResolver,
         current: Model,
         reasoning: Option<ThinkingLevel>,
+        inherited: nomic_core::SharedModel,
     ) -> Self {
         Self {
             models,
             current,
             reasoning,
             pending: None,
+            inherited,
         }
     }
 
@@ -193,6 +198,8 @@ impl ModelSwitcher {
         if handle.set_model(model.clone()).is_err() {
             return Err("内部错误：agent 任务已退出，无法切换模型".to_string());
         }
+        // 子 agent 的继承模型跟随主 agent（ADR-0038）
+        *self.inherited.write().expect("inherited model lock") = model.clone();
         self.current = model;
         Ok(spec)
     }
@@ -304,7 +311,12 @@ mod tests {
             .expect("同步初始级别应成功");
         handle.flush().await.expect("屏障应成功");
         (
-            ModelSwitcher::new(models, current, Some(ThinkingLevel::Low)),
+            ModelSwitcher::new(
+                models,
+                current.clone(),
+                Some(ThinkingLevel::Low),
+                nomic_core::shared_model(current),
+            ),
             handle,
         )
     }

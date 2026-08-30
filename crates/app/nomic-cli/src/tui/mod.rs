@@ -125,8 +125,13 @@ pub async fn run(cli: &Cli) -> Result<()> {
         todo: agent_recipe::TodoPolicy::Shared(todo_store),
         provider: boot.provider.clone(),
         available_models: boot.available_models,
+        default_model: boot.model.clone(),
+        model_aliases: boot.model_aliases,
         turn_injection: Some(app.queue().handle()),
     });
+    // 子 agent 的继承模型单元（ADR-0038）：`/models` 切换主 agent 模型时
+    // 经 ModelSwitcher 写入，此后创建的未指定模型的子 agent 继承新模型
+    let inherited_model = recipe.inherited_model_cell();
     // 正常态工具集副本：goal 命令启动目标驱动运行时以它为基准换入
     // goal_done / 换出 ask_user_question，目标结束再换回
     let normal_tools = recipe.tools().to_vec();
@@ -168,6 +173,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
         base_dir,
         boot.models,
         boot.model,
+        inherited_model,
         skill_resolver,
         boot.prompt_recipe,
         initial_reasoning,

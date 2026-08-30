@@ -52,6 +52,10 @@ pub struct Config {
     pub providers: Option<BTreeMap<String, ProviderConfig>>,
     /// 上下文压缩配置（`[compaction]`）
     pub compaction: Option<CompactionConfig>,
+    /// 模型别名表（`[model_aliases]`，别名 → `<provider>/<模型id>`）：
+    /// 子 agent 创建时按别名选择模型，别名用于按模型能力（推理 / 多模态）
+    /// 区分常用模型；目标模型的规格解析与主模型同一分层口径
+    pub model_aliases: Option<BTreeMap<String, String>>,
 }
 
 /// 上下文压缩配置（`[compaction]`），全部字段可选，缺省取内置默认
@@ -114,8 +118,33 @@ impl Config {
                 }
             }
         }
+        if let Some(aliases) = &self.model_aliases {
+            for (alias, spec) in aliases {
+                validate_alias(alias, spec)?;
+            }
+        }
         Ok(())
     }
+}
+
+/// 校验模型别名：名字为 URL/参数友好的短标识（字母数字、`-`、`_`），
+/// 目标为 `<provider>/<模型id>` 全形式（别名解析不经默认 provider 上下文）。
+fn validate_alias(alias: &str, spec: &str) -> Result<()> {
+    if alias.is_empty()
+        || !alias
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        bail!(
+            "模型别名 {alias:?} 非法：只允许字母、数字、-、_\
+             （按模型能力命名，如 smart / fast / vision）"
+        );
+    }
+    match spec.split_once('/') {
+        Some((provider, model)) if !provider.is_empty() && !model.is_empty() => {}
+        _ => bail!("模型别名 {alias:?} 的目标 {spec:?} 非法：应为 <provider>/<模型id> 格式"),
+    }
+    Ok(())
 }
 
 /// 从默认路径加载配置；文件不存在时返回 `Ok(None)`。
@@ -287,6 +316,45 @@ append_system = "Always reply in Chinese."
         assert!(format!("{error:#}").contains("reasoning"));
     }
 
+    // ── [model_aliases] 模型别名 ─────────────────────────────────────────
+
+    #[test]
+    fn parses_model_aliases() {
+        let (_dir, path) = write_temp(
+            r#"
+[model_aliases]
+smart = "anthropic/claude-opus-4-5"
+fast = "openai/gpt-4o-mini"
+vision = "openai/gpt-4o"
+"#,
+        );
+        let config = load_from(&path).expect("load").expect("some");
+        let aliases = config.model_aliases.expect("aliases");
+        assert_eq!(
+            aliases.get("smart").map(String::as_str),
+            Some("anthropic/claude-opus-4-5")
+        );
+        assert_eq!(
+            aliases.get("vision").map(String::as_str),
+            Some("openai/gpt-4o")
+        );
+    }
+
+    #[test]
+    fn invalid_alias_name_is_rejected() {
+        let (_dir, path) = write_temp("[model_aliases]\n\"my alias!\" = \"openai/gpt-4o\"\n");
+        let error = load_from(&path).expect_err("非法别名必须报错");
+        assert!(format!("{error:#}").contains("my alias!"));
+    }
+
+    #[test]
+    fn alias_target_without_provider_is_rejected() {
+        let (_dir, path) = write_temp("[model_aliases]\nsmart = \"gpt-4o\"\n");
+        let error = load_from(&path).expect_err("缺 provider 的目标必须报错");
+        assert!(format!("{error:#}").contains("smart"));
+        assert!(format!("{error:#}").contains("<provider>/<模型id>"));
+    }
+
     // ── [providers.*] 嵌套 models 配置 ─────────────────────────────────────
 
     #[test]
@@ -300,6 +368,7 @@ api_key = "sk-ant-test"
 [providers.anthropic.models."claude-sonnet-4-5"]
 name = "Claude Sonnet 4.5"
 reasoning = true
+vision = true
 context_window = 200000
 max_tokens = 64000
 cost_input = 3.0

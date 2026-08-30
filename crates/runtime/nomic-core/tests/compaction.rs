@@ -65,6 +65,7 @@ fn model(context_window: u64) -> Model {
         provider: "mock".to_string(),
         base_url: "http://localhost".to_string(),
         reasoning: false,
+        vision: false,
         context_window,
         max_tokens: 4096,
         cost_input: 0.0,

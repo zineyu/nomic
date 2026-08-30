@@ -239,6 +239,7 @@ mod tests {
             provider: "mock".to_string(),
             base_url: "http://localhost".to_string(),
             reasoning: false,
+            vision: false,
             context_window: 128_000,
             max_tokens: 4096,
             cost_input: 0.0,

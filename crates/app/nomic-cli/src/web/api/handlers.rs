@@ -357,6 +357,11 @@ pub async fn handle_switch_model(
     if session.handle.set_model(model.clone()).is_err() {
         return ApiError::Internal("agent actor 已退出".to_string()).to_ws_response(None);
     }
+    // 子 agent 的继承模型跟随主 agent（ADR-0038）
+    *session
+        .inherited_model
+        .write()
+        .expect("inherited model lock") = model.clone();
 
     if let Some(level) = reasoning.as_deref() {
         match parse_thinking_level(level) {

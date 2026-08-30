@@ -275,6 +275,7 @@ const fn neutral_preset(api: ApiKind) -> Preset {
         spec: ModelSpec {
             name: None,
             reasoning: Some(false),
+            vision: Some(false),
             context_window: Some(0),
             max_tokens: Some(0),
             cost_input: Some(0.0),
@@ -377,8 +378,9 @@ impl ModelResolver {
             .unwrap_or_else(|| preset.default_base_url.to_string())
     }
 
-    /// 规格字段（`name` / `reasoning` / `context_window` / `max_tokens` / `cost_*`）
-    /// 逐字段分层：配置 `providers.<名字>.models.<模型id>` > models.dev > 中性兜底。
+    /// 规格字段（`name` / `reasoning` / `vision` / `context_window` / `max_tokens` /
+    /// `cost_*`）逐字段分层：配置 `providers.<名字>.models.<模型id>` > models.dev >
+    /// 中性兜底。
     fn spec_for(&self, provider: &str, model_id: &str, preset: &Preset) -> ModelSpec {
         model_spec_from_config(self.config(), provider, Some(model_id))
             .cloned()
@@ -420,6 +422,7 @@ impl ModelResolver {
             provider: provider.to_string(),
             base_url,
             reasoning: spec.reasoning.unwrap_or(false),
+            vision: spec.vision.unwrap_or(false),
             context_window: spec.context_window.unwrap_or(0),
             max_tokens: spec.max_tokens.unwrap_or(0),
             cost_input: spec.cost_input.unwrap_or(0.0),

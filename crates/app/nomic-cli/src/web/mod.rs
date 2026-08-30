@@ -222,6 +222,9 @@ pub struct SessionRuntime {
     /// 正常态工具集（goal 模式换出/换回的基准；`DynTool` 是 `Arc` 共享
     /// 句柄，克隆廉价）
     pub normal_tools: Vec<nomic_core::DynTool>,
+    /// 子 agent 继承模型的共享单元（ADR-0038）：switch_model 切换本
+    /// session 主 agent 模型时写入，未指定模型的子 agent 继承它
+    pub inherited_model: nomic_core::SharedModel,
     /// goal 目标驱动运行的追问状态（与 `goal_done` 工具共享的会话句柄 +
     /// 连续追问计数；策略收在 nomic-tools 的 `GoalNudger`，与 TUI 同一口径）
     pub goal: std::sync::Mutex<nomic_tools::GoalNudger>,
@@ -461,6 +464,7 @@ fn build_app_state(boot: Bootstrap) -> AppState {
         default_model: boot.model.clone(),
         default_reasoning,
         available_models: boot.available_models,
+        model_aliases: boot.model_aliases,
         events,
     };
 
@@ -589,6 +593,7 @@ mod tests {
             provider: "openai".into(),
             base_url: "https://api.openai.com/v1".into(),
             reasoning: false,
+            vision: false,
             context_window: 128_000,
             max_tokens: 4_096,
             cost_input: 0.0,
@@ -615,6 +620,7 @@ mod tests {
             default_model: model.clone(),
             default_reasoning: None,
             available_models: vec![model.clone()],
+            model_aliases: std::collections::BTreeMap::new(),
             events,
         };
         let initial = factory.build(

@@ -33,6 +33,8 @@ pub struct ModelSpec {
     pub name: Option<String>,
     /// 是否支持推理/思考
     pub reasoning: Option<bool>,
+    /// 是否支持图像输入（多模态）
+    pub vision: Option<bool>,
     /// 上下文窗口 token 数
     pub context_window: Option<u64>,
     /// 最大输出 token 数
@@ -52,6 +54,7 @@ impl ModelSpec {
     pub const fn is_complete(&self) -> bool {
         self.name.is_some()
             && self.reasoning.is_some()
+            && self.vision.is_some()
             && self.context_window.is_some()
             && self.max_tokens.is_some()
             && self.cost_input.is_some()
@@ -66,6 +69,7 @@ impl ModelSpec {
         ModelSpec {
             name: self.name.clone().or_else(|| lower.name.clone()),
             reasoning: self.reasoning.or(lower.reasoning),
+            vision: self.vision.or(lower.vision),
             context_window: self.context_window.or(lower.context_window),
             max_tokens: self.max_tokens.or(lower.max_tokens),
             cost_input: self.cost_input.or(lower.cost_input),
@@ -94,8 +98,15 @@ struct ProviderEntry {
 struct ModelEntry {
     name: Option<String>,
     reasoning: Option<bool>,
+    modalities: Option<ModalitiesEntry>,
     limit: Option<LimitEntry>,
     cost: Option<CostEntry>,
+}
+
+/// api.json 的 `modalities` 子对象（仅取输入模态；多模态能力判断用）。
+#[derive(Deserialize)]
+struct ModalitiesEntry {
+    input: Option<Vec<String>>,
 }
 
 /// api.json 的 `limit` 子对象。
@@ -119,6 +130,10 @@ impl From<ModelEntry> for ModelSpec {
         ModelSpec {
             name: entry.name,
             reasoning: entry.reasoning,
+            vision: entry
+                .modalities
+                .and_then(|m| m.input)
+                .map(|input| input.iter().any(|m| m == "image")),
             context_window: entry.limit.as_ref().and_then(|l| l.context),
             max_tokens: entry.limit.as_ref().and_then(|l| l.output),
             cost_input: entry.cost.as_ref().and_then(|c| c.input),
@@ -317,6 +332,7 @@ mod tests {
                     "name": "Claude Sonnet 4.5 (latest)",
                     "reasoning": true,
                     "tool_call": true,
+                    "modalities": { "input": ["text", "image"], "output": ["text"] },
                     "limit": { "context": 1000000, "output": 64000 },
                     "cost": { "input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75 }
                 }
@@ -343,6 +359,7 @@ mod tests {
             .expect("found");
         assert_eq!(spec.name.as_deref(), Some("Claude Sonnet 4.5 (latest)"));
         assert_eq!(spec.reasoning, Some(true));
+        assert_eq!(spec.vision, Some(true));
         assert_eq!(spec.context_window, Some(1_000_000));
         assert_eq!(spec.max_tokens, Some(64_000));
         assert_eq!(spec.cost_input, Some(3.0));
@@ -359,6 +376,7 @@ mod tests {
             .expect("found");
         assert_eq!(spec.name.as_deref(), Some("DeepSeek Chat"));
         assert_eq!(spec.reasoning, Some(false));
+        assert_eq!(spec.vision, None, "未声明 modalities 时 vision 缺省");
         assert_eq!(spec.context_window, None);
         assert_eq!(spec.cost_input, None);
     }
@@ -401,6 +419,7 @@ mod tests {
         let mut spec = ModelSpec {
             name: Some("x".to_string()),
             reasoning: Some(true),
+            vision: Some(false),
             context_window: Some(1),
             max_tokens: Some(1),
             cost_input: Some(0.0),

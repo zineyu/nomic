@@ -337,6 +337,9 @@ pub struct Model {
     /// 是否支持推理/思考
     #[serde(default)]
     pub reasoning: bool,
+    /// 是否支持图像输入（多模态）
+    #[serde(default)]
+    pub vision: bool,
     /// 上下文窗口 token 数
     #[serde(default)]
     pub context_window: u64,

@@ -60,6 +60,9 @@ pub struct Bootstrap {
     pub prompt_templates: Vec<PromptTemplate>,
     /// 所有可用模型列表（子 agent 模型选择用）
     pub available_models: Vec<Model>,
+    /// 模型别名表（config.toml `[model_aliases]` 解析为完整模型；子 agent
+    /// 按别名选择模型用）
+    pub model_aliases: std::collections::BTreeMap<String, Model>,
 }
 
 /// 按 CLI 参数与环境初始化运行时上下文。
@@ -189,6 +192,9 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
         model: model.id.clone(),
     };
     let available_models = models.all_models(&current_selection);
+    // 模型别名（子 agent 模型选择用）：目标模型与主模型同一分层解析口径；
+    // 配置指向未知 provider / 非法 spec 时硬报错（与配置文件校验同一口径）
+    let model_aliases = resolve_model_aliases(&models)?;
     tracing::info!(
         model = %model.id,
         provider = %model.provider,
@@ -214,7 +220,34 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
         skill_resolver,
         prompt_templates,
         available_models,
+        model_aliases,
     })
+}
+
+/// 把 config.toml `[model_aliases]` 的别名表解析为完整 [`Model`]：目标为
+/// `<provider>/<模型id>` 全形式（加载期已校验格式），经 [`ModelResolver`]
+/// 按与主模型相同的分层口径解析。
+fn resolve_model_aliases(
+    models: &ModelResolver,
+) -> Result<std::collections::BTreeMap<String, Model>> {
+    let mut resolved = std::collections::BTreeMap::new();
+    let Some(aliases) = models.config().and_then(|c| c.model_aliases.as_ref()) else {
+        return Ok(resolved);
+    };
+    for (alias, spec) in aliases {
+        let selection = crate::model::ModelSelection::parse(spec, None)
+            .with_context(|| format!("模型别名 {alias:?} 的目标 {spec:?} 非法"))?;
+        let model = models
+            .resolve(&selection.provider, &selection.model)
+            .with_context(|| {
+                format!(
+                    "模型别名 {alias:?} 指向的模型 {} 无法解析",
+                    selection.spec()
+                )
+            })?;
+        resolved.insert(alias.clone(), model);
+    }
+    Ok(resolved)
 }
 
 /// 启动时把 skill 加载诊断对用户可见：坏 skill 被静默跳过会让人无从排查。

@@ -12,10 +12,14 @@
 //! 共享基准句柄形式：入口只需给出 [`BaseDir`]（不需要原地更新的入口
 //! 新建后不再写它即可，行为等同按固定路径构建）。
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use nomic_ai::{Model, Provider};
-use nomic_core::{AgentBuilder, AgentSupervisor, DynTool, SupervisorConfig, TurnInjection};
+use nomic_core::{
+    AgentBuilder, AgentSupervisor, DynTool, SharedModel, SupervisorConfig, TurnInjection,
+    shared_model,
+};
 use nomic_skills::SkillResolver;
 use nomic_tools::{BaseDir, QuestionSink, TodoStore};
 
@@ -54,6 +58,12 @@ pub struct RecipeOpts {
     pub provider: Arc<dyn Provider>,
     /// 可供子 agent 选择的模型列表（supervisor 校验与展示用）。
     pub available_models: Vec<Model>,
+    /// 主 agent 的当前模型：子 agent 未指定模型时继承（ADR-0038）；交互端
+    /// 在主 agent 模型切换时经 [`AgentRecipe::inherited_model_cell`] 更新。
+    pub default_model: Model,
+    /// 模型别名表（config.toml `[model_aliases]`，bootstrap 已解析为完整
+    /// 模型；创建子 agent 时按别名选择）。
+    pub model_aliases: BTreeMap<String, Model>,
     /// 运行中注入源（ADR-0014，交互端自持统一消息队列，core 在 turn
     /// 边界经注入点弹出注入；非交互入口为 `None`）。
     pub turn_injection: Option<Arc<dyn TurnInjection>>,
@@ -66,6 +76,10 @@ pub struct RecipeOpts {
 pub struct AgentRecipe {
     tools: Vec<DynTool>,
     turn_injection: Option<Arc<dyn TurnInjection>>,
+    /// 主 agent 模型的共享单元（子 agent 继承语义的载体）：supervisor 读、
+    /// 入口在主 agent 模型切换时写；`apply` 消耗配方前经
+    /// [`AgentRecipe::inherited_model_cell`] 取走句柄。
+    inherited_model: SharedModel,
 }
 
 /// 按配方组装：主 agent 工具 = 基础工具（含 skills、todo、提问）+
@@ -90,10 +104,14 @@ pub fn assemble(opts: RecipeOpts) -> AgentRecipe {
         child_todo,
         opts.question_sink.clone(),
     );
-    // supervisor 管理子 agent 生命周期
+    // supervisor 管理子 agent 生命周期；继承模型单元与入口共享（主 agent
+    // 切换模型时更新，子 agent 的继承始终跟随主 agent 当前模型）
+    let inherited_model = shared_model(opts.default_model);
     let supervisor = Arc::new(AgentSupervisor::new(
         opts.provider,
         opts.available_models,
+        opts.model_aliases,
+        inherited_model.clone(),
         SupervisorConfig::default(),
     ));
     // 主 agent 工具 = 基础工具 + 多 agent 管理工具
@@ -111,6 +129,7 @@ pub fn assemble(opts: RecipeOpts) -> AgentRecipe {
     AgentRecipe {
         tools,
         turn_injection: opts.turn_injection,
+        inherited_model,
     }
 }
 
@@ -119,6 +138,13 @@ impl AgentRecipe {
     /// 运行期整体替换工具集（goal 模式换入换出）时以它为正常态基准。
     pub fn tools(&self) -> &[DynTool] {
         &self.tools
+    }
+
+    /// 主 agent 模型的共享单元（继承句柄）：交互端在主 agent 模型切换时
+    /// 写入（`*cell.write() = new_model`），此后创建的未指定模型的子
+    /// agent 继承新模型。`apply` 消耗配方，需在调用前取走本句柄。
+    pub fn inherited_model_cell(&self) -> SharedModel {
+        self.inherited_model.clone()
     }
 
     /// 把产物装到 agent builder 上：设置工具集；有注入点则一并设置。
@@ -195,6 +221,22 @@ mod tests {
             todo,
             provider: Arc::new(MockProvider),
             available_models: Vec::new(),
+            default_model: Model {
+                id: "mock".to_string(),
+                name: "mock".to_string(),
+                api: nomic_ai::ApiKind::OpenAiCompletions,
+                provider: "mock".to_string(),
+                base_url: "http://localhost".to_string(),
+                reasoning: false,
+                vision: false,
+                context_window: 128_000,
+                max_tokens: 4096,
+                cost_input: 0.0,
+                cost_output: 0.0,
+                cost_cache_read: 0.0,
+                cost_cache_write: 0.0,
+            },
+            model_aliases: BTreeMap::new(),
             turn_injection: None,
         }
     }
@@ -293,6 +335,7 @@ mod tests {
             provider: "mock".to_string(),
             base_url: "http://localhost".to_string(),
             reasoning: false,
+            vision: false,
             context_window: 128_000,
             max_tokens: 4096,
             cost_input: 0.0,

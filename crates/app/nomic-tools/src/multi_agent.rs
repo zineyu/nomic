@@ -14,8 +14,8 @@
 //! ## fork-join 典型流程
 //!
 //! ```text
-//! create_agent(id="a", model="claude-sonnet-4-20250514", system_prompt="...", tool_names=[...])
-//! create_agent(id="b", model="gpt-4o", system_prompt="...", tool_names=[...])
+//! create_agent(id="a", model="smart", system_prompt="...", tool_names=[...])
+//! create_agent(id="b", system_prompt="...")   ← 缺省继承主 agent 模型
 //! send_message(agent_id="a", message="任务 A")   ← 非阻塞
 //! send_message(agent_id="b", message="任务 B")   ← 非阻塞
 //! wait_all(agent_ids=["a","b"])                    ← 阻塞等待全部
@@ -25,8 +25,10 @@
 //!
 //! ## 模型选择
 //!
-//! `create_agent` 的 `model` 参数为必填项。可用模型列表在工具构造时注入，
-//! 写入工具描述供 LLM 参照选择，同时用于运行时校验。
+//! `create_agent` 的 `model` 参数为**可选**：支持模型别名（用户经
+//! config.toml `[model_aliases]` 配置，按智力 / 多模态能力区分）或模型
+//! ID / `<provider>/<id>`；缺省时子 agent 继承主 agent 的当前模型。
+//! 可用模型与别名列表在工具构造时注入工具描述，供 LLM 参照选择。
 
 use std::sync::Arc;
 
@@ -76,23 +78,63 @@ fn format_messages(messages: &[Message]) -> String {
     parts.join("\n")
 }
 
+/// 模型的能力标签（写入工具描述，供 LLM 按任务需求区分模型）：
+/// `reasoning` = 推理/思考（智力维度），`vision` = 图像输入（多模态维度）。
+fn capability_tags(m: &nomic_ai::Model) -> String {
+    let mut tags = Vec::new();
+    if m.reasoning {
+        tags.push("reasoning");
+    }
+    if m.vision {
+        tags.push("vision");
+    }
+    if tags.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", tags.join("] ["))
+    }
+}
+
+/// 单行模型描述：`- <id> (<名称><能力标签>, ctx Nk)`。
+fn model_line(m: &nomic_ai::Model) -> String {
+    format!(
+        "- {} ({}{}, ctx {}k)",
+        m.id,
+        m.name,
+        capability_tags(m),
+        m.context_window / 1000
+    )
+}
+
 /// 根据可用模型列表生成模型描述文本（写入工具 description）。
 fn models_description(available_models: &[nomic_ai::Model]) -> String {
     if available_models.is_empty() {
         return String::from("(no models available)");
     }
-    let mut lines = Vec::new();
-    for m in available_models {
-        let reasoning_tag = if m.reasoning { " [reasoning]" } else { "" };
-        lines.push(format!(
-            "- {} ({}{}, ctx {}k)",
-            m.id,
-            m.name,
-            reasoning_tag,
-            m.context_window / 1000
-        ));
+    available_models
+        .iter()
+        .map(model_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 根据别名表生成别名描述文本（写入工具 description）：每个别名带目标
+/// 模型与能力标签，LLM 据此按智力 / 多模态需求选择别名。
+fn aliases_description(aliases: &std::collections::BTreeMap<String, nomic_ai::Model>) -> String {
+    if aliases.is_empty() {
+        return String::from("(no aliases configured)");
     }
-    lines.join("\n")
+    aliases
+        .iter()
+        .map(|(alias, m)| {
+            format!(
+                "- {alias} → {}/{}",
+                m.provider,
+                model_line(m).trim_start_matches("- ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -104,8 +146,10 @@ fn models_description(available_models: &[nomic_ai::Model]) -> String {
 pub struct CreateAgentParams {
     /// Agent 的唯一标识（可选；不提供则自动生成 UUID）。
     pub id: Option<String>,
-    /// 使用的模型 ID（必填；从下方可用模型列表中选择）。
-    pub model: String,
+    /// 使用的模型（可选）：模型别名或模型 ID / `<provider>/<id>`（从下方
+    /// 别名表与可用模型列表中选择）；不提供时继承主 agent 的当前模型。
+    #[serde(default)]
+    pub model: Option<String>,
     /// 系统提示词（必填；定义该 agent 的角色和行为）。
     pub system_prompt: String,
     /// 该 agent 可以使用的工具名称列表（子集）。
@@ -132,11 +176,18 @@ impl CreateAgentTool {
     /// - `supervisor`：共享的 supervisor。
     /// - `available_tools`：可供子 agent 分配的工具池。
     pub fn new(supervisor: Arc<AgentSupervisor>, available_tools: Vec<DynTool>) -> Self {
+        let aliases_desc = aliases_description(supervisor.aliases());
         let models_desc = models_description(supervisor.available_models());
         let tool_names: Vec<&str> = available_tools.iter().map(DynTool::name).collect();
         let description = format!(
             "Create an independent child agent with its own system prompt, tools, and model. \
              Returns the agent ID for use with send_message / wait_result / close_agent.\n\n\
+             The `model` param is optional: pass a model alias or a model ID; omit it to let \
+             the child inherit the main agent's current model (the default). Aliases are \
+             user-configured shortcuts tagged by capability ([reasoning] = intelligence, \
+             [vision] = multimodal image input) — prefer them when the task has clear \
+             capability needs.\n\n\
+             Model aliases:\n{aliases_desc}\n\n\
              Available models:\n{models_desc}\n\n\
              Available tools for assignment:\n{}",
             tool_names.join(", ")
@@ -176,30 +227,31 @@ impl AgentTool for CreateAgentTool {
         _cancel: CancellationToken,
         _on_update: ToolUpdateCallback,
     ) -> Result<ToolResult, ToolError> {
-        let model = self
-            .supervisor
-            .available_models()
-            .iter()
-            .find(|m| m.id == params.model)
-            .cloned()
-            .ok_or_else(|| {
-                let available: Vec<&str> = self
-                    .supervisor
-                    .available_models()
-                    .iter()
-                    .map(|m| m.id.as_str())
-                    .collect();
-                ToolError::new(format!(
-                    "unknown model \"{}\"; available: [{}]",
-                    params.model,
-                    available.join(", ")
-                ))
-            })?;
+        // 模型三层解析：缺省继承主 agent 当前模型 > 别名 > 模型 ID / 全形式
+        let (model, source) = match params.model.as_deref() {
+            None => (
+                self.supervisor.inherited_model(),
+                "inherited from main agent".to_string(),
+            ),
+            Some(spec) => {
+                let model = self.supervisor.resolve_model(spec).map_err(|e| {
+                    tracing::warn!(spec, error = %e, "unknown model for child agent");
+                    ToolError::new(e.to_string())
+                })?;
+                let source = if self.supervisor.aliases().contains_key(spec.trim()) {
+                    format!("alias \"{}\"", spec.trim())
+                } else {
+                    "specified".to_string()
+                };
+                (model, source)
+            }
+        };
 
         let tools = filter_tools(&self.available_tools, &params.tool_names);
 
         tracing::info!(
-            model = %params.model,
+            model = %model.id,
+            source = %source,
             tool_count = tools.len(),
             id = ?params.id,
             "creating child agent"
@@ -210,7 +262,7 @@ impl AgentTool for CreateAgentTool {
                 id: params.id,
                 system_prompt: params.system_prompt,
                 tools,
-                model,
+                model: model.clone(),
                 provider: None,
                 stream_options: None,
             })
@@ -220,10 +272,10 @@ impl AgentTool for CreateAgentTool {
                 ToolError::new(e.to_string())
             })?;
 
-        tracing::info!(agent_id = %id, model = %params.model, "child agent created");
+        tracing::info!(agent_id = %id, model = %model.id, "child agent created");
         Ok(ToolResult::text(format!(
-            "Agent created successfully.\n  ID: {id}\n  Model: {}\n  Tools: [{}]",
-            params.model,
+            "Agent created successfully.\n  ID: {id}\n  Model: {} ({source})\n  Tools: [{}]",
+            model.id,
             if params.tool_names.is_empty() {
                 "none".to_string()
             } else {

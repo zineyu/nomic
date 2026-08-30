@@ -32,7 +32,8 @@ pub use runner::{
     PromptOutcome, RunnerError, RunnerEvent, SessionJob, SessionRunner,
 };
 pub use supervisor::{
-    AgentId, AgentStatus, AgentSupervisor, CreateAgentRequest, SupervisorConfig, SupervisorError,
+    AgentId, AgentStatus, AgentSupervisor, CreateAgentRequest, SharedModel, SupervisorConfig,
+    SupervisorError, shared_model,
 };
 pub use tool::{
     AgentTool, DynTool, ExecutionMode, ToolError, ToolResult, ToolUpdate, ToolUpdateCallback,

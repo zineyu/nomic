@@ -17,6 +17,7 @@ use crate::web::{AppState, ServerEvent, Snapshot};
 
 mod commands;
 mod crud;
+mod settings;
 
 use commands::{SlashCommand, goal_command, parse_slash_command};
 
@@ -24,6 +25,7 @@ pub use crud::{
     handle_create_session, handle_create_workspace, handle_delete_session, handle_delete_workspace,
     handle_rename_session,
 };
+pub use settings::{SettingsSnapshotView, dispatch_settings};
 
 // ── 查询类 handler（返回带 request_id 的 ServerEvent）─────────────────────
 

@@ -34,7 +34,7 @@ use crate::web::{AppState, ServerEvent, assets};
 
 mod handlers;
 
-pub use handlers::{SkillItem, SnapshotView};
+pub use handlers::{SettingsSnapshotView, SkillItem, SnapshotView};
 
 // ── 客户端事件 ────────────────────────────────────────────────────────────
 
@@ -139,6 +139,41 @@ pub enum ClientEvent {
         #[serde(default)]
         force: bool,
     },
+    /// 查询设置快照（providers + 模型规格覆盖 + 标量全量；ADR-0039）。
+    GetSettings { request_id: String },
+    /// 新建或更新 provider（查询式命令：逐字段补丁三态——字段缺失 =
+    /// 不更新，null = 清除；响应 `settings_updated` 并广播 `settings_changed`）。
+    UpsertProvider {
+        request_id: String,
+        name: String,
+        #[serde(flatten)]
+        patch: nomic_session::ProviderPatch,
+    },
+    /// 删除 provider（其模型规格覆盖级联清除）。
+    DeleteProvider { request_id: String, name: String },
+    /// 新建或更新模型规格覆盖（逐字段补丁三态同 `upsert_provider`；所属
+    /// provider 必须已定义）。
+    UpsertModelSpec {
+        request_id: String,
+        provider: String,
+        model_id: String,
+        #[serde(flatten)]
+        patch: nomic_session::ModelSpecPatch,
+    },
+    /// 删除模型规格覆盖。
+    DeleteModelSpec {
+        request_id: String,
+        provider: String,
+        model_id: String,
+    },
+    /// 写入标量设置（键与取值类型校验与 `nomic config set` 同一口径）。
+    SetSetting {
+        request_id: String,
+        key: String,
+        value: serde_json::Value,
+    },
+    /// 删除标量设置。
+    UnsetSetting { request_id: String, key: String },
 }
 
 // ── 组装路由 ──────────────────────────────────────────────────────────────
@@ -395,6 +430,15 @@ async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
                 id,
                 force,
             } => Some(handlers::handle_delete_workspace(state, &request_id, &id, force).await),
+            event @ (ClientEvent::GetSettings { .. }
+            | ClientEvent::UpsertProvider { .. }
+            | ClientEvent::DeleteProvider { .. }
+            | ClientEvent::UpsertModelSpec { .. }
+            | ClientEvent::DeleteModelSpec { .. }
+            | ClientEvent::SetSetting { .. }
+            | ClientEvent::UnsetSetting { .. }) => {
+                Some(handlers::dispatch_settings(state, event).await)
+            }
         }
     }
     .instrument(span)
@@ -433,7 +477,14 @@ fn client_event_span(event: &ClientEvent) -> tracing::Span {
         | ClientEvent::ListSkills { request_id }
         | ClientEvent::CreateSession { request_id, .. }
         | ClientEvent::CreateWorkspace { request_id, .. }
-        | ClientEvent::DeleteWorkspace { request_id, .. } => {
+        | ClientEvent::DeleteWorkspace { request_id, .. }
+        | ClientEvent::GetSettings { request_id }
+        | ClientEvent::UpsertProvider { request_id, .. }
+        | ClientEvent::DeleteProvider { request_id, .. }
+        | ClientEvent::UpsertModelSpec { request_id, .. }
+        | ClientEvent::DeleteModelSpec { request_id, .. }
+        | ClientEvent::SetSetting { request_id, .. }
+        | ClientEvent::UnsetSetting { request_id, .. } => {
             tracing::info_span!("client_event", request_id = %request_id)
         }
         ClientEvent::Prompt { session_id, .. }

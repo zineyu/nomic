@@ -181,6 +181,24 @@ pub fn validate_provider_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// 写入 provider 前的校验（CLI / TUI / web 共用）：名字合法；新建时 api
+/// 必须可解析（补丁显式给出或按名推断），避免存下永远解析失败的定义。
+pub async fn validate_provider_patch(
+    store: &SessionStore,
+    name: &str,
+    patch: &nomic_session::ProviderPatch,
+) -> Result<()> {
+    validate_provider_name(name)?;
+    let creating = store.get_provider(name).await?.is_none();
+    let effective_api = patch.api.as_ref().copied().flatten();
+    if creating && effective_api.is_none() && infer_api(name).is_none() {
+        bail!(
+            "自定义 provider {name:?} 必须指定 api（--api anthropic_messages / open_ai_completions）"
+        );
+    }
+    Ok(())
+}
+
 /// 校验模型别名：名字为 URL/参数友好的短标识（字母数字、`-`、`_`），
 /// 目标为 `<provider>/<模型id>` 全形式（别名解析不经默认 provider 上下文）。
 pub fn validate_alias(alias: &str, spec: &str) -> Result<()> {

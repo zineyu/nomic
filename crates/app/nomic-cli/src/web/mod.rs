@@ -181,6 +181,18 @@ pub enum ServerEvent {
     /// 删除 workspace 确认（响应 `delete_workspace`；名下 session 已级联
     /// 删除；同时经总线广播，其他客户端据此刷新列表）
     WorkspaceDeleted { request_id: String, id: String },
+    /// 设置快照响应（`get_settings` 查询的回复；ADR-0039）
+    SettingsSnapshot {
+        request_id: String,
+        snapshot: Box<api::SettingsSnapshotView>,
+    },
+    /// 设置写入确认（响应 upsert/delete/set/unset 设置命令，携带
+    /// `request_id`）；成功后另有 `settings_changed` 总线广播供全部
+    /// 客户端刷新
+    SettingsUpdated { request_id: String },
+    /// 设置已变化（无 session 维度的总线广播，同 `Refresh` 先例）：任何
+    /// 设置写操作成功后发出，客户端据此重新拉取 `get_settings` 快照
+    SettingsChanged,
 }
 
 /// goal 状态变化种类（`/goal <目标>` 命令驱动；serde snake_case）。

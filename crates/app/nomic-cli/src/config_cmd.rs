@@ -10,7 +10,7 @@ use nomic_ai::ApiKind;
 use nomic_session::{ModelSpecPatch, ProviderPatch, SessionStore};
 
 use crate::model::ModelSelection;
-use crate::settings::{infer_api, keys, validate_provider_name, validate_scalar};
+use crate::settings::{keys, validate_provider_name, validate_scalar};
 
 /// `nomic config` 子命令。
 #[derive(Debug, Clone, Subcommand)]
@@ -279,12 +279,8 @@ async fn providers(command: &ProvidersCommand, store: &SessionStore) -> Result<S
                 }
             }
             // 新建 provider 时校验 api 可解析（按名推断或显式给出），
-            // 避免存下一条永远解析失败的定义
-            let creating = store.get_provider(name).await?.is_none();
-            let effective_api = patch.api.as_ref().copied().flatten();
-            if creating && effective_api.is_none() && infer_api(name).is_none() {
-                bail!("自定义 provider {name:?} 必须用 --api 指定 API 种类");
-            }
+            // 避免存下一条永远解析失败的定义（CLI / TUI / web 同一口径）
+            crate::settings::validate_provider_patch(store, name, &patch).await?;
             store.upsert_provider(name, patch).await?;
             Ok(format!("已保存 provider {name}"))
         }

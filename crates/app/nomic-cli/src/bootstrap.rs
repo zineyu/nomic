@@ -1,7 +1,8 @@
 //! 两种模式共享的运行时初始化装配：stream options、系统提示词、session
 //! 新建/恢复；provider/model 的分层解析在 [`model`][crate::model]。
 //!
-//! 配置文件存在但非法时硬报错（见 [`config`][crate::config]）。
+//! 设置来自 sqlite（providers / model_specs / settings 三表快照，ADR-0039），
+//! 不再读取配置文件。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,12 +14,12 @@ use nomic_session::SessionStore;
 use nomic_skills::{ActivatedSkill, SkillResolver};
 
 use crate::Cli;
-use crate::config::Config;
 use crate::context_files::{ContextFile, discover_agents_files};
 use crate::model::{
     ModelResolver, api_key_env, build_provider, cli_model_provider, db_model_history,
     db_reasoning_level, load_catalog_unless_complete, resolve_api_key, select_startup_model,
 };
+use crate::settings::Settings;
 
 /// session 初始化策略：交互/print 模式启动即建/恢复 session；web 模式只开库，
 /// session 由前端按 workspace 显式创建（无默认 workspace，见 ADR-0030）。
@@ -38,7 +39,7 @@ pub struct Bootstrap {
     pub provider: Arc<dyn Provider>,
     pub stream_options: StreamOptions,
     pub system_prompt: String,
-    /// 上下文压缩配置（`[compaction]` 合并内置默认）
+    /// 上下文压缩配置（settings 表 `compaction.*` 合并内置默认）
     pub compaction: nomic_core::CompactionSettings,
     /// session 库句柄（模型选择与 workspace/session 列表共用）；不可用时为 `None`
     pub store: Option<SessionStore>,
@@ -60,7 +61,7 @@ pub struct Bootstrap {
     pub prompt_templates: Vec<PromptTemplate>,
     /// 所有可用模型列表（子 agent 模型选择用）
     pub available_models: Vec<Model>,
-    /// 模型别名表（config.toml `[model_aliases]` 解析为完整模型；子 agent
+    /// 模型别名表（settings 表 `model_aliases` 解析为完整模型；子 agent
     /// 按别名选择模型用）
     pub model_aliases: std::collections::BTreeMap<String, Model>,
 }
@@ -68,20 +69,21 @@ pub struct Bootstrap {
 /// 按 CLI 参数与环境初始化运行时上下文。
 ///
 /// provider/model 的选择按 CLI 参数 > sqlite 配置（回退链）解析，两层都没有时
-/// 报错（无内置默认模型）；其余可配置项按 CLI 参数 > 环境变量 > 配置文件 >
-/// 协议默认 的优先级解析；配置文件存在但非法时硬报错（见 [`config`][crate::config]）。
+/// 报错（无内置默认模型）；其余设置项按 CLI 参数 > 环境变量 > sqlite 设置 >
+/// 协议默认 的优先级解析（ADR-0039）。
 /// `policy` 决定是否在启动时创建/恢复 session（web 模式只开库不建 session）。
 #[allow(clippy::too_many_lines)]
 pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
     tracing::info!(?policy, "bootstrap: starting initialization");
-    let config = crate::config::load()?;
     let env_openai_base_url = std::env::var("OPENAI_BASE_URL").ok();
-    // session 库提前打开：模型选择（config 表）与消息持久化共用同一库
+    // session 库提前打开：设置快照、模型选择（config 表）与消息持久化共用同一库
     let store = open_store(cli).await?;
     tracing::debug!(
         store_available = store.is_some(),
         "bootstrap: session store opened"
     );
+    // 设置快照（providers / model_specs / 标量，替代 config.toml）
+    let settings = Settings::load(store.as_ref()).await;
     // 数据库中的模型选择历史（最新在前的回退链；库不可用或读取失败为空链）
     let db_history = db_model_history(store.as_ref()).await;
     // catalog 加载提示：CLI 选择器 > 数据库最新选择；都没有时不做完整性预判
@@ -100,9 +102,8 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
         .map(|spec| spec.rsplit_once('/').map_or(spec, |(_, model)| model))
         .or_else(|| db_history.first().map(|selection| selection.model.as_str()));
     let catalog =
-        load_catalog_unless_complete(config.as_ref(), provider_hint.as_deref(), model_id_hint)
-            .await;
-    let models = ModelResolver::new(cli, config, env_openai_base_url, catalog);
+        load_catalog_unless_complete(&settings, provider_hint.as_deref(), model_id_hint).await;
+    let models = ModelResolver::new(cli, settings, env_openai_base_url, catalog);
     let model = select_startup_model(cli, &db_history, &models)?;
     tracing::info!(
         model = %model.id,
@@ -110,33 +111,30 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
         api = ?model.api,
         "bootstrap: model selected"
     );
+    let snapshot = models.settings();
     // api_key 显式分层解析（provider 内部的 env 回退发生在请求时，
-    // 若把配置文件值直接交给构造器会抢到环境变量前面）。
+    // 若把设置值直接交给构造器会抢到环境变量前面）。
     let api_key = resolve_api_key(
         cli.api_key.as_deref(),
         std::env::var(api_key_env(model.api)).ok().as_deref(),
         models
-            .provider_config(&model.provider)
-            .and_then(|p| p.api_key.as_deref()),
-        models.config().and_then(|c| c.api_key.as_deref()),
+            .provider_row(&model.provider)
+            .and_then(|p| p.api_key)
+            .as_deref(),
+        snapshot.api_key.as_deref(),
     );
     let provider = build_provider(model.api, api_key.clone());
-    // 思考级别恢复链：CLI > config.toml > sqlite 配置表
+    // 思考级别恢复链：CLI > sqlite 配置表
     let db_reasoning = db_reasoning_level(store.as_ref()).await;
     let reasoning = cli
         .reasoning
         .as_deref()
-        .or_else(|| models.config().and_then(|c| c.reasoning.as_deref()))
         .map(parse_reasoning)
         .transpose()?
         .or(db_reasoning);
     let stream_options = StreamOptions {
-        temperature: cli
-            .temperature
-            .or_else(|| models.config().and_then(|c| c.temperature)),
-        max_tokens: cli
-            .max_tokens
-            .or_else(|| models.config().and_then(|c| c.max_tokens)),
+        temperature: cli.temperature.or(snapshot.temperature),
+        max_tokens: cli.max_tokens.or(snapshot.max_tokens),
         reasoning,
         api_key,
         headers: Vec::new(),
@@ -145,7 +143,7 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
     let append_system = cli
         .append_system
         .as_deref()
-        .or_else(|| models.config().and_then(|c| c.append_system.as_deref()));
+        .or(snapshot.append_system.as_deref());
     let cwd = std::env::current_dir().context("get cwd")?;
     let skill_resolver = SkillResolver::for_cwd(&cwd).context("初始化 skills 目录失败")?;
     warn_skill_diagnostics(&skill_resolver);
@@ -164,7 +162,7 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
         append_system: append_system.map(str::to_string),
         active_skills,
     };
-    let prompt_templates = load_prompt_templates(cli, &cwd, models.config())?;
+    let prompt_templates = load_prompt_templates(cli, &cwd, &snapshot.prompts)?;
     let session = match policy {
         SessionPolicy::Init => init_session(cli, &cwd, store.clone()).await?,
         SessionPolicy::OpenStoreOnly => None,
@@ -185,7 +183,7 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
         .as_ref()
         .map(|init| init.history.clone())
         .unwrap_or_default();
-    let compaction = compaction_settings(models.config());
+    let compaction = snapshot.compaction.settings();
     // 所有可用模型列表（子 agent 模型选择用）
     let current_selection = crate::model::ModelSelection {
         provider: model.provider.clone(),
@@ -224,17 +222,14 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
     })
 }
 
-/// 把 config.toml `[model_aliases]` 的别名表解析为完整 [`Model`]：目标为
-/// `<provider>/<模型id>` 全形式（加载期已校验格式），经 [`ModelResolver`]
+/// 把 settings 表 `model_aliases` 的别名表解析为完整 [`Model`]：目标为
+/// `<provider>/<模型id>` 全形式（写入时已校验格式），经 [`ModelResolver`]
 /// 按与主模型相同的分层口径解析。
 fn resolve_model_aliases(
     models: &ModelResolver,
 ) -> Result<std::collections::BTreeMap<String, Model>> {
     let mut resolved = std::collections::BTreeMap::new();
-    let Some(aliases) = models.config().and_then(|c| c.model_aliases.as_ref()) else {
-        return Ok(resolved);
-    };
-    for (alias, spec) in aliases {
+    for (alias, spec) in &models.settings().model_aliases {
         let selection = crate::model::ModelSelection::parse(spec, None)
             .with_context(|| format!("模型别名 {alias:?} 的目标 {spec:?} 非法"))?;
         let model = models
@@ -258,17 +253,15 @@ fn warn_skill_diagnostics(skill_resolver: &SkillResolver) {
     }
 }
 
-/// 加载 prompt templates：目录发现（`--no-prompt-templates` 关闭）+ 配置文件
+/// 加载 prompt templates：目录发现（`--no-prompt-templates` 关闭）+ 设置
 /// `prompts` 与 `--prompt-template` 的显式路径（同名时优先级最高）。
 /// 单个模板加载失败只告警不中断（与 skills 同一口径）。
 fn load_prompt_templates(
     cli: &Cli,
     cwd: &Path,
-    config: Option<&Config>,
+    settings_prompts: &[PathBuf],
 ) -> Result<Vec<PromptTemplate>> {
-    let mut explicit = config
-        .and_then(|config| config.prompts.clone())
-        .unwrap_or_default();
+    let mut explicit = settings_prompts.to_vec();
     explicit.extend(cli.prompt_template.iter().cloned());
     let resolver = if cli.no_prompt_templates {
         PromptResolver::new(
@@ -286,14 +279,6 @@ fn load_prompt_templates(
         tracing::warn!(error = ?error, "skipping failed prompt template");
     }
     Ok(catalog.templates)
-}
-
-/// 解析压缩配置：`[compaction]` 表逐字段合并内置默认。
-fn compaction_settings(config: Option<&Config>) -> nomic_core::CompactionSettings {
-    config.and_then(|c| c.compaction.as_ref()).map_or_else(
-        nomic_core::CompactionSettings::default,
-        crate::config::CompactionConfig::settings,
-    )
 }
 
 /// session 初始化结果：store、session id 与恢复的历史消息（新会话为空）。

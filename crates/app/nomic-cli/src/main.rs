@@ -11,7 +11,6 @@
 mod agent_recipe;
 mod bootstrap;
 mod clipboard;
-mod config;
 mod context_files;
 mod images;
 mod logging;
@@ -20,6 +19,7 @@ mod model;
 mod picker;
 mod print;
 mod sessions;
+mod settings;
 mod tui;
 mod web;
 
@@ -59,7 +59,8 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "PATH")]
     pub(crate) image: Vec<PathBuf>,
 
-    /// provider：config.toml 的 `[providers]` 中定义的名字（anthropic、openai 可按名推断 api）；
+    /// provider：providers 设置表中定义的名字（`nomic config providers` 管理，
+    /// anthropic、openai 可按名推断 api）；
     /// 需搭配 `--model`（无内置默认模型，缺省用数据库中保存的选择）
     #[arg(long)]
     pub(crate) provider: Option<String>,

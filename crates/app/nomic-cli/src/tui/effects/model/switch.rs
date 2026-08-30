@@ -172,7 +172,7 @@ impl ModelSwitcher {
 
     /// 应用切换：直调 actor（跨 provider 时按启动同一口径构造新连接
     /// ——api_key 分层：环境变量 > `providers.<名字>.api_key` >
-    /// 平铺配置；CLI 的 `--api-key` 属于启动 provider，不参与运行时切换
+    /// 标量；CLI 的 `--api-key` 属于启动 provider，不参与运行时切换
     /// 分层）并把当前模型换为目标。成功返回待落库的选择 spec（config 表
     /// append-only，最新行即下次启动的首选）；actor 已退出返回 warn 文本。
     fn apply(&mut self, model: Model, handle: &AgentHandle) -> Result<String, String> {
@@ -183,9 +183,10 @@ impl ModelSwitcher {
                 None,
                 std::env::var(model::api_key_env(model.api)).ok().as_deref(),
                 self.models
-                    .provider_config(&model.provider)
-                    .and_then(|p| p.api_key.as_deref()),
-                self.models.config().and_then(|c| c.api_key.as_deref()),
+                    .provider_row(&model.provider)
+                    .and_then(|p| p.api_key)
+                    .as_deref(),
+                self.models.settings().api_key.as_deref(),
             );
             if handle
                 .set_provider(model::build_provider(model.api, api_key.clone()), api_key)
@@ -255,6 +256,8 @@ mod tests {
     use nomic_ai::{Catalog, ThinkingLevel};
     use nomic_core::AgentHandle;
 
+    use crate::settings::Settings;
+
     use super::{Confirm, ModelSwitcher, Select};
     use crate::Cli;
     use crate::model::ModelResolver;
@@ -300,7 +303,7 @@ mod tests {
     async fn switcher() -> (ModelSwitcher, AgentHandle) {
         let cli = Cli::parse_from(["nomic"]);
         let catalog = Catalog::parse(MODELS_DEV_FIXTURE).expect("catalog fixture");
-        let models = ModelResolver::new(&cli, None, None, Some(catalog));
+        let models = ModelResolver::new(&cli, Settings::default(), None, Some(catalog));
         let current = models.resolve("openai", "gpt-4o").expect("resolve");
         let handle = crate::tui::driver::dummy_handle();
         handle

@@ -66,9 +66,10 @@ impl SessionFactory {
                 .ok()
                 .as_deref(),
             self.models
-                .provider_config(&model.provider)
-                .and_then(|p| p.api_key.as_deref()),
-            self.models.config().and_then(|c| c.api_key.as_deref()),
+                .provider_row(&model.provider)
+                .and_then(|p| p.api_key)
+                .as_deref(),
+            self.models.settings().api_key.as_deref(),
         );
         let provider = crate::model::build_provider(model.api, api_key.clone());
         let mut options = self.stream_options.clone();

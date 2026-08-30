@@ -582,7 +582,7 @@ mod tests {
         let id = store.create_session(".").await.expect("session");
         let models = Arc::new(ModelResolver::new(
             &Cli::parse_from(["nomic", "--model", "openai/gpt-4o"]),
-            None,
+            crate::settings::Settings::default(),
             None,
             None,
         ));

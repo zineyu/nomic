@@ -2,10 +2,9 @@
 //!
 //! provider/model 的选择按 CLI 参数 > sqlite 配置（config 表回退链）解析，
 //! 两层都没有时启动报错（无内置默认模型）；base_url / api_key 等连接参数按
-//! CLI 参数 > 环境变量 > `providers.<名字>.*` > 平铺配置 > 协议默认 解析
-//! （永远来自用户指定）；模型规格字段（展示名、推理能力、上下文/输出上限、
-//! 费率）逐字段按 配置 `providers.<名字>.models.<模型id>` > models.dev >
-//! 中性兜底 解析。
+//! CLI 参数 > 环境变量 > providers 表 > settings 标量 > 协议默认 解析
+//! （永远来自用户指定，ADR-0039）；模型规格字段（展示名、推理能力、上下文/
+//! 输出上限、费率）逐字段按 model_specs 表 > models.dev > 中性兜底 解析。
 
 use std::sync::Arc;
 
@@ -14,10 +13,10 @@ use nomic_ai::{
     ApiKind, Catalog, Model, ModelSpec, Provider, ThinkingLevel,
     providers::{AnthropicProvider, OpenAiCompat, OpenAiProvider},
 };
-use nomic_session::SessionStore;
+use nomic_session::{ProviderRow, SessionStore};
 
 use crate::Cli;
-use crate::config::{Config, ProviderConfig};
+use crate::settings::Settings;
 
 /// provider 各 API 家族对应的环境变量名（`api_key` 分层解析用）。
 pub const fn api_key_env(api: ApiKind) -> &'static str {
@@ -183,7 +182,7 @@ pub fn select_startup_model(
         }
     }
     bail!(
-        "未指定模型：请用 --model <provider>/<模型id> 指定（provider 在 config.toml 的 [providers] 中定义）"
+        "未指定模型：请用 --model <provider>/<模型id> 指定（provider 由 `nomic config providers` 定义）"
     )
 }
 
@@ -213,39 +212,33 @@ pub fn resolve_api_key(
     cli.or(env).or(provider).or(config).map(str::to_string)
 }
 
-/// 取 `providers.<名字>` 定义。
-fn provider_config<'c>(
-    config: Option<&'c Config>,
-    provider_kind: &str,
-) -> Option<&'c ProviderConfig> {
-    config
-        .and_then(|c| c.providers.as_ref())
-        .and_then(|providers| providers.get(provider_kind))
-}
-
-/// 取配置中 `providers.<名字>.models.<模型id>` 的规格覆盖。
-fn model_spec_from_config<'c>(
-    config: Option<&'c Config>,
+/// 取设置快照中 (provider, 模型id) 的规格覆盖行。
+fn model_spec_override(
+    settings: &Settings,
     provider_kind: &str,
     model_id: Option<&str>,
-) -> Option<&'c ModelSpec> {
-    provider_config(config, provider_kind)
-        .and_then(|p| p.models.as_ref())
-        .and_then(|models| model_id.and_then(|id| models.get(id)))
+) -> Option<ModelSpec> {
+    model_id.and_then(|id| {
+        settings
+            .model_specs
+            .get(&(provider_kind.to_string(), id.to_string()))
+            .cloned()
+    })
 }
 
-/// 加载 models.dev 目录；配置已给全规格字段时跳过（不读缓存、不联网），
+/// 加载 models.dev 目录；设置已给全规格字段时跳过（不读缓存、不联网），
 /// 目录不可用时告警并返回 `None`（调用方落到中性兜底）。
 pub async fn load_catalog_unless_complete(
-    config: Option<&Config>,
+    settings: &Settings,
     provider_kind: Option<&str>,
     model_id_hint: Option<&str>,
 ) -> Option<Catalog> {
     let complete = provider_kind.is_some_and(|provider| {
-        model_spec_from_config(config, provider, model_id_hint).is_some_and(ModelSpec::is_complete)
+        model_spec_override(settings, provider, model_id_hint)
+            .is_some_and(|spec| spec.is_complete())
     });
     if complete {
-        tracing::debug!("models.dev catalog skipped (config has complete spec)");
+        tracing::debug!("models.dev catalog skipped (settings have complete spec)");
         return None;
     }
     let catalog = nomic_ai::models_dev::load().await;
@@ -310,10 +303,13 @@ impl ModelChoice {
 }
 
 /// 运行时模型解析器：持有全部 provider 的连接层输入（CLI 覆盖、环境变量、
-/// 配置文件、models.dev 目录），按 `<provider, 模型id>` 重复解析完整 [`Model`]。
-/// 启动解析与 TUI `/models` 运行时切换共用同一分层口径。
+/// sqlite 设置快照、models.dev 目录），按 `<provider, 模型id>` 重复解析完整
+/// [`Model`]。启动解析与 TUI `/models` 运行时切换共用同一分层口径。
+///
+/// 设置快照（ADR-0039）放在 `RwLock` 里：`nomic config` / TUI `/config` /
+/// web 设置事件写入落库后经 [`Self::reload`] 刷新，运行进程立即生效。
 pub struct ModelResolver {
-    config: Option<Config>,
+    settings: std::sync::RwLock<Settings>,
     catalog: Option<Catalog>,
     cli_base_url: Option<String>,
     env_openai_base_url: Option<String>,
@@ -323,45 +319,75 @@ impl ModelResolver {
     /// 捕获启动时的解析输入（`cli` 中只有 `--base-url` 参与模型解析）。
     pub fn new(
         cli: &Cli,
-        config: Option<Config>,
+        settings: Settings,
         env_openai_base_url: Option<String>,
         catalog: Option<Catalog>,
     ) -> Self {
         Self {
-            config,
+            settings: std::sync::RwLock::new(settings),
             catalog,
             cli_base_url: cli.base_url.clone(),
             env_openai_base_url,
         }
     }
 
-    /// 配置文件层（`stream_options` 等其他分层仍需要）。
-    pub const fn config(&self) -> Option<&Config> {
-        self.config.as_ref()
+    /// 设置快照（克隆读出；解析均为冷路径，克隆成本可忽略）。
+    ///
+    /// # Panics
+    ///
+    /// 设置锁中毒时 panic（锁内无 panic 路径，正常不会触发）。
+    pub fn settings(&self) -> Settings {
+        self.settings
+            .read()
+            .expect("settings lock poisoned")
+            .clone()
     }
 
-    /// 指定 provider 的配置表定义。
-    pub fn provider_config(&self, provider: &str) -> Option<&ProviderConfig> {
-        provider_config(self.config(), provider)
+    /// 从 store 重新加载设置快照（设置写入落库后调用，运行进程立即生效）。
+    ///
+    /// # Panics
+    ///
+    /// 设置锁中毒时 panic（锁内无 panic 路径，正常不会触发）。
+    // 消费者随 TUI `/config` 与 web 设置事件任务落地
+    #[expect(dead_code)]
+    pub async fn reload(&self, store: Option<&SessionStore>) {
+        let settings = Settings::load(store).await;
+        *self.settings.write().expect("settings lock poisoned") = settings;
     }
 
-    /// provider 的 API 种类：配置显式指定 > 按名推断（anthropic / openai）；
-    /// 其余名字必须在配置中定义。
+    /// 指定 provider 的定义行（providers 表）。
+    ///
+    /// # Panics
+    ///
+    /// 设置锁中毒时 panic（锁内无 panic 路径，正常不会触发）。
+    pub fn provider_row(&self, provider: &str) -> Option<ProviderRow> {
+        self.settings
+            .read()
+            .expect("settings lock poisoned")
+            .providers
+            .get(provider)
+            .cloned()
+    }
+
+    /// provider 的 API 种类：providers 表显式设置 > 按名推断
+    /// （anthropic / openai）；其余名字必须在 providers 表中定义并给出 api。
     fn api(&self, provider: &str) -> Result<ApiKind> {
-        self.provider_config(provider)
+        self.provider_row(provider)
             .and_then(|p| p.api)
-            .or_else(|| crate::config::infer_api(provider))
+            .or_else(|| crate::settings::infer_api(provider))
             .with_context(|| {
                 format!(
-                    "未知 provider {provider:?}：请在 config.toml 的 [providers.{provider}] 中\
-                     定义并指定 api（anthropic / openai 可按名自动推断）"
+                    "未知 provider {provider:?}：请用 `nomic config providers set {provider} \
+                     --api <anthropic_messages|open_ai_completions> --base-url <url>` 定义\
+                     （anthropic / openai 可按名自动推断）"
                 )
             })
     }
 
     /// base_url 永远来自用户指定：CLI > 环境变量（仅 openai 系）>
-    /// `providers.<名字>.*` > 平铺配置 > 协议默认地址，不经由 models.dev。
+    /// providers 表 > settings 标量 > 协议默认地址，不经由 models.dev。
     fn base_url(&self, provider: &str, api: ApiKind, preset: &Preset) -> String {
+        let settings = self.settings();
         self.cli_base_url
             .clone()
             .or_else(|| {
@@ -371,19 +397,19 @@ impl ModelResolver {
                     .map(str::to_string)
             })
             .or_else(|| {
-                self.provider_config(provider)
+                settings
+                    .providers
+                    .get(provider)
                     .and_then(|p| p.base_url.clone())
             })
-            .or_else(|| self.config().and_then(|c| c.base_url.clone()))
+            .or(settings.base_url)
             .unwrap_or_else(|| preset.default_base_url.to_string())
     }
 
     /// 规格字段（`name` / `reasoning` / `vision` / `context_window` / `max_tokens` /
-    /// `cost_*`）逐字段分层：配置 `providers.<名字>.models.<模型id>` > models.dev >
-    /// 中性兜底。
+    /// `cost_*`）逐字段分层：model_specs 表 > models.dev > 中性兜底。
     fn spec_for(&self, provider: &str, model_id: &str, preset: &Preset) -> ModelSpec {
-        model_spec_from_config(self.config(), provider, Some(model_id))
-            .cloned()
+        model_spec_override(&self.settings(), provider, Some(model_id))
             .unwrap_or_default()
             .or_fill(
                 &self
@@ -432,12 +458,12 @@ impl ModelResolver {
         })
     }
 
-    /// 模型存在性校验：配置覆盖表（用户显式定义）→ models.dev 目录。
+    /// 模型存在性校验：model_specs 覆盖表（用户显式定义）→ models.dev 目录。
     ///
-    /// 目录不可用（离线 / 配置已写全规格跳过加载）时不校验——没有权威数据源
+    /// 目录不可用（离线 / 设置已写全规格跳过加载）时不校验——没有权威数据源
     /// 无法判断「不存在」，维持启动告警 + 中性兜底的降级语义。
     fn ensure_known(&self, provider: &str, model_id: &str) -> Result<()> {
-        if model_spec_from_config(self.config(), provider, Some(model_id)).is_some()
+        if model_spec_override(&self.settings(), provider, Some(model_id)).is_some()
             || self
                 .catalog
                 .as_ref()
@@ -450,33 +476,48 @@ impl ModelResolver {
             tracing::debug!(provider = %provider, model = %model_id, "model validation skipped (catalog unavailable)");
             return Ok(());
         }
-        tracing::warn!(provider = %provider, model = %model_id, "model not found in catalog or config");
+        tracing::warn!(provider = %provider, model = %model_id, "model not found in catalog or settings");
         Err(anyhow::anyhow!(
             "模型 {model_id:?} 不存在：不在 models.dev 目录中，\
-             也未在 config.toml 的 [providers.{provider}.models] 下定义，\
-             请检查 model / --model 拼写，或在该表中补充该模型的规格"
+             也未在 model_specs 设置中定义，\
+             请检查 model / --model 拼写，或用 `nomic config models set {provider}/{model_id} ...`\
+             补充该模型的规格"
         ))
     }
 
-    /// 候选 provider 列表：配置表 `[providers]` 定义的名字，按名排序。
+    /// 候选 provider 列表：providers 表定义的名字，按名排序。
+    ///
+    /// # Panics
+    ///
+    /// 设置锁中毒时 panic（锁内无 panic 路径，正常不会触发）。
+    // 消费者随 web 设置快照事件任务落地
+    #[expect(dead_code)]
     pub fn providers(&self) -> Vec<String> {
-        self.config()
-            .and_then(|c| c.providers.as_ref())
-            .map(|providers| providers.keys().cloned().collect())
-            .unwrap_or_default()
+        self.settings
+            .read()
+            .expect("settings lock poisoned")
+            .providers
+            .keys()
+            .cloned()
+            .collect()
     }
 
-    /// `/models` 选择器候选（跨 provider）：每个 provider 的 配置覆盖 ∪
+    /// `/models` 选择器候选（跨 provider）：每个 provider 的 规格覆盖 ∪
     /// models.dev 目录 ∪ 当前模型；provider 间按名排序（当前模型所在的
-    /// provider 未在配置中定义时补入，保证当前模型始终可见）、provider 内
-    /// 按模型 id 排序去重。
+    /// provider 未在 providers 表中定义时补入，保证当前模型始终可见）、
+    /// provider 内按模型 id 排序去重。
     ///
     /// 目录不可用（启动时已告警）或 provider 名不命中 models.dev 时，该
-    /// provider 只剩配置覆盖与当前模型；`/models:<p>/<id>` 直接切换不受候选
+    /// provider 只剩规格覆盖与当前模型；`/models:<p>/<id>` 直接切换不受候选
     /// 范围限制。api 解析失败的 provider 整组跳过。
+    ///
+    /// # Panics
+    ///
+    /// 设置锁中毒时 panic（锁内无 panic 路径，正常不会触发）。
     pub fn candidates(&self, current: &ModelSelection) -> Vec<ModelChoice> {
+        let settings = self.settings();
         let mut choices = Vec::new();
-        let mut providers = self.providers();
+        let mut providers: Vec<String> = settings.providers.keys().cloned().collect();
         if !providers.contains(&current.provider) {
             providers.insert(0, current.provider.clone());
         }
@@ -489,12 +530,13 @@ impl ModelResolver {
             if provider == current.provider {
                 ids.insert(current.model.clone());
             }
-            if let Some(models) = self
-                .provider_config(&provider)
-                .and_then(|p| p.models.as_ref())
-            {
-                ids.extend(models.keys().cloned());
-            }
+            ids.extend(
+                settings
+                    .model_specs
+                    .keys()
+                    .filter(|(p, _)| p == &provider)
+                    .map(|(_, id)| id.clone()),
+            );
             if let Some(catalog) = &self.catalog {
                 ids.extend(
                     catalog
@@ -536,13 +578,13 @@ impl ModelResolver {
 fn resolve_model(
     provider_kind: &str,
     cli: &Cli,
-    config: Option<&Config>,
+    settings: Settings,
     env_openai_base_url: Option<&str>,
     catalog: Option<&Catalog>,
 ) -> Result<Model> {
     let resolver = ModelResolver::new(
         cli,
-        config.cloned(),
+        settings,
         env_openai_base_url.map(str::to_string),
         catalog.cloned(),
     );

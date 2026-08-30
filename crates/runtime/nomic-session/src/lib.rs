@@ -44,9 +44,11 @@ mod error;
 mod feature_tests;
 mod recorder;
 mod session;
+mod settings;
 mod workspace;
 pub use error::SessionError;
 pub use recorder::SessionRecorder;
+pub use settings::{ModelSpecPatch, ModelSpecRow, ProviderPatch, ProviderRow};
 pub use workspace::{Workspace, WorkspaceSummary};
 
 /// 内嵌迁移（`crates/runtime/nomic-session/migrations/`）。

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// api.json 端点。
 const API_URL: &str = "https://models.dev/api.json";
@@ -24,9 +24,10 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 模型规格：全部字段可选，缺省时由调用方继续向下层（models.dev / 中性兜底）解析。
 ///
-/// 同时作为 `config.toml` 中 `[providers.<名字>.models."<模型id>"]` 的反序列化
-/// 目标，`deny_unknown_fields` 让配置中的拼写错误硬报错。
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+/// 同时作为 sqlite `model_specs` 表的序列化形态（ADR-0039；历史上也作为
+/// config.toml `[providers.<名字>.models."<模型id>"]` 的反序列化目标），
+/// `deny_unknown_fields` 让配置中的拼写错误硬报错。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSpec {
     /// 展示名

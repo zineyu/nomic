@@ -11,6 +11,7 @@
 mod agent_recipe;
 mod bootstrap;
 mod clipboard;
+mod config_cmd;
 mod context_files;
 mod images;
 mod logging;
@@ -140,6 +141,11 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: SessionsCommand,
     },
+    /// 管理设置（存于 sqlite，不再读取配置文件；见 docs/adr/0039）
+    Config {
+        #[command(subcommand)]
+        command: config_cmd::ConfigCommand,
+    },
 }
 
 /// `nomic sessions` 子命令。
@@ -168,6 +174,7 @@ async fn main() -> Result<()> {
         Some(Commands::Sessions {
             command: SessionsCommand::List,
         }) => sessions::list().await,
+        Some(Commands::Config { command }) => config_cmd::run(command).await,
         None => dispatch(&cli).await,
     }
 }

@@ -48,8 +48,6 @@ pub mod keys {
     pub const MODEL_ALIASES: &str = "model_aliases";
 
     /// 全部已知键（`nomic config list` 与写入校验用）
-    // 消费者随 `nomic config` 子命令任务落地
-    #[expect(dead_code)]
     pub const ALL: &[&str] = &[
         BASE_URL,
         API_KEY,
@@ -176,8 +174,6 @@ impl Settings {
 
 /// 校验 provider 名：非空、不含 `/` 与空白（作为 `<provider>/<模型id>`
 /// 选择项的前段与 WS/CLI 参数传输）。
-// 消费者随 `nomic config` 子命令任务落地
-#[expect(dead_code)]
 pub fn validate_provider_name(name: &str) -> Result<()> {
     if name.is_empty() || name.chars().any(|c| c == '/' || c.is_whitespace()) {
         bail!("provider 名 {name:?} 非法：非空且不能含 / 或空白字符");
@@ -187,8 +183,6 @@ pub fn validate_provider_name(name: &str) -> Result<()> {
 
 /// 校验模型别名：名字为 URL/参数友好的短标识（字母数字、`-`、`_`），
 /// 目标为 `<provider>/<模型id>` 全形式（别名解析不经默认 provider 上下文）。
-// 消费者随 `nomic config` 子命令任务落地
-#[expect(dead_code)]
 pub fn validate_alias(alias: &str, spec: &str) -> Result<()> {
     if alias.is_empty()
         || !alias
@@ -210,8 +204,6 @@ pub fn validate_alias(alias: &str, spec: &str) -> Result<()> {
 /// 校验标量设置的键与取值类型（写入路径共用：CLI / TUI `/config` /
 /// web WS）。未知键硬报错（防拼写错误，与旧 config.toml
 /// `deny_unknown_fields` 同一口径）。
-// 消费者随 `nomic config` 子命令任务落地
-#[expect(dead_code)]
 pub fn validate_scalar(key: &str, value: &serde_json::Value) -> Result<()> {
     let ok = match key {
         keys::BASE_URL | keys::API_KEY | keys::APPEND_SYSTEM => value.is_string(),

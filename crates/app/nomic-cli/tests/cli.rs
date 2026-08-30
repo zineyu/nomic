@@ -234,3 +234,87 @@ async fn continue_fails_in_directory_without_session() {
         "无本目录 session 应明确报错：{err}"
     );
 }
+
+// ── nomic config：设置子命令（ADR-0039，落库 sqlite）─────────────────────
+
+#[test]
+fn config_scalar_set_get_unset_persists_across_processes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let output = run(&["config", "set", "temperature", "0.7"], tmp.path());
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+
+    // 另起进程读取：sqlite 持久化生效
+    let output = run(&["config", "get", "temperature"], tmp.path());
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(stdout(&output).contains("0.7"));
+
+    let output = run(&["config", "unset", "temperature"], tmp.path());
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let output = run(&["config", "get", "temperature"], tmp.path());
+    assert!(stdout(&output).contains("未设置"));
+}
+
+#[test]
+fn config_providers_and_models_roundtrip() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let output = run(
+        &[
+            "config",
+            "providers",
+            "set",
+            "deepseek",
+            "--api",
+            "open_ai_completions",
+            "--base-url",
+            "https://api.deepseek.com/v1",
+        ],
+        tmp.path(),
+    );
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+
+    let output = run(
+        &[
+            "config",
+            "models",
+            "set",
+            "deepseek/deepseek-chat",
+            "--context-window",
+            "128000",
+        ],
+        tmp.path(),
+    );
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+
+    let output = run(&["config", "list"], tmp.path());
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let out = stdout(&output);
+    assert!(out.contains("deepseek"), "{out}");
+    assert!(out.contains("deepseek-chat"), "{out}");
+    assert!(out.contains("128000"), "{out}");
+}
+
+#[test]
+fn config_unknown_key_is_rejected() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let output = run(&["config", "set", "no_such_key", "1"], tmp.path());
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("未知设置键"));
+}
+
+#[test]
+fn config_custom_provider_requires_api() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let output = run(
+        &[
+            "config",
+            "providers",
+            "set",
+            "deepseek",
+            "--base-url",
+            "https://x",
+        ],
+        tmp.path(),
+    );
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("--api"));
+}

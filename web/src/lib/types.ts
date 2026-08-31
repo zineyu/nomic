@@ -4,7 +4,7 @@
 
 // ── 消息模型（nomic-ai types）─────────────────────────────────────────────
 
-export type ApiKind = 'anthropic_messages' | 'open_ai_completions'
+export type ApiKind = 'anthropic_messages' | 'open_ai_completions' | 'kimi_completions'
 
 export type StopReason = 'stop' | 'length' | 'tool_use' | 'error' | 'aborted'
 

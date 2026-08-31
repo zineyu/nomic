@@ -153,7 +153,7 @@ function ProviderDialog({
               value={name}
               onChange={(e) => setName(e.target.value)}
               disabled={provider !== null}
-              placeholder="如 anthropic、openai、deepseek"
+              placeholder="如 anthropic、openai、coding、deepseek"
             />
           </div>
           <div className="flex flex-col gap-2">
@@ -166,6 +166,7 @@ function ProviderDialog({
                 <SelectItem value={API_INFER}>按名推断</SelectItem>
                 <SelectItem value="anthropic_messages">anthropic_messages</SelectItem>
                 <SelectItem value="open_ai_completions">open_ai_completions</SelectItem>
+                <SelectItem value="kimi_completions">kimi_completions</SelectItem>
               </SelectContent>
             </Select>
           </div>

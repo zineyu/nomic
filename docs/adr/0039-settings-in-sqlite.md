@@ -72,13 +72,21 @@ CREATE TABLE settings (
 
 ### 分层口径（config.toml 层原位替换为 sqlite）
 
+#### 设置项调整（2026-02）
+
+`base_url` / `api_key` / `temperature` / `max_tokens` /
+`compaction.reserve_tokens` / `compaction.keep_recent_tokens` 六个标量键已废弃：
+写入按未知键硬报错（与拼写错误同一口径），快照加载时清理库中残留，取值一律
+回退——base_url / api_key 走 providers 表与环境变量分层，temperature /
+max_tokens 仅由 CLI 参数提供，压缩 token 参数用内置默认。当前分层口径：
+
 | 字段 | 分层（高 → 低） |
 | --- | --- |
-| base_url | CLI > env（OPENAI_BASE_URL，仅 openai 系）> `providers.base_url` > `settings.base_url` > 协议默认 |
-| api_key | CLI > env（ANTHROPIC_API_KEY / OPENAI_API_KEY）> `providers.api_key` > `settings.api_key` |
+| base_url | CLI > env（OPENAI_BASE_URL，仅 openai 系）> `providers.base_url` > 协议默认 |
+| api_key | CLI > env（ANTHROPIC_API_KEY / OPENAI_API_KEY / KIMI_API_KEY）> `providers.api_key` |
 | 模型字段 | `model_specs` 行 > models.dev > 中性兜底 |
-| temperature / max_tokens / append_system | CLI > `settings` |
-| compaction（enabled/reserve/keep_recent） | `settings` > 内置默认 |
+| append_system | CLI > `settings` |
+| compaction.enabled | `settings` > 内置默认 |
 | model_aliases / prompts 显式路径 | `settings`（prompts 仍叠加 CLI `--prompt-template`） |
 | provider/model 选择、reasoning | 不变（CLI > `config` 表回退链） |
 
@@ -96,7 +104,7 @@ TUI `/config` 与 web REST 的写操作在落库后调用 `resolver.reload()` �
    `providers list/set/unset`、`models list/set/unset <provider>/<模型id>`
    （逐字段 flag，只更新显式传入的字段）、`set/get/unset/list <key>`；
 2. **TUI**：`/config ...` slash 命令，复用同一 clap 解析（
-   `/config set temperature 0.7`），结果作为系统消息显示，写后 reload；
+   `/config set compaction.enabled false`），结果作为系统消息显示，写后 reload；
 3. **Web**：复用已有 WebSocket 事件协议（不新增 REST）——查询事件
    `get_settings`（响应 `SettingsSnapshot`：providers + model_specs +
    标量全量）；查询式命令 `upsert_provider` / `delete_provider` /

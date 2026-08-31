@@ -295,17 +295,14 @@ X11 / Wayland。从文件管理器粘贴或拖入的图片文件路径（含 `fi
 
 | key | 取值 | 说明 |
 | --- | ---- | ---- |
-| `base_url` | 字符串 | 全局 base_url 兜底 |
-| `api_key` | 字符串 | 全局 api_key 兜底（最低优先级，建议优先用环境变量） |
 | `reasoning` | minimal / low / medium / high | 默认思考级别（仅推理模型生效） |
-| `temperature` | 数字 | 采样温度 |
-| `max_tokens` | 整数 | 最大输出 token 数 |
 | `append_system` | 字符串 | 追加到系统提示词的文本 |
 | `prompts` | JSON 数组 | 额外 prompt template 路径 |
 | `compaction.enabled` | 布尔 | 自动压缩开关 |
-| `compaction.reserve_tokens` | 整数 | 触发压缩的预留阈值 |
-| `compaction.keep_recent_tokens` | 整数 | 压缩时保留的近期 token 数 |
 | `model_aliases` | JSON 对象 | 模型别名表（别名 → `<provider>/<模型id>`），子 agent 与 `models:` 切换可用 |
+
+> `temperature` / `max_tokens` 由 CLI 参数（`--temperature` / `--max-tokens`）提供；
+> `base_url` / `api_key` 走 provider 定义与环境变量；压缩的 token 参数使用内置默认值。
 
 ### Providers 与模型
 

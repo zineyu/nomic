@@ -18,6 +18,7 @@ nomic-prompts = { path = "crates/app/nomic-prompts", version = "0.4.0" }
 nomic-session = { path = "crates/runtime/nomic-session", version = "0.4.0" }
 nomic-skills = { path = "crates/app/nomic-skills", version = "0.4.0" }
 nomic-tools = { path = "crates/app/nomic-tools", version = "0.4.0" }
+nomic-uri = { path = "crates/app/nomic-uri", version = "0.4.0" }
 
 # ── 异步运行时与工具 ─────────────────────────────────────────────────────────
 tokio = { version = "1.53", features = [

@@ -6,27 +6,52 @@
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)，
 由 [git-cliff](https://git-cliff.org) 从 conventional commits 自动生成。
 
-## [Unreleased]
-
-### 破坏性变更
-
-- **BREAKING CHANGE:** 设置全部迁入 sqlite（ADR-0039），`config.toml` 被完全忽略
-  （不读取、不迁移、不报错）；`config.example.toml` 删除。请经三个新入口重建配置：
-  CLI `nomic config ...`、TUI 命令栏 `config ...`、web Rail「设置」页。
-  优先级统一为 CLI 参数 > 环境变量 > sqlite > 协议/内置默认。
-
-### 新功能
-
-- **(session)** providers / model_specs / settings 三表（迁移 0008）与 CRUD
-- **(cli)** `nomic config` 子命令族（标量 get/set/unset、providers、models）
-- **(tui)** 命令栏 `config` 命令（与 CLI 同一命令树）
-- **(web)** WS 设置事件与 Rail 设置页（providers / 模型覆盖 / 标量可视化管理，api_key 脱敏）
+## [0.4.0] - 2026-08-31
 
 ### 修复
 
-- **(cli)** sqlite 无任何模型配置时不再启动失败：TUI / web 以占位模型继续启动，
-  发消息时提示先选择模型（print 模式非交互，保持启动报错）
+- 将 tracing 错误日志从 %error 改为 ?error 以记录完整错误链
+- **(cli)** AGENTS.md 与系统提示词以 session 的 workspace 为基准
+- **(deps)** 升级 chacha20 0.10.1 → 0.10.2（0.10.1 被 yank，cargo deny 拒绝）
+- **(cli)** Sqlite 无模型配置时 TUI/web 以占位模型继续启动，不再启动失败
+- **(session)** 恢复已发布迁移以修复现有数据库启动
+- **(web)** 切换模型后前端经快照回填 model/reasoning，选择器显示同步更新
 
+### 其他
+
+- Docs/adr/0036 mem-native memory（非本次任务改动，暂存）
+
+### 文档
+
+- README 的 AGENTS.md 发现语义改为以 session workspace 为基准
+- ADR-0037 目标驱动运行与运行时工具集替换
+- ADR-0037 补充 web 入口 goal 接线与 README 更新
+- ADR-0039 设置全部存储于 SQLite（移除 config.toml）
+- 收尾设置迁移——删除 config.example.toml，README/CHANGELOG/注释/AGENTS.md 同步为 sqlite 口径（BREAKING CHANGE: config.toml 不再生效）
+
+### 新功能
+
+- **(web)** 添加 TraceLayer 为每个 HTTP 请求生成 request span
+- **(cli,core)** 统一日志语言为英文并注入 session/request tracing span
+- **(core)** Agent 支持运行时整体替换系统提示词
+- **(tools)** Grep/find 迁移到 fff 常驻索引引擎
+- **(core)** Agent 支持运行时整体替换工具集
+- **(tools)** 新增 goal_done 工具与 GoalSession 共享状态
+- **(tui)** [**breaking**] Goal 命令改为目标驱动运行
+- **(web)** Goal 命令支持目标驱动运行（服务端）
+- **(web)** 前端 goal 状态徽标与 /goal 命令补全
+- 子 agent 模型继承与模型别名（create_agent 模型可选）
+- 设置三表（providers/model_specs/settings）迁移与 CRUD（ADR-0039）
+- Nomic config 子命令族（providers/models/标量设置的 CLI 入口，ADR-0039）
+- TUI config 命令（sqlite 设置的查看与修改，复用 nomic config 逻辑，写后刷新设置快照）
+- Web 设置事件（get_settings 快照 + upsert/delete/set/unset 命令，写后 reload 并广播 settings_changed）
+- Web 设置页（providers/模型规格/标量可视化管理，经 WS 设置事件读写；api_key 脱敏）
+
+### 重构
+
+- **(cli)** 用户警告统一走 tracing::warn!
+- **(tools)** Goal 追问策略收进 nomic-tools 供 TUI/web 共用
+- 设置层从 config.toml 切换到 sqlite 快照（ADR-0039）
 ## [0.3.1] - 2026-08-24
 
 ### 代码风格
@@ -348,7 +373,7 @@
 - TUI 渲染 assistant 输出的 Markdown（标题/列表/代码块/引用/表格/行内样式）
 - 新增 resume 子命令交互选择并恢复历史 session
 - TUI 新增 /resume 命令，交互选择并恢复历史 session
-- 模型分层解析（配置 → models.dev → 内置默认）
+- 模型规格分层解析（配置 → models.dev → 内置默认）
 - **(cli)** 基于 tracing 的日志系统，默认写入 XDG state 目录，支持 --log 切换终端输出
 - **(core,tools)** Agent loop 与工具执行的 tracing 插桩
 - **(ai)** LLM 流式请求的 tracing 插桩

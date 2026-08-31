@@ -613,10 +613,7 @@ mod tests {
             cost_cache_read: 0.0,
             cost_cache_write: 0.0,
         };
-        let provider = crate::model::build_provider(
-            nomic_ai::ApiKind::OpenAiCompletions,
-            Some("sk-test".into()),
-        );
+        let provider = crate::model::build_provider(model.api, Some("sk-test".into()));
         let (events, _) = broadcast::channel::<ServerEvent>(64);
         let factory = SessionFactory {
             models: models.clone(),

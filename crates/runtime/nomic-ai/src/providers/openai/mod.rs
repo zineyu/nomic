@@ -9,8 +9,8 @@
 //! M1 未实现：Responses API、grammar tools、deferred tools（见 ADR-0001）。
 
 mod raw;
+pub mod schema;
 mod tool_state;
-
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -58,6 +58,11 @@ pub struct OpenAiCompat {
     pub requires_tool_result_name: bool,
     /// 工具结果后是否不允许直接跟 user 消息（默认 false）
     pub requires_assistant_after_tool_result: bool,
+    /// 工具参数 schema 方言（默认 [`schema::ToolSchemaDialect::Standard`]，原样发送）
+    pub tool_schema_dialect: schema::ToolSchemaDialect,
+    /// 缺省 api key 的环境变量名（默认 `OPENAI_API_KEY`；请求级
+    /// `StreamOptions::api_key` 与构造器 key 优先）
+    pub api_key_env: Option<&'static str>,
 }
 
 /// OpenAI Completions 兼容 provider。
@@ -106,7 +111,7 @@ impl OpenAiProvider {
             return key.clone();
         }
         // 本地/代理端点常见约定：无 key 也放行，由端点自行决定
-        std::env::var("OPENAI_API_KEY").unwrap_or_default()
+        std::env::var(self.compat.api_key_env.unwrap_or("OPENAI_API_KEY")).unwrap_or_default()
     }
 }
 
@@ -208,12 +213,16 @@ fn build_request(
                 .tools
                 .iter()
                 .map(|tool| {
+                    let parameters = match compat.tool_schema_dialect {
+                        schema::ToolSchemaDialect::Standard => tool.parameters.clone(),
+                        schema::ToolSchemaDialect::Mfjs => schema::normalize_mfjs(&tool.parameters),
+                    };
                     serde_json::json!({
                         "type": "function",
                         "function": {
                             "name": tool.name,
                             "description": tool.description,
-                            "parameters": tool.parameters,
+                            "parameters": parameters,
                         },
                     })
                 })

@@ -206,3 +206,22 @@ async fn settings_set_get_unset_roundtrip() {
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn kimi_completions_api_round_trips() {
+    let store = SessionStore::in_memory().await.unwrap();
+    let row = store
+        .upsert_provider(
+            "coding",
+            ProviderPatch {
+                api: Some(Some(ApiKind::KimiCompletions)),
+                ..ProviderPatch::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.api, Some(ApiKind::KimiCompletions));
+
+    let loaded = store.get_provider("coding").await.unwrap().unwrap();
+    assert_eq!(loaded.api, Some(ApiKind::KimiCompletions));
+}

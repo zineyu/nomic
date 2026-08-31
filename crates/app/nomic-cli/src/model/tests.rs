@@ -23,6 +23,17 @@ const MODELS_DEV_FIXTURE: &str = r#"{
                 }
             }
         },
+        "kimi-for-coding": {
+            "id": "kimi-for-coding",
+            "models": {
+                "k3": {
+                    "id": "k3",
+                    "name": "Kimi K3",
+                    "reasoning": true,
+                    "limit": { "context": 262144, "output": 32768 }
+                }
+            }
+        },
         "openai": {
             "id": "openai",
             "models": {
@@ -35,6 +46,64 @@ const MODELS_DEV_FIXTURE: &str = r#"{
             }
         }
     }"#;
+
+/// provider 名任意、api 为 kimi_completions 的设置行。
+fn kimi_settings(name: &str) -> Settings {
+    let mut providers = std::collections::BTreeMap::new();
+    providers.insert(
+        name.to_string(),
+        ProviderRow {
+            name: name.to_string(),
+            api: Some(ApiKind::KimiCompletions),
+            base_url: None,
+            api_key: None,
+            updated_at: 0,
+        },
+    );
+    Settings {
+        providers,
+        ..Settings::default()
+    }
+}
+
+#[test]
+fn kimi_completions_api_drives_kimi_behavior() {
+    // provider 名是任意的（coding）：api 类型驱动默认端点、目录别名与
+    // api_key 环境变量
+    let model = resolve(
+        "coding",
+        &cli(&["--model", "coding/k3"]),
+        kimi_settings("coding"),
+        None,
+        Some(&catalog()),
+    );
+    assert_eq!(model.api, ApiKind::KimiCompletions);
+    assert_eq!(model.provider, "coding");
+    assert_eq!(model.base_url, "https://api.kimi.com/coding/v1");
+    // 规格经目录别名 kimi-for-coding 命中（与 provider 名无关）
+    assert_eq!(model.name, "Kimi K3");
+    assert!(model.reasoning);
+    assert_eq!(model.context_window, 262_144);
+    assert_eq!(api_key_env(ApiKind::KimiCompletions), "KIMI_API_KEY");
+
+    // `/models` 候选同样按 api 别名命中目录
+    let model_resolver = resolver(&cli(&[]), kimi_settings("coding"), Some(catalog()));
+    let choices = model_resolver.candidates(&ModelSelection {
+        provider: "coding".to_string(),
+        model: "k3".to_string(),
+    });
+    assert!(choices.iter().any(|choice| choice.id == "k3"));
+}
+
+#[test]
+fn provider_named_kimi_no_longer_inferred() {
+    // 内置名 kimi 已移除：没有 providers 表定义时按名推断失败
+    let model_resolver = resolver(&cli(&[]), Settings::default(), Some(catalog()));
+    let error = model_resolver
+        .resolve("kimi", "k3")
+        .expect_err("kimi 不再是内置 provider 名");
+    assert!(error.to_string().contains("未知 provider"));
+}
 
 fn catalog() -> Catalog {
     Catalog::parse(MODELS_DEV_FIXTURE).expect("catalog fixture")

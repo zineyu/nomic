@@ -319,6 +319,10 @@ pub enum ApiKind {
     AnthropicMessages,
     /// OpenAI Chat Completions API（含兼容端点）
     OpenAiCompletions,
+    /// Kimi（Moonshot）端点：OpenAI Completions 协议 + MFJS 工具 schema
+    /// 子集（`tools.function.parameters` 只接受 Moonshot Flavored JSON
+    /// Schema，见 `providers::kimi`）
+    KimiCompletions,
 }
 
 /// 模型描述。

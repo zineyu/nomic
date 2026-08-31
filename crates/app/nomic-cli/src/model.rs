@@ -14,31 +14,52 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result, bail};
 use nomic_ai::{
     ApiKind, AssistantMessage, Catalog, Model, ModelSpec, Provider, StopReason, ThinkingLevel,
-    providers::{AnthropicProvider, OpenAiCompat, OpenAiProvider},
+    providers::{AnthropicProvider, KimiProvider, OpenAiCompat, OpenAiProvider},
 };
 use nomic_session::{ProviderRow, SessionStore};
 
 use crate::Cli;
 use crate::settings::Settings;
 
+/// `kimi_completions` API 的默认 base_url（Kimi For Coding 订阅端点）。
+const KIMI_DEFAULT_BASE_URL: &str = "https://api.kimi.com/coding/v1";
+
+/// `kimi_completions` API 在 models.dev 目录中的 provider id（规格查询别名：
+/// 与 provider 名无关，凡 api 为 kimi_completions 的 provider 都命中该目录）。
+const KIMI_CATALOG_ID: &str = "kimi-for-coding";
+
 /// provider 各 API 家族对应的环境变量名（`api_key` 分层解析用）。
 pub const fn api_key_env(api: ApiKind) -> &'static str {
     match api {
         ApiKind::AnthropicMessages => "ANTHROPIC_API_KEY",
         ApiKind::OpenAiCompletions => "OPENAI_API_KEY",
+        ApiKind::KimiCompletions => "KIMI_API_KEY",
+    }
+}
+
+/// models.dev 目录查询用的 provider id：`kimi_completions` API 别名到目录中的
+/// `kimi-for-coding`（Moonshot 系模型都登记在该 id 下）；其余按 provider 名查询。
+const fn catalog_provider_id(provider: &str, api: ApiKind) -> &str {
+    match api {
+        ApiKind::KimiCompletions => KIMI_CATALOG_ID,
+        _ => provider,
     }
 }
 
 /// 按 API 种类构造 provider 连接实现（启动与 `/models` 运行时切换共用）。
+///
+/// `kimi_completions` 用 [`KimiProvider`]（OpenAI Completions 传输 + 固定
+/// MFJS 工具 schema 方言）；`open_ai_completions` 及其他兼容端点用
+/// [`OpenAiProvider`] 默认配置。
 pub fn build_provider(api: ApiKind, api_key: Option<String>) -> Arc<dyn Provider> {
     match api {
         ApiKind::AnthropicMessages => Arc::new(AnthropicProvider::new(api_key)),
+        ApiKind::KimiCompletions => Arc::new(KimiProvider::new(api_key)),
         ApiKind::OpenAiCompletions => {
             Arc::new(OpenAiProvider::new(api_key, OpenAiCompat::default()))
         }
     }
 }
-
 /// 占位模型的 provider 名 / 模型 id（[`unconfigured_model`]；与真实定义不
 /// 冲突——providers 表写入校验将该名保留）。
 pub const UNCONFIGURED: &str = "unconfigured";
@@ -358,19 +379,22 @@ pub async fn load_catalog_unless_complete(
 
 /// 分层解析的最底层：协议级默认 base URL 与保守的规格兜底值（全零）。
 struct Preset {
-    /// 默认 base URL（按 API 协议；provider 本身无内置地址）
+    /// 默认 base URL（内置 provider 有专属地址，其余按 API 协议）
     default_base_url: &'static str,
     /// 规格兜底值（除 `name` 外全字段有值；`name` 缺省回退为模型 id）
     spec: ModelSpec,
 }
 
-/// 中性兜底：规格字段全为保守值，base URL 按 API 协议取官方地址。
+/// 中性兜底：规格字段全为保守值，base URL 按 API 协议取官方地址
+/// （`kimi_completions` 指向 Kimi For Coding 订阅端点）。
 const fn neutral_preset(api: ApiKind) -> Preset {
+    let default_base_url = match api {
+        ApiKind::AnthropicMessages => "https://api.anthropic.com",
+        ApiKind::OpenAiCompletions => "https://api.openai.com/v1",
+        ApiKind::KimiCompletions => KIMI_DEFAULT_BASE_URL,
+    };
     Preset {
-        default_base_url: match api {
-            ApiKind::AnthropicMessages => "https://api.anthropic.com",
-            ApiKind::OpenAiCompletions => "https://api.openai.com/v1",
-        },
+        default_base_url,
         spec: ModelSpec {
             name: None,
             reasoning: Some(false),
@@ -517,14 +541,14 @@ impl ModelResolver {
 
     /// 规格字段（`name` / `reasoning` / `vision` / `context_window` / `max_tokens` /
     /// `cost_*`）逐字段分层：model_specs 表 > models.dev > 中性兜底。
-    fn spec_for(&self, provider: &str, model_id: &str, preset: &Preset) -> ModelSpec {
+    fn spec_for(&self, provider: &str, model_id: &str, api: ApiKind, preset: &Preset) -> ModelSpec {
         model_spec_override(&self.settings(), provider, Some(model_id))
             .unwrap_or_default()
             .or_fill(
                 &self
                     .catalog
                     .as_ref()
-                    .and_then(|c| c.lookup(Some(provider), model_id))
+                    .and_then(|c| c.lookup(Some(catalog_provider_id(provider, api)), model_id))
                     .cloned()
                     .unwrap_or_default(),
             )
@@ -539,9 +563,9 @@ impl ModelResolver {
     pub fn resolve(&self, provider: &str, model_id: &str) -> Result<Model> {
         let api = self.api(provider)?;
         let preset = neutral_preset(api);
-        self.ensure_known(provider, model_id)?;
+        self.ensure_known(provider, model_id, api)?;
         let base_url = self.base_url(provider, api, &preset);
-        let spec = self.spec_for(provider, model_id, &preset);
+        let spec = self.spec_for(provider, model_id, api, &preset);
         tracing::debug!(
             provider = %provider,
             model = %model_id,
@@ -571,12 +595,13 @@ impl ModelResolver {
     ///
     /// 目录不可用（离线 / 设置已写全规格跳过加载）时不校验——没有权威数据源
     /// 无法判断「不存在」，维持启动告警 + 中性兜底的降级语义。
-    fn ensure_known(&self, provider: &str, model_id: &str) -> Result<()> {
+    fn ensure_known(&self, provider: &str, model_id: &str, api: ApiKind) -> Result<()> {
         if model_spec_override(&self.settings(), provider, Some(model_id)).is_some()
-            || self
-                .catalog
-                .as_ref()
-                .is_some_and(|catalog| catalog.lookup(Some(provider), model_id).is_some())
+            || self.catalog.as_ref().is_some_and(|catalog| {
+                catalog
+                    .lookup(Some(catalog_provider_id(provider, api)), model_id)
+                    .is_some()
+            })
         {
             return Ok(());
         }
@@ -632,13 +657,13 @@ impl ModelResolver {
             if let Some(catalog) = &self.catalog {
                 ids.extend(
                     catalog
-                        .models_of(&provider)
+                        .models_of(catalog_provider_id(&provider, api))
                         .into_iter()
                         .map(|(id, _)| id.to_string()),
                 );
             }
             choices.extend(ids.into_iter().map(|id| {
-                let spec = self.spec_for(&provider, &id, &preset);
+                let spec = self.spec_for(&provider, &id, api, &preset);
                 let name = spec.name.unwrap_or_else(|| id.clone());
                 ModelChoice {
                     provider: provider.clone(),

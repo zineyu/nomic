@@ -269,6 +269,95 @@ fn request_converts_assistant_tool_calls_and_tool_results() {
     );
 }
 
+// ── 工具 schema 方言（MFJS）─────────────────────────────────────────────────
+
+/// 带工具定义的测试上下文（schema 形态取自 ask_user_question 的真实输出：
+/// `$ref` + `oneOf` + `$schema`/`title` 注解）。
+fn tool_context() -> Context {
+    Context {
+        system_prompt: None,
+        messages: Vec::new(),
+        tools: vec![crate::types::ToolDefinition {
+            name: "ask_user_question".to_string(),
+            description: "ask".to_string(),
+            parameters: serde_json::json!({
+                "$defs": {
+                    "QuestionKind": {
+                        "oneOf": [
+                            { "const": "single_choice", "type": "string" },
+                            { "const": "fill_in", "type": "string" }
+                        ]
+                    }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                    "kind": { "$ref": "#/$defs/QuestionKind", "default": "single_choice" }
+                },
+                "title": "AskParams",
+                "type": "object"
+            }),
+        }],
+    }
+}
+
+fn test_model() -> Model {
+    Model {
+        id: "kimi-for-coding".to_string(),
+        name: "test".to_string(),
+        api: ApiKind::OpenAiCompletions,
+        provider: "kimi".to_string(),
+        base_url: "https://api.kimi.com/coding/v1".to_string(),
+        reasoning: false,
+        vision: false,
+        context_window: 128_000,
+        max_tokens: 4096,
+        cost_input: 0.0,
+        cost_output: 0.0,
+        cost_cache_read: 0.0,
+        cost_cache_write: 0.0,
+    }
+}
+
+#[test]
+fn mfjs_dialect_normalizes_tool_parameters() {
+    let body = build_request(
+        &test_model(),
+        &tool_context(),
+        &StreamOptions::default(),
+        &OpenAiCompat {
+            tool_schema_dialect: schema::ToolSchemaDialect::Mfjs,
+            ..OpenAiCompat::default()
+        },
+    );
+    let parameters = &body["tools"][0]["function"]["parameters"];
+    // oneOf 折叠为 enum；$schema / title 移除；$defs 与 $ref 保留
+    assert_eq!(
+        parameters["$defs"]["QuestionKind"],
+        serde_json::json!({ "type": "string", "enum": ["single_choice", "fill_in"] })
+    );
+    assert!(parameters.get("$schema").is_none());
+    assert!(parameters.get("title").is_none());
+    assert_eq!(
+        parameters["properties"]["kind"]["$ref"],
+        "#/$defs/QuestionKind"
+    );
+}
+
+#[test]
+fn standard_dialect_keeps_tool_parameters_verbatim() {
+    let context = tool_context();
+    let body = build_request(
+        &test_model(),
+        &context,
+        &StreamOptions::default(),
+        &OpenAiCompat::default(),
+    );
+    assert_eq!(
+        body["tools"][0]["function"]["parameters"],
+        context.tools[0].parameters
+    );
+}
+
 // ── 失败重试的端到端测试（脚本化 HTTP 服务器）────────────────────────────────
 
 use std::sync::atomic::Ordering;

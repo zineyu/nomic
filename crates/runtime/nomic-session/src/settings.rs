@@ -132,6 +132,7 @@ const fn api_to_str(api: ApiKind) -> &'static str {
     match api {
         ApiKind::AnthropicMessages => "anthropic_messages",
         ApiKind::OpenAiCompletions => "open_ai_completions",
+        ApiKind::KimiCompletions => "kimi_completions",
     }
 }
 

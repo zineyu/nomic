@@ -309,10 +309,20 @@ X11 / Wayland。从文件管理器粘贴或拖入的图片文件路径（含 `fi
 
 ### Providers 与模型
 
-没有内置 provider：`nomic config providers set anthropic --api-key sk-...` 添加
-（`anthropic` / `openai` 可按名推断 API 种类；自定义 provider 需 `--api` 显式指定）。
-api_key 建议优先用环境变量（`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`）或启动时的
-`--api-key`，避免明文落库。
+不预置任何凭据：`nomic config providers set anthropic --api-key sk-...` 添加
+（`anthropic` / `openai` 可按名推断 API 种类；其余名字需 `--api` 显式指定）。
+api_key 建议优先用环境变量（`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
+`KIMI_API_KEY`）或启动时的 `--api-key`，避免明文落库。
+
+Kimi（Moonshot）用专属 API 种类 `kimi_completions`（OpenAI Completions 协议 +
+MFJS 工具 schema 子集；base_url 缺省为 Kimi For Coding 订阅端点
+`https://api.kimi.com/coding/v1`，api_key 环境变量 `KIMI_API_KEY`；provider
+名任意，模型规格经 models.dev 目录 `kimi-for-coding` 命中）：
+
+```bash
+nomic config providers set kimi --api kimi_completions --api-key sk-...
+nomic --model kimi/k3
+```
 
 模型覆盖用 `nomic config models set <provider> <模型id> [--context-window N ...]`：
 models.dev 目录缺字段或需修正时逐字段覆盖（没写的字段不覆盖）。规格逐字段按

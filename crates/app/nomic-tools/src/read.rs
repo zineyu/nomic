@@ -1,10 +1,18 @@
-//! `read` 工具：文件 / `skill://` 读取、offset/limit、头部截断与翻页提示。
+//! `read` 工具：文件 / 内部 URI（`skill://` 等）读取、offset/limit、
+//! 尾挂选择器（`:N-M` / `:raw`）、头部截断与翻页提示。
+//!
+//! 内部 URI 走 [`UriRouter`] 分发（ADR-0040）；普通路径走文件系统。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use nomic_core::{AgentTool, ToolError, ToolResult, ToolUpdateCallback};
-use nomic_skills::{SKILL_SCHEME, SkillResolver, SkillResource, SkillsError};
+use nomic_skills::{SKILL_SCHEME, SkillResolver};
+use nomic_uri::handlers::SkillProtocolHandler;
+use nomic_uri::{
+    LineRange, ParsedSelector, UriResource, UriRouter, parse_selector, split_uri_selector,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -16,7 +24,9 @@ use crate::truncate::{
 /// 参数。
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadParams {
-    /// Path to the file to read (relative or absolute), or skill://<name>[/<path>]
+    /// Path to the file to read (relative or absolute), or an internal URI
+    /// like skill://<name>[/<path>] (optionally with a trailing line selector
+    /// such as :50-100 or :raw)
     pub path: String,
     /// Line number to start reading from (1-indexed)
     pub offset: Option<usize>,
@@ -27,7 +37,8 @@ pub struct ReadParams {
 /// `read` 工具。
 #[derive(Debug, Clone)]
 pub struct ReadTool {
-    skill_resolver: Option<SkillResolver>,
+    /// 内部 URI 路由器；`None` 时仅支持文件系统路径
+    uri_router: Option<Arc<UriRouter>>,
     /// 相对路径的解析基准（workspace 严格归属；空句柄 = 进程 cwd）
     base: crate::base::BaseDir,
 }
@@ -39,25 +50,32 @@ impl Default for ReadTool {
 }
 
 impl ReadTool {
-    /// 创建不支持 `skill://` 的基础 read 工具。
+    /// 创建不支持内部 URI 的基础 read 工具。
     pub fn new() -> Self {
         Self {
-            skill_resolver: None,
+            uri_router: None,
             base: crate::base::BaseDir::default(),
         }
     }
 
-    /// 创建支持 `skill://` 的 read 工具。
+    /// 创建支持 `skill://` 的 read 工具（以 skill resolver 构造单协议路由）。
     pub fn with_skill_resolver(skill_resolver: SkillResolver) -> Self {
+        let mut router = UriRouter::new();
+        router.register(Arc::new(SkillProtocolHandler::new(skill_resolver)));
+        Self::with_uri_router(Arc::new(router))
+    }
+
+    /// 创建带内部 URI 路由器的 read 工具。
+    pub fn with_uri_router(uri_router: Arc<UriRouter>) -> Self {
         Self {
-            skill_resolver: Some(skill_resolver),
+            uri_router: Some(uri_router),
             base: crate::base::BaseDir::default(),
         }
     }
 
     /// 设置固定基准目录：相对路径以它解析（workspace 严格归属）。
     #[must_use]
-    pub fn with_base_dir(mut self, base_dir: Option<std::path::PathBuf>) -> Self {
+    pub fn with_base_dir(mut self, base_dir: Option<PathBuf>) -> Self {
         self.base = crate::base::BaseDir::new(base_dir);
         self
     }
@@ -72,98 +90,133 @@ impl ReadTool {
 
     async fn execute_read(&self, params: ReadParams) -> Result<ToolResult, ToolError> {
         tracing::debug!(path = %params.path, offset = ?params.offset, limit = ?params.limit, "read");
-        if let Some(target) = params.path.strip_prefix(SKILL_SCHEME) {
-            return self.execute_skill_read(&params, target).await;
+        let target = params.path.trim();
+        if target.is_empty() {
+            return Err(ToolError::new("path is empty"));
+        }
+        if let Some(router) = &self.uri_router {
+            // 已注册 scheme → 路由；形似 URI 但未注册 → 也交给 router 报
+            // UnknownScheme（带可用 scheme 列表），比文件 ENOENT 更可行动。
+            if router.can_resolve(target) || UriRouter::looks_like_uri(target) {
+                return execute_uri_read(router, target, &params).await;
+            }
+        } else if let Some(uri_target) = target.strip_prefix(SKILL_SCHEME) {
+            return Err(ToolError::new(format!(
+                "Skill reading is not configured for this read tool. \
+                 Use a filesystem path, or start nomic from a directory where skills can be discovered. \
+                 Requested: {SKILL_SCHEME}{uri_target}"
+            )));
         }
 
         let base = self.base.snapshot();
         read_text_path(
-            &crate::base::resolve(base.as_deref(), &params.path),
-            &params.path,
+            &crate::base::resolve(base.as_deref(), target),
+            target,
             None,
             params.offset,
             params.limit,
         )
         .await
     }
+}
 
-    /// `skill://<name>[/<path>]` 读取：无子路径返回 SKILL.md 正文；
-    /// 子路径返回 skill 根目录内的文件内容或目录清单。
-    async fn execute_skill_read(
-        &self,
-        params: &ReadParams,
-        target: &str,
-    ) -> Result<ToolResult, ToolError> {
-        let resolver = self.skill_resolver.as_ref().ok_or_else(|| {
-            ToolError::new(format!(
-                "Skill reading is not configured for this read tool. \
-                 Use a filesystem path, or start nomic from a directory where skills can be discovered. \
-                 Requested: {SKILL_SCHEME}{target}"
-            ))
-        })?;
-        // 首个 `/` 切分 skill 名与子路径；`skill://name/` 的子路径为空串，
-        // 与无子路径同义（正文）。
-        let (name, rel) = match target.split_once('/') {
-            Some((name, rel)) => (name, Some(rel)),
-            None => (target, None),
-        };
-        let resolve_error = |error: SkillsError| {
-            ToolError::new(format!("Could not resolve {SKILL_SCHEME}{target}. {error}"))
-        };
-        let resource = resolver
-            .resolve_resource(name, rel)
-            .map_err(resolve_error)?;
-        match resource {
-            SkillResource::Instructions(skill) => {
-                let mut result = read_text_path(
-                    &skill.path,
-                    &params.path,
-                    Some(skill.document.body.clone()),
-                    params.offset,
-                    params.limit,
-                )
-                .await?;
-                result.details = Some(merge_details(
-                    result.details.take(),
-                    &serde_json::json!({
-                        "source": skill_source(&params.path, &skill, None),
-                    }),
-                ));
-                Ok(result)
-            }
-            SkillResource::File { skill, path } => {
-                let rel_display = rel.unwrap_or_default().to_string();
-                let mut result =
-                    read_text_path(&path, &params.path, None, params.offset, params.limit).await?;
-                result.details = Some(merge_details(
-                    result.details.take(),
-                    &serde_json::json!({
-                        "source": skill_source(&params.path, &skill, Some(rel_display.as_str())),
-                    }),
-                ));
-                Ok(result)
-            }
-            SkillResource::Directory { skill, path } => {
-                let listing = read_dir_listing(&path).await.map_err(|error| {
-                    ToolError::new(format!(
-                        "Could not read directory: {}. {error}",
-                        params.path
-                    ))
-                })?;
-                let mut result = ToolResult::text(listing);
-                let rel_display = format!("{}/", rel.unwrap_or_default().trim_end_matches('/'));
-                result.details = Some(serde_json::json!({
-                    "source": skill_source(&params.path, &skill, Some(rel_display.as_str())),
-                }));
-                Ok(result)
-            }
-        }
+/// 内部 URI 读取：剥选择器 → 路由解析 → 选择器/分页 → 合并 details。
+async fn execute_uri_read(
+    router: &UriRouter,
+    target: &str,
+    params: &ReadParams,
+) -> Result<ToolResult, ToolError> {
+    let (clean, sel) = split_uri_selector(target);
+    let selector = match sel {
+        Some(sel) => parse_selector(&sel).map_err(|error| ToolError::new(error.to_string()))?,
+        None => ParsedSelector::None,
+    };
+    if matches!(selector, ParsedSelector::Conflicts) {
+        return Err(ToolError::new(
+            "The :conflicts selector is not supported yet.",
+        ));
     }
+    let resource = router
+        .resolve(&clean)
+        .await
+        .map_err(|error| ToolError::new(error.to_string()))?;
+    read_resource(&resource, &selector, params).await
+}
+
+/// 对已解析资源应用选择器与分页。显式 offset/limit 参数优先于尾挂选择器。
+async fn read_resource(
+    resource: &UriResource,
+    selector: &ParsedSelector,
+    params: &ReadParams,
+) -> Result<ToolResult, ToolError> {
+    let hint = resource
+        .source_path
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(&resource.url));
+    let display = resource.url.as_str();
+    let explicit = params.offset.is_some() || params.limit.is_some();
+    let mut result = if explicit {
+        read_text_path(
+            &hint,
+            display,
+            Some(resource.content.clone()),
+            params.offset,
+            params.limit,
+        )
+        .await?
+    } else {
+        match selector {
+            ParsedSelector::Lines { ranges, .. } if ranges.len() > 1 => {
+                let joined = slice_line_ranges(&resource.content, ranges, display)?;
+                read_text_path(&hint, display, Some(joined), None, None).await?
+            }
+            ParsedSelector::Lines { .. } => {
+                let (offset, limit) = selector.to_offset_limit().unwrap_or((None, None));
+                read_text_path(
+                    &hint,
+                    display,
+                    Some(resource.content.clone()),
+                    offset,
+                    limit,
+                )
+                .await?
+            }
+            // Raw / None：nomic 的 read 本无结构加工，raw 等价于完整读取
+            _ => read_text_path(&hint, display, Some(resource.content.clone()), None, None).await?,
+        }
+    };
+    if let Some(details) = &resource.details {
+        result.details = Some(merge_details(result.details.take(), details));
+    }
+    Ok(result)
+}
+
+/// 多段行范围切片：各段内容以 `[...]` 分隔拼接（越界段报错）。
+fn slice_line_ranges(
+    content: &str,
+    ranges: &[LineRange],
+    display: &str,
+) -> Result<String, ToolError> {
+    let lines: Vec<&str> = content.split('\n').collect();
+    let total = lines.len();
+    let mut sections = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if range.start > total {
+            return Err(ToolError::new(format!(
+                "Line range :{} is beyond end of {display} ({total} lines total)",
+                range.start
+            )));
+        }
+        let start = range.start - 1;
+        let end = range.end.map_or(total, |end| end.min(total));
+        sections.push(lines[start..end].join("\n"));
+    }
+    Ok(sections.join("\n\n[...]\n\n"))
 }
 
 const LABEL: &str = "read";
 
-const DESCRIPTION: &str = "Read the contents of a file or skill://<name>[/<path>]. Supports text files and read-only skill instructions; a sub-path reads a file inside the skill directory, and a directory sub-path lists its entries. Output is truncated to 2000 lines or 50KB \
+const DESCRIPTION: &str = "Read the contents of a file or an internal URI like skill://<name>[/<path>]. Supports text files and read-only skill instructions; a sub-path reads a file inside the skill directory, and a directory sub-path lists its entries. Output is truncated to 2000 lines or 50KB \
          (whichever is hit first). Use offset/limit for large files. When you need the full file, \
          continue with offset until complete.";
 
@@ -282,38 +335,4 @@ fn merge_details(base: Option<serde_json::Value>, extra: &serde_json::Value) -> 
         }
     }
     serde_json::Value::Object(merged)
-}
-
-/// `details.source` 的 skill 标注；`resource` 为子路径（目录以 `/` 结尾），无子路径时为 `None`。
-fn skill_source(
-    uri: &str,
-    skill: &nomic_skills::Skill,
-    resource: Option<&str>,
-) -> serde_json::Value {
-    serde_json::json!({
-        "kind": "skill",
-        "uri": uri,
-        "name": skill.name,
-        "scope": skill.scope.to_string(),
-        "path": skill.path.display().to_string(),
-        "resource": resource,
-    })
-}
-
-/// 目录清单：一行一个条目，目录以 `/` 结尾，按名称排序（目录在前）。
-async fn read_dir_listing(path: &Path) -> std::io::Result<String> {
-    let mut dirs = Vec::new();
-    let mut files = Vec::new();
-    let mut entries = tokio::fs::read_dir(path).await?;
-    while let Some(entry) = entries.next_entry().await? {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if entry.file_type().await?.is_dir() {
-            dirs.push(format!("{name}/"));
-        } else {
-            files.push(name);
-        }
-    }
-    dirs.sort();
-    files.sort();
-    Ok(dirs.into_iter().chain(files).collect::<Vec<_>>().join("\n"))
 }

@@ -2394,6 +2394,7 @@ dependencies = [
  "nomic-ai",
  "nomic-core",
  "nomic-skills",
+ "nomic-uri",
  "regex",
  "schemars",
  "serde",
@@ -2411,6 +2412,8 @@ name = "nomic-uri"
 version = "0.4.0"
 dependencies = [
  "async-trait",
+ "nomic-skills",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",

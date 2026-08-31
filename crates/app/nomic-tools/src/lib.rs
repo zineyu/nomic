@@ -130,10 +130,15 @@ pub fn default_tools_with_skills_in_shared(
     todo_store: TodoStore,
     question_sink: std::sync::Arc<dyn QuestionSink>,
 ) -> Vec<nomic_core::DynTool> {
+    // 会话级内部 URI 路由器（ADR-0040）：工具共享同一实例，handler 后端
+    // 在构造期注入。后续协议（local/artifact/history…）在此追加注册。
+    let mut uri_router = nomic_uri::UriRouter::new();
+    uri_router.register(std::sync::Arc::new(
+        nomic_uri::handlers::SkillProtocolHandler::new(skill_resolver),
+    ));
+    let uri_router = std::sync::Arc::new(uri_router);
     vec![
-        nomic_core::DynTool::new(
-            ReadTool::with_skill_resolver(skill_resolver).with_shared_base_dir(base),
-        ),
+        nomic_core::DynTool::new(ReadTool::with_uri_router(uri_router).with_shared_base_dir(base)),
         nomic_core::DynTool::new(WriteTool::new().with_shared_base_dir(base)),
         nomic_core::DynTool::new(EditTool::new().with_shared_base_dir(base)),
         nomic_core::DynTool::new(BashTool::new().with_shared_base_dir(base)),

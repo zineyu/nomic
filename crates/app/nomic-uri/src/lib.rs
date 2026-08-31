@@ -6,6 +6,7 @@
 //! T1 解析器 → T2 router/trait → T3 选择器 → T4+ 协议 handler。
 
 pub mod handler;
+pub mod handlers;
 pub mod parse;
 pub mod router;
 mod selector;

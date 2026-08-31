@@ -62,6 +62,9 @@ pub struct UriResource {
     pub source_path: Option<PathBuf>,
     /// 单个资源的不可变覆盖；`None` = 用 handler 默认值
     pub immutable: Option<bool>,
+    /// handler 附带的结构化元数据（如 skill 来源标注），由 read 工具
+    /// 合并进 `ToolResult.details`。默认无。
+    pub details: Option<serde_json::Value>,
     /// 是否为目录清单而非文件内容
     pub is_directory: bool,
     /// 解析附加说明（缓存新鲜度、来源等）
@@ -78,6 +81,7 @@ impl UriResource {
             content_type: ContentType::Plain,
             source_path: None,
             immutable: None,
+            details: None,
             is_directory: false,
             notes: Vec::new(),
         }

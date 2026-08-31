@@ -439,8 +439,8 @@ fn parse_command_dispatches_known_unknown_and_slash_prefixed() {
         ))
     );
     assert_eq!(
-        parse_command("config:get temperature"),
-        CommandParse::Known(CommandAction::Config("get temperature".to_string()))
+        parse_command("config:get append_system"),
+        CommandParse::Known(CommandAction::Config("get append_system".to_string()))
     );
     assert!(CommandAction::Config(String::new()).is_local());
     // 普通文本同样是未知命令（命令栏只承载命令；模板调用由分发层展开）

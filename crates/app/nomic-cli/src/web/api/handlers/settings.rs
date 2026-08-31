@@ -117,11 +117,7 @@ pub async fn handle_get_settings(state: &AppState, request_id: &str) -> ServerEv
         return store_unavailable(request_id);
     };
     let result = async {
-        let mut settings = store.list_settings().await?;
-        // 全局 api_key 同样脱敏（与 providers 表同一口径）
-        if settings.contains_key(keys::API_KEY) {
-            settings.insert(keys::API_KEY.to_string(), serde_json::json!("已设置"));
-        }
+        let settings = store.list_settings().await?;
         Ok::<_, ApiError>(SettingsSnapshotView {
             providers: store
                 .list_providers()
@@ -280,12 +276,12 @@ mod tests {
         };
         assert!(snapshot.providers.is_empty());
         assert!(snapshot.settings.is_empty());
-        assert!(snapshot.scalar_keys.contains(&"temperature"));
+        assert!(snapshot.scalar_keys.contains(&"append_system"));
 
         // 写入后经快照可读回
         let store = state.inner.store.clone().expect("store");
         store
-            .set_setting("temperature", &serde_json::json!(0.7))
+            .set_setting("append_system", &serde_json::json!("保持简洁"))
             .await
             .expect("set");
         let ServerEvent::SettingsSnapshot { snapshot, .. } =
@@ -293,7 +289,10 @@ mod tests {
         else {
             panic!("expected SettingsSnapshot");
         };
-        assert_eq!(snapshot.settings["temperature"], serde_json::json!(0.7));
+        assert_eq!(
+            snapshot.settings["append_system"],
+            serde_json::json!("保持简洁")
+        );
     }
 
     #[tokio::test]
@@ -335,16 +334,20 @@ mod tests {
     #[tokio::test]
     async fn set_setting_validates_key_and_value() {
         let state = test_state().await;
-        // 未知键
+        // 未知键（含已废弃键）
         let event = handle_set_setting(&state, "r4", "no_such_key", serde_json::json!(1)).await;
         assert!(matches!(event, ServerEvent::Error { .. }));
+        let event = handle_set_setting(&state, "r4b", "temperature", serde_json::json!(0.7)).await;
+        assert!(matches!(event, ServerEvent::Error { .. }));
         // 类型不符
-        let event = handle_set_setting(&state, "r5", "temperature", serde_json::json!("热")).await;
+        let event =
+            handle_set_setting(&state, "r5", "compaction.enabled", serde_json::json!("是")).await;
         assert!(matches!(event, ServerEvent::Error { .. }));
         // 合法写入 + unset
-        let event = handle_set_setting(&state, "r6", "temperature", serde_json::json!(0.2)).await;
+        let event =
+            handle_set_setting(&state, "r6", "compaction.enabled", serde_json::json!(false)).await;
         assert!(matches!(event, ServerEvent::SettingsUpdated { .. }));
-        let event = handle_unset_setting(&state, "r7", "temperature").await;
+        let event = handle_unset_setting(&state, "r7", "compaction.enabled").await;
         assert!(matches!(event, ServerEvent::SettingsUpdated { .. }));
         let event = handle_unset_setting(&state, "r8", "no_such_key").await;
         assert!(matches!(event, ServerEvent::Error { .. }));

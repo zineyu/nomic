@@ -426,26 +426,26 @@ mod tests {
         let store = SessionStore::in_memory().await.expect("store");
         let out = execute(
             &ConfigCommand::Set {
-                key: "temperature".to_string(),
-                value: "0.7".to_string(),
+                key: "append_system".to_string(),
+                value: "保持简洁".to_string(),
             },
             &store,
         )
         .await
         .expect("set");
-        assert!(out.contains("0.7"));
+        assert!(out.contains("保持简洁"));
         let out = execute(
             &ConfigCommand::Get {
-                key: "temperature".to_string(),
+                key: "append_system".to_string(),
             },
             &store,
         )
         .await
         .expect("get");
-        assert!(out.contains("0.7"));
+        assert!(out.contains("保持简洁"));
         let out = execute(
             &ConfigCommand::Unset {
-                key: "temperature".to_string(),
+                key: "append_system".to_string(),
             },
             &store,
         )
@@ -454,13 +454,31 @@ mod tests {
         assert!(out.contains("已删除"));
         let out = execute(
             &ConfigCommand::Get {
-                key: "temperature".to_string(),
+                key: "append_system".to_string(),
             },
             &store,
         )
         .await
         .expect("get");
         assert!(out.contains("未设置"));
+    }
+
+    #[tokio::test]
+    async fn removed_keys_are_rejected() {
+        // 已废弃键与未知键同一口径：硬报错防拼写错误
+        let store = SessionStore::in_memory().await.expect("store");
+        for key in ["temperature", "base_url", "compaction.reserve_tokens"] {
+            let error = execute(
+                &ConfigCommand::Set {
+                    key: key.to_string(),
+                    value: "1".to_string(),
+                },
+                &store,
+            )
+            .await
+            .expect_err("废弃键必须报错");
+            assert!(format!("{error:#}").contains("未知设置键"), "{error:#}");
+        }
     }
 
     #[tokio::test]

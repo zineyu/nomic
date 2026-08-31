@@ -89,13 +89,13 @@ mod tests {
             split_args("providers set openai --base-url https://x"),
             ["providers", "set", "openai", "--base-url", "https://x"]
         );
-        assert_eq!(split_args("get temperature"), ["get", "temperature"]);
+        assert_eq!(split_args("get append_system"), ["get", "append_system"]);
     }
 
     #[test]
     fn parse_roundtrip_via_config_cmd() {
         assert!(matches!(
-            parse("set temperature 0.7").expect("parse"),
+            parse("set compaction.enabled false").expect("parse"),
             ConfigCommand::Set { .. }
         ));
         assert!(matches!(parse("").expect("bare"), ConfigCommand::List));

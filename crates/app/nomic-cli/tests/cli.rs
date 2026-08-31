@@ -240,17 +240,17 @@ async fn continue_fails_in_directory_without_session() {
 #[test]
 fn config_scalar_set_get_unset_persists_across_processes() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let output = run(&["config", "set", "temperature", "0.7"], tmp.path());
+    let output = run(&["config", "set", "append_system", "保持简洁"], tmp.path());
     assert!(output.status.success(), "stderr: {}", stderr(&output));
 
     // 另起进程读取：sqlite 持久化生效
-    let output = run(&["config", "get", "temperature"], tmp.path());
+    let output = run(&["config", "get", "append_system"], tmp.path());
     assert!(output.status.success(), "stderr: {}", stderr(&output));
-    assert!(stdout(&output).contains("0.7"));
+    assert!(stdout(&output).contains("保持简洁"));
 
-    let output = run(&["config", "unset", "temperature"], tmp.path());
+    let output = run(&["config", "unset", "append_system"], tmp.path());
     assert!(output.status.success(), "stderr: {}", stderr(&output));
-    let output = run(&["config", "get", "temperature"], tmp.path());
+    let output = run(&["config", "get", "append_system"], tmp.path());
     assert!(stdout(&output).contains("未设置"));
 }
 

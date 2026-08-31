@@ -26,51 +26,36 @@ pub fn infer_api(provider: &str) -> Option<ApiKind> {
 
 /// 标量设置键（`settings` 表）。
 pub mod keys {
-    /// 全局 base_url 兜底（低于 providers 表）
-    pub const BASE_URL: &str = "base_url";
-    /// 全局 api_key 兜底（低于 providers 表与环境变量）
-    pub const API_KEY: &str = "api_key";
-    /// 采样温度
-    pub const TEMPERATURE: &str = "temperature";
-    /// 单次请求最大输出 token 数
-    pub const MAX_TOKENS: &str = "max_tokens";
     /// 追加到系统提示词末尾的文本
     pub const APPEND_SYSTEM: &str = "append_system";
     /// 额外的 prompt template 文件或目录（优先级高于自动发现目录）
     pub const PROMPTS: &str = "prompts";
     /// 自动压缩开关
     pub const COMPACTION_ENABLED: &str = "compaction.enabled";
-    /// 为模型响应预留的 token 数
-    pub const COMPACTION_RESERVE_TOKENS: &str = "compaction.reserve_tokens";
-    /// 保留不压缩的近期 token 数
-    pub const COMPACTION_KEEP_RECENT_TOKENS: &str = "compaction.keep_recent_tokens";
     /// 模型别名表（别名 → `<provider>/<模型id>`；子 agent 模型选择用）
     pub const MODEL_ALIASES: &str = "model_aliases";
 
     /// 全部已知键（`nomic config list` 与写入校验用）
-    pub const ALL: &[&str] = &[
-        BASE_URL,
-        API_KEY,
-        TEMPERATURE,
-        MAX_TOKENS,
-        APPEND_SYSTEM,
-        PROMPTS,
-        COMPACTION_ENABLED,
-        COMPACTION_RESERVE_TOKENS,
-        COMPACTION_KEEP_RECENT_TOKENS,
-        MODEL_ALIASES,
+    pub const ALL: &[&str] = &[APPEND_SYSTEM, PROMPTS, COMPACTION_ENABLED, MODEL_ALIASES];
+
+    /// 已废弃键：加载快照时顺手清除库中残留，取值一律回退内置默认 /
+    /// 分层兜底（base_url、api_key 走 providers 表与环境变量；temperature、
+    /// max_tokens 走 CLI 参数；compaction token 参数走内置默认）。
+    pub const REMOVED: &[&str] = &[
+        "base_url",
+        "api_key",
+        "temperature",
+        "max_tokens",
+        "compaction.reserve_tokens",
+        "compaction.keep_recent_tokens",
     ];
 }
 
-/// 上下文压缩设置覆盖（`compaction.*` 三个标量键），未设置的字段取内置默认。
+/// 上下文压缩设置覆盖（`compaction.enabled` 标量键），未设置时取内置默认。
 #[derive(Debug, Clone, Default)]
 pub struct CompactionOverride {
     /// 是否启用自动压缩（手动 `/compact` 不受此开关影响）
     pub enabled: Option<bool>,
-    /// 为模型响应预留的 token 数
-    pub reserve_tokens: Option<u64>,
-    /// 保留不压缩的近期 token 数（估算口径）
-    pub keep_recent_tokens: Option<u64>,
 }
 
 impl CompactionOverride {
@@ -79,10 +64,7 @@ impl CompactionOverride {
         let defaults = nomic_core::CompactionSettings::default();
         nomic_core::CompactionSettings {
             enabled: self.enabled.unwrap_or(defaults.enabled),
-            reserve_tokens: self.reserve_tokens.unwrap_or(defaults.reserve_tokens),
-            keep_recent_tokens: self
-                .keep_recent_tokens
-                .unwrap_or(defaults.keep_recent_tokens),
+            ..defaults
         }
     }
 }
@@ -94,14 +76,6 @@ pub struct Settings {
     pub providers: BTreeMap<String, ProviderRow>,
     /// 模型覆盖表（`model_specs` 表，(provider, 模型id) 索引）
     pub model_specs: BTreeMap<(String, String), ModelSpec>,
-    /// 全局 base_url 兜底
-    pub base_url: Option<String>,
-    /// 全局 api_key 兜底
-    pub api_key: Option<String>,
-    /// 采样温度
-    pub temperature: Option<f64>,
-    /// 单次请求最大输出 token 数
-    pub max_tokens: Option<u64>,
     /// 追加到系统提示词末尾的文本
     pub append_system: Option<String>,
     /// 额外的 prompt template 文件或目录
@@ -151,19 +125,19 @@ impl Settings {
                 BTreeMap::new()
             }
         };
+        // 废弃键残留清理：取值一律回退默认，库中不再保留
+        for key in keys::REMOVED {
+            if let Err(error) = store.unset_setting(key).await {
+                tracing::warn!(error = ?error, key = %key, "清理废弃设置键失败");
+            }
+        }
         Self {
             providers,
             model_specs,
-            base_url: get_scalar(store, keys::BASE_URL).await,
-            api_key: get_scalar(store, keys::API_KEY).await,
-            temperature: get_scalar(store, keys::TEMPERATURE).await,
-            max_tokens: get_scalar(store, keys::MAX_TOKENS).await,
             append_system: get_scalar(store, keys::APPEND_SYSTEM).await,
             prompts: get_scalar(store, keys::PROMPTS).await.unwrap_or_default(),
             compaction: CompactionOverride {
                 enabled: get_scalar(store, keys::COMPACTION_ENABLED).await,
-                reserve_tokens: get_scalar(store, keys::COMPACTION_RESERVE_TOKENS).await,
-                keep_recent_tokens: get_scalar(store, keys::COMPACTION_KEEP_RECENT_TOKENS).await,
             },
             model_aliases: get_scalar(store, keys::MODEL_ALIASES)
                 .await
@@ -227,11 +201,7 @@ pub fn validate_alias(alias: &str, spec: &str) -> Result<()> {
 /// `deny_unknown_fields` 同一口径）。
 pub fn validate_scalar(key: &str, value: &serde_json::Value) -> Result<()> {
     let ok = match key {
-        keys::BASE_URL | keys::API_KEY | keys::APPEND_SYSTEM => value.is_string(),
-        keys::TEMPERATURE => value.as_f64().is_some(),
-        keys::MAX_TOKENS
-        | keys::COMPACTION_RESERVE_TOKENS
-        | keys::COMPACTION_KEEP_RECENT_TOKENS => value.as_u64().is_some(),
+        keys::APPEND_SYSTEM => value.is_string(),
         keys::COMPACTION_ENABLED => value.is_boolean(),
         keys::PROMPTS => value
             .as_array()

@@ -340,7 +340,6 @@ pub async fn handle_switch_model(
                 .provider_row(&model.provider)
                 .and_then(|p| p.api_key)
                 .as_deref(),
-            state.inner.models.settings().api_key.as_deref(),
         );
         if session
             .handle

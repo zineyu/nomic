@@ -262,18 +262,14 @@ fn cli_model_accepts_provider_qualified_form() {
 }
 
 #[test]
-fn base_url_precedence_cli_env_settings_default() {
-    let settings = Settings {
-        base_url: Some("https://settings".to_string()),
-        ..Settings::default()
-    };
+fn base_url_precedence_cli_env_provider_default() {
     let with_flag = cli(&["--base-url", "https://cli", "--model", "gpt-5.2"]);
     let plain = cli(&["--model", "gpt-5.2"]);
     // CLI 参数最高
     let model = resolve(
         "openai",
         &with_flag,
-        settings.clone(),
+        Settings::default(),
         Some("https://env"),
         None,
     );
@@ -282,14 +278,11 @@ fn base_url_precedence_cli_env_settings_default() {
     let model = resolve(
         "openai",
         &plain,
-        settings.clone(),
+        Settings::default(),
         Some("https://env"),
         None,
     );
     assert_eq!(model.base_url, "https://env");
-    // sqlite 设置再次
-    let model = resolve("openai", &plain, settings, None, None);
-    assert_eq!(model.base_url, "https://settings");
     // 协议默认地址兜底
     let model = resolve("openai", &plain, Settings::default(), None, None);
     assert_eq!(model.base_url, "https://api.openai.com/v1");
@@ -306,7 +299,7 @@ fn base_url_precedence_cli_env_settings_default() {
 }
 
 #[test]
-fn provider_row_base_url_beats_global_fallback() {
+fn provider_row_base_url_beats_protocol_default() {
     let mut providers = std::collections::BTreeMap::new();
     providers.insert(
         "openai".to_string(),
@@ -319,7 +312,6 @@ fn provider_row_base_url_beats_global_fallback() {
         },
     );
     let settings = Settings {
-        base_url: Some("https://global".to_string()),
         providers,
         ..Settings::default()
     };
@@ -334,16 +326,14 @@ fn provider_row_base_url_beats_global_fallback() {
 }
 
 #[test]
-fn api_key_precedence_cli_env_provider_settings() {
-    let key = resolve_api_key(Some("cli"), Some("env"), Some("provider"), Some("settings"));
+fn api_key_precedence_cli_env_provider() {
+    let key = resolve_api_key(Some("cli"), Some("env"), Some("provider"));
     assert_eq!(key.as_deref(), Some("cli"));
-    let key = resolve_api_key(None, Some("env"), Some("provider"), Some("settings"));
+    let key = resolve_api_key(None, Some("env"), Some("provider"));
     assert_eq!(key.as_deref(), Some("env"));
-    let key = resolve_api_key(None, None, Some("provider"), Some("settings"));
+    let key = resolve_api_key(None, None, Some("provider"));
     assert_eq!(key.as_deref(), Some("provider"));
-    let key = resolve_api_key(None, None, None, Some("settings"));
-    assert_eq!(key.as_deref(), Some("settings"));
-    assert_eq!(resolve_api_key(None, None, None, None), None);
+    assert_eq!(resolve_api_key(None, None, None), None);
 }
 
 // ── 规格字段分层：model_specs 表 > models.dev > 中性兜底 ──────────────

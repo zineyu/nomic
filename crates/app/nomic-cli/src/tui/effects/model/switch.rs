@@ -178,8 +178,8 @@ impl ModelSwitcher {
     }
 
     /// 应用切换：直调 actor（跨 provider 时按启动同一口径构造新连接
-    /// ——api_key 分层：环境变量 > `providers.<名字>.api_key` >
-    /// 标量；CLI 的 `--api-key` 属于启动 provider，不参与运行时切换
+    /// ——api_key 分层：环境变量 > `providers.<名字>.api_key`；
+    /// CLI 的 `--api-key` 属于启动 provider，不参与运行时切换
     /// 分层）并把当前模型换为目标。成功返回待落库的选择 spec（config 表
     /// append-only，最新行即下次启动的首选）；actor 已退出返回 warn 文本。
     fn apply(&mut self, model: Model, handle: &AgentHandle) -> Result<String, String> {
@@ -193,7 +193,6 @@ impl ModelSwitcher {
                     .provider_row(&model.provider)
                     .and_then(|p| p.api_key)
                     .as_deref(),
-                self.models.settings().api_key.as_deref(),
             );
             if handle
                 .set_provider(model::build_provider(model.api, api_key.clone()), api_key)

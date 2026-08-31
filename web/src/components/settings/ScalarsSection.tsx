@@ -1,7 +1,9 @@
-// 标量设置段：简单取值（布尔 / 数字 / 普通字符串）行内直接编辑——布尔用开关
-// 即点即存，数字与字符串在输入框内 Enter/失焦提交、Esc 还原；密钥与 JSON 等
-// 复杂取值仍走编辑对话框。api_key 服务端已脱敏为「已设置」标记，编辑时输入新值覆盖。
-// 布局：无边框平铺列表 + 细分隔线，编辑按钮悬停行时才显现。
+// 标量设置段：仅暴露适合 web 端调整的键（追加系统提示词 / prompt template 路径 /
+// 自动压缩开关 / 模型别名表）；base_url、api_key、temperature、max_tokens 与
+// compaction 的 token 参数不在页面展示，一律使用默认值（或经 CLI `nomic config`
+// 配置），即使快照下发了这些键也会被过滤。
+// 简单取值行内直接编辑——布尔开关即点即存，字符串输入框 Enter/失焦提交、Esc 还原；
+// JSON 取值走编辑对话框。布局：无边框平铺列表 + 细分隔线，编辑按钮悬停行时才显现。
 
 import { useState } from 'react'
 import { Pencil } from 'lucide-react'
@@ -18,7 +20,6 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { cn } from '@/lib/utils'
 
 interface ScalarsSectionProps {
   values: Record<string, unknown>
@@ -26,18 +27,12 @@ interface ScalarsSectionProps {
   onSet: (key: string, value: unknown) => Promise<unknown>
 }
 
-type ScalarKind = 'string' | 'number' | 'boolean' | 'json'
+type ScalarKind = 'string' | 'boolean' | 'json'
 
-const KEY_META: Record<string, { label: string; kind: ScalarKind; secret?: boolean }> = {
-  base_url: { label: '全局 base_url', kind: 'string' },
-  api_key: { label: '全局 api_key', kind: 'string', secret: true },
-  temperature: { label: '采样温度', kind: 'number' },
-  max_tokens: { label: '最大输出 token 数', kind: 'number' },
+const KEY_META: Record<string, { label: string; kind: ScalarKind }> = {
   append_system: { label: '追加系统提示词', kind: 'string' },
   prompts: { label: '额外 prompt template 路径', kind: 'json' },
   'compaction.enabled': { label: '自动压缩开关', kind: 'boolean' },
-  'compaction.reserve_tokens': { label: '压缩预留 tokens', kind: 'number' },
-  'compaction.keep_recent_tokens': { label: '压缩保留近期 tokens', kind: 'number' },
   model_aliases: { label: '模型别名表', kind: 'json' },
 }
 
@@ -59,19 +54,16 @@ export function ScalarsSection({ values, keys, onSet }: ScalarsSectionProps) {
       <ul role="list" className="flex flex-col divide-y divide-border">
         {keys.map((key) => {
           const meta = KEY_META[key]
-          const kind: ScalarKind = meta?.kind ?? 'string'
+          if (!meta) return null
           const set = key in values
-          const needsDialog = kind === 'json' || meta?.secret === true
           return (
             <li key={key} className="group flex items-center justify-between gap-4 py-3">
               <div className="flex min-w-0 flex-col gap-0.5">
-                <span className="truncate text-body-sm font-medium">
-                  {meta?.label ?? key}
-                </span>
+                <span className="truncate text-body-sm font-medium">{meta.label}</span>
                 <code className="truncate text-caption text-muted-foreground">{key}</code>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {kind === 'boolean' ? (
+                {meta.kind === 'boolean' ? (
                   <Switch
                     checked={values[key] === true}
                     onCheckedChange={(checked) => {
@@ -80,10 +72,10 @@ export function ScalarsSection({ values, keys, onSet }: ScalarsSectionProps) {
                     }}
                     aria-label={key}
                   />
-                ) : needsDialog ? (
+                ) : meta.kind === 'json' ? (
                   <>
                     <span className="max-w-48 truncate text-body-sm text-muted-foreground">
-                      {set ? (meta?.secret ? '已设置' : '已设置（JSON）') : '未设置'}
+                      {set ? '已设置' : '未设置'}
                     </span>
                     <Button
                       variant="ghost"
@@ -96,12 +88,7 @@ export function ScalarsSection({ values, keys, onSet }: ScalarsSectionProps) {
                     </Button>
                   </>
                 ) : (
-                  <InlineScalarInput
-                    scalarKey={key}
-                    kind={kind}
-                    current={values[key]}
-                    onSet={onSet}
-                  />
+                  <InlineStringInput scalarKey={key} current={values[key]} onSet={onSet} />
                 )}
               </div>
             </li>
@@ -109,7 +96,7 @@ export function ScalarsSection({ values, keys, onSet }: ScalarsSectionProps) {
         })}
       </ul>
       {editing !== null && (
-        <ScalarDialog
+        <JsonDialog
           scalarKey={editing}
           current={values[editing]}
           onClose={() => setEditing(null)}
@@ -124,14 +111,12 @@ export function ScalarsSection({ values, keys, onSet }: ScalarsSectionProps) {
 }
 
 // 行内输入框：本地草稿态，Enter/失焦提交，Esc 还原；提交失败回显错误并还原为当前值。
-function InlineScalarInput({
+function InlineStringInput({
   scalarKey,
-  kind,
   current,
   onSet,
 }: {
   scalarKey: string
-  kind: 'string' | 'number'
   current: unknown
   onSet: (key: string, value: unknown) => Promise<unknown>
 }) {
@@ -155,28 +140,15 @@ function InlineScalarInput({
 
   const commit = async () => {
     const raw = text.trim()
-    if (raw === committed) {
+    if (raw === committed || raw === '') {
+      // 置空语义不被接受：留空即还原，这些键全部回退默认值。
       revert()
       return
-    }
-    if (raw === '') {
-      // 置空语义不被接受：留空即还原。
-      revert()
-      return
-    }
-    let value: unknown = raw
-    if (kind === 'number') {
-      value = Number(raw)
-      if (!Number.isFinite(value)) {
-        setError(`应为数字：${raw}`)
-        revert()
-        return
-      }
     }
     setSaving(true)
     setError(null)
     try {
-      await onSet(scalarKey, value)
+      await onSet(scalarKey, raw)
       setDirty(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -195,12 +167,10 @@ function InlineScalarInput({
       )}
       <Input
         aria-label={scalarKey}
-        type="text"
-        inputMode={kind === 'number' ? 'decimal' : undefined}
         value={text}
         disabled={saving}
         placeholder="未设置"
-        className={cn('h-8', kind === 'number' ? 'w-32 text-right' : 'w-64')}
+        className="h-8 w-64"
         onChange={(e) => {
           setText(e.target.value)
           setDirty(true)
@@ -218,8 +188,8 @@ function InlineScalarInput({
   )
 }
 
-// 对话框仅服务复杂取值：JSON（多行）与密钥（脱敏，不明文回显）。
-function ScalarDialog({
+// JSON 取值（prompt 模板路径 / 模型别名表）的编辑对话框：多行文本，保存前解析校验。
+function JsonDialog({
   scalarKey,
   current,
   onClose,
@@ -231,27 +201,19 @@ function ScalarDialog({
   onSet: (key: string, value: unknown) => Promise<void>
 }) {
   const meta = KEY_META[scalarKey]
-  const kind: ScalarKind = meta?.kind ?? 'string'
-  const isSecret = meta?.secret === true
-  const [text, setText] = useState(() => {
-    if (current === undefined || isSecret) return ''
-    if (kind === 'json') return JSON.stringify(current, null, 2)
-    return String(current)
-  })
+  const [text, setText] = useState(() =>
+    current === undefined ? '' : JSON.stringify(current, null, 2),
+  )
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   const handleSave = async () => {
     let value: unknown
-    if (kind === 'json') {
-      try {
-        value = JSON.parse(text)
-      } catch {
-        setError('JSON 解析失败')
-        return
-      }
-    } else {
-      value = text
+    try {
+      value = JSON.parse(text)
+    } catch {
+      setError('JSON 解析失败')
+      return
     }
     setSaving(true)
     setError(null)
@@ -274,23 +236,13 @@ function ScalarDialog({
             <Label htmlFor="scalar-value">
               <code className="text-caption">{scalarKey}</code>
             </Label>
-            {kind === 'json' ? (
-              <Textarea
-                id="scalar-value"
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                rows={4}
-                className="font-mono"
-              />
-            ) : (
-              <Input
-                id="scalar-value"
-                type={isSecret ? 'password' : 'text'}
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                placeholder={isSecret ? '已设置' : undefined}
-              />
-            )}
+            <Textarea
+              id="scalar-value"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              rows={4}
+              className="font-mono"
+            />
           </div>
           {error && (
             <p role="alert" className="text-body-sm text-destructive">

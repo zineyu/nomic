@@ -129,7 +129,6 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
             .provider_row(&model.provider)
             .and_then(|p| p.api_key)
             .as_deref(),
-        snapshot.api_key.as_deref(),
     );
     let provider = crate::model::provider_for(&model, api_key.clone());
     // 思考级别恢复链：CLI > sqlite 配置表
@@ -141,8 +140,8 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
         .transpose()?
         .or(db_reasoning);
     let stream_options = StreamOptions {
-        temperature: cli.temperature.or(snapshot.temperature),
-        max_tokens: cli.max_tokens.or(snapshot.max_tokens),
+        temperature: cli.temperature,
+        max_tokens: cli.max_tokens,
         reasoning,
         api_key,
         headers: Vec::new(),

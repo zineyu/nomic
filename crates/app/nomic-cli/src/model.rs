@@ -313,12 +313,11 @@ pub fn select_startup_model(
     })
 }
 
-/// 解析 api_key：CLI 参数 > 环境变量 > `providers.<名字>.api_key` > 平铺配置文件。
+/// 解析 api_key：CLI 参数 > 环境变量 > `providers.<名字>.api_key`。
 pub fn resolve_api_key(
     cli: Option<&str>,
     env: Option<&str>,
     provider: Option<&str>,
-    config: Option<&str>,
 ) -> Option<String> {
     let source = if cli.is_some() {
         "cli"
@@ -326,17 +325,15 @@ pub fn resolve_api_key(
         "env"
     } else if provider.is_some() {
         "provider_config"
-    } else if config.is_some() {
-        "global_config"
     } else {
         "none"
     };
     tracing::debug!(
         source,
-        has_key = cli.or(env).or(provider).or(config).is_some(),
+        has_key = cli.or(env).or(provider).is_some(),
         "api_key resolved"
     );
-    cli.or(env).or(provider).or(config).map(str::to_string)
+    cli.or(env).or(provider).map(str::to_string)
 }
 
 /// 取设置快照中 (provider, 模型id) 的规格覆盖行。
@@ -518,7 +515,7 @@ impl ModelResolver {
     }
 
     /// base_url 永远来自用户指定：CLI > 环境变量（仅 openai 系）>
-    /// providers 表 > settings 标量 > 协议默认地址，不经由 models.dev。
+    /// providers 表 > 协议默认地址，不经由 models.dev。
     fn base_url(&self, provider: &str, api: ApiKind, preset: &Preset) -> String {
         let settings = self.settings();
         self.cli_base_url
@@ -535,7 +532,6 @@ impl ModelResolver {
                     .get(provider)
                     .and_then(|p| p.base_url.clone())
             })
-            .or(settings.base_url)
             .unwrap_or_else(|| preset.default_base_url.to_string())
     }
 

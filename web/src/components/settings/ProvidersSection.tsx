@@ -62,14 +62,17 @@ export function ProvidersSection({ providers, onSave, onDelete }: ProvidersSecti
       {providers.length === 0 ? (
         <p className="text-body-sm text-muted-foreground">还没有 provider 定义。</p>
       ) : (
-        <ul role="list" className="flex flex-col gap-2">
+        <ul role="list" className="flex flex-col divide-y divide-border">
           {providers.map((provider) => (
-            <li
-              key={provider.name}
-              className="flex items-center justify-between gap-4 rounded-lg border px-4 py-3"
-            >
-              <span className="min-w-0 truncate text-body-sm font-medium">{provider.name}</span>
-              <div className="flex shrink-0 gap-1">
+            <li key={provider.name} className="group flex items-center justify-between gap-4 py-3">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <span className="truncate text-body-sm font-medium">{provider.name}</span>
+                <span className="truncate text-caption text-muted-foreground">
+                  {provider.api ?? '按名推断'} · {provider.base_url ?? '默认端点'} ·{' '}
+                  {provider.has_api_key ? 'api_key 已设置' : 'api_key 未设置'}
+                </span>
+              </div>
+              <div className="flex shrink-0 gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
                 <Button
                   variant="ghost"
                   size="icon-sm"

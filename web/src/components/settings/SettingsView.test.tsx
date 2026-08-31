@@ -86,6 +86,11 @@ describe('SettingsView', () => {
     await screen.findByText('anthropic')
     expect(screen.getByText('anthropic/claude-sonnet-4-5')).toBeInTheDocument()
     expect(screen.getByText('采样温度')).toBeInTheDocument()
+    // 列表行直接展示关键信息：provider 摘要与覆盖摘要
+    expect(
+      screen.getByText(/按名推断 · https:\/\/api\.anthropic\.com · api_key 已设置/),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/推理 · 上下文 200k/)).toBeInTheDocument()
   })
 
   it('空快照展示引导文案', async () => {
@@ -122,23 +127,57 @@ describe('SettingsView', () => {
     })
   })
 
-  it('编辑标量：数字解析后写入；写失败就地展示错误', async () => {
+  it('行内编辑数字标量：Enter 提交解析后的值', async () => {
     mocks.settings.mockResolvedValue(snapshot())
     render(<SettingsView />)
 
     await screen.findByText('采样温度')
-    await userEvent.click(screen.getByRole('button', { name: '编辑 temperature' }))
     const input = screen.getByLabelText('temperature', { exact: true })
     await userEvent.clear(input)
     await userEvent.type(input, '0.2')
-    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+    await userEvent.keyboard('{Enter}')
     await waitFor(() => expect(mocks.setSetting).toHaveBeenCalledWith('temperature', 0.2))
+  })
 
-    mocks.setSetting.mockRejectedValueOnce(new Error('取值类型非法'))
-    await userEvent.click(screen.getByRole('button', { name: '编辑 temperature' }))
-    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+  it('行内编辑失败：就地展示错误并还原为当前值', async () => {
+    mocks.setSetting.mockRejectedValue(new Error('取值类型非法'))
+    mocks.settings.mockResolvedValue(snapshot())
+    render(<SettingsView />)
+
+    await screen.findByText('采样温度')
+    const input = screen.getByLabelText('temperature', { exact: true })
+    await userEvent.clear(input)
+    await userEvent.type(input, '0.9')
+    await userEvent.keyboard('{Enter}')
     await screen.findByRole('alert')
     expect(screen.getByRole('alert')).toHaveTextContent('取值类型非法')
+    await waitFor(() => expect(input).toHaveValue('0.7'))
+  })
+
+  it('布尔标量开关即点即存', async () => {
+    mocks.settings.mockResolvedValue(
+      snapshot({ scalar_keys: [...snapshot().scalar_keys, 'compaction.enabled'] }),
+    )
+    render(<SettingsView />)
+
+    await screen.findByText('自动压缩开关')
+    await userEvent.click(screen.getByRole('switch', { name: 'compaction.enabled' }))
+    await waitFor(() =>
+      expect(mocks.setSetting).toHaveBeenCalledWith('compaction.enabled', true),
+    )
+  })
+
+  it('密钥标量仍走对话框：留空禁用保存，输入新值覆盖', async () => {
+    mocks.settings.mockResolvedValue(snapshot())
+    render(<SettingsView />)
+
+    await screen.findByText('全局 api_key')
+    await userEvent.click(screen.getByRole('button', { name: '编辑 api_key' }))
+    const input = screen.getByLabelText('api_key', { exact: true })
+    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()
+    await userEvent.type(input, 'sk-new')
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(mocks.setSetting).toHaveBeenCalledWith('api_key', 'sk-new'))
   })
 
   it('加载失败展示错误而非空白', async () => {

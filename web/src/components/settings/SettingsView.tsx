@@ -59,7 +59,6 @@ export function SettingsView() {
               values={settings.snapshot.settings}
               keys={settings.snapshot.scalar_keys}
               onSet={settings.setSetting}
-              onUnset={settings.unsetSetting}
             />
           </>
         )}

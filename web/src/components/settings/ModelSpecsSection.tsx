@@ -32,6 +32,26 @@ interface ModelSpecsSectionProps {
 
 const UNSET = '__unset__'
 
+// 覆盖行摘要：仅列出已覆盖的字段（null = 未覆盖，向下回退）。
+function specSummary(spec: ModelSpecRow): string {
+  const parts: string[] = []
+  if (spec.name !== null) parts.push(spec.name)
+  if (spec.reasoning === true) parts.push('推理')
+  if (spec.vision === true) parts.push('视觉')
+  if (spec.context_window !== null) parts.push(`上下文 ${formatTokens(spec.context_window)}`)
+  if (spec.max_tokens !== null) parts.push(`输出 ${formatTokens(spec.max_tokens)}`)
+  if (spec.cost_input !== null || spec.cost_output !== null) {
+    parts.push(
+      `费率 ${spec.cost_input ?? '-'}/${spec.cost_output ?? '-'} $/M`,
+    )
+  }
+  return parts.join(' · ')
+}
+
+function formatTokens(n: number): string {
+  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n)
+}
+
 export function ModelSpecsSection({ specs, providers, onSave, onDelete }: ModelSpecsSectionProps) {
   const [editing, setEditing] = useState<ModelSpecRow | 'new' | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -58,16 +78,23 @@ export function ModelSpecsSection({ specs, providers, onSave, onDelete }: ModelS
       {specs.length === 0 ? (
         <p className="text-body-sm text-muted-foreground">没有模型覆盖。</p>
       ) : (
-        <ul role="list" className="flex flex-col gap-2">
+        <ul role="list" className="flex flex-col divide-y divide-border">
           {specs.map((spec) => (
             <li
               key={`${spec.provider}/${spec.model_id}`}
-              className="flex items-center justify-between gap-4 rounded-lg border px-4 py-3"
+              className="group flex items-center justify-between gap-4 py-3"
             >
-              <span className="min-w-0 truncate text-body-sm font-medium">
-                {spec.provider}/{spec.model_id}
-              </span>
-              <div className="flex shrink-0 gap-1">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <span className="truncate text-body-sm font-medium">
+                  {spec.provider}/{spec.model_id}
+                </span>
+                {specSummary(spec) && (
+                  <span className="truncate text-caption text-muted-foreground">
+                    {specSummary(spec)}
+                  </span>
+                )}
+              </div>
+              <div className="flex shrink-0 gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
                 <Button
                   variant="ghost"
                   size="icon-sm"

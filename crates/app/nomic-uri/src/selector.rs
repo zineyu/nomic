@@ -64,14 +64,20 @@ mod tests {
             "1-20:raw",
             "-3",
         ] {
-            assert!(is_selector_chain(input), "{input} should be a selector chain");
+            assert!(
+                is_selector_chain(input),
+                "{input} should be a selector chain"
+            );
         }
     }
 
     #[test]
     fn rejects_non_selectors() {
         for input in ["example:document", "item", "", "1-", "1-", "a-b", "1..2"] {
-            assert!(!is_selector_chain(input), "{input} should not be a selector chain");
+            assert!(
+                !is_selector_chain(input),
+                "{input} should not be a selector chain"
+            );
         }
     }
 }

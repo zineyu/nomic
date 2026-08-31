@@ -95,6 +95,18 @@ pub fn extract_uri_scheme(input: &str) -> Option<String> {
     Some(scheme.to_ascii_lowercase())
 }
 
+/// 提取层级形式（`scheme://…`）的小写 scheme；非层级形式返回 `None`。
+///
+/// 与 [`extract_uri_scheme`] 的区别：不接受 opaque 形式，也无防误判守卫——
+/// 调用方（router）只关心严格的 `scheme://` 前缀。
+#[must_use]
+pub fn hierarchical_scheme(input: &str) -> Option<String> {
+    let (scheme, scheme_len) = match_scheme(input)?;
+    input[scheme_len..]
+        .strip_prefix("://")
+        .map(|_| scheme.to_ascii_lowercase())
+}
+
 /// percent 解码；非法序列按原样保留（lossy，不报错）。
 #[must_use]
 pub fn percent_decode(input: &str) -> String {

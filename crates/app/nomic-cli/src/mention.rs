@@ -2,8 +2,8 @@
 //!
 //! mention 是输入草稿里的内联标记，支持两类：
 //!
-//! - `@skill:<name>`：引用一个已发现的 skill（名称即 skill 目录名）；
-//!   `@skill://<name>`（ADR-0040 的内部 URI 形式）与之等价，展开结果相同
+//! - `@skill://<name>`：引用一个已发现的 skill（内部 URI 形式，ADR-0040；
+//!   名称为 skill 目录名）
 //! - `@file:<path>`：引用一个文件（相对 cwd 或绝对路径）
 //!
 //! `@` 本身不触发任何动作；补全弹层只负责填好标记文本。消息提交（Enter
@@ -19,11 +19,8 @@ use std::path::{Path, PathBuf};
 
 use nomic_skills::SkillResolver;
 
-/// skill mention 前缀。
-pub const SKILL_PREFIX: &str = "@skill:";
-/// skill mention 的内部 URI 形式前缀（ADR-0040）。与 [`SKILL_PREFIX`]
-/// 等价：补全与展开均接受，展开产物相同。
-pub const SKILL_URI_PREFIX: &str = "@skill://";
+/// skill mention 前缀（内部 URI 形式，ADR-0040）。
+pub const SKILL_PREFIX: &str = "@skill://";
 /// file mention 前缀。
 pub const FILE_PREFIX: &str = "@file:";
 
@@ -127,17 +124,13 @@ fn is_mention_start(text: &str, at: usize) -> bool {
 /// 尝试从 `tail`（以 `@` 开头）展开一个 mention。
 /// 返回 `(展开文本, 消耗的字节数)`；不是有效 mention 时返回 `None`。
 fn expand_one(tail: &str, skills: &SkillResolver, cwd: &Path) -> Option<(String, usize)> {
-    // URI 形式先匹配（更长前缀），随后旧式 `@skill:`；两者展开一致
-    for prefix in [SKILL_URI_PREFIX, SKILL_PREFIX] {
-        if let Some(name) = tail.strip_prefix(prefix) {
-            let name_len = skill_name_len(name);
-            if name_len == 0 {
-                continue;
-            }
+    if let Some(name) = tail.strip_prefix(SKILL_PREFIX) {
+        let name_len = skill_name_len(name);
+        if name_len > 0 {
             let name = &name[..name_len];
             let skill = skills.activate(name).ok()?;
             let expanded = skill.prompt_tag();
-            return Some((expanded, prefix.len() + name_len));
+            return Some((expanded, SKILL_PREFIX.len() + name_len));
         }
     }
     if let Some(path) = tail.strip_prefix(FILE_PREFIX) {
@@ -166,7 +159,7 @@ fn expand_one(tail: &str, skills: &SkillResolver, cwd: &Path) -> Option<(String,
     None
 }
 
-/// `@skill:` 后 skill 名的字节长度：取合法名称字符（小写 ASCII 字母、
+/// `@skill://` 后 skill 名的字节长度：取合法名称字符（小写 ASCII 字母、
 /// 数字、`-`、`_`）的最大前缀，自然在标点/空白处截断。
 fn skill_name_len(name: &str) -> usize {
     name.chars()
@@ -212,13 +205,11 @@ mod tests {
     #[test]
     fn fragment_requires_mention_boundary_and_no_trailing_space() {
         assert_eq!(mention_fragment("用 @"), Some("@"));
-        assert_eq!(mention_fragment("@skill:ju"), Some("@skill:ju"));
+        assert_eq!(mention_fragment("@skill://ju"), Some("@skill://ju"));
         assert_eq!(mention_fragment("看看 @file:src/ma"), Some("@file:src/ma"));
         assert_eq!(mention_fragment("没有 at 符号"), None);
         // `@` 后出现空白则视为普通文本，不再作为 mention
-        assert_eq!(mention_fragment("@skill:ju "), None);
-        // URI 形式片段同样参与补全
-        assert_eq!(mention_fragment("@skill://ju"), Some("@skill://ju"));
+        assert_eq!(mention_fragment("@skill://ju "), None);
         // 前导非空白不构成 mention 边界（如邮箱）
         assert_eq!(mention_fragment("a@b"), None);
     }
@@ -230,7 +221,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let resolver = skill_resolver(dir.path(), &[("rust-review", "Check unsafe code.")]);
 
-        let text = "用 @skill:rust-review 审查，还有 @skill:missing 原样";
+        let text = "用 @skill://rust-review 审查，还有 @skill://missing 原样";
         let expanded = expand_mentions(text, &resolver, dir.path());
 
         assert!(
@@ -238,26 +229,17 @@ mod tests {
             "{expanded}"
         );
         assert!(expanded.contains("Check unsafe code."), "{expanded}");
-        assert!(expanded.contains("@skill:missing"), "{expanded}");
+        assert!(expanded.contains("@skill://missing"), "{expanded}");
     }
 
     #[test]
-    fn expands_uri_form_skill_mention() {
+    fn legacy_at_skill_colon_form_is_not_a_mention() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let resolver = skill_resolver(dir.path(), &[("rust-review", "Check unsafe code.")]);
+        let resolver = skill_resolver(dir.path(), &[("rust-review", "body")]);
 
-        // URI 形式（ADR-0040）与旧式展开一致
-        let expanded = expand_mentions("用 @skill://rust-review 审查", &resolver, dir.path());
-        assert!(
-            expanded.contains("<active_skill name=\"rust-review\""),
-            "{expanded}"
-        );
-        assert!(expanded.contains("Check unsafe code."), "{expanded}");
-        assert!(!expanded.contains("@skill://"), "{expanded}");
-
-        // 不存在的 skill 原样保留
-        let expanded = expand_mentions("@skill://missing", &resolver, dir.path());
-        assert_eq!(expanded, "@skill://missing");
+        // 旧式 `@skill:` 不再是有效 mention：原样保留
+        let expanded = expand_mentions("@skill:rust-review", &resolver, dir.path());
+        assert_eq!(expanded, "@skill:rust-review");
     }
 
     #[test]
@@ -265,7 +247,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let resolver = skill_resolver(dir.path(), &[("rust-review", "body")]);
 
-        let expanded = expand_mentions("@skill:rust-review，请审查", &resolver, dir.path());
+        let expanded = expand_mentions("@skill://rust-review，请审查", &resolver, dir.path());
         assert!(expanded.contains("body"), "{expanded}");
         assert!(expanded.contains("，请审查"), "{expanded}");
         assert!(!expanded.contains("rust-review，"), "{expanded}");

@@ -261,7 +261,7 @@ export const api = {
   deleteWorkspace: (id: string, force: boolean) =>
     client.request<{ id: string }>({ type: 'delete_workspace', id, force }),
 
-  /** skill 清单（`@skill:` 补全用；进程级解析器快照）。 */
+  /** skill 清单（`@skill://` 补全用；进程级解析器快照）。 */
   skills: () =>
     client.request<{ skills: SkillSummary[] }>({ type: 'list_skills' }).then((r) => r.skills),
 

@@ -407,7 +407,9 @@ impl MentionBlock {
     /// 块的紧凑标记；无法解析时返回 `None`（调用方原样保留整块）。
     fn chip(self, block: &str) -> Option<String> {
         match self {
-            Self::Skill => parse_active_skill_tag(block).map(|tag| format!("@skill:{}", tag.name)),
+            Self::Skill => {
+                parse_active_skill_tag(block).map(|tag| format!("@skill://{}", tag.name))
+            }
             Self::File => mention::file_block_path(block).map(|path| format!("@file:{path}")),
         }
     }

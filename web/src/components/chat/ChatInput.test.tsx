@@ -96,17 +96,17 @@ describe('ChatInput 补全弹层', () => {
     const textarea = screen.getByPlaceholderText(/给智能体发消息/)
 
     await user.type(textarea, '@')
-    expect(await screen.findByText('@skill:')).toBeInTheDocument()
+    expect(await screen.findByText('@skill://')).toBeInTheDocument()
     expect(screen.getByText('@file:')).toBeInTheDocument()
 
-    // Tab 接受类型候选：写入 @skill: 并弹出 skill 名候选
+    // Tab 接受类型候选：写入 @skill:// 并弹出 skill 名候选
     await user.keyboard('{Tab}')
-    expect(textarea).toHaveValue('@skill:')
-    expect(await screen.findByText('@skill:rust-review')).toBeInTheDocument()
+    expect(textarea).toHaveValue('@skill://')
+    expect(await screen.findByText('@skill://rust-review')).toBeInTheDocument()
     expect(screen.getByText('审查 unsafe')).toBeInTheDocument()
   })
 
-  it('@skill: 候选按名称前缀过滤，Enter 接受补尾随空格', async () => {
+  it('@skill:// 候选按名称前缀过滤，Enter 接受补尾随空格', async () => {
     const user = userEvent.setup()
     mockedApi.skills.mockResolvedValue([
       { name: 'rust-review', description: '审查 unsafe' },
@@ -115,13 +115,13 @@ describe('ChatInput 补全弹层', () => {
     renderChatInput()
     const textarea = screen.getByPlaceholderText(/给智能体发消息/)
 
-    await user.type(textarea, '看看 @skill:rust-r')
-    const candidate = await screen.findByText('@skill:rust-review')
-    expect(screen.queryByText('@skill:rust-doc')).not.toBeInTheDocument()
+    await user.type(textarea, '看看 @skill://rust-r')
+    const candidate = await screen.findByText('@skill://rust-review')
+    expect(screen.queryByText('@skill://rust-doc')).not.toBeInTheDocument()
 
     // Enter 接受候选而非发送；片段被替换并补尾随空格
     await user.keyboard('{Enter}')
-    expect(textarea).toHaveValue('看看 @skill:rust-review ')
+    expect(textarea).toHaveValue('看看 @skill://rust-review ')
     expect(candidate).not.toBeInTheDocument()
   })
 

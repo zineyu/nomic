@@ -58,7 +58,7 @@ pub enum ClientEvent {
     ListSessions { request_id: String },
     /// 列出全部 workspace 摘要。
     ListWorkspaces { request_id: String },
-    /// 查询 skill 清单（`@skill:` 补全用；进程级 skill 解析器快照）。
+    /// 查询 skill 清单（`@skill://` 补全用；进程级 skill 解析器快照）。
     ListSkills { request_id: String },
     /// 查询文件候选（`@file:` 补全用；相对目标 session 的 workspace 前缀匹配）。
     ListFiles {

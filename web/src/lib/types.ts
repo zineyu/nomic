@@ -322,7 +322,7 @@ export interface QueueEntry {
   images: number
 }
 
-/** skill 清单条目（list_skills 响应；`@skill:` 补全弹层展示用） */
+/** skill 清单条目（list_skills 响应；`@skill://` 补全弹层展示用） */
 export interface SkillSummary {
   name: string
   description: string

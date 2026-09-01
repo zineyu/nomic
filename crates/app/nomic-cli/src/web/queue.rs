@@ -11,7 +11,7 @@
 //! - TUI 以游标下标编辑、QUEUE 模式打开期间冻结注入防下标漂移；web 的
 //!   编辑操作来自远程客户端、与 turn 边界弹出天然并发，故条目以**稳定
 //!   id** 寻址（编辑/删除/换位均按 id），无需冻结机制；
-//! - 队列存用户输入原文（展示与编辑的对象），`@skill:` / `@file:`
+//! - 队列存用户输入原文（展示与编辑的对象），`@skill://` / `@file:`
 //!   mention 在**投递时**（弹出队首）展开——注入与 drain 两条消费路径
 //!   同一口径，且展开内容以投递时刻为准。
 //!
@@ -51,7 +51,7 @@ struct Entry {
     images: Vec<ImageContent>,
 }
 
-/// mention 展开器：投递时把原文中的 `@skill:` / `@file:` 展开为内容
+/// mention 展开器：投递时把原文中的 `@skill://` / `@file:` 展开为内容
 /// （`None` 为恒等，测试与非交互入口用）。
 type MentionExpander = Option<Arc<dyn Fn(&str) -> String + Send + Sync>>;
 

@@ -99,7 +99,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
             scope: skill.scope,
         })
         .collect();
-    // 命令输入框 `/skill:` 补全与草稿 `@skill:` mention 补全共用同一快照
+    // 命令输入框 `/skill:` 补全与草稿 `@skill://` mention 补全共用同一快照
     app.command_mut()
         .set_available_skills(skill_entries.clone());
     app.input_mut().set_available_skills(skill_entries);

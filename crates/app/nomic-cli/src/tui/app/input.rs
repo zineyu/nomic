@@ -58,7 +58,7 @@ pub(in crate::tui) struct MentionCompletion {
 }
 
 /// `@` mention 的单个补全候选：`fragment` 为填入草稿的完整标记
-/// （如 `@skill:jujutsu`），`display` 为弹层展示文本。
+/// （如 `@skill://jujutsu`），`display` 为弹层展示文本。
 #[derive(Debug)]
 pub(in crate::tui) struct MentionCandidate {
     pub(in crate::tui) fragment: String,
@@ -615,16 +615,11 @@ impl Input {
         self.mention = self.mention_candidates(fragment);
     }
 
-    /// 按 mention 片段构造候选：`@skill:` / `@skill://`（URI 形式，
-    /// ADR-0040）后为 skill 名、`@file:` 后为文件路径；`@` + 部分
-    /// `skill`/`file` 前缀时为类型候选。
+    /// 按 mention 片段构造候选：`@skill://` 后为 skill 名、`@file:` 后为
+    /// 文件路径；`@` + 部分 `skill`/`file` 前缀时为类型候选。
     fn mention_candidates(&self, fragment: &str) -> Option<MentionCompletion> {
-        // URI 形式先匹配（更长前缀），填入 `@skill://<name>` 标记
-        if let Some(name) = fragment.strip_prefix(mention::SKILL_URI_PREFIX) {
-            return self.skill_mention_candidates(name, mention::SKILL_URI_PREFIX);
-        }
         if let Some(name) = fragment.strip_prefix(mention::SKILL_PREFIX) {
-            return self.skill_mention_candidates(name, mention::SKILL_PREFIX);
+            return self.skill_mention_candidates(name);
         }
         if let Some(path) = fragment.strip_prefix(mention::FILE_PREFIX) {
             return self.file_mention_candidates(path);
@@ -652,20 +647,20 @@ impl Input {
         })
     }
 
-    /// skill 名候选（按名称前缀匹配）；`prefix` 决定填入标记的形式
-    ///（`@skill:` 或 `@skill://`）。
-    fn skill_mention_candidates(
-        &self,
-        name_fragment: &str,
-        prefix: &str,
-    ) -> Option<MentionCompletion> {
+    /// `@skill://` 后的 skill 名候选（按名称前缀匹配）。
+    fn skill_mention_candidates(&self, name_fragment: &str) -> Option<MentionCompletion> {
         let mut candidates: Vec<MentionCandidate> = self
             .skills
             .iter()
             .filter(|entry| entry.name.starts_with(name_fragment))
             .map(|entry| MentionCandidate {
-                fragment: format!("{prefix}{}", entry.name),
-                display: format!("{prefix}{} — {}", entry.name, entry.description),
+                fragment: format!("{}{}", mention::SKILL_PREFIX, entry.name),
+                display: format!(
+                    "{}{} — {}",
+                    mention::SKILL_PREFIX,
+                    entry.name,
+                    entry.description
+                ),
             })
             .collect();
         if candidates.is_empty() {

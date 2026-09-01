@@ -557,7 +557,7 @@ pub(super) async fn execute_effect(
 /// 换入 goal 工具集（goal_done 换入、ask_user_question 换出），把目标
 /// 包装为提示词提交一轮 prompt。
 fn start_goal(app: &mut App, driver: &mut Driver, objective: &str) {
-    // 发送前展开有效 `@skill:` / `@file:` mention（与用户 prompt 同一口径；
+    // 发送前展开有效 `@skill://` / `@file:` mention（与用户 prompt 同一口径；
     // 无效标记原样保留）
     let objective = mention::expand_mentions(
         objective,
@@ -628,7 +628,7 @@ fn submit_prompt(
     // 残留的在途问题（防御：正常路径弹层已随运行结束关闭）
     driver.goal.reset();
     discard_pending_question(driver);
-    // 发送前展开有效 `@skill:` / `@file:` mention；无效标记原样保留
+    // 发送前展开有效 `@skill://` / `@file:` mention；无效标记原样保留
     // （`@file:` 相对路径以当前 session 的 workspace 为基准）
     let text = mention::expand_mentions(text, &driver.skill_resolver, &driver.session.base_dir());
     if driver

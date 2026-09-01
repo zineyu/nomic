@@ -127,7 +127,7 @@ pub enum ServerEvent {
         request_id: String,
         workspaces: Vec<nomic_session::WorkspaceSummary>,
     },
-    /// skill 清单响应（`list_skills` 查询的回复；`@skill:` 补全用）
+    /// skill 清单响应（`list_skills` 查询的回复；`@skill://` 补全用）
     SkillsList {
         request_id: String,
         skills: Vec<api::SkillItem>,

@@ -196,7 +196,7 @@ nomic --cwd /path/to/project
 - **设置**：左侧 Rail 的「设置」页管理 providers / 模型覆盖 / 标量设置
   （走 WS 设置事件，与 CLI / TUI `config` 命令同一存储与校验；api_key 脱敏回显）
 - **提问**：`ask_user_question` 以弹层呈现（单选/多选/填空 + 自定义填写）
-- **mention 与命令**：输入 `@` 弹出行内补全（`@skill:` 引用 skill、`@file:` 引用
+- **mention 与命令**：输入 `@` 弹出行内补全（`@skill://` 引用 skill、`@file:` 引用
   当前 session workspace 内的文件，发送时由服务端展开有效标记，与 TUI 同一口径）；
   输入 `/` 弹出命令补全——`/compact [聚焦指令]` 压缩上下文、`/continue` 续跑上次
   运行（命令走 runner 串行队列，运行中提交则等本轮结束）、`/goal <目标>` 启动
@@ -434,8 +434,8 @@ read({"path": "skill://x/a.md:conflicts?theirs=b.md"})       # 与 b.md 的三�
 
 选择器畸形即报错（如 `:0`、`:-3`），不会静默放宽为全量读取。
 
-在 TUI / Web 的输入框里，`@skill://<name>`（与旧式 `@skill:<name>` 等价）可作为
-mention 引用 skill，发送时展开为内容块。
+在 TUI / Web 的输入框里，`@skill://<name>` 可作为 mention 引用 skill，发送时展开为
+内容块。
 
 启动时 nomic 将 skill 的名称、描述与 triggers 注入系统提示词；模型可通过
 `read` 工具按需读取完整指令：
@@ -462,10 +462,10 @@ session 落库，resume 后仍然有效）：
 ```
 
 聊天草稿里也可用 `@` mention 内联引用 skill 或文件，随消息一起发送（输入
-`@` 后 Tab 补全，`@skill:` 后补全 skill 名、`@file:` 后补全文件路径）：
+`@` 后 Tab 补全，`@skill://` 后补全 skill 名、`@file:` 后补全文件路径）：
 
 ```text
-用 @skill:rust-review 审查，参考 @file:src/main.rs
+用 @skill://rust-review 审查，参考 @file:src/main.rs
 ```
 
 `@` 只是标记，不立即注入；Enter 发送时才把**有效**的 skill / 文件内容展开

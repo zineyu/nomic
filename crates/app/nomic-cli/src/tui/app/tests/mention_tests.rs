@@ -23,10 +23,10 @@ fn mention_type_completion_and_tab() {
         .iter()
         .map(|c| c.fragment.as_str())
         .collect();
-    assert_eq!(fragments, vec!["@skill:", "@file:"]);
+    assert_eq!(fragments, vec!["@skill://", "@file:"]);
 
     app.press(Key::Tab);
-    assert_eq!(app.input().text(), "@skill:");
+    assert_eq!(app.input().text(), "@skill://");
 }
 
 #[test]
@@ -35,24 +35,9 @@ fn mention_skill_completion_filters_and_completes() {
     app.input_mut()
         .set_available_skills(vec![skill_entry("jujutsu"), skill_entry("rust-review")]);
 
-    app.paste_text("@skill:ju");
-    let mention = app.input().mention().expect("skill 候选");
-    assert_eq!(mention.candidates.len(), 1);
-    assert_eq!(mention.candidates[0].fragment, "@skill:jujutsu");
-
-    app.press(Key::Tab);
-    assert_eq!(app.input().text(), "@skill:jujutsu");
-}
-
-#[test]
-fn mention_skill_uri_form_completion() {
-    let mut app = app();
-    app.input_mut()
-        .set_available_skills(vec![skill_entry("jujutsu"), skill_entry("rust-review")]);
-
-    // URI 形式（ADR-0040）：`@skill://` 后补全 skill 名，填入 URI 标记
+    // `@skill://` 后补全 skill 名，填入 URI 标记（ADR-0040）
     app.paste_text("@skill://ju");
-    let mention = app.input().mention().expect("URI skill 候选");
+    let mention = app.input().mention().expect("skill 候选");
     assert_eq!(mention.candidates.len(), 1);
     assert_eq!(mention.candidates[0].fragment, "@skill://jujutsu");
 
@@ -61,12 +46,23 @@ fn mention_skill_uri_form_completion() {
 }
 
 #[test]
+fn mention_legacy_at_skill_colon_shows_no_popup() {
+    let mut app = app();
+    app.input_mut()
+        .set_available_skills(vec![skill_entry("jujutsu")]);
+
+    // 旧式 `@skill:` 不再触发补全
+    app.paste_text("@skill:ju");
+    assert!(app.input().mention().is_none());
+}
+
+#[test]
 fn mention_esc_dismisses_then_normal() {
     let mut app = app();
     app.input_mut()
         .set_available_skills(vec![skill_entry("jujutsu")]);
 
-    app.paste_text("@skill:");
+    app.paste_text("@skill://");
     assert!(app.input().mention().is_some());
 
     app.press(Key::Esc);
@@ -83,7 +79,7 @@ fn mention_up_down_selects_candidate() {
     app.input_mut()
         .set_available_skills(vec![skill_entry("alpha"), skill_entry("beta")]);
 
-    app.paste_text("@skill:");
+    app.paste_text("@skill://");
     app.press(Key::Down);
     let mention = app.input().mention().expect("mention");
     assert_eq!(mention.selected, 1);
@@ -108,7 +104,7 @@ fn chat_collapses_mention_blocks() {
     let ChatItem::User(displayed) = &app.chat().items()[0] else {
         panic!("应为折叠后的 user 条目")
     };
-    assert!(displayed.contains("@skill:jujutsu"), "{displayed}");
+    assert!(displayed.contains("@skill://jujutsu"), "{displayed}");
     assert!(displayed.contains("@file:/x/notes.txt"), "{displayed}");
     assert!(!displayed.contains("body"), "{displayed}");
     assert!(!displayed.contains("内容"), "{displayed}");

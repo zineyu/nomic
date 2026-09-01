@@ -2,13 +2,14 @@
 // 及 web prompt handler 的斜杠命令解析对应）。
 //
 // mention 是输入草稿里的内联标记，支持两类：
-// - `@skill:<name>`：引用一个已发现的 skill（名称即 skill 目录名）
+// - `@skill://<name>`：引用一个已发现的 skill（内部 URI 形式，ADR-0040；
+//   名称为 skill 目录名）
 // - `@file:<path>`：引用一个文件（相对 session workspace 或绝对路径）
 //
 // 补全弹层只负责填好标记文本；发送后由服务端展开有效标记（无效标记原样保留）。
 
-/** skill mention 前缀 */
-export const SKILL_PREFIX = '@skill:'
+/** skill mention 前缀（内部 URI 形式） */
+export const SKILL_PREFIX = '@skill://'
 /** file mention 前缀 */
 export const FILE_PREFIX = '@file:'
 
@@ -18,7 +19,7 @@ export interface MentionFragment {
   kind: 'skill' | 'file' | null
   /** `@` 到光标的完整片段 */
   fragment: string
-  /** 类型前缀后的部分（`@skill:ru` → `ru`；类型阶段为 `@` 后的文本） */
+  /** 类型前缀后的部分（`@skill://ru` → `ru`；类型阶段为 `@` 后的文本） */
   prefix: string
   /** `@` 在文本中的索引（接受候选时从此处替换） */
   start: number

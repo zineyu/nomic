@@ -83,7 +83,7 @@ pub async fn handle_list_workspaces(state: &AppState, request_id: &str) -> Serve
     }
 }
 
-/// skill 清单（`@skill:` 补全用；进程级 skill 解析器快照，与 TUI 补全同一来源）。
+/// skill 清单（`@skill://` 补全用；进程级 skill 解析器快照，与 TUI 补全同一来源）。
 pub fn handle_list_skills(state: &AppState, request_id: &str) -> ServerEvent {
     let skills = state
         .inner
@@ -135,7 +135,7 @@ const MAX_FILE_CANDIDATES: usize = 100;
 /// 与 TUI「启动属会话命令」同一口径），`/goal` 无参取消进行中的目标。
 ///
 /// 普通文本：运行中入 steering 统一消息队列（ADR-0014），core 在 turn
-/// 边界弹出注入本轮运行（队列存原文，`@skill:` / `@file:` mention 在
+/// 边界弹出注入本轮运行（队列存原文，`@skill://` / `@file:` mention 在
 /// 投递时展开；异常结束队列保留，正常结束的滞后入队由 runner 事件侧
 /// drain 续跑）；空闲时直接提交运行（提交前展开 mention，无效标记原样
 /// 保留——与 TUI 同一口径）。
@@ -390,7 +390,7 @@ pub async fn handle_switch_model(
 
 // ── 共享类型 ──────────────────────────────────────────────────────────────
 
-/// skill 清单条目（`list_skills` 响应；`@skill:` 补全弹层展示用）。
+/// skill 清单条目（`list_skills` 响应；`@skill://` 补全弹层展示用）。
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillItem {
     pub name: String,

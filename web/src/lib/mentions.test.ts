@@ -16,9 +16,9 @@ describe('mentionFragment', () => {
       prefix: '',
       start: 2,
     })
-    expect(mentionFragment('@skill:ju')).toEqual({
+    expect(mentionFragment('@skill://ju')).toEqual({
       kind: 'skill',
-      fragment: '@skill:ju',
+      fragment: '@skill://ju',
       prefix: 'ju',
       start: 0,
     })
@@ -33,7 +33,7 @@ describe('mentionFragment', () => {
   it('非 mention 场景返回 null', () => {
     expect(mentionFragment('没有 at 符号')).toBeNull()
     // `@` 后出现空白则视为普通文本
-    expect(mentionFragment('@skill:ju ')).toBeNull()
+    expect(mentionFragment('@skill://ju ')).toBeNull()
     // 前导非空白不构成 mention 边界（如邮箱）
     expect(mentionFragment('a@b')).toBeNull()
   })
@@ -51,6 +51,8 @@ describe('mentionTypeCandidates', () => {
     expect(mentionTypeCandidates(mentionFragment('@fi')!)).toEqual([FILE_PREFIX])
     expect(mentionTypeCandidates(mentionFragment('@xyz')!)).toEqual([])
     // 已进入具体 mention 类型后不再给类型候选
+    expect(mentionTypeCandidates(mentionFragment('@skill://ju')!)).toEqual([])
+    // 旧式 `@skill:` 不构成 mention 类型（退回类型阶段且无候选）
     expect(mentionTypeCandidates(mentionFragment('@skill:ju')!)).toEqual([])
   })
 })

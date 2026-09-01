@@ -2,7 +2,7 @@
 // 输入框占满剩余空间，右下角模型选择器 + 发送按钮。
 //
 // 补全弹层（`@` mention 与 `/` 命令）：
-// - `@` 触发类型候选（@skill: / @file:）；`@skill:` 后为 skill 名候选
+// - `@` 触发类型候选（@skill:// / @file:）；`@skill://` 后为 skill 名候选
 //   （进程级清单，懒加载缓存）；`@file:` 后为文件候选（服务端按 session
 //   workspace 前缀匹配，防抖查询）
 // - `/` 开头触发斜杠命令候选（/compact、/continue、/goal；执行在服务端，
@@ -156,7 +156,7 @@ export function ChatInput({
       return
     }
 
-    // `@skill:` 名候选（懒加载进程级清单，之后本地前缀过滤）
+    // `@skill://` 名候选（懒加载进程级清单，之后本地前缀过滤）
     if (fragment.kind === 'skill') {
       const match = (skills: SkillSummary[]) =>
         skills

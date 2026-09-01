@@ -23,6 +23,7 @@ mod goal;
 mod grep;
 pub mod multi_agent;
 mod mutation_queue;
+pub mod nix_env;
 mod picker;
 mod question_registry;
 mod read;

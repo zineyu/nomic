@@ -584,14 +584,16 @@ impl nomic_uri::ProtocolHandler for MemProtocol {
         &self,
         url: &nomic_uri::InternalUri,
     ) -> Result<nomic_uri::UriResource, nomic_uri::UriError> {
+        // 以不含 query 的 href 为键（query 是选择器参数，非资源标识）
+        let key = url.without_query();
         let content = self
             .store
             .lock()
             .expect("lock")
-            .get(&url.raw_href)
+            .get(&key)
             .cloned()
             .unwrap_or_default();
-        Ok(nomic_uri::UriResource::text(url.raw_href.clone(), content))
+        Ok(nomic_uri::UriResource::text(key, content))
     }
     fn writable(&self) -> bool {
         true
@@ -764,4 +766,86 @@ async fn write_and_edit_roundtrip_writable_uri() {
     );
     let details = result.details.expect("details");
     assert!(details["diff"].as_str().expect("diff").contains("-beta"));
+}
+
+// ── T7：:conflicts 选择器 ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn read_conflicts_selector_returns_conflict_regions() {
+    let dir = temp_dir();
+    let base = dir.join("base.md");
+    let theirs = dir.join("theirs.md");
+    std::fs::write(&base, "a\nb\nc\n").expect("write base");
+    std::fs::write(&theirs, "a\nB-theirs\nc\n").expect("write theirs");
+
+    let (router, mem) = mem_router();
+    mem.store
+        .lock()
+        .expect("lock")
+        .insert("mem://ours".to_string(), "a\nB-ours\nc\n".to_string());
+
+    let target = format!(
+        "mem://ours:conflicts?base={}&theirs={}",
+        base.display(),
+        theirs.display()
+    );
+    let result = ReadTool::with_uri_router(router.clone())
+        .execute(
+            serde_json::from_value(serde_json::json!({"path": target})).expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .expect("read conflicts");
+    let nomic_ai::UserContent::Text(text) = &result.content[0] else {
+        panic!("expected text")
+    };
+    assert_eq!(text.text, "B-ours");
+    let details = result.details.expect("details");
+    assert_eq!(
+        details["conflicts"].as_array().expect("conflicts")[0],
+        serde_json::json!([2, 2, false])
+    );
+
+    // 无冲突：ours 改第 2 行、theirs 改第 4 行（有间隔上下文 → 干净合并）
+    let base_wide = dir.join("base-wide.md");
+    let theirs_clean = dir.join("theirs-clean.md");
+    std::fs::write(&base_wide, "a\nb\nc\nd\ne\n").expect("write base");
+    std::fs::write(&theirs_clean, "a\nb\nc\nD\ne\n").expect("write theirs");
+    mem.store
+        .lock()
+        .expect("lock")
+        .insert("mem://clean".to_string(), "a\nB\nc\nd\ne\n".to_string());
+    let target = format!(
+        "mem://clean:conflicts?base={}&theirs={}",
+        base_wide.display(),
+        theirs_clean.display()
+    );
+    let result = ReadTool::with_uri_router(router)
+        .execute(
+            serde_json::from_value(serde_json::json!({"path": target})).expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .expect("read clean");
+    let nomic_ai::UserContent::Text(text) = &result.content[0] else {
+        panic!("expected text")
+    };
+    assert_eq!(text.text, "No conflicts found in mem://clean.");
+}
+
+#[tokio::test]
+async fn read_conflicts_selector_requires_theirs() {
+    let (router, _mem) = mem_router();
+    let error = ReadTool::with_uri_router(router)
+        .execute(
+            serde_json::from_value(serde_json::json!({"path": "mem://ours:conflicts"}))
+                .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("?theirs=<path>"), "{error}");
 }

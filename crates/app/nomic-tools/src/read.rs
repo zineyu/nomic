@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use nomic_core::{AgentTool, ToolError, ToolResult, ToolUpdateCallback};
 use nomic_skills::{SKILL_SCHEME, SkillResolver};
 use nomic_uri::handlers::SkillProtocolHandler;
+use nomic_uri::parse::{parse_internal_uri, percent_decode};
 use nomic_uri::{
     LineRange, ParsedSelector, UriResource, UriRouter, parse_selector, split_uri_selector,
 };
@@ -98,7 +99,7 @@ impl ReadTool {
             // 已注册 scheme → 路由；形似 URI 但未注册 → 也交给 router 报
             // UnknownScheme（带可用 scheme 列表），比文件 ENOENT 更可行动。
             if router.can_resolve(target) || UriRouter::looks_like_uri(target) {
-                return execute_uri_read(router, target, &params).await;
+                return self.execute_uri_read(router, target, &params).await;
             }
         } else if let Some(uri_target) = target.strip_prefix(SKILL_SCHEME) {
             return Err(ToolError::new(format!(
@@ -120,27 +121,103 @@ impl ReadTool {
     }
 }
 
-/// 内部 URI 读取：剥选择器 → 路由解析 → 选择器/分页 → 合并 details。
-async fn execute_uri_read(
-    router: &UriRouter,
-    target: &str,
-    params: &ReadParams,
-) -> Result<ToolResult, ToolError> {
-    let (clean, sel) = split_uri_selector(target);
-    let selector = match sel {
-        Some(sel) => parse_selector(&sel).map_err(|error| ToolError::new(error.to_string()))?,
-        None => ParsedSelector::None,
-    };
-    if matches!(selector, ParsedSelector::Conflicts) {
-        return Err(ToolError::new(
-            "The :conflicts selector is not supported yet.",
-        ));
+/// 读取 `:conflicts` 的一侧文件（相对 read 工具基准目录）。
+async fn read_conflict_side(base: Option<&Path>, param: &str) -> Result<String, ToolError> {
+    let path = crate::base::resolve(base, &percent_decode(param));
+    tokio::fs::read_to_string(&path).await.map_err(|error| {
+        ToolError::new(format!(
+            "Could not read {param}: {}. {error}",
+            path.display()
+        ))
+    })
+}
+
+/// `:conflicts` 的 query 参数名。
+const CONFLICTS_BASE_PARAM: &str = "base";
+/// `:conflicts` 的 query 参数名。
+const CONFLICTS_THEIRS_PARAM: &str = "theirs";
+
+impl ReadTool {
+    /// 内部 URI 读取：剥选择器 → 路由解析 → 选择器/分页 → 合并 details。
+    async fn execute_uri_read(
+        &self,
+        router: &UriRouter,
+        target: &str,
+        params: &ReadParams,
+    ) -> Result<ToolResult, ToolError> {
+        let (clean, sel) = split_uri_selector(target);
+        let selector = match sel {
+            Some(sel) => parse_selector(&sel).map_err(|error| ToolError::new(error.to_string()))?,
+            None => ParsedSelector::None,
+        };
+        let resource = router
+            .resolve(&clean)
+            .await
+            .map_err(|error| ToolError::new(error.to_string()))?;
+        if matches!(selector, ParsedSelector::Conflicts) {
+            return self.read_conflicts(&resource, &clean).await;
+        }
+        read_resource(&resource, &selector, params).await
     }
-    let resource = router
-        .resolve(&clean)
-        .await
-        .map_err(|error| ToolError::new(error.to_string()))?;
-    read_resource(&resource, &selector, params).await
+
+    /// `:conflicts` 选择器：以资源内容为 ours，`?theirs=`（必填）与
+    /// `?base=`（可选）为文件系统路径，输出冲突行区间的切片。
+    async fn read_conflicts(
+        &self,
+        resource: &UriResource,
+        clean: &str,
+    ) -> Result<ToolResult, ToolError> {
+        let url = parse_internal_uri(clean).map_err(|error| ToolError::new(error.to_string()))?;
+        let Some(theirs_param) = url.query_param(CONFLICTS_THEIRS_PARAM) else {
+            return Err(ToolError::new(format!(
+                "The :conflicts selector needs a comparison file: \
+                 {clean}?{CONFLICTS_THEIRS_PARAM}=<path> \
+                 (optionally &{CONFLICTS_BASE_PARAM}=<path>)."
+            )));
+        };
+        let base_dir = self.base.snapshot();
+        let theirs = read_conflict_side(base_dir.as_deref(), theirs_param).await?;
+        let base = match url.query_param(CONFLICTS_BASE_PARAM) {
+            Some(param) => Some(read_conflict_side(base_dir.as_deref(), param).await?),
+            None => None,
+        };
+        let ranges = crate::conflicts::find_conflicts(&resource.content, base.as_deref(), &theirs)
+            .await
+            .map_err(|error| ToolError::new(error.to_string()))?;
+        let conflict_details = serde_json::json!({
+            "conflicts": ranges
+                .iter()
+                .map(|range| serde_json::json!([range.start, range.end, range.empty]))
+                .collect::<Vec<_>>(),
+        });
+        if ranges.is_empty() {
+            let mut result =
+                ToolResult::text(format!("No conflicts found in {}.", url.without_query()));
+            result.details = Some(merge_details(resource.details.clone(), &conflict_details));
+            return Ok(result);
+        }
+        let line_ranges: Vec<LineRange> = ranges
+            .iter()
+            .map(|range| LineRange {
+                start: range.start,
+                end: Some(range.end),
+            })
+            .collect();
+        let joined = slice_line_ranges(&resource.content, &line_ranges, &resource.url)?;
+        let hint = resource
+            .source_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(&resource.url));
+        let mut result = read_text_path(&hint, &resource.url, Some(joined), None, None).await?;
+        result.details = Some(merge_details(
+            Some(merge_details(result.details.take(), &conflict_details)),
+            resource
+                .details
+                .as_ref()
+                .unwrap_or(&serde_json::Value::Null),
+        ));
+        Ok(result)
+    }
 }
 
 /// 对已解析资源应用选择器与分页。显式 offset/limit 参数优先于尾挂选择器。

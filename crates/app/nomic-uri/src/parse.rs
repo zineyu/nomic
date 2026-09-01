@@ -39,6 +39,14 @@ impl InternalUri {
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.as_str())
     }
+
+    /// 不含 query 的 href（query 是选择器参数，非资源标识）。
+    #[must_use]
+    pub fn without_query(&self) -> String {
+        self.raw_href
+            .split_once('?')
+            .map_or_else(|| self.raw_href.clone(), |(head, _)| head.to_string())
+    }
 }
 
 /// scheme 首字符：`[a-z]`（大小写不敏感）。

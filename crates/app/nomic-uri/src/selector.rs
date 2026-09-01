@@ -114,10 +114,15 @@ impl ParsedSelector {
 /// 把干净 URI 交给协议 handler，选择器错误由 [`parse_selector`] 统一报告，
 /// 而不是让 handler 抛误导性的 "host invalid"。非 URI 输入原样返回。
 pub fn split_uri_selector(input: &str) -> (String, Option<String>) {
-    let Some(scheme_len) = hierarchical_scheme_end(input) else {
+    // 选择器挂在 path 尾部、query 之前：先摘 query，剥离后重新拼回
+    let (head, query) = match input.find('?') {
+        Some(index) => (&input[..index], &input[index..]),
+        None => (input, ""),
+    };
+    let Some(scheme_len) = hierarchical_scheme_end(head) else {
         return (input.to_string(), None);
     };
-    let mut path = input;
+    let mut path = head;
     let mut chunks: Vec<&str> = Vec::new();
     while let Some(colon) = path.rfind(':') {
         // 不越过 scheme 分隔符 `://`
@@ -135,7 +140,7 @@ pub fn split_uri_selector(input: &str) -> (String, Option<String>) {
         return (input.to_string(), None);
     }
     chunks.reverse();
-    (path.to_string(), Some(chunks.join(":")))
+    (format!("{path}{query}"), Some(chunks.join(":")))
 }
 
 /// `scheme://` 分隔符末尾的偏移（即 host 起点）。
@@ -325,6 +330,18 @@ mod tests {
         );
         // 不越过 scheme 分隔符
         assert_eq!(split("local://"), ("local://".to_string(), None));
+        // 选择器在 query 之前：剥离后 query 保留在干净 URI 上
+        assert_eq!(
+            split("local://a.md:conflicts?theirs=b.md"),
+            (
+                "local://a.md?theirs=b.md".to_string(),
+                Some("conflicts".to_string())
+            )
+        );
+        assert_eq!(
+            split("artifact://3:raw:1-9?x=1"),
+            ("artifact://3?x=1".to_string(), Some("raw:1-9".to_string()))
+        );
     }
 
     #[test]

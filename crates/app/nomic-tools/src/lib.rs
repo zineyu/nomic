@@ -16,6 +16,7 @@
 mod ask;
 mod base;
 mod bash;
+pub mod conflicts;
 mod edit;
 mod find;
 mod goal;

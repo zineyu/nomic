@@ -151,3 +151,19 @@
 3. **T6 的 mention 语法**：nomic 已有 `@skill:`/`@file:` mention 体系（含 chat
    折叠、web 端）。URI 形式 `@skill://` 作为等价形式并入（补全 + 展开），不替换
    既有语法。
+4. **T9 落地为 `local://`**：`LocalProtocolHandler`（workspace 根词法防穿越、
+   目录清单派生内容盖不可变章、workspace 路径补全）。为承载共享 workspace
+   根句柄，`BaseDir` 本体移至 `nomic-uri`（更名 `WorkspaceRoot`），
+   `nomic-tools::base` 保留别名与路径解析助手（零调用方扰动）。
+   另修闸语义：可写协议允许写入不存在的目标（write 新建），edit 对不存在的
+   目标报「先用 write 创建」。
+5. **T12 落地**：grep 搜索根接受内部 URI（对齐 `source_path`；选择器与虚拟
+   资源明确报错）；bash 拦截 `cd <uri>` / `cd <uri> && …` 并重写为底层路径
+   （其余复合形态不动）。
+6. **T10/T11 推迟（2026-08-07 决定）**：`artifact://` 需要 nomic 不具备的
+   artifact store 与产物型命令；`history://`/`agent://` 需要会话/子 agent 的
+   URI 寻址设计。两者均为新建子系统而非移植，待另立 ADR 单独驱动。
+   T6 推迟的 commands 移植一并在 T10 评估。
+7. **T13 收敛**：选择器/immutable/冲突提取语义由 T1–T12 的单测与集成测试承载
+   （nomic-uri 与 nomic-tools 共 230+ 用例）；oh-my-pi COMMIT.md 契约文档不移植
+   （其内容是 nomic 已内建的原子 commit 规范）。

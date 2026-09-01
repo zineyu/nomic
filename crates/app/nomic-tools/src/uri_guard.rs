@@ -17,8 +17,9 @@ pub struct WritableTarget<'a> {
     pub router: &'a UriRouter,
     /// 剥掉选择器的干净 URI
     pub href: String,
-    /// 闸内已解析的资源（edit 的读-改-写复用，避免二次 resolve）
-    pub resource: UriResource,
+    /// 闸内已解析的资源（edit 的读-改-写复用，避免二次 resolve）；
+    /// `None` = 资源尚不存在（write 可新建，edit 须报错）
+    pub resource: Option<UriResource>,
 }
 
 /// 写入闸。`Ok(None)` = 非 URI 输入；`Ok(Some)` = 可写；`Err` = 已拦截。
@@ -44,11 +45,22 @@ pub async fn guard_writable<'a>(
              Remove the selector and retry."
         )));
     }
-    let resource = router
-        .resolve(&clean)
-        .await
-        .map_err(|error| ToolError::new(error.to_string()))?;
-    if resource.is_immutable() {
+    let resource = match router.resolve(&clean).await {
+        Ok(resource) => Some(resource),
+        Err(error) => {
+            // 可写协议允许写入不存在的目标（write 新建）；只读协议照常报错
+            let writable = nomic_uri::parse_internal_uri(&clean)
+                .ok()
+                .and_then(|url| router.handler(&url.scheme))
+                .is_some_and(|handler| handler.writable());
+            if writable {
+                None
+            } else {
+                return Err(ToolError::new(error.to_string()));
+            }
+        }
+    };
+    if resource.as_ref().is_some_and(UriResource::is_immutable) {
         return Err(ToolError::new(format!(
             "{clean} is a read-only resource; do not modify it. \
              Use read to inspect, or the protocol's dedicated mutation tool if one exists."

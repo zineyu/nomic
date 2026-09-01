@@ -303,3 +303,108 @@ async fn read_conflicts_selector_requires_theirs() {
         .unwrap_err();
     assert!(error.to_string().contains("?theirs=<path>"), "{error}");
 }
+
+// ── T9：local:// 工作区协议 ────────────────────────────────────────────────
+
+fn local_router(dir: &std::path::Path) -> std::sync::Arc<nomic_uri::UriRouter> {
+    let mut router = nomic_uri::UriRouter::new();
+    router.register(std::sync::Arc::new(
+        nomic_uri::handlers::LocalProtocolHandler::new(nomic_uri::WorkspaceRoot::new(Some(
+            dir.to_path_buf(),
+        ))),
+    ));
+    std::sync::Arc::new(router)
+}
+
+#[tokio::test]
+async fn local_uri_read_write_edit_roundtrip() {
+    let dir = temp_dir();
+    std::fs::write(dir.join("main.rs"), "fn main() {}\n").expect("write");
+    let router = local_router(&dir);
+
+    // read：文件与目录清单
+    let result = ReadTool::with_uri_router(router.clone())
+        .execute(
+            serde_json::from_value(serde_json::json!({"path": "local://main.rs:1"}))
+                .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .expect("read");
+    let nomic_ai::UserContent::Text(text) = &result.content[0] else {
+        panic!("expected text")
+    };
+    assert_eq!(
+        text.text,
+        "fn main() {}\n\n[1 more lines in file. Use offset=2 to continue.]"
+    );
+
+    // write：新建（含父目录创建）
+    WriteTool::new()
+        .with_uri_router(router.clone())
+        .execute(
+            serde_json::from_value(
+                serde_json::json!({"path": "local://notes/new.md", "content": "hello\n"}),
+            )
+            .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .expect("write");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("notes/new.md")).expect("fs read"),
+        "hello\n"
+    );
+
+    // edit：读-改-写
+    EditTool::new()
+        .with_uri_router(router.clone())
+        .execute(
+            serde_json::from_value(serde_json::json!({
+                "path": "local://main.rs",
+                "edits": [{"oldText": "main", "newText": "run"}],
+            }))
+            .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .expect("edit");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("main.rs")).expect("fs read"),
+        "fn run() {}\n"
+    );
+
+    // 目录清单是派生内容：不可编辑
+    let error = EditTool::new()
+        .with_uri_router(router.clone())
+        .execute(
+            serde_json::from_value(serde_json::json!({
+                "path": "local://notes",
+                "edits": [{"oldText": "x", "newText": "y"}],
+            }))
+            .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("read-only"), "{error}");
+
+    // 越出 workspace 根：拒绝
+    let error = ReadTool::with_uri_router(router)
+        .execute(
+            serde_json::from_value(serde_json::json!({"path": "local://../escape"}))
+                .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("escapes the workspace root"),
+        "{error}"
+    );
+}

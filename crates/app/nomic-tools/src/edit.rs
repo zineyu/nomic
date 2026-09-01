@@ -197,7 +197,13 @@ async fn execute_uri_edit(
     target: &WritableTarget<'_>,
     params: &EditParams,
 ) -> Result<ToolResult, ToolError> {
-    let outcome = edit_content(&target.resource.content, &params.edits, &params.path)?;
+    let Some(resource) = &target.resource else {
+        return Err(ToolError::new(format!(
+            "Could not edit {}: the resource does not exist yet. Use write to create it first.",
+            params.path
+        )));
+    };
+    let outcome = edit_content(&resource.content, &params.edits, &params.path)?;
     target
         .router
         .write(&target.href, &outcome.final_content)

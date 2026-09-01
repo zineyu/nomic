@@ -8,10 +8,12 @@
 pub mod handler;
 pub mod handlers;
 pub mod parse;
+mod root;
 pub mod router;
 mod selector;
 
 pub use handler::{ContentType, ProtocolHandler, UriError, UriResource, UrlCompletion};
 pub use parse::{InternalUri, extract_uri_scheme, parse_internal_uri};
+pub use root::WorkspaceRoot;
 pub use router::UriRouter;
 pub use selector::{LineRange, ParsedSelector, SelectorError, parse_selector, split_uri_selector};

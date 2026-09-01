@@ -138,6 +138,9 @@ pub fn default_tools_with_skills_in_shared(
     uri_router.register(std::sync::Arc::new(
         nomic_uri::handlers::SkillProtocolHandler::new(skill_resolver),
     ));
+    uri_router.register(std::sync::Arc::new(
+        nomic_uri::handlers::LocalProtocolHandler::new(base.clone()),
+    ));
     let uri_router = std::sync::Arc::new(uri_router);
     vec![
         nomic_core::DynTool::new(ReadTool::with_uri_router(uri_router).with_shared_base_dir(base)),

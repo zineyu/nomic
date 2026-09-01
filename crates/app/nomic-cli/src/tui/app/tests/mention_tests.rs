@@ -45,6 +45,22 @@ fn mention_skill_completion_filters_and_completes() {
 }
 
 #[test]
+fn mention_skill_uri_form_completion() {
+    let mut app = app();
+    app.input_mut()
+        .set_available_skills(vec![skill_entry("jujutsu"), skill_entry("rust-review")]);
+
+    // URI 形式（ADR-0040）：`@skill://` 后补全 skill 名，填入 URI 标记
+    app.paste_text("@skill://ju");
+    let mention = app.input().mention().expect("URI skill 候选");
+    assert_eq!(mention.candidates.len(), 1);
+    assert_eq!(mention.candidates[0].fragment, "@skill://jujutsu");
+
+    app.press(Key::Tab);
+    assert_eq!(app.input().text(), "@skill://jujutsu");
+}
+
+#[test]
 fn mention_esc_dismisses_then_normal() {
     let mut app = app();
     app.input_mut()

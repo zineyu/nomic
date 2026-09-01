@@ -128,3 +128,26 @@
   复用，避免双份分页逻辑。
 - **T9 生命周期**：agent 关闭（close_agent）后输出是否保留需决策——
   计划默认保留至会话结束（store 不随 close 清除），与 history:// 互补。
+
+---
+
+## 实施进度（2026-08-07 起）
+
+- T1–T3：`nomic-uri` 解析器 / router+trait / 选择器，done。
+- T4：`skill://` 迁入 router；`default_tools_with_skills_in_shared` 构建会话级
+  `Arc<UriRouter>`，read 经 router 分发；失败矩阵 4.2 全绿。
+- T5：write/edit 经 `uri_guard::guard_writable` 闸：只读拒绝、未知 scheme 报
+  UnknownScheme、可写协议走 resolve→替换→router.write（测试用内存协议验证）。
+- T6：`@skill://` URI mention 形式（补全 + 展开，与旧式 `@skill:` 等价共存）。
+
+### 与计划的偏差记录
+
+1. **仓库现状差异**：nomic 没有 `nomic-tui` / `nomic-commands` / `nomic-artifacts`
+   crate——TUI 在 `nomic-cli/src/tui/`，slash 命令注册表在 `tui/app`（`COMMANDS`），
+   artifacts 子系统不存在。移植按现状适配。
+2. **T6 的 commands.ts 移植推迟**：oh-my-pi 的 new/copy/export 命令以 artifact
+   store 为依托，nomic 尚无 artifact 子系统；且 nomic 已有自己的 slash 命令体系，
+   整体另建 `nomic-commands` 属独立架构决策。推迟到 T10（artifact://）一并评估。
+3. **T6 的 mention 语法**：nomic 已有 `@skill:`/`@file:` mention 体系（含 chat
+   折叠、web 端）。URI 形式 `@skill://` 作为等价形式并入（补全 + 展开），不替换
+   既有语法。

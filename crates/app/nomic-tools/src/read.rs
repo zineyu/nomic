@@ -295,7 +295,8 @@ const LABEL: &str = "read";
 
 const DESCRIPTION: &str = "Read the contents of a file or an internal URI like skill://<name>[/<path>]. Supports text files and read-only skill instructions; a sub-path reads a file inside the skill directory, and a directory sub-path lists its entries. Output is truncated to 2000 lines or 50KB \
          (whichever is hit first). Use offset/limit for large files. When you need the full file, \
-         continue with offset until complete.";
+         continue with offset until complete. Internal URIs accept trailing selectors: \
+         :N-M (line range), :raw, :conflicts (with ?theirs=<path>[, ?base=<path>]).";
 
 #[async_trait]
 impl AgentTool for ReadTool {

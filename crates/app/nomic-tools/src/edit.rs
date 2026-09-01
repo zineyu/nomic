@@ -86,7 +86,8 @@ const LABEL: &str = "edit";
 const DESCRIPTION: &str = "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, \
          non-overlapping region of the original file. If two changes affect the same block or nearby \
          lines, merge them into one edit instead of emitting overlapping edits. Do not include large \
-         unchanged regions just to connect distant changes.";
+         unchanged regions just to connect distant changes. Read-only internal URIs (e.g. skill://) \
+         are rejected; use read to inspect them.";
 
 #[async_trait]
 impl AgentTool for EditTool {

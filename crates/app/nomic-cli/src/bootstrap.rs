@@ -477,6 +477,7 @@ fn build_system_prompt(
          - Skills are reusable instruction documents; read skill://<name> before following one\n\
          - skill://<name>/<path> reads supporting files (scripts/, references/, etc.) inside the skill directory\n\
          - Do not write or edit skill:// resources; edit their backing files only when the user asks\n\
+         - Internal URIs like skill:// accept trailing line selectors, e.g. skill://name/SKILL.md:10-20 or :raw\n\
          - Be concise in your responses\n\
          - Show file paths clearly when working with files"
         .to_string();

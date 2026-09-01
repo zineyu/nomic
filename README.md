@@ -418,6 +418,25 @@ read({"path": "skill://rust-review/scripts"})                   # 列目录
 子路径被限制在 skill 目录内（拒绝 `..` 穿越与绝对路径）；显式激活时注入块会
 附带 `[Skill directory: ...]` 指引，正文中引用的相对路径以该目录为基准解析。
 
+#### 内部 URI 与选择器
+
+`skill://` 是 nomic 的内部 URI 协议（设计与演进见
+[ADR-0040](docs/adr/0040-internal-uri-router.md)）：`read` 按 scheme 分发到对应
+协议 handler；`write`/`edit` 对只读协议（含 `skill://`）直接报错。内部 URI 支持
+尾挂**行选择器**（对文件系统路径不生效，那里请用 `offset`/`limit` 参数）：
+
+```text
+read({"path": "skill://rust-review:50-100"})                 # 第 50–100 行
+read({"path": "skill://rust-review:5-16,960-973"})           # 多段
+read({"path": "skill://rust-review:raw"})                    # 原文
+read({"path": "skill://x/a.md:conflicts?theirs=b.md"})       # 与 b.md 的三方冲突区域（可附 &base=…）
+```
+
+选择器畸形即报错（如 `:0`、`:-3`），不会静默放宽为全量读取。
+
+在 TUI / Web 的输入框里，`@skill://<name>`（与旧式 `@skill:<name>` 等价）可作为
+mention 引用 skill，发送时展开为内容块。
+
 启动时 nomic 将 skill 的名称、描述与 triggers 注入系统提示词；模型可通过
 `read` 工具按需读取完整指令：
 

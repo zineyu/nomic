@@ -64,8 +64,9 @@ impl WriteTool {
 
 const LABEL: &str = "write";
 
-const DESCRIPTION: &str = "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. \
-         Automatically creates parent directories.";
+const DESCRIPTION: &str = "Write content to a file or a writable internal URI. Creates the file if it doesn't exist, overwrites if it does. \
+         Automatically creates parent directories. Read-only internal URIs (e.g. skill://) are rejected; \
+         use the protocol's dedicated tool to mutate those.";
 
 #[async_trait]
 impl AgentTool for WriteTool {

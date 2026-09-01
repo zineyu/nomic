@@ -30,3 +30,7 @@ result-*
 
 # OS
 .DS_Store
+
+# nomic-cli 集成测试以包目录为 cwd 运行真实二进制，bootstrap 会在该目录
+# 惰性生成默认 nix 环境（ADR-0041）——属测试副产物，不入库
+/crates/app/nomic-cli/.nomic/

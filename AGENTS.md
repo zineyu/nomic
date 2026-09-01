@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> A ADE (ai development environment): ratatui full-screen TUI plus a
+> A ADE (ai development environment): TUI and WebUI plus a
 > unified streaming provider abstraction, event-driven agent loop,
 > SQLite-backed persistent sessions, and a skills system. Architecture decisions live in `docs/adr/`.
 

@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use nomic_core::{AgentTool, ToolError, ToolResult, ToolUpdate, ToolUpdateCallback};
+use nomic_uri::UriRouter;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
@@ -44,6 +45,9 @@ pub struct BashParams {
 /// `bash` 工具。
 #[derive(Debug, Default, Clone)]
 pub struct BashTool {
+    /// 内部 URI 路由器：`cd <uri>` 重写为底层 source_path
+    ///（ADR-0040 §9）；`None` 时命令原样执行
+    uri_router: Option<Arc<UriRouter>>,
     /// 命令执行的基准目录（workspace 严格归属；空句柄 = 进程 cwd）
     base: crate::base::BaseDir,
 }
@@ -67,6 +71,49 @@ impl BashTool {
     pub fn with_shared_base_dir(mut self, base: &crate::base::BaseDir) -> Self {
         self.base = base.clone();
         self
+    }
+
+    /// 挂内部 URI 路由器（会话共享实例）。
+    #[must_use]
+    pub fn with_uri_router(mut self, uri_router: Arc<UriRouter>) -> Self {
+        self.uri_router = Some(uri_router);
+        self
+    }
+
+    /// `cd <uri>`（且仅这种单一命令形态）重写为底层路径；URI 解析失败
+    /// 与虚拟资源（无 source_path）报错，其余命令原样返回。
+    async fn rewrite_cd_uri(&self, command: &str) -> Result<String, ToolError> {
+        let Some(router) = &self.uri_router else {
+            return Ok(command.to_string());
+        };
+        let trimmed = command.trim();
+        let Some(rest) = trimmed.strip_prefix("cd ") else {
+            return Ok(command.to_string());
+        };
+        // 支持 `cd <uri>` 与 `cd <uri> && …` 两种形态；管道/重定向/分号
+        // 等其余复合形态不重写（保守）
+        let (arg, tail) = match rest.find(char::is_whitespace) {
+            Some(index) => (&rest[..index], rest[index..].trim_start()),
+            None => (rest, ""),
+        };
+        if (!tail.is_empty() && !tail.starts_with("&&"))
+            || arg.contains(['&', '|', ';', '>', '<', '`', '$', '\n'])
+        {
+            return Ok(command.to_string());
+        }
+        let arg = arg.trim_matches(|c| c == '\'' || c == '"');
+        if !router.can_resolve(arg) {
+            return Ok(command.to_string());
+        }
+        let path = crate::uri_guard::uri_source_path(router, arg, "bash")
+            .await?
+            .expect("can_resolve 蕴含已注册");
+        let escaped = path.display().to_string().replace('\'', "'\\''");
+        if tail.is_empty() {
+            Ok(format!("cd '{escaped}'"))
+        } else {
+            Ok(format!("cd '{escaped}' {tail}"))
+        }
     }
 }
 
@@ -134,7 +181,8 @@ impl AgentTool for BashTool {
         tracing::debug!(command = %params.command, ?timeout, "bash start");
         let started = Instant::now();
 
-        let mut child = spawn_bash(&params.command, self.base.snapshot())?;
+        let command = self.rewrite_cd_uri(&params.command).await?;
+        let mut child = spawn_bash(&command, self.base.snapshot())?;
 
         // stdout/stderr 按到达顺序合并到共享缓冲
         let buffer = Arc::new(Mutex::new(String::new()));

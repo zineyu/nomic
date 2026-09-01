@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 use fff_search::{Constraint, FFFQuery, FuzzyQuery, GrepMode, GrepSearchOptions};
 use nomic_core::{AgentTool, ToolError, ToolResult, ToolUpdateCallback};
+use nomic_uri::UriRouter;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -46,6 +47,9 @@ pub struct GrepParams {
 /// `grep` 工具。
 #[derive(Debug, Default, Clone)]
 pub struct GrepTool {
+    /// 内部 URI 路由器：搜索根可为 `skill://` / `local://` 等 URI
+    ///（对齐到底层 source_path）；`None` 时仅支持文件系统路径
+    uri_router: Option<Arc<UriRouter>>,
     /// 相对路径的解析基准（workspace 严格归属；空句柄 = 进程 cwd）
     base: crate::base::BaseDir,
 }
@@ -68,6 +72,13 @@ impl GrepTool {
     #[must_use]
     pub fn with_shared_base_dir(mut self, base: &crate::base::BaseDir) -> Self {
         self.base = base.clone();
+        self
+    }
+
+    /// 挂内部 URI 路由器（会话共享实例）。
+    #[must_use]
+    pub fn with_uri_router(mut self, uri_router: Arc<UriRouter>) -> Self {
+        self.uri_router = Some(uri_router);
         self
     }
 }
@@ -135,8 +146,19 @@ impl AgentTool for GrepTool {
                 .map_err(|e| ToolError::new(format!("Invalid regex: {e}")))?;
         }
         let glob = params.glob.as_deref().map(normalize_glob).transpose()?;
-        let root =
-            crate::base::resolve_root(self.base.snapshot().as_deref(), params.path.as_deref());
+        // 内部 URI 搜索根：对齐到底层 source_path（ADR-0040 §9）
+        let uri_root = match (&self.uri_router, params.path.as_deref()) {
+            (Some(router), Some(path)) => {
+                crate::uri_guard::uri_source_path(router, path, "grep").await?
+            }
+            _ => None,
+        };
+        let root = match uri_root {
+            Some(root) => root,
+            None => {
+                crate::base::resolve_root(self.base.snapshot().as_deref(), params.path.as_deref())
+            }
+        };
         tracing::debug!(pattern = %params.pattern, root = %root.display(), limit, "grep");
 
         // 单文件根不进索引：直接读内容匹配（索引父目录的代价不可控）。

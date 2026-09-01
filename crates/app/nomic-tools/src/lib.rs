@@ -143,11 +143,29 @@ pub fn default_tools_with_skills_in_shared(
     ));
     let uri_router = std::sync::Arc::new(uri_router);
     vec![
-        nomic_core::DynTool::new(ReadTool::with_uri_router(uri_router).with_shared_base_dir(base)),
-        nomic_core::DynTool::new(WriteTool::new().with_shared_base_dir(base)),
-        nomic_core::DynTool::new(EditTool::new().with_shared_base_dir(base)),
-        nomic_core::DynTool::new(BashTool::new().with_shared_base_dir(base)),
-        nomic_core::DynTool::new(GrepTool::new().with_shared_base_dir(base)),
+        nomic_core::DynTool::new(
+            ReadTool::with_uri_router(uri_router.clone()).with_shared_base_dir(base),
+        ),
+        nomic_core::DynTool::new(
+            WriteTool::new()
+                .with_uri_router(uri_router.clone())
+                .with_shared_base_dir(base),
+        ),
+        nomic_core::DynTool::new(
+            EditTool::new()
+                .with_uri_router(uri_router.clone())
+                .with_shared_base_dir(base),
+        ),
+        nomic_core::DynTool::new(
+            BashTool::new()
+                .with_uri_router(uri_router.clone())
+                .with_shared_base_dir(base),
+        ),
+        nomic_core::DynTool::new(
+            GrepTool::new()
+                .with_uri_router(uri_router)
+                .with_shared_base_dir(base),
+        ),
         nomic_core::DynTool::new(FindTool::new().with_shared_base_dir(base)),
         nomic_core::DynTool::new(TodoReadTool::new(todo_store.clone())),
         nomic_core::DynTool::new(TodoWriteTool::new(todo_store)),

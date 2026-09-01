@@ -1,4 +1,5 @@
-//! write/edit 共用的内部 URI 写入闸（ADR-0040 §8.1）。
+//! 内部 URI 与文件工具的桥接（ADR-0040 §8.1）：
+//! write/edit 的写入闸 + grep/bash 的 source_path 对齐助手。
 //!
 //! 语义分层：
 //! - 已注册 scheme 且资源不可变 → 只读错误（协议专用变更工具是唯一合法入口）；
@@ -7,6 +8,8 @@
 //! - 其余输入 → `None`，走文件系统路径分支。
 //!
 //! 尾挂选择器（`:N-M` / `:raw`）不是合法的写入目标：先剥离再报错。
+
+use std::path::PathBuf;
 
 use nomic_core::ToolError;
 use nomic_uri::{UriResource, UriRouter, parse::hierarchical_scheme, split_uri_selector};
@@ -71,4 +74,35 @@ pub async fn guard_writable<'a>(
         href: clean,
         resource,
     }))
+}
+
+/// 把 URI 输入对齐到底层文件系统路径（grep 搜索根、bash `cd` 目标）。
+///
+/// - 未注册 / 非 URI 输入 → `Ok(None)`（调用方走原路径解析）；
+/// - 已注册 → resolve；有 `source_path` 则返回它，虚拟资源报错；
+/// - 尾挂选择器对搜索/执行无语义 → 明确报错而非静默忽略。
+pub async fn uri_source_path(
+    router: &UriRouter,
+    input: &str,
+    tool: &str,
+) -> Result<Option<PathBuf>, ToolError> {
+    if !router.can_resolve(input) {
+        return Ok(None);
+    }
+    let (clean, sel) = split_uri_selector(input);
+    if sel.is_some() {
+        return Err(ToolError::new(format!(
+            "Line selectors (:N-M, :raw) have no meaning for {tool}: {input}. \
+             Remove the selector and retry."
+        )));
+    }
+    let resource = router
+        .resolve(&clean)
+        .await
+        .map_err(|error| ToolError::new(error.to_string()))?;
+    resource.source_path.map(Some).ok_or_else(|| {
+        ToolError::new(format!(
+            "{tool} cannot use {clean}: it is a virtual resource not backed by a filesystem path."
+        ))
+    })
 }

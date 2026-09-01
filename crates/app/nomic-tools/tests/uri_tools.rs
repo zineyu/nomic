@@ -408,3 +408,97 @@ async fn local_uri_read_write_edit_roundtrip() {
         "{error}"
     );
 }
+
+// ── T12：grep/bash 的 URI 对齐 ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn grep_accepts_uri_search_root() {
+    let dir = temp_dir();
+    std::fs::create_dir_all(dir.join("src")).expect("mkdir");
+    std::fs::write(dir.join("src/main.rs"), "fn main() {}\n").expect("write");
+    std::fs::write(dir.join("other.rs"), "// nothing\n").expect("write");
+    let router = local_router(&dir);
+
+    let result = nomic_tools::GrepTool::new()
+        .with_uri_router(router.clone())
+        .execute(
+            serde_json::from_value(serde_json::json!({"pattern": "main", "path": "local://src"}))
+                .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .expect("grep");
+    let nomic_ai::UserContent::Text(text) = &result.content[0] else {
+        panic!("expected text")
+    };
+    assert!(text.text.contains("main.rs:1:"), "{}", text.text);
+
+    // 选择器对 grep 无语义：明确报错
+    let error = nomic_tools::GrepTool::new()
+        .with_uri_router(router.clone())
+        .execute(
+            serde_json::from_value(
+                serde_json::json!({"pattern": "main", "path": "local://src:1-2"}),
+            )
+            .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("no meaning for grep"), "{error}");
+
+    // 虚拟资源（无底层路径）报错
+    let (mem_only, _mem) = mem_router();
+    let error = nomic_tools::GrepTool::new()
+        .with_uri_router(mem_only)
+        .execute(
+            serde_json::from_value(serde_json::json!({"pattern": "x", "path": "mem://doc"}))
+                .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("virtual resource"), "{error}");
+}
+
+#[tokio::test]
+async fn bash_cd_rewrites_uri_to_source_path() {
+    let dir = temp_dir();
+    std::fs::create_dir_all(dir.join("src")).expect("mkdir");
+    let router = local_router(&dir);
+
+    let result = nomic_tools::BashTool::new()
+        .with_uri_router(router.clone())
+        .execute(
+            serde_json::from_value(serde_json::json!({"command": "cd local://src && pwd"}))
+                .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .expect("bash");
+    let nomic_ai::UserContent::Text(text) = &result.content[0] else {
+        panic!("expected text")
+    };
+    assert!(
+        text.text.contains(&dir.join("src").display().to_string()),
+        "{}",
+        text.text
+    );
+
+    // 裸 `cd <uri>` 单一命令同样重写
+    let result = nomic_tools::BashTool::new()
+        .with_uri_router(router)
+        .execute(
+            serde_json::from_value(serde_json::json!({"command": "cd local://src", "timeout": 5}))
+                .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .expect("bash cd");
+    let _ = result;
+}

@@ -3,9 +3,14 @@
 //! - `edits[]` 对**原始文件**匹配（非增量），禁止重叠/嵌套
 //! - 精确匹配失败时按行模糊匹配（归一化：行尾空白、智能引号、Unicode 破折号/空格）
 //! - 保留 BOM 与 CRLF；返回 unified diff/patch 作为 details
+//! - 内部 URI 目标先过 [`guard_writable`] 闸（ADR-0040 §8.1）：只读协议拒绝，
+//!   可写协议走「resolve → 替换 → router.write」的读-改-写
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use nomic_core::{AgentTool, ToolError, ToolResult, ToolUpdateCallback};
+use nomic_uri::UriRouter;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use similar::TextDiff;
@@ -13,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::mutation_queue::lock_path;
+use crate::uri_guard::{WritableTarget, guard_writable};
 
 /// 单处替换。
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -40,6 +46,8 @@ pub struct EditParams {
 /// `edit` 工具。
 #[derive(Debug, Default, Clone)]
 pub struct EditTool {
+    /// 内部 URI 路由器；`None` 时 URI 目标一律落到文件系统分支
+    uri_router: Option<Arc<UriRouter>>,
     /// 相对路径的解析基准（workspace 严格归属；空句柄 = 进程 cwd）
     base: crate::base::BaseDir,
 }
@@ -48,6 +56,13 @@ impl EditTool {
     /// 创建以进程 cwd 为基准的 edit 工具。
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 挂内部 URI 路由器（会话共享实例）。
+    #[must_use]
+    pub fn with_uri_router(mut self, uri_router: Arc<UriRouter>) -> Self {
+        self.uri_router = Some(uri_router);
+        self
     }
 
     /// 设置固定基准目录：相对路径以它解析（workspace 严格归属）。
@@ -100,6 +115,11 @@ impl AgentTool for EditTool {
                 "Edit tool input is invalid. edits must contain at least one replacement.",
             ));
         }
+        if let Some(router) = &self.uri_router
+            && let Some(target) = guard_writable(router, params.path.trim()).await?
+        {
+            return execute_uri_edit(&target, &params).await;
+        }
         let base = self.base.snapshot();
         let path = crate::base::resolve(base.as_deref(), &params.path);
         let _guard = lock_path(&path).await;
@@ -117,38 +137,73 @@ impl AgentTool for EditTool {
             ))
         })?;
 
-        let (bom, without_bom) = strip_bom(&raw);
-        let line_ending = detect_line_ending(without_bom);
-        let content = normalize_to_lf(without_bom);
-
-        let base_content = content.clone();
-        let new_content = apply_edits(&content, &params.edits, &params.path)?;
+        let outcome = edit_content(&raw, &params.edits, &params.path)?;
         if cancel.is_cancelled() {
             return Err(ToolError::new("Operation aborted"));
         }
 
-        let final_content = format!("{bom}{}", restore_line_endings(&new_content, line_ending));
-        tokio::fs::write(path, final_content)
+        tokio::fs::write(path, &outcome.final_content)
             .await
             .map_err(|e| ToolError::new(format!("Could not edit file: {}. {e}", params.path)))?;
         if cancel.is_cancelled() {
             return Err(ToolError::new("Operation aborted"));
         }
-
-        let (diff, first_changed_line) = generate_diff(&base_content, &new_content);
-        tracing::debug!(path = %params.path, blocks = params.edits.len(), "edit applied");
-        let mut result = ToolResult::text(format!(
-            "Successfully replaced {} block(s) in {}.",
-            params.edits.len(),
-            params.path
-        ));
-        result.details = Some(serde_json::json!({
-            "diff": diff,
-            "patch": generate_patch(&params.path, &base_content, &new_content),
-            "first_changed_line": first_changed_line,
-        }));
-        Ok(result)
+        Ok(edit_result(&params, &outcome))
     }
+}
+
+/// 编辑产物：写回内容与 diff 详情。
+struct EditOutcome {
+    final_content: String,
+    diff: String,
+    patch: String,
+    first_changed_line: Option<usize>,
+}
+
+/// 共享替换核心：BOM/行尾归一化 → 精确/模糊替换 → 行尾还原 → diff。
+fn edit_content(raw: &str, edits: &[EditBlock], display: &str) -> Result<EditOutcome, ToolError> {
+    let (bom, without_bom) = strip_bom(raw);
+    let line_ending = detect_line_ending(without_bom);
+    let content = normalize_to_lf(without_bom);
+    let new_content = apply_edits(&content, edits, display)?;
+    let (diff, first_changed_line) = generate_diff(&content, &new_content);
+    let patch = generate_patch(display, &content, &new_content);
+    Ok(EditOutcome {
+        final_content: format!("{bom}{}", restore_line_endings(&new_content, line_ending)),
+        diff,
+        patch,
+        first_changed_line,
+    })
+}
+
+/// 组装编辑成功的工具结果（fs 与 URI 分支共用）。
+fn edit_result(params: &EditParams, outcome: &EditOutcome) -> ToolResult {
+    let mut result = ToolResult::text(format!(
+        "Successfully replaced {} block(s) in {}.",
+        params.edits.len(),
+        params.path
+    ));
+    result.details = Some(serde_json::json!({
+        "diff": outcome.diff,
+        "patch": outcome.patch,
+        "first_changed_line": outcome.first_changed_line,
+    }));
+    result
+}
+
+/// 可写 URI 的读-改-写：闸内 resolve 的内容 → 替换 → `router.write`。
+async fn execute_uri_edit(
+    target: &WritableTarget<'_>,
+    params: &EditParams,
+) -> Result<ToolResult, ToolError> {
+    let outcome = edit_content(&target.resource.content, &params.edits, &params.path)?;
+    target
+        .router
+        .write(&target.href, &outcome.final_content)
+        .await
+        .map_err(|error| ToolError::new(error.to_string()))?;
+    tracing::debug!(uri = %target.href, blocks = params.edits.len(), "uri edit applied");
+    Ok(edit_result(params, &outcome))
 }
 
 // ── 行尾与 BOM ───────────────────────────────────────────────────────────────

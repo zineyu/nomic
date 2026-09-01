@@ -1,12 +1,19 @@
 //! `write` 工具：自动创建父目录 + 文件变更队列串行化（契约与 pi 一致）。
+//!
+//! 内部 URI 目标先过 [`guard_writable`] 闸（ADR-0040 §8.1）：只读协议
+//! 拒绝，可写协议经 router 分发到 handler。
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use nomic_core::{AgentTool, ToolError, ToolResult, ToolUpdateCallback};
+use nomic_uri::UriRouter;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::mutation_queue::lock_path;
+use crate::uri_guard::guard_writable;
 
 /// 参数。
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -20,6 +27,8 @@ pub struct WriteParams {
 /// `write` 工具。
 #[derive(Debug, Default, Clone)]
 pub struct WriteTool {
+    /// 内部 URI 路由器；`None` 时 URI 目标一律落到文件系统分支
+    uri_router: Option<Arc<UriRouter>>,
     /// 相对路径的解析基准（workspace 严格归属；空句柄 = 进程 cwd）
     base: crate::base::BaseDir,
 }
@@ -28,6 +37,13 @@ impl WriteTool {
     /// 创建以进程 cwd 为基准的 write 工具。
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 挂内部 URI 路由器（会话共享实例）。
+    #[must_use]
+    pub fn with_uri_router(mut self, uri_router: Arc<UriRouter>) -> Self {
+        self.uri_router = Some(uri_router);
+        self
     }
 
     /// 设置固定基准目录：相对路径以它解析（workspace 严格归属）。
@@ -73,6 +89,21 @@ impl AgentTool for WriteTool {
         cancel: CancellationToken,
         _on_update: ToolUpdateCallback,
     ) -> Result<ToolResult, ToolError> {
+        if let Some(router) = &self.uri_router
+            && let Some(target) = guard_writable(router, params.path.trim()).await?
+        {
+            target
+                .router
+                .write(&target.href, &params.content)
+                .await
+                .map_err(|error| ToolError::new(error.to_string()))?;
+            tracing::debug!(uri = %target.href, bytes = params.content.len(), "uri written");
+            return Ok(ToolResult::text(format!(
+                "Successfully wrote {} bytes to {}",
+                params.content.len(),
+                params.path
+            )));
+        }
         let base = self.base.snapshot();
         let path = crate::base::resolve(base.as_deref(), &params.path);
         let _guard = lock_path(&path).await;

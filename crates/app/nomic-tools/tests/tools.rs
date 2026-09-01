@@ -564,3 +564,204 @@ async fn ask_user_question_fill_in_ignores_options() {
     let details = result.details.expect("details");
     assert_eq!(details["custom"], "a@b.c");
 }
+
+// ── T5：write/edit 的 URI immutable 闸 ─────────────────────────────────────
+
+/// 测试用可写内存协议（local:// 落地前的可写路径验证）。
+struct MemProtocol {
+    store: std::sync::Mutex<std::collections::HashMap<String, String>>,
+}
+
+#[async_trait::async_trait]
+impl nomic_uri::ProtocolHandler for MemProtocol {
+    fn scheme(&self) -> &'static str {
+        "mem"
+    }
+    fn immutable(&self) -> bool {
+        false
+    }
+    async fn resolve(
+        &self,
+        url: &nomic_uri::InternalUri,
+    ) -> Result<nomic_uri::UriResource, nomic_uri::UriError> {
+        let content = self
+            .store
+            .lock()
+            .expect("lock")
+            .get(&url.raw_href)
+            .cloned()
+            .unwrap_or_default();
+        Ok(nomic_uri::UriResource::text(url.raw_href.clone(), content))
+    }
+    fn writable(&self) -> bool {
+        true
+    }
+    async fn write(
+        &self,
+        url: &nomic_uri::InternalUri,
+        content: &str,
+    ) -> Result<(), nomic_uri::UriError> {
+        self.store
+            .lock()
+            .expect("lock")
+            .insert(url.raw_href.clone(), content.to_string());
+        Ok(())
+    }
+}
+
+fn mem_router() -> (
+    std::sync::Arc<nomic_uri::UriRouter>,
+    std::sync::Arc<MemProtocol>,
+) {
+    let mem = std::sync::Arc::new(MemProtocol {
+        store: std::sync::Mutex::new(std::collections::HashMap::new()),
+    });
+    let mut router = nomic_uri::UriRouter::new();
+    router.register(mem.clone());
+    (std::sync::Arc::new(router), mem)
+}
+
+fn skill_router(dir: &std::path::Path) -> std::sync::Arc<nomic_uri::UriRouter> {
+    let skills_dir = dir.join("skills");
+    let demo = skills_dir.join("demo");
+    std::fs::create_dir_all(&demo).expect("skill dir");
+    std::fs::write(demo.join("SKILL.md"), "demo body").expect("write skill");
+    let resolver = SkillResolver::new(
+        dir,
+        ProjectDiscovery::Roots(Vec::new()),
+        vec![SkillRoot {
+            path: skills_dir,
+            scope: SkillScope::Project,
+        }],
+    )
+    .expect("resolver");
+    let mut router = nomic_uri::UriRouter::new();
+    router.register(std::sync::Arc::new(
+        nomic_uri::handlers::SkillProtocolHandler::new(resolver),
+    ));
+    std::sync::Arc::new(router)
+}
+
+#[tokio::test]
+async fn write_and_edit_reject_immutable_skill_uri() {
+    let dir = temp_dir();
+    let router = skill_router(&dir);
+
+    let error = WriteTool::new()
+        .with_uri_router(router.clone())
+        .execute(
+            serde_json::from_value(
+                serde_json::json!({"path": "skill://demo", "content": "hacked"}),
+            )
+            .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("read-only"), "{error}");
+
+    let error = EditTool::new()
+        .with_uri_router(router)
+        .execute(
+            serde_json::from_value(serde_json::json!({
+                "path": "skill://demo",
+                "edits": [{"oldText": "demo", "newText": "hacked"}],
+            }))
+            .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("read-only"), "{error}");
+}
+
+#[tokio::test]
+async fn write_rejects_unknown_scheme_and_selectors() {
+    let (router, _mem) = mem_router();
+
+    let error = WriteTool::new()
+        .with_uri_router(router.clone())
+        .execute(
+            serde_json::from_value(serde_json::json!({"path": "bogus://x", "content": "data"}))
+                .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("Unknown protocol: bogus://"), "{message}");
+    assert!(message.contains("mem://"), "{message}");
+
+    // 尾挂选择器不是合法写入目标
+    let error = WriteTool::new()
+        .with_uri_router(router)
+        .execute(
+            serde_json::from_value(serde_json::json!({"path": "mem://a:1-2", "content": "data"}))
+                .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("not valid write targets"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn write_and_edit_roundtrip_writable_uri() {
+    let (router, mem) = mem_router();
+
+    let result = WriteTool::new()
+        .with_uri_router(router.clone())
+        .execute(
+            serde_json::from_value(
+                serde_json::json!({"path": "mem://doc", "content": "alpha\nbeta\n"}),
+            )
+            .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .expect("write");
+    let nomic_ai::UserContent::Text(text) = &result.content[0] else {
+        panic!("expected text")
+    };
+    assert!(text.text.contains("Successfully wrote"), "{}", text.text);
+    assert_eq!(
+        mem.store
+            .lock()
+            .expect("lock")
+            .get("mem://doc")
+            .map(String::as_str),
+        Some("alpha\nbeta\n")
+    );
+
+    let result = EditTool::new()
+        .with_uri_router(router)
+        .execute(
+            serde_json::from_value(serde_json::json!({
+                "path": "mem://doc",
+                "edits": [{"oldText": "beta", "newText": "BETA"}],
+            }))
+            .expect("params"),
+            CancellationToken::new(),
+            no_update(),
+        )
+        .await
+        .expect("edit");
+    assert_eq!(
+        mem.store
+            .lock()
+            .expect("lock")
+            .get("mem://doc")
+            .map(String::as_str),
+        Some("alpha\nBETA\n")
+    );
+    let details = result.details.expect("details");
+    assert!(details["diff"].as_str().expect("diff").contains("-beta"));
+}

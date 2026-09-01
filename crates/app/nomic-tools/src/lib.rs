@@ -27,6 +27,7 @@ mod question_registry;
 mod read;
 mod todo;
 mod truncate;
+mod uri_guard;
 mod write;
 
 pub use ask::{

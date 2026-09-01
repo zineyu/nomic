@@ -31,6 +31,11 @@ impl Runtime {
                 base.display()
             )));
         }
+        // workspace 首次初始化：惰性生成默认 nix 环境定义（仅 nix 可用时；
+        // ADR-0041）。失败不阻断，bash 会回退宿主环境
+        if let Err(error) = nomic_tools::nix_env::ensure_default_flake(&base) {
+            tracing::warn!(%error, "创建默认 nix 环境定义失败");
+        }
         let id = match &self.store {
             Some(store) => store.create_session(&base).await?,
             None => uuid::Uuid::now_v7().to_string(),
@@ -83,6 +88,10 @@ impl Runtime {
                 "不是目录：{}",
                 canonical.display()
             )));
+        }
+        // 登记即初始化：惰性生成默认 nix 环境定义（仅 nix 可用时；ADR-0041）
+        if let Err(error) = nomic_tools::nix_env::ensure_default_flake(&canonical) {
+            tracing::warn!(%error, "创建默认 nix 环境定义失败");
         }
         Ok(store.get_or_create_workspace(&canonical).await?)
     }

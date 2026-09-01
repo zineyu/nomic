@@ -85,11 +85,17 @@ pub fn default_tools_in_shared(
     todo_store: TodoStore,
     question_sink: std::sync::Arc<dyn QuestionSink>,
 ) -> Vec<nomic_core::DynTool> {
+    let nix_env = nix_env::NixEnvCache::new();
+    prewarm_nix_env(&nix_env, base);
     vec![
         nomic_core::DynTool::new(ReadTool::new().with_shared_base_dir(base)),
         nomic_core::DynTool::new(WriteTool::new().with_shared_base_dir(base)),
         nomic_core::DynTool::new(EditTool::new().with_shared_base_dir(base)),
-        nomic_core::DynTool::new(BashTool::new().with_shared_base_dir(base)),
+        nomic_core::DynTool::new(
+            BashTool::new()
+                .with_nix_env(nix_env)
+                .with_shared_base_dir(base),
+        ),
         nomic_core::DynTool::new(GrepTool::new().with_shared_base_dir(base)),
         nomic_core::DynTool::new(FindTool::new().with_shared_base_dir(base)),
         nomic_core::DynTool::new(TodoReadTool::new(todo_store.clone())),
@@ -142,7 +148,14 @@ pub fn default_tools_with_skills_in_shared(
     uri_router.register(std::sync::Arc::new(
         nomic_uri::handlers::LocalProtocolHandler::new(base.clone()),
     ));
+    // nix://shell：workspace nix 环境定义（ADR-0041），与下方 BashTool 的
+    // env 缓存经文件 mtime 解耦（改写即失效重解析，无需跨组件通知）
+    uri_router.register(std::sync::Arc::new(
+        nomic_uri::handlers::NixProtocolHandler::new(base.clone()),
+    ));
     let uri_router = std::sync::Arc::new(uri_router);
+    let nix_env = nix_env::NixEnvCache::new();
+    prewarm_nix_env(&nix_env, base);
     vec![
         nomic_core::DynTool::new(
             ReadTool::with_uri_router(uri_router.clone()).with_shared_base_dir(base),
@@ -160,6 +173,7 @@ pub fn default_tools_with_skills_in_shared(
         nomic_core::DynTool::new(
             BashTool::new()
                 .with_uri_router(uri_router.clone())
+                .with_nix_env(nix_env)
                 .with_shared_base_dir(base),
         ),
         nomic_core::DynTool::new(
@@ -172,4 +186,15 @@ pub fn default_tools_with_skills_in_shared(
         nomic_core::DynTool::new(TodoWriteTool::new(todo_store)),
         nomic_core::DynTool::new(AskUserQuestionTool::new(question_sink)),
     ]
+}
+
+/// 后台预解析 workspace 的 nix 环境（有 flake 时）：给首个 bash 调用
+/// 提前量；无 flake / 无 tokio 运行时时为 no-op。
+fn prewarm_nix_env(nix_env: &std::sync::Arc<nix_env::NixEnvCache>, base: &BaseDir) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    if let Some(dir) = base.snapshot() {
+        nix_env.prewarm(&dir);
+    }
 }

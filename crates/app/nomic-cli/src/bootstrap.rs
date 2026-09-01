@@ -177,6 +177,11 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
     let workspace = session
         .as_ref()
         .map_or_else(|| normalize_path(&cwd), |init| init.workspace.clone());
+    // workspace 首次初始化：惰性生成默认 nix 环境定义（仅 nix 可用时；
+    // ADR-0041）。失败不阻断启动，bash 会回退宿主环境
+    if let Err(error) = nomic_tools::nix_env::ensure_default_flake(&workspace) {
+        tracing::warn!(%error, "创建默认 nix 环境定义失败");
+    }
     // AGENTS.md 与 cwd 脚注以 session 的 workspace 为基准（workspace 严格
     // 归属，与工具基准同口径）：--session 跨目录恢复时提示词跟随目标
     // workspace 而非进程 cwd

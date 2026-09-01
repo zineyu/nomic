@@ -37,7 +37,7 @@ pub use ask::{
     QuestionKind, QuestionSink,
 };
 pub use base::BaseDir;
-pub use bash::BashTool;
+pub use bash::{BashParams, BashTool};
 pub use edit::EditTool;
 pub use find::FindTool;
 pub use goal::{

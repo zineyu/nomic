@@ -6,8 +6,9 @@
 //! 超时/取消时 SIGKILL 整个组——只杀 shell 会让前台孙进程（如 `sleep`）存活并
 //! 继续持有输出管道，读取任务永远等不到 EOF，超时形同虚设。
 
+use std::collections::HashMap;
 use std::mem;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -50,6 +51,8 @@ pub struct BashTool {
     uri_router: Option<Arc<UriRouter>>,
     /// 命令执行的基准目录（workspace 严格归属；空句柄 = 进程 cwd）
     base: crate::base::BaseDir,
+    /// 会话级 nix 环境缓存（ADR-0041）；`None` 时始终用宿主环境
+    nix_env: Option<Arc<crate::nix_env::NixEnvCache>>,
 }
 
 impl BashTool {
@@ -78,6 +81,39 @@ impl BashTool {
     pub fn with_uri_router(mut self, uri_router: Arc<UriRouter>) -> Self {
         self.uri_router = Some(uri_router);
         self
+    }
+
+    /// 挂会话级 nix 环境缓存：命令注入 workspace 的纯净环境执行，
+    /// 不可用时回退宿主环境并附尾注（ADR-0041）。
+    #[must_use]
+    pub fn with_nix_env(mut self, cache: Arc<crate::nix_env::NixEnvCache>) -> Self {
+        self.nix_env = Some(cache);
+        self
+    }
+
+    /// 取本次调用的执行环境：命中缓存返回纯净 env；未启用/未注入返回
+    /// `(None, None)`；解析失败/进行中返回 `(None, Some(尾注))`。
+    async fn nix_env_state(
+        &self,
+        base: Option<&Path>,
+    ) -> (Option<Arc<HashMap<String, String>>>, Option<String>) {
+        let Some(cache) = &self.nix_env else {
+            return (None, None);
+        };
+        let workspace = base
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok());
+        let Some(workspace) = workspace else {
+            return (None, None);
+        };
+        match cache.env_for(&workspace).await {
+            Ok(Some(env)) => (Some(env), None),
+            Ok(None) => (None, None),
+            Err(reason) => (
+                None,
+                Some(format!("[nix] {reason}; ran with host environment")),
+            ),
+        }
     }
 
     /// `cd <uri>`（且仅这种单一命令形态）重写为底层路径；URI 解析失败
@@ -122,11 +158,20 @@ const LABEL: &str = "bash";
 /// 配置并 spawn bash 子进程：管道输出、`kill_on_drop`、以基准目录为执行
 /// 目录（`None` 时进程 cwd）；子进程自成一个进程组（pgid = pid）：
 /// 超时/取消时按组强杀，命令派生的孙进程一并停止（见模块文档）。
+/// `env` 为 nix 纯净环境（ADR-0041）：`env_clear` 后整体注入，bash 从
+/// 该 env 的 PATH 显式解析（execvp 用的是宿主 PATH，不能依赖）。
 fn spawn_bash(
     command_text: &str,
     base: Option<PathBuf>,
+    env: Option<&HashMap<String, String>>,
 ) -> Result<tokio::process::Child, ToolError> {
-    let mut command = tokio::process::Command::new("bash");
+    let program = env
+        .and_then(|env| crate::nix_env::resolve_program("bash", env))
+        .unwrap_or_else(|| "bash".to_string());
+    let mut command = tokio::process::Command::new(program);
+    if let Some(env) = env {
+        command.env_clear().envs(env.iter());
+    }
     command
         .arg("-c")
         .arg(command_text)
@@ -142,7 +187,7 @@ fn spawn_bash(
         .spawn()
         .map_err(|e| ToolError::new(format!("Could not spawn bash: {e}")))
 }
-const DESCRIPTION: &str = "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds (defaults to 60); on timeout the process group is forcibly killed and the output collected so far is returned.";
+const DESCRIPTION: &str = "Execute a bash command in the current working directory. If the workspace defines a nix environment (.nomic/flake.nix, readable and editable via the nix://shell URI), the command runs inside that pure environment; otherwise it falls back to the host environment. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds (defaults to 60); on timeout the process group is forcibly killed and the output collected so far is returned.";
 
 #[async_trait]
 impl AgentTool for BashTool {
@@ -182,7 +227,10 @@ impl AgentTool for BashTool {
         let started = Instant::now();
 
         let command = self.rewrite_cd_uri(&params.command).await?;
-        let mut child = spawn_bash(&command, self.base.snapshot())?;
+        let base = self.base.snapshot();
+        let (env, host_note) = self.nix_env_state(base.as_deref()).await;
+        let nix_pure = env.is_some();
+        let mut child = spawn_bash(&command, base, env.as_deref())?;
 
         // stdout/stderr 按到达顺序合并到共享缓冲
         let buffer = Arc::new(Mutex::new(String::new()));
@@ -230,12 +278,14 @@ impl AgentTool for BashTool {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
         let (output_text, details) = assemble_output(&full_output);
+        let details = merge_nix_details(details, host_note.as_deref());
+        let with_note = |text: String| append_host_note(text, host_note.as_deref());
 
         let append_status = |status_text: &str| {
             if output_text.is_empty() {
-                status_text.to_string()
+                with_note(status_text.to_string())
             } else {
-                format!("{output_text}\n\n{status_text}")
+                with_note(format!("{output_text}\n\n{status_text}"))
             }
         };
         match outcome {
@@ -247,6 +297,7 @@ impl AgentTool for BashTool {
             WaitOutcome::Exited(_) => {
                 tracing::debug!(
                     exit_code,
+                    nix_pure,
                     elapsed_ms = started.elapsed().as_millis(),
                     output_bytes = full_output.len(),
                     "bash finished"
@@ -258,11 +309,11 @@ impl AgentTool for BashTool {
                         "Command exited with code {code}"
                     ))));
                 }
-                let mut result = ToolResult::text(if output_text.is_empty() {
-                    "(no output)"
+                let mut result = ToolResult::text(with_note(if output_text.is_empty() {
+                    "(no output)".to_string()
                 } else {
-                    &output_text
-                });
+                    output_text
+                }));
                 result.details = details;
                 Ok(result)
             }
@@ -373,6 +424,28 @@ where
             }
         }
     }
+}
+
+/// nix 回退尾注（ADR-0041）：附加到输出尾部，风格同截断 notice。
+fn append_host_note(text: String, note: Option<&str>) -> String {
+    match note {
+        Some(note) if text.is_empty() => note.to_string(),
+        Some(note) => format!("{text}\n\n{note}"),
+        None => text,
+    }
+}
+
+/// 把 nix 回退信息并入 details（与截断 details 共存），供上层结构化消费。
+fn merge_nix_details(
+    details: Option<serde_json::Value>,
+    note: Option<&str>,
+) -> Option<serde_json::Value> {
+    let Some(note) = note else {
+        return details;
+    };
+    let mut value = details.unwrap_or_else(|| serde_json::json!({}));
+    value["nix"] = serde_json::json!({ "mode": "host", "reason": note });
+    Some(value)
 }
 
 /// 截断输出并组装展示文本与 details。
@@ -505,5 +578,55 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("partial"), "{error}");
         assert!(error.to_string().contains("aborted"), "{error}");
+    }
+
+    /// nix 环境解析失败（坏 flake 或无 nix）时回退宿主环境：命令照常
+    /// 执行，输出尾部附提示，details 记录 mode/reason（ADR-0041）。
+    #[tokio::test]
+    async fn nix_env_failure_falls_back_to_host_with_note() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let nomic_dir = dir.path().join(".nomic");
+        std::fs::create_dir_all(&nomic_dir).expect("mkdir");
+        // 语法错误的 flake：nix develop 求值立即失败（不拉取 inputs）
+        std::fs::write(nomic_dir.join("flake.nix"), "{ this is not valid nix !!!")
+            .expect("write flake");
+        let tool = BashTool::new()
+            .with_base_dir(Some(dir.path().to_path_buf()))
+            .with_nix_env(crate::nix_env::NixEnvCache::new());
+        let result = tool
+            .execute(
+                BashParams {
+                    command: "echo ok".to_string(),
+                    timeout: Some(30.0),
+                },
+                CancellationToken::new(),
+                noop_update(),
+            )
+            .await
+            .expect("fallback should run on host");
+        let [nomic_ai::UserContent::Text(text)] = &result.content[..] else {
+            panic!("expected text result");
+        };
+        assert!(text.text.contains("ok"), "{}", text.text);
+        assert!(
+            text.text.contains("ran with host environment"),
+            "{}",
+            text.text
+        );
+        assert_eq!(
+            result.details.as_ref().expect("details")["nix"]["mode"],
+            "host"
+        );
+    }
+
+    /// 未注入缓存时行为与注入前完全一致（无 nix 尾注）。
+    #[tokio::test]
+    async fn without_nix_cache_no_note() {
+        let result = run("echo plain", None).await.expect("echo");
+        let [nomic_ai::UserContent::Text(text)] = &result.content[..] else {
+            panic!("expected text result");
+        };
+        assert_eq!(text.text.trim_end(), "plain");
+        assert!(result.details.is_none());
     }
 }

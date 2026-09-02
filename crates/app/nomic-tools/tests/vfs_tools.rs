@@ -1,5 +1,5 @@
-//! 内部 URI（ADR-0040）与 read/write/edit 的集成测试：immutable 闸、
-//! 可写协议读-改-写、`:conflicts` 选择器。
+//! 内部 URI（ADR-0040 / ADR-0042 VFS 化）与 read/write/edit 的集成测试：
+//! immutable 闸、可写协议读-改-写、`:conflicts` 选择器、grep/bash 对齐。
 
 use nomic_core::{AgentTool, ToolUpdateCallback};
 use nomic_skills::{ProjectDiscovery, SkillResolver, SkillRoot, SkillScope};
@@ -21,25 +21,28 @@ fn temp_dir() -> std::path::PathBuf {
 
 // ── T5：write/edit 的 URI immutable 闸 ─────────────────────────────────────
 
-/// 测试用可写内存协议（local:// 落地前的可写路径验证）。
-struct MemProtocol {
+/// 测试用可写内存 VFS（local:// 之外的虚拟协议验证）。
+struct MemVfs {
     store: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 #[async_trait::async_trait]
-impl nomic_uri::ProtocolHandler for MemProtocol {
+impl nomic_vfs::Vfs for MemVfs {
     fn scheme(&self) -> &'static str {
         "mem"
     }
-    fn immutable(&self) -> bool {
-        false
+    fn capabilities(&self) -> nomic_vfs::VfsCapabilities {
+        nomic_vfs::VfsCapabilities {
+            writable: true,
+            immutable: false,
+            completion: false,
+        }
     }
-    async fn resolve(
+    async fn stat(
         &self,
-        url: &nomic_uri::InternalUri,
-    ) -> Result<nomic_uri::UriResource, nomic_uri::UriError> {
-        // 以不含 query 的 href 为键（query 是选择器参数，非资源标识）
-        let key = url.without_query();
+        uri: &nomic_vfs::InternalUri,
+    ) -> Result<nomic_vfs::VfsMetadata, nomic_vfs::VfsError> {
+        let key = uri.without_query();
         let content = self
             .store
             .lock()
@@ -47,37 +50,52 @@ impl nomic_uri::ProtocolHandler for MemProtocol {
             .get(&key)
             .cloned()
             .unwrap_or_default();
-        Ok(nomic_uri::UriResource::text(key, content))
+        let mut meta = nomic_vfs::VfsMetadata::file(nomic_vfs::ContentType::Plain, None);
+        meta.size = Some(content.len());
+        Ok(meta)
     }
-    fn writable(&self) -> bool {
-        true
+    async fn read(
+        &self,
+        uri: &nomic_vfs::InternalUri,
+    ) -> Result<nomic_vfs::VfsFile, nomic_vfs::VfsError> {
+        // 以不含 query 的 href 为键（query 是选择器参数，非资源标识）
+        let key = uri.without_query();
+        let content = self
+            .store
+            .lock()
+            .expect("lock")
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        let meta = self.stat(uri).await?;
+        Ok(nomic_vfs::VfsFile::text(key, content, meta))
     }
     async fn write(
         &self,
-        url: &nomic_uri::InternalUri,
+        uri: &nomic_vfs::InternalUri,
         content: &str,
-    ) -> Result<(), nomic_uri::UriError> {
+    ) -> Result<(), nomic_vfs::VfsError> {
         self.store
             .lock()
             .expect("lock")
-            .insert(url.raw_href.clone(), content.to_string());
+            .insert(uri.raw_href.clone(), content.to_string());
         Ok(())
     }
 }
 
 fn mem_router() -> (
-    std::sync::Arc<nomic_uri::UriRouter>,
-    std::sync::Arc<MemProtocol>,
+    std::sync::Arc<nomic_vfs::VfsRouter>,
+    std::sync::Arc<MemVfs>,
 ) {
-    let mem = std::sync::Arc::new(MemProtocol {
+    let mem = std::sync::Arc::new(MemVfs {
         store: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
-    let mut router = nomic_uri::UriRouter::new();
-    router.register(mem.clone());
+    let mut router = nomic_vfs::VfsRouter::new();
+    router.mount(mem.clone());
     (std::sync::Arc::new(router), mem)
 }
 
-fn skill_router(dir: &std::path::Path) -> std::sync::Arc<nomic_uri::UriRouter> {
+fn skill_router(dir: &std::path::Path) -> std::sync::Arc<nomic_vfs::VfsRouter> {
     let skills_dir = dir.join("skills");
     let demo = skills_dir.join("demo");
     std::fs::create_dir_all(&demo).expect("skill dir");
@@ -91,10 +109,8 @@ fn skill_router(dir: &std::path::Path) -> std::sync::Arc<nomic_uri::UriRouter> {
         }],
     )
     .expect("resolver");
-    let mut router = nomic_uri::UriRouter::new();
-    router.register(std::sync::Arc::new(
-        nomic_uri::handlers::SkillProtocolHandler::new(resolver),
-    ));
+    let mut router = nomic_vfs::VfsRouter::new();
+    router.mount(std::sync::Arc::new(nomic_vfs::fs::SkillVfs::new(resolver)));
     std::sync::Arc::new(router)
 }
 
@@ -104,7 +120,7 @@ async fn write_and_edit_reject_immutable_skill_uri() {
     let router = skill_router(&dir);
 
     let error = WriteTool::new()
-        .with_uri_router(router.clone())
+        .with_vfs_router(router.clone())
         .execute(
             serde_json::from_value(
                 serde_json::json!({"path": "skill://demo", "content": "hacked"}),
@@ -118,7 +134,7 @@ async fn write_and_edit_reject_immutable_skill_uri() {
     assert!(error.to_string().contains("read-only"), "{error}");
 
     let error = EditTool::new()
-        .with_uri_router(router)
+        .with_vfs_router(router)
         .execute(
             serde_json::from_value(serde_json::json!({
                 "path": "skill://demo",
@@ -138,7 +154,7 @@ async fn write_rejects_unknown_scheme_and_selectors() {
     let (router, _mem) = mem_router();
 
     let error = WriteTool::new()
-        .with_uri_router(router.clone())
+        .with_vfs_router(router.clone())
         .execute(
             serde_json::from_value(serde_json::json!({"path": "bogus://x", "content": "data"}))
                 .expect("params"),
@@ -153,7 +169,7 @@ async fn write_rejects_unknown_scheme_and_selectors() {
 
     // 尾挂选择器不是合法写入目标
     let error = WriteTool::new()
-        .with_uri_router(router)
+        .with_vfs_router(router)
         .execute(
             serde_json::from_value(serde_json::json!({"path": "mem://a:1-2", "content": "data"}))
                 .expect("params"),
@@ -173,7 +189,7 @@ async fn write_and_edit_roundtrip_writable_uri() {
     let (router, mem) = mem_router();
 
     let result = WriteTool::new()
-        .with_uri_router(router.clone())
+        .with_vfs_router(router.clone())
         .execute(
             serde_json::from_value(
                 serde_json::json!({"path": "mem://doc", "content": "alpha\nbeta\n"}),
@@ -198,7 +214,7 @@ async fn write_and_edit_roundtrip_writable_uri() {
     );
 
     let result = EditTool::new()
-        .with_uri_router(router)
+        .with_vfs_router(router)
         .execute(
             serde_json::from_value(serde_json::json!({
                 "path": "mem://doc",
@@ -243,7 +259,7 @@ async fn read_conflicts_selector_returns_conflict_regions() {
         base.display(),
         theirs.display()
     );
-    let result = ReadTool::with_uri_router(router.clone())
+    let result = ReadTool::with_vfs_router(router.clone())
         .execute(
             serde_json::from_value(serde_json::json!({"path": target})).expect("params"),
             CancellationToken::new(),
@@ -275,7 +291,7 @@ async fn read_conflicts_selector_returns_conflict_regions() {
         base_wide.display(),
         theirs_clean.display()
     );
-    let result = ReadTool::with_uri_router(router)
+    let result = ReadTool::with_vfs_router(router)
         .execute(
             serde_json::from_value(serde_json::json!({"path": target})).expect("params"),
             CancellationToken::new(),
@@ -292,7 +308,7 @@ async fn read_conflicts_selector_returns_conflict_regions() {
 #[tokio::test]
 async fn read_conflicts_selector_requires_theirs() {
     let (router, _mem) = mem_router();
-    let error = ReadTool::with_uri_router(router)
+    let error = ReadTool::with_vfs_router(router)
         .execute(
             serde_json::from_value(serde_json::json!({"path": "mem://ours:conflicts"}))
                 .expect("params"),
@@ -306,13 +322,11 @@ async fn read_conflicts_selector_requires_theirs() {
 
 // ── T9：local:// 工作区协议 ────────────────────────────────────────────────
 
-fn local_router(dir: &std::path::Path) -> std::sync::Arc<nomic_uri::UriRouter> {
-    let mut router = nomic_uri::UriRouter::new();
-    router.register(std::sync::Arc::new(
-        nomic_uri::handlers::LocalProtocolHandler::new(nomic_uri::WorkspaceRoot::new(Some(
-            dir.to_path_buf(),
-        ))),
-    ));
+fn local_router(dir: &std::path::Path) -> std::sync::Arc<nomic_vfs::VfsRouter> {
+    let mut router = nomic_vfs::VfsRouter::new();
+    router.mount(std::sync::Arc::new(nomic_vfs::fs::LocalVfs::new(
+        nomic_vfs::WorkspaceRoot::new(Some(dir.to_path_buf())),
+    )));
     std::sync::Arc::new(router)
 }
 
@@ -323,7 +337,7 @@ async fn local_uri_read_write_edit_roundtrip() {
     let router = local_router(&dir);
 
     // read：文件与目录清单
-    let result = ReadTool::with_uri_router(router.clone())
+    let result = ReadTool::with_vfs_router(router.clone())
         .execute(
             serde_json::from_value(serde_json::json!({"path": "local://main.rs:1"}))
                 .expect("params"),
@@ -340,9 +354,24 @@ async fn local_uri_read_write_edit_roundtrip() {
         "fn main() {}\n\n[1 more lines in file. Use offset=2 to continue.]"
     );
 
+    // stat/list：纯元数据与类型化条目（不整读内容）
+    let meta = router.stat("local://main.rs").await.expect("stat");
+    assert_eq!(meta.kind, nomic_vfs::VfsKind::File);
+    assert!(!meta.is_immutable());
+    let meta = router.stat("local://").await.expect("stat root");
+    assert_eq!(meta.kind, nomic_vfs::VfsKind::Directory);
+    assert!(meta.is_immutable()); // 目录清单由 router 盖不可变章
+    let entries = router.list("local://").await.expect("list");
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.name == "main.rs" && e.kind == nomic_vfs::VfsKind::File),
+        "{entries:?}"
+    );
+
     // write：新建（含父目录创建）
     WriteTool::new()
-        .with_uri_router(router.clone())
+        .with_vfs_router(router.clone())
         .execute(
             serde_json::from_value(
                 serde_json::json!({"path": "local://notes/new.md", "content": "hello\n"}),
@@ -360,7 +389,7 @@ async fn local_uri_read_write_edit_roundtrip() {
 
     // edit：读-改-写
     EditTool::new()
-        .with_uri_router(router.clone())
+        .with_vfs_router(router.clone())
         .execute(
             serde_json::from_value(serde_json::json!({
                 "path": "local://main.rs",
@@ -379,7 +408,7 @@ async fn local_uri_read_write_edit_roundtrip() {
 
     // 目录清单是派生内容：不可编辑
     let error = EditTool::new()
-        .with_uri_router(router.clone())
+        .with_vfs_router(router.clone())
         .execute(
             serde_json::from_value(serde_json::json!({
                 "path": "local://notes",
@@ -394,7 +423,7 @@ async fn local_uri_read_write_edit_roundtrip() {
     assert!(error.to_string().contains("read-only"), "{error}");
 
     // 越出 workspace 根：拒绝
-    let error = ReadTool::with_uri_router(router)
+    let error = ReadTool::with_vfs_router(router)
         .execute(
             serde_json::from_value(serde_json::json!({"path": "local://../escape"}))
                 .expect("params"),
@@ -420,7 +449,7 @@ async fn grep_accepts_uri_search_root() {
     let router = local_router(&dir);
 
     let result = nomic_tools::GrepTool::new()
-        .with_uri_router(router.clone())
+        .with_vfs_router(router.clone())
         .execute(
             serde_json::from_value(serde_json::json!({"pattern": "main", "path": "local://src"}))
                 .expect("params"),
@@ -436,7 +465,7 @@ async fn grep_accepts_uri_search_root() {
 
     // 选择器对 grep 无语义：明确报错
     let error = nomic_tools::GrepTool::new()
-        .with_uri_router(router.clone())
+        .with_vfs_router(router.clone())
         .execute(
             serde_json::from_value(
                 serde_json::json!({"pattern": "main", "path": "local://src:1-2"}),
@@ -452,7 +481,7 @@ async fn grep_accepts_uri_search_root() {
     // 虚拟资源（无底层路径）报错
     let (mem_only, _mem) = mem_router();
     let error = nomic_tools::GrepTool::new()
-        .with_uri_router(mem_only)
+        .with_vfs_router(mem_only)
         .execute(
             serde_json::from_value(serde_json::json!({"pattern": "x", "path": "mem://doc"}))
                 .expect("params"),
@@ -471,7 +500,7 @@ async fn bash_cd_rewrites_uri_to_source_path() {
     let router = local_router(&dir);
 
     let result = nomic_tools::BashTool::new()
-        .with_uri_router(router.clone())
+        .with_vfs_router(router.clone())
         .execute(
             serde_json::from_value(serde_json::json!({"command": "cd local://src && pwd"}))
                 .expect("params"),
@@ -491,7 +520,7 @@ async fn bash_cd_rewrites_uri_to_source_path() {
 
     // 裸 `cd <uri>` 单一命令同样重写
     let result = nomic_tools::BashTool::new()
-        .with_uri_router(router)
+        .with_vfs_router(router)
         .execute(
             serde_json::from_value(serde_json::json!({"command": "cd local://src", "timeout": 5}))
                 .expect("params"),

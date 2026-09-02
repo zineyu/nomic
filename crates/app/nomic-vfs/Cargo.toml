@@ -1,5 +1,5 @@
 [package]
-name = "nomic-uri"
+name = "nomic-vfs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

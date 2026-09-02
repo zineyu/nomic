@@ -3,14 +3,14 @@
 //! - `edits[]` 对**原始文件**匹配（非增量），禁止重叠/嵌套
 //! - 精确匹配失败时按行模糊匹配（归一化：行尾空白、智能引号、Unicode 破折号/空格）
 //! - 保留 BOM 与 CRLF；返回 unified diff/patch 作为 details
-//! - 内部 URI 目标先过 [`guard_writable`] 闸（ADR-0040 §8.1）：只读协议拒绝，
-//!   可写协议走「resolve → 替换 → router.write」的读-改-写
+//! - 内部 URI 目标先过 [`guard_writable`] 闸（ADR-0040 §8.1，ADR-0042）：只读协议拒绝，
+//!   可写协议走「read → 替换 → write」的读-改-写
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use nomic_core::{AgentTool, ToolError, ToolResult, ToolUpdateCallback};
-use nomic_uri::UriRouter;
+use nomic_vfs::VfsRouter;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use similar::TextDiff;
@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::mutation_queue::lock_path;
-use crate::uri_guard::{WritableTarget, guard_writable};
+use crate::vfs_guard::{WritableTarget, guard_writable};
 
 /// 单处替换。
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -46,8 +46,8 @@ pub struct EditParams {
 /// `edit` 工具。
 #[derive(Debug, Default, Clone)]
 pub struct EditTool {
-    /// 内部 URI 路由器；`None` 时 URI 目标一律落到文件系统分支
-    uri_router: Option<Arc<UriRouter>>,
+    /// VFS 挂载表；`None` 时 URI 目标一律落到文件系统分支
+    vfs_router: Option<Arc<VfsRouter>>,
     /// 相对路径的解析基准（workspace 严格归属；空句柄 = 进程 cwd）
     base: crate::base::BaseDir,
 }
@@ -58,10 +58,10 @@ impl EditTool {
         Self::default()
     }
 
-    /// 挂内部 URI 路由器（会话共享实例）。
+    /// 挂 VFS 挂载表（会话共享实例）。
     #[must_use]
-    pub fn with_uri_router(mut self, uri_router: Arc<UriRouter>) -> Self {
-        self.uri_router = Some(uri_router);
+    pub fn with_vfs_router(mut self, vfs_router: Arc<VfsRouter>) -> Self {
+        self.vfs_router = Some(vfs_router);
         self
     }
 
@@ -116,7 +116,7 @@ impl AgentTool for EditTool {
                 "Edit tool input is invalid. edits must contain at least one replacement.",
             ));
         }
-        if let Some(router) = &self.uri_router
+        if let Some(router) = &self.vfs_router
             && let Some(target) = guard_writable(router, params.path.trim()).await?
         {
             return execute_uri_edit(&target, &params).await;
@@ -192,18 +192,23 @@ fn edit_result(params: &EditParams, outcome: &EditOutcome) -> ToolResult {
     result
 }
 
-/// 可写 URI 的读-改-写：闸内 resolve 的内容 → 替换 → `router.write`。
+/// 可写 URI 的读-改-写：闸内 stat 确认存在且可变 → read 内容 → 替换 → write。
 async fn execute_uri_edit(
     target: &WritableTarget<'_>,
     params: &EditParams,
 ) -> Result<ToolResult, ToolError> {
-    let Some(resource) = &target.resource else {
+    if target.meta.is_none() {
         return Err(ToolError::new(format!(
             "Could not edit {}: the resource does not exist yet. Use write to create it first.",
             params.path
         )));
-    };
-    let outcome = edit_content(&resource.content, &params.edits, &params.path)?;
+    }
+    let file = target
+        .router
+        .read(&target.href)
+        .await
+        .map_err(|error| ToolError::new(error.to_string()))?;
+    let outcome = edit_content(&file.content, &params.edits, &params.path)?;
     target
         .router
         .write(&target.href, &outcome.final_content)

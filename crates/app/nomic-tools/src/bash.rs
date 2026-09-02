@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use nomic_core::{AgentTool, ToolError, ToolResult, ToolUpdate, ToolUpdateCallback};
-use nomic_uri::UriRouter;
+use nomic_vfs::VfsRouter;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
@@ -46,9 +46,9 @@ pub struct BashParams {
 /// `bash` 工具。
 #[derive(Debug, Default, Clone)]
 pub struct BashTool {
-    /// 内部 URI 路由器：`cd <uri>` 重写为底层 source_path
+    /// VFS 挂载表：`cd <uri>` 重写为底层 source_path
     ///（ADR-0040 §9）；`None` 时命令原样执行
-    uri_router: Option<Arc<UriRouter>>,
+    vfs_router: Option<Arc<VfsRouter>>,
     /// 命令执行的基准目录（workspace 严格归属；空句柄 = 进程 cwd）
     base: crate::base::BaseDir,
     /// 会话级 nix 环境缓存（ADR-0041）；`None` 时始终用宿主环境
@@ -76,10 +76,10 @@ impl BashTool {
         self
     }
 
-    /// 挂内部 URI 路由器（会话共享实例）。
+    /// 挂 VFS 挂载表（会话共享实例）。
     #[must_use]
-    pub fn with_uri_router(mut self, uri_router: Arc<UriRouter>) -> Self {
-        self.uri_router = Some(uri_router);
+    pub fn with_vfs_router(mut self, vfs_router: Arc<VfsRouter>) -> Self {
+        self.vfs_router = Some(vfs_router);
         self
     }
 
@@ -119,7 +119,7 @@ impl BashTool {
     /// `cd <uri>`（且仅这种单一命令形态）重写为底层路径；URI 解析失败
     /// 与虚拟资源（无 source_path）报错，其余命令原样返回。
     async fn rewrite_cd_uri(&self, command: &str) -> Result<String, ToolError> {
-        let Some(router) = &self.uri_router else {
+        let Some(router) = &self.vfs_router else {
             return Ok(command.to_string());
         };
         let trimmed = command.trim();
@@ -141,7 +141,7 @@ impl BashTool {
         if !router.can_resolve(arg) {
             return Ok(command.to_string());
         }
-        let path = crate::uri_guard::uri_source_path(router, arg, "bash")
+        let path = crate::vfs_guard::vfs_source_path(router, arg, "bash")
             .await?
             .expect("can_resolve 蕴含已注册");
         let escaped = path.display().to_string().replace('\'', "'\\''");

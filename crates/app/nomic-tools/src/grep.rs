@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 use fff_search::{Constraint, FFFQuery, FuzzyQuery, GrepMode, GrepSearchOptions};
 use nomic_core::{AgentTool, ToolError, ToolResult, ToolUpdateCallback};
-use nomic_uri::UriRouter;
+use nomic_vfs::VfsRouter;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
@@ -47,9 +47,9 @@ pub struct GrepParams {
 /// `grep` 工具。
 #[derive(Debug, Default, Clone)]
 pub struct GrepTool {
-    /// 内部 URI 路由器：搜索根可为 `skill://` / `local://` 等 URI
+    /// 内部 URI 挂载表：搜索根可为 `skill://` / `local://` 等 URI
     ///（对齐到底层 source_path）；`None` 时仅支持文件系统路径
-    uri_router: Option<Arc<UriRouter>>,
+    vfs_router: Option<Arc<VfsRouter>>,
     /// 相对路径的解析基准（workspace 严格归属；空句柄 = 进程 cwd）
     base: crate::base::BaseDir,
 }
@@ -75,10 +75,10 @@ impl GrepTool {
         self
     }
 
-    /// 挂内部 URI 路由器（会话共享实例）。
+    /// 挂 VFS 挂载表（会话共享实例）。
     #[must_use]
-    pub fn with_uri_router(mut self, uri_router: Arc<UriRouter>) -> Self {
-        self.uri_router = Some(uri_router);
+    pub fn with_vfs_router(mut self, vfs_router: Arc<VfsRouter>) -> Self {
+        self.vfs_router = Some(vfs_router);
         self
     }
 }
@@ -147,9 +147,9 @@ impl AgentTool for GrepTool {
         }
         let glob = params.glob.as_deref().map(normalize_glob).transpose()?;
         // 内部 URI 搜索根：对齐到底层 source_path（ADR-0040 §9）
-        let uri_root = match (&self.uri_router, params.path.as_deref()) {
+        let uri_root = match (&self.vfs_router, params.path.as_deref()) {
             (Some(router), Some(path)) => {
-                crate::uri_guard::uri_source_path(router, path, "grep").await?
+                crate::vfs_guard::vfs_source_path(router, path, "grep").await?
             }
             _ => None,
         };

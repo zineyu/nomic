@@ -1,19 +1,19 @@
 //! `write` 工具：自动创建父目录 + 文件变更队列串行化（契约与 pi 一致）。
 //!
 //! 内部 URI 目标先过 [`guard_writable`] 闸（ADR-0040 §8.1）：只读协议
-//! 拒绝，可写协议经 router 分发到 handler。
+//! 拒绝，可写协议经 router 分发到对应 VFS 实现。
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use nomic_core::{AgentTool, ToolError, ToolResult, ToolUpdateCallback};
-use nomic_uri::UriRouter;
+use nomic_vfs::VfsRouter;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::mutation_queue::lock_path;
-use crate::uri_guard::guard_writable;
+use crate::vfs_guard::guard_writable;
 
 /// 参数。
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -27,8 +27,8 @@ pub struct WriteParams {
 /// `write` 工具。
 #[derive(Debug, Default, Clone)]
 pub struct WriteTool {
-    /// 内部 URI 路由器；`None` 时 URI 目标一律落到文件系统分支
-    uri_router: Option<Arc<UriRouter>>,
+    /// VFS 挂载表；`None` 时 URI 目标一律落到文件系统分支
+    vfs_router: Option<Arc<VfsRouter>>,
     /// 相对路径的解析基准（workspace 严格归属；空句柄 = 进程 cwd）
     base: crate::base::BaseDir,
 }
@@ -39,10 +39,10 @@ impl WriteTool {
         Self::default()
     }
 
-    /// 挂内部 URI 路由器（会话共享实例）。
+    /// 挂 VFS 挂载表（会话共享实例）。
     #[must_use]
-    pub fn with_uri_router(mut self, uri_router: Arc<UriRouter>) -> Self {
-        self.uri_router = Some(uri_router);
+    pub fn with_vfs_router(mut self, vfs_router: Arc<VfsRouter>) -> Self {
+        self.vfs_router = Some(vfs_router);
         self
     }
 
@@ -90,7 +90,7 @@ impl AgentTool for WriteTool {
         cancel: CancellationToken,
         _on_update: ToolUpdateCallback,
     ) -> Result<ToolResult, ToolError> {
-        if let Some(router) = &self.uri_router
+        if let Some(router) = &self.vfs_router
             && let Some(target) = guard_writable(router, params.path.trim()).await?
         {
             target

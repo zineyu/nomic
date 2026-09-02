@@ -1,13 +1,13 @@
 //! 工具基准目录（workspace 严格归属）：session 内工具的相对路径以其
 //! workspace 路径解析；未设置时退回进程 cwd（由 OS 隐式解析，行为同现状）。
 //!
-//! 句柄本体在 [`nomic_uri::WorkspaceRoot`]（`local://` 协议 handler 与各
+//! 句柄本体在 [`nomic_vfs::WorkspaceRoot`]（`local://` VFS 与各
 //! 文件工具共享同一份状态）；本模块保留 `BaseDir` 别名与路径解析助手。
 
 use std::path::{Path, PathBuf};
 
-/// 工具共享的基准目录句柄（[`nomic_uri::WorkspaceRoot`] 的兼容别名）。
-pub type BaseDir = nomic_uri::WorkspaceRoot;
+/// 工具共享的基准目录句柄（[`nomic_vfs::WorkspaceRoot`] 的兼容别名）。
+pub type BaseDir = nomic_vfs::WorkspaceRoot;
 
 /// 相对路径按基准目录解析；绝对路径原样返回。
 pub fn resolve(base: Option<&Path>, path: &str) -> PathBuf {

@@ -11,7 +11,7 @@
 //!
 //! 所有解析内部 URI 的代码必须用 [`parse_internal_uri`]，不得自行切分字符串。
 
-use crate::handler::UriError;
+use crate::vfs::VfsError;
 
 /// 解析后的内部 URI。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,13 +153,13 @@ const fn hex_val(ch: u8) -> Option<u8> {
 ///
 /// host 段允许冒号（`skill://plugin:name` 的冒号不是端口分隔符）。
 /// 非层级形式（缺 `://`）报错——opaque URI 不由本函数解析。
-pub fn parse_internal_uri(input: &str) -> Result<InternalUri, UriError> {
+pub fn parse_internal_uri(input: &str) -> Result<InternalUri, VfsError> {
     let (scheme, scheme_len) =
-        match_scheme(input).ok_or_else(|| UriError::InvalidUri(input.to_string()))?;
+        match_scheme(input).ok_or_else(|| VfsError::InvalidUri(input.to_string()))?;
     let rest = &input[scheme_len..];
     let rest = rest
         .strip_prefix("://")
-        .ok_or_else(|| UriError::InvalidUri(input.to_string()))?;
+        .ok_or_else(|| VfsError::InvalidUri(input.to_string()))?;
 
     // fragment 最右优先：`#` 之后全部属于 fragment。
     let (before_fragment, fragment) = match rest.find('#') {

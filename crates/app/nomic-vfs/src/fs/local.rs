@@ -1,36 +1,38 @@
-//! `local://` 协议 handler：会话 workspace 内的文件/目录（ADR-0040 §协议目录）。
+//! `local://` VFS：会话 workspace 内的文件/目录（ADR-0040 §协议目录，
+//! ADR-0042 VFS 化）。
 //!
 //! - `local://<path>` 以 workspace 根为基准；路径经词法规范化，越出根即拒绝
 //!   （`..` 穿越、绝对路径、`~` 不展开——与 oh-my-pi 的 local 安全边界一致）。
 //! - `local://`（空路径）列根目录清单。
-//! - 可写：write/edit 经 router 分发到这里；目录清单是派生内容（盖不可变章）。
-//! - `source_path` 始终为底层真实路径，grep/bash 据此与 fs 路径对齐（T12）。
+//! - 可写：write/edit 经 router 分发到这里；目录清单是派生内容（router 盖
+//!   不可变章）。
+//! - `source_path` 始终为底层真实路径，grep/bash 据此与 fs 路径对齐。
 
 use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
 
-use crate::handler::{ContentType, ProtocolHandler, UriError, UriResource, UrlCompletion};
+use crate::fs::{MAX_LISTING_ENTRIES, content_type_for, dir_entries};
 use crate::parse::{InternalUri, percent_decode};
 use crate::root::WorkspaceRoot;
+use crate::vfs::{
+    UrlCompletion, Vfs, VfsCapabilities, VfsEntry, VfsError, VfsFile, VfsMetadata, render_listing,
+};
 
-/// 目录清单 / 补全的条目数上限。
-const MAX_LISTING_ENTRIES: usize = 1000;
-
-/// `local://<path>` handler。
-pub struct LocalProtocolHandler {
+/// `local://<path>` VFS。
+pub struct LocalVfs {
     root: WorkspaceRoot,
 }
 
-impl std::fmt::Debug for LocalProtocolHandler {
+impl std::fmt::Debug for LocalVfs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LocalProtocolHandler")
+        f.debug_struct("LocalVfs")
             .field("root", &self.root.snapshot())
             .finish()
     }
 }
 
-impl LocalProtocolHandler {
+impl LocalVfs {
     /// 以共享 workspace 根句柄构造。
     #[must_use]
     pub const fn new(root: WorkspaceRoot) -> Self {
@@ -38,12 +40,12 @@ impl LocalProtocolHandler {
     }
 
     /// 解析 `local://` 目标到 workspace 内绝对路径；空路径 = 根本身。
-    fn resolve_path(&self, url: &InternalUri) -> Result<PathBuf, UriError> {
+    fn resolve_path(&self, uri: &InternalUri) -> Result<PathBuf, VfsError> {
         // raw_path 不含前导 `/`：host 与 path 段之间手动补分隔
-        let rel = if url.raw_path.is_empty() {
-            url.raw_host.clone()
+        let rel = if uri.raw_path.is_empty() {
+            uri.raw_host.clone()
         } else {
-            format!("{}/{}", url.raw_host, url.raw_path)
+            format!("{}/{}", uri.raw_host, uri.raw_path)
         };
         let rel = percent_decode(&rel);
         let root = self
@@ -52,7 +54,7 @@ impl LocalProtocolHandler {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
         normalize_within(&root, &rel).ok_or_else(|| {
-            UriError::Resolve(format!(
+            VfsError::Resolve(format!(
                 "Invalid local:// path: {rel} escapes the workspace root. \
              Paths under local:// must stay inside the session workspace."
             ))
@@ -61,63 +63,82 @@ impl LocalProtocolHandler {
 }
 
 #[async_trait]
-impl ProtocolHandler for LocalProtocolHandler {
+impl Vfs for LocalVfs {
     fn scheme(&self) -> &'static str {
         "local"
     }
 
-    fn immutable(&self) -> bool {
-        false
+    fn capabilities(&self) -> VfsCapabilities {
+        VfsCapabilities::READ_WRITE_COMPLETION
     }
 
-    async fn resolve(&self, url: &InternalUri) -> Result<UriResource, UriError> {
-        let path = self.resolve_path(url)?;
-        let href = url.without_query();
+    async fn stat(&self, uri: &InternalUri) -> Result<VfsMetadata, VfsError> {
+        let path = self.resolve_path(uri)?;
+        let href = uri.without_query();
         let metadata = tokio::fs::metadata(&path)
             .await
-            .map_err(|error| UriError::Resolve(format!("Could not resolve {href}. {error}")))?;
+            .map_err(|error| VfsError::Resolve(format!("Could not resolve {href}. {error}")))?;
         if metadata.is_dir() {
-            let listing = dir_listing(&path, MAX_LISTING_ENTRIES)
+            return Ok(VfsMetadata::directory(Some(path)));
+        }
+        let mut meta = VfsMetadata::file(content_type_for(&path), Some(path));
+        meta.size = usize::try_from(metadata.len()).ok();
+        Ok(meta)
+    }
+
+    async fn read(&self, uri: &InternalUri) -> Result<VfsFile, VfsError> {
+        let path = self.resolve_path(uri)?;
+        let href = uri.without_query();
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .map_err(|error| VfsError::Resolve(format!("Could not resolve {href}. {error}")))?;
+        if metadata.is_dir() {
+            let entries = dir_entries(&path, MAX_LISTING_ENTRIES)
                 .await
-                .map_err(|error| UriError::Resolve(format!("Could not resolve {href}. {error}")))?;
-            let mut resource = UriResource::text(href, listing);
-            resource.is_directory = true;
-            resource.immutable = Some(true); // 目录清单是派生内容
-            resource.source_path = Some(path);
-            return Ok(resource);
+                .map_err(|error| VfsError::Resolve(format!("Could not resolve {href}. {error}")))?;
+            return Ok(VfsFile::text(
+                href,
+                render_listing(&entries),
+                VfsMetadata::directory(Some(path)),
+            ));
         }
         let content = tokio::fs::read_to_string(&path)
             .await
-            .map_err(|error| UriError::Resolve(format!("Could not resolve {href}. {error}")))?;
-        let mut resource = UriResource::text(href, content);
-        resource.content_type = content_type_for(&path);
-        resource.source_path = Some(path);
-        Ok(resource)
+            .map_err(|error| VfsError::Resolve(format!("Could not resolve {href}. {error}")))?;
+        let mut meta = VfsMetadata::file(content_type_for(&path), Some(path));
+        meta.size = Some(content.len());
+        Ok(VfsFile::text(href, content, meta))
     }
 
-    fn writable(&self) -> bool {
-        true
+    async fn list(&self, uri: &InternalUri) -> Result<Vec<VfsEntry>, VfsError> {
+        let path = self.resolve_path(uri)?;
+        let href = uri.without_query();
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .map_err(|error| VfsError::Resolve(format!("Could not resolve {href}. {error}")))?;
+        if !metadata.is_dir() {
+            return Err(VfsError::Resolve(format!("{href} is a file, not a directory.")));
+        }
+        dir_entries(&path, MAX_LISTING_ENTRIES)
+            .await
+            .map_err(|error| VfsError::Resolve(format!("Could not resolve {href}. {error}")))
     }
 
-    async fn write(&self, url: &InternalUri, content: &str) -> Result<(), UriError> {
-        let path = self.resolve_path(url)?;
-        let href = url.without_query();
+    async fn write(&self, uri: &InternalUri, content: &str) -> Result<(), VfsError> {
+        let path = self.resolve_path(uri)?;
+        let href = uri.without_query();
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
             tokio::fs::create_dir_all(parent).await.map_err(|error| {
-                UriError::Resolve(format!(
+                VfsError::Resolve(format!(
                     "Could not create parent directories for {href}: {error}"
                 ))
             })?;
         }
         tokio::fs::write(&path, content)
             .await
-            .map_err(|error| UriError::Resolve(format!("Could not write {href}. {error}")))
-    }
-
-    fn supports_completion(&self) -> bool {
-        true
+            .map_err(|error| VfsError::Resolve(format!("Could not write {href}. {error}")))
     }
 
     fn complete(&self, query: &str) -> Vec<UrlCompletion> {
@@ -156,41 +177,6 @@ fn normalize_within(root: &Path, rel: &str) -> Option<PathBuf> {
         }
     }
     Some(path)
-}
-
-/// 目录清单：一行一个条目，目录以 `/` 结尾，按名称排序（目录在前）。
-async fn dir_listing(path: &Path, cap: usize) -> std::io::Result<String> {
-    let mut dirs = Vec::new();
-    let mut files = Vec::new();
-    let mut entries = tokio::fs::read_dir(path).await?;
-    while let Some(entry) = entries.next_entry().await? {
-        if dirs.len() + files.len() >= cap {
-            break;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if entry.file_type().await?.is_dir() {
-            dirs.push(format!("{name}/"));
-        } else {
-            files.push(name);
-        }
-    }
-    dirs.sort();
-    files.sort();
-    Ok(dirs.into_iter().chain(files).collect::<Vec<_>>().join("\n"))
-}
-
-/// 按扩展名推断内容类别。
-fn content_type_for(path: &Path) -> ContentType {
-    match path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("md" | "markdown") => ContentType::Markdown,
-        Some("json") => ContentType::Json,
-        _ => ContentType::Plain,
-    }
 }
 
 /// workspace 内路径补全：两层内的文件/目录（目录带 `/`），按前缀过滤。
@@ -240,12 +226,14 @@ fn complete_paths(root: &Path, query: &str, cap: usize) -> Vec<UrlCompletion> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parse::parse_internal_uri;
+    use crate::vfs::{ContentType, VfsKind};
     use tempfile::TempDir;
 
     struct Fixture {
         _dir: TempDir,
         root: WorkspaceRoot,
-        handler: LocalProtocolHandler,
+        vfs: LocalVfs,
     }
 
     fn fixture() -> Fixture {
@@ -257,74 +245,111 @@ mod tests {
         Fixture {
             _dir: dir,
             root: root.clone(),
-            handler: LocalProtocolHandler::new(root),
+            vfs: LocalVfs::new(root),
         }
     }
 
     fn uri(input: &str) -> InternalUri {
-        crate::parse::parse_internal_uri(input).expect("parse")
+        parse_internal_uri(input).expect("parse")
     }
 
     #[tokio::test]
-    async fn resolves_files_dirs_and_root() {
+    async fn reads_files_dirs_and_root() {
         let fixture = fixture();
-        let handler = &fixture.handler;
+        let vfs = &fixture.vfs;
 
-        let resource = handler
-            .resolve(&uri("local://README.md"))
+        let file = vfs.read(&uri("local://README.md")).await.expect("file");
+        assert_eq!(file.content, "# Demo\nline 2\n");
+        assert_eq!(file.meta.content_type, ContentType::Markdown);
+        assert!(!file.meta.is_immutable());
+        assert!(file.meta.source_path.expect("path").ends_with("README.md"));
+
+        let file = vfs.read(&uri("local://src")).await.expect("dir");
+        assert_eq!(file.content, "main.rs");
+        assert_eq!(file.meta.kind, VfsKind::Directory);
+        // 目录清单的不可变章由 router 统一盖；VFS 自身不设置
+        assert!(file.meta.immutable.is_none());
+
+        let file = vfs.read(&uri("local://")).await.expect("root");
+        assert_eq!(file.meta.kind, VfsKind::Directory);
+        assert!(file.content.contains("src/"));
+        assert!(file.content.contains("README.md"));
+    }
+
+    #[tokio::test]
+    async fn stat_reports_metadata_without_content() {
+        let fixture = fixture();
+        let vfs = &fixture.vfs;
+
+        let meta = vfs.stat(&uri("local://README.md")).await.expect("file");
+        assert_eq!(meta.kind, VfsKind::File);
+        assert_eq!(meta.content_type, ContentType::Markdown);
+        assert_eq!(meta.size, Some("# Demo\nline 2\n".len()));
+
+        let meta = vfs.stat(&uri("local://src")).await.expect("dir");
+        assert_eq!(meta.kind, VfsKind::Directory);
+        assert_eq!(meta.size, None);
+    }
+
+    #[tokio::test]
+    async fn list_returns_typed_entries() {
+        let fixture = fixture();
+        let mut entries = fixture.vfs.list(&uri("local://")).await.expect("list");
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(
+            entries,
+            vec![
+                VfsEntry {
+                    name: "README.md".into(),
+                    kind: VfsKind::File,
+                },
+                VfsEntry {
+                    name: "src".into(),
+                    kind: VfsKind::Directory,
+                },
+            ]
+        );
+
+        // 文件目标不可 list
+        let error = fixture
+            .vfs
+            .list(&uri("local://README.md"))
             .await
-            .expect("file");
-        assert_eq!(resource.content, "# Demo\nline 2\n");
-        assert_eq!(resource.content_type, ContentType::Markdown);
-        assert!(!resource.is_immutable());
-        assert!(resource.source_path.expect("path").ends_with("README.md"));
-
-        let resource = handler.resolve(&uri("local://src")).await.expect("dir");
-        assert_eq!(resource.content, "main.rs");
-        assert!(resource.is_directory);
-        assert!(resource.is_immutable()); // 目录清单派生内容
-
-        let resource = handler.resolve(&uri("local://")).await.expect("root");
-        assert!(resource.is_directory);
-        assert!(resource.content.contains("src/"));
-        assert!(resource.content.contains("README.md"));
+            .unwrap_err();
+        assert!(error.to_string().contains("not a directory"), "{error}");
     }
 
     #[tokio::test]
     async fn rejects_traversal_and_missing() {
         let fixture = fixture();
-        let handler = &fixture.handler;
+        let vfs = &fixture.vfs;
         for input in [
             "local://../escape",
             "local://src/../../escape",
             "local://./..",
         ] {
-            let error = handler.resolve(&uri(input)).await.unwrap_err();
+            let error = vfs.stat(&uri(input)).await.unwrap_err();
             assert!(
                 error.to_string().contains("escapes the workspace root"),
                 "{input}: {error}"
             );
         }
-        let error = handler
-            .resolve(&uri("local://missing.txt"))
-            .await
-            .unwrap_err();
+        let error = vfs.read(&uri("local://missing.txt")).await.unwrap_err();
         assert!(error.to_string().contains("local://missing.txt"), "{error}");
     }
 
     #[tokio::test]
     async fn write_creates_parents_and_roundtrips() {
         let fixture = fixture();
-        let handler = &fixture.handler;
-        handler
-            .write(&uri("local://notes/deep/new.md"), "hello")
+        let vfs = &fixture.vfs;
+        vfs.write(&uri("local://notes/deep/new.md"), "hello")
             .await
             .expect("write");
-        let resource = handler
-            .resolve(&uri("local://notes/deep/new.md"))
+        let file = vfs
+            .read(&uri("local://notes/deep/new.md"))
             .await
             .expect("read back");
-        assert_eq!(resource.content, "hello");
+        assert_eq!(file.content, "hello");
         assert_eq!(
             std::fs::read_to_string(
                 fixture
@@ -337,19 +362,19 @@ mod tests {
             "hello"
         );
         // 目录目标不可写
-        let error = handler.write(&uri("local://src"), "x").await.unwrap_err();
+        let error = vfs.write(&uri("local://src"), "x").await.unwrap_err();
         assert!(error.to_string().contains("Could not write"), "{error}");
     }
 
     #[test]
     fn completes_workspace_paths() {
         let fixture = fixture();
-        assert!(fixture.handler.supports_completion());
-        let completions = fixture.handler.complete("");
+        assert!(fixture.vfs.capabilities().completion);
+        let completions = fixture.vfs.complete("");
         let values: Vec<&str> = completions.iter().map(|c| c.value.as_str()).collect();
         assert!(values.contains(&"README.md"), "{values:?}");
         assert!(values.contains(&"src/"), "{values:?}");
-        let completions = fixture.handler.complete("src/");
+        let completions = fixture.vfs.complete("src/");
         let nested: Vec<&str> = completions.iter().map(|c| c.value.as_str()).collect();
         assert!(nested.contains(&"src/main.rs"), "{nested:?}");
     }

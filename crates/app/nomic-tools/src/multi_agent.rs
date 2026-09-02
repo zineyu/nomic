@@ -6,7 +6,7 @@
 //! |--------|--------|------|
 //! | `create_agent` | 否 | 创建子 agent（指定模型、系统提示词、工具子集） |
 //! | `send_message` | **否** | 向子 agent 发送消息，立即返回 |
-//! | `wait_result` | **是** | 等待子 agent 完成，返回 assistant 回复 |
+//! | `wait_result` | **是** | 等待子 agent 完成，返回最终 assistant 回复 |
 //! | `wait_all` | **是** | 等待多个子 agent 全部完成 |
 //! | `close_agent` | 否 | 关闭子 agent，释放资源 |
 //! | `list_agents` | 否 | 列出所有子 agent 及其状态 |
@@ -53,29 +53,27 @@ fn filter_tools(available_tools: &[DynTool], names: &[String]) -> Vec<DynTool> {
         .collect()
 }
 
-/// 格式化 agent 回复消息为可读文本（提取 assistant 消息的文本内容）。
-fn format_messages(messages: &[Message]) -> String {
-    let mut parts = Vec::new();
-    for msg in messages {
-        match msg {
-            Message::Assistant(assistant) => {
-                for block in &assistant.content {
-                    if let nomic_ai::AssistantContent::Text(text) = block {
-                        parts.push(text.text.clone());
-                    }
-                }
-            }
-            Message::ToolResult(result) => {
-                for block in &result.content {
-                    if let nomic_ai::UserContent::Text(text) = block {
-                        parts.push(format!("[tool:{}]: {}", result.tool_name, text.text));
-                    }
-                }
-            }
-            Message::User(_) => {}
-        }
-    }
-    parts.join("\n")
+/// 提取 agent 的最终回复文本：只取最后一条 assistant 消息的文本块。
+///
+/// `wait_result` 返回的消息列表包含子 agent 本轮的全部中间消息
+///（工具调用与结果等），主 agent 关心的只是最终结论，其余中间
+/// 过程不回传以节省上下文。
+fn final_response_text(messages: &[Message]) -> String {
+    let Some(assistant) = messages.iter().rev().find_map(|m| match m {
+        Message::Assistant(assistant) => Some(assistant),
+        _ => None,
+    }) else {
+        return String::new();
+    };
+    assistant
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            nomic_ai::AssistantContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// 模型的能力标签（写入工具描述，供 LLM 按任务需求区分模型）：
@@ -405,9 +403,10 @@ impl AgentTool for WaitResultTool {
     }
 
     fn description(&self) -> &str {
-        "Wait for a child agent to finish processing and return its response. \
+        "Wait for a child agent to finish processing and return its final response. \
          This is BLOCKING: it waits until the agent completes its current task. \
-         Use this after send_message to collect the agent's response."
+         Use this after send_message to collect the agent's response. \
+         Only the agent's last message is returned (intermediate steps are omitted)."
     }
 
     fn execution_mode(&self) -> ExecutionMode {
@@ -428,7 +427,7 @@ impl AgentTool for WaitResultTool {
         })?;
 
         tracing::debug!(agent_id = %params.agent_id, messages = messages.len(), "child agent result received");
-        let text = format_messages(&messages);
+        let text = final_response_text(&messages);
         if text.is_empty() {
             Ok(ToolResult::text(format!(
                 "Agent \"{}\" completed with no text response.",
@@ -486,9 +485,10 @@ impl AgentTool for WaitAllTool {
     }
 
     fn description(&self) -> &str {
-        "Wait for multiple child agents to ALL finish and return their responses. \
+        "Wait for multiple child agents to ALL finish and return their final responses. \
          This is BLOCKING. All agents are awaited concurrently (total time = slowest agent). \
-         Use this after sending messages to multiple agents for fork-join patterns."
+         Use this after sending messages to multiple agents for fork-join patterns. \
+         Only each agent's last message is returned (intermediate steps are omitted)."
     }
 
     fn execution_mode(&self) -> ExecutionMode {
@@ -517,7 +517,7 @@ impl AgentTool for WaitAllTool {
         for id_str in &params.agent_ids {
             let id = AgentId(id_str.clone());
             if let Some(messages) = results.get(&id) {
-                let text = format_messages(messages);
+                let text = final_response_text(messages);
                 let _ = write!(
                     output,
                     "=== Agent \"{}\" ===\n{}\n\n",
@@ -710,4 +710,67 @@ pub fn multi_agent_tools(
         DynTool::new(CloseAgentTool::new(supervisor.clone())),
         DynTool::new(ListAgentsTool::new(supervisor)),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use nomic_ai::{AssistantContent, AssistantMessage, StopReason, TextContent, ToolCall, Usage};
+
+    use super::*;
+
+    fn assistant(blocks: Vec<AssistantContent>) -> Message {
+        Message::Assistant(AssistantMessage {
+            content: blocks,
+            api: nomic_ai::ApiKind::OpenAiCompletions,
+            provider: "mock".to_string(),
+            model: "mock".to_string(),
+            response_model: None,
+            response_id: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: 0,
+        })
+    }
+
+    fn text_block(text: &str) -> AssistantContent {
+        AssistantContent::Text(TextContent {
+            text: text.to_string(),
+            text_signature: None,
+        })
+    }
+
+    fn tool_call_block() -> AssistantContent {
+        AssistantContent::ToolCall(ToolCall {
+            id: "c1".to_string(),
+            name: "read".to_string(),
+            arguments: serde_json::json!({}),
+            thought_signature: None,
+        })
+    }
+
+    #[test]
+    fn final_response_text_returns_only_last_assistant_message() {
+        let messages = vec![
+            assistant(vec![text_block("中间结论"), tool_call_block()]),
+            Message::ToolResult(nomic_ai::ToolResultMessage {
+                tool_call_id: "c1".to_string(),
+                tool_name: "read".to_string(),
+                content: vec![nomic_ai::UserContent::Text(TextContent {
+                    text: "工具结果不应回传".to_string(),
+                    text_signature: None,
+                })],
+                details: None,
+                is_error: false,
+                timestamp: 0,
+            }),
+            assistant(vec![text_block("第一段"), text_block("第二段")]),
+        ];
+        assert_eq!(final_response_text(&messages), "第一段\n第二段");
+    }
+
+    #[test]
+    fn final_response_text_empty_when_no_assistant_message() {
+        assert_eq!(final_response_text(&[]), "");
+    }
 }

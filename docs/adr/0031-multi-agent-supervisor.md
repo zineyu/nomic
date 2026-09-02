@@ -60,7 +60,7 @@ close_agent("b")
 |--------|--------|------|
 | `create_agent` | 否 | 创建子 agent（指定模型、系统提示词、工具子集） |
 | `send_message` | 否 | 向子 agent 发送消息，立即返回 |
-| `wait_result` | 是 | 等待子 agent 完成，返回 assistant 回复 |
+| `wait_result` | 是 | 等待子 agent 完成，只返回最终 assistant 回复（中间过程不回传） |
 | `wait_all` | 是 | 等待多个子 agent 全部完成 |
 | `close_agent` | 否 | 关闭子 agent，释放资源 |
 | `list_agents` | 否 | 列出所有子 agent 及其状态 |

@@ -23,6 +23,7 @@ clap.workspace = true
 crossterm.workspace = true
 dirs.workspace = true
 futures.workspace = true
+nix = { workspace = true, features = ["term"] }
 nomic-ai.workspace = true
 nomic-core.workspace = true
 nomic-prompts.workspace = true

@@ -2304,6 +2304,7 @@ dependencies = [
  "crossterm",
  "dirs 6.0.0",
  "futures",
+ "nix 0.31.3",
  "nomic-ai",
  "nomic-core",
  "nomic-prompts",

@@ -117,7 +117,9 @@ impl Vfs for LocalVfs {
             .await
             .map_err(|error| VfsError::Resolve(format!("Could not resolve {href}. {error}")))?;
         if !metadata.is_dir() {
-            return Err(VfsError::Resolve(format!("{href} is a file, not a directory.")));
+            return Err(VfsError::Resolve(format!(
+                "{href} is a file, not a directory."
+            )));
         }
         dir_entries(&path, MAX_LISTING_ENTRIES)
             .await

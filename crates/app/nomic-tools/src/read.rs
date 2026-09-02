@@ -162,11 +162,7 @@ impl ReadTool {
 
     /// `:conflicts` 选择器：以资源内容为 ours，`?theirs=`（必填）与
     /// `?base=`（可选）为文件系统路径，输出冲突行区间的切片。
-    async fn read_conflicts(
-        &self,
-        file: &VfsFile,
-        clean: &str,
-    ) -> Result<ToolResult, ToolError> {
+    async fn read_conflicts(&self, file: &VfsFile, clean: &str) -> Result<ToolResult, ToolError> {
         let url = parse_internal_uri(clean).map_err(|error| ToolError::new(error.to_string()))?;
         let Some(theirs_param) = url.query_param(CONFLICTS_THEIRS_PARAM) else {
             return Err(ToolError::new(format!(

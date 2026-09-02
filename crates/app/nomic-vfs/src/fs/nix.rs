@@ -88,7 +88,10 @@ impl Vfs for NixVfs {
     async fn read(&self, uri: &InternalUri) -> Result<VfsFile, VfsError> {
         let (path, _) = self.existing_path(uri).await?;
         let content = tokio::fs::read_to_string(&path).await.map_err(|error| {
-            VfsError::Resolve(format!("Could not resolve {}. {error}", uri.without_query()))
+            VfsError::Resolve(format!(
+                "Could not resolve {}. {error}",
+                uri.without_query()
+            ))
         })?;
         let mut meta = VfsMetadata::file(ContentType::Plain, Some(path));
         meta.size = Some(content.len());
@@ -178,7 +181,10 @@ mod tests {
             .expect("read back");
         assert_eq!(file.content, "{ description = \"env\"; }\n");
         assert!(!file.meta.is_immutable());
-        assert_eq!(file.meta.source_path.expect("source path"), fixture.flake_path);
+        assert_eq!(
+            file.meta.source_path.expect("source path"),
+            fixture.flake_path
+        );
 
         let meta = fixture.vfs.stat(&uri("nix://shell")).await.expect("stat");
         assert_eq!(meta.kind, VfsKind::File);
@@ -202,7 +208,9 @@ mod tests {
         let fixture = fixture();
         let error = fixture.vfs.list(&uri("nix://shell")).await.unwrap_err();
         assert!(
-            error.to_string().contains("does not support directory listing"),
+            error
+                .to_string()
+                .contains("does not support directory listing"),
             "{error}"
         );
     }

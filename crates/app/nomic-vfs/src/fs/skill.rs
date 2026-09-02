@@ -35,7 +35,7 @@ impl SkillVfs {
 
     /// 解析 URI 目标为（skill 名，根内相对子路径）；空 / `"."` 子路径
     /// 退化为正文（`None`）。与 ADR-0040 时代 read.rs 的特判一致。
-    fn target<'a>(uri: &'a InternalUri) -> Result<(&'a str, Option<&'a str>), VfsError> {
+    fn target(uri: &InternalUri) -> Result<(&str, Option<&str>), VfsError> {
         let name = uri.raw_host.as_str();
         if name.is_empty() {
             return Err(VfsError::Resolve(format!(
@@ -87,11 +87,8 @@ impl Vfs for SkillVfs {
         match self.locate(uri)? {
             SkillResource::Instructions(skill) => {
                 let meta = VfsMetadata::file(ContentType::Markdown, Some(skill.path.clone()));
-                let mut file = VfsFile::text(
-                    uri.raw_href.clone(),
-                    skill.document.body.clone(),
-                    meta,
-                );
+                let mut file =
+                    VfsFile::text(uri.raw_href.clone(), skill.document.body.clone(), meta);
                 file.details = Some(skill_details(&uri.raw_href, &skill, None));
                 Ok(file)
             }
@@ -105,15 +102,13 @@ impl Vfs for SkillVfs {
                 Ok(file)
             }
             SkillResource::Directory { skill, path } => {
-                let entries = dir_entries(&path, MAX_LISTING_ENTRIES).await.map_err(|error| {
-                    VfsError::Resolve(format!("Could not resolve {}. {error}", uri.raw_href))
-                })?;
+                let entries = dir_entries(&path, MAX_LISTING_ENTRIES)
+                    .await
+                    .map_err(|error| {
+                        VfsError::Resolve(format!("Could not resolve {}. {error}", uri.raw_href))
+                    })?;
                 let meta = VfsMetadata::directory(Some(path));
-                let mut file = VfsFile::text(
-                    uri.raw_href.clone(),
-                    render_listing(&entries),
-                    meta,
-                );
+                let mut file = VfsFile::text(uri.raw_href.clone(), render_listing(&entries), meta);
                 // 目录清单的 resource 标注带尾随 `/`（ADR-0040 时代 read.rs 的既有契约）
                 let listed = rel.map(|r| format!("{}/", r.trim_end_matches('/')));
                 file.details = Some(skill_details(&uri.raw_href, &skill, listed.as_deref()));
@@ -123,12 +118,25 @@ impl Vfs for SkillVfs {
     }
 
     async fn list(&self, uri: &InternalUri) -> Result<Vec<VfsEntry>, VfsError> {
-        match self.locate(uri)? {
-            SkillResource::Directory { path, .. } => {
-                dir_entries(&path, MAX_LISTING_ENTRIES).await.map_err(|error| {
+        let (name, rel) = Self::target(uri)?;
+        // 根（`skill://<name>`）经 resolver 退化为正文资源，但对 list 而言
+        // 应视作 skill 根目录。
+        if rel.is_none() {
+            let skill = self.resolver.resolve(name).map_err(|error| {
+                VfsError::Resolve(format!("Could not resolve {}. {error}", uri.raw_href))
+            })?;
+            return dir_entries(&skill.root, MAX_LISTING_ENTRIES)
+                .await
+                .map_err(|error| {
                     VfsError::Resolve(format!("Could not resolve {}. {error}", uri.raw_href))
-                })
-            }
+                });
+        }
+        match self.locate(uri)? {
+            SkillResource::Directory { path, .. } => dir_entries(&path, MAX_LISTING_ENTRIES)
+                .await
+                .map_err(|error| {
+                    VfsError::Resolve(format!("Could not resolve {}. {error}", uri.raw_href))
+                }),
             _ => Err(VfsError::Resolve(format!(
                 "{} is a file, not a directory.",
                 uri.raw_href

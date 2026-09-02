@@ -97,7 +97,9 @@ pub fn init(
         LogTarget::Terminal => {
             tracing_subscriber::fmt()
                 .with_env_filter(filter)
+                .with_ansi(true)
                 .with_writer(std::io::stderr)
+                .pretty()
                 .init();
             Ok(LogGuard { _file: None })
         }

@@ -33,6 +33,10 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+#[cfg(unix)]
+use nix::sys::termios::{
+    LocalFlags, SetArg, SpecialCharacterIndices, Termios, tcgetattr, tcsetattr,
+};
 use nomic_core::{AgentEvent, SessionRunner};
 use nomic_session::{SessionRecorder, SessionStore};
 use nomic_tools::{AskUserAnswer, AskUserQuestion, QuestionRegistry};
@@ -493,11 +497,12 @@ fn build_app_state(boot: Bootstrap) -> AppState {
 
 /// 优雅退出：q 或 Ctrl+C 取消当前运行后关闭 HTTP 服务。
 ///
-/// 键盘轮询全程开 raw mode：cooked 模式下按键被 tty 行缓冲，q 需回车才
-/// 送达进程；raw mode 同时关闭 ISIG，Ctrl+C 不再产生 SIGINT，而是以
-/// `Char('c') + CONTROL` 按键事件送达（见 [`is_quit_key`]）。轮询任务退出
-/// 时恢复 cooked 模式。`tokio::signal::ctrl_c` 保留：raw mode 开启失败
-/// （stdin 非 tty）或外部直接发 SIGINT 时兜底。
+/// 键盘轮询期间仅关闭 ICANON/ECHO（见 [`QuitKeyGuard`]）：cooked 模式下
+/// 按键被 tty 行缓冲，q 需回车才送达进程；关 ICANON 后按下即送达，关
+/// ECHO 避免回显。OPOST/ONLCR、ISIG 等其余终端标志保持原样：web 模式
+/// 不是全屏 TUI，服务存活期间仍向终端打印，不能动输出处理；Ctrl+C 仍
+/// 产生 SIGINT，由 `tokio::signal::ctrl_c` 分支处理（stdin 非 tty 或外部
+/// 直接发 SIGINT 时也走该分支兜底）。轮询任务退出时恢复原始终端属性。
 async fn shutdown_signal(state: AppState) {
     let (quit_tx, mut quit_rx) = oneshot::channel::<()>();
 
@@ -506,7 +511,7 @@ async fn shutdown_signal(state: AppState) {
     let stop = CancellationToken::new();
     let stop_keyboard = stop.clone();
     let keyboard = tokio::task::spawn_blocking(move || {
-        let _raw_guard = RawModeGuard::enter();
+        let _key_guard = QuitKeyGuard::enter();
         loop {
             if stop_keyboard.is_cancelled() {
                 break;
@@ -548,26 +553,69 @@ async fn cancel_all(state: &AppState) {
     }
 }
 
-/// 退出键：q，或 Ctrl+C（raw mode 下 ISIG 关闭，Ctrl+C 以按键事件送达）。
+/// 退出键：q，或 Ctrl+C（仅 Windows 的 crossterm raw mode 下 Ctrl+C 以
+/// `Char('c') + CONTROL` 按键事件送达；Unix 上 ISIG 保持开启，Ctrl+C 走
+/// SIGINT，由 `tokio::signal::ctrl_c` 处理，不经这里）。
 fn is_quit_key(key: event::KeyEvent) -> bool {
     key.code == KeyCode::Char('q')
         || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
 }
 
-/// 退出时恢复 cooked 模式，把 tty 还给 shell（任务 panic 也经 Drop 恢复）。
-struct RawModeGuard;
+/// 退出键监听的终端态 RAII：q 按下即送达且不回显；离开作用域（含轮询
+/// 任务 panic 经 Drop）恢复原始终端属性，把 tty 还给 shell。
+///
+/// Unix 上刻意不用 crossterm raw mode：raw mode 是 cfmakeraw 语义，会清掉
+/// OPOST/ONLCR，web 服务存活期间打印到终端的 \n 不再自动带回车（输出
+/// 阶梯错位），子进程继承 tty 也受影响。这里只关 ICANON（行缓冲）与
+/// ECHO（回显），输出处理保持原样——只有 TUI 模式才关 ONLCR。Windows
+/// 控制台无 ONLCR 概念，直接用 crossterm raw mode。
+struct QuitKeyGuard {
+    /// 进入前的终端属性；stdin 非 tty（管道等）时为 None，无需恢复。
+    #[cfg(unix)]
+    saved: Option<Termios>,
+}
 
-impl RawModeGuard {
+impl QuitKeyGuard {
     fn enter() -> Self {
-        let _ = crossterm::terminal::enable_raw_mode();
-        Self
+        #[cfg(unix)]
+        {
+            Self {
+                saved: enter_quit_key_mode().ok(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = crossterm::terminal::enable_raw_mode();
+            Self
+        }
     }
 }
 
-impl Drop for RawModeGuard {
+impl Drop for QuitKeyGuard {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(saved) = self.saved.take() {
+            let _ = tcsetattr(std::io::stdin(), SetArg::TCSANOW, &saved);
+        }
+        #[cfg(not(unix))]
         let _ = crossterm::terminal::disable_raw_mode();
     }
+}
+
+/// Unix：仅关闭 ICANON/ECHO，让按键立即送达且不回显；VMIN=1/VTIME=0 保证
+/// 单键即唤醒 read（防御终端原有非规范配置）。返回进入前的终端属性供恢复。
+#[cfg(unix)]
+fn enter_quit_key_mode() -> nix::Result<Termios> {
+    let stdin = std::io::stdin();
+    let saved = tcgetattr(&stdin)?;
+    let mut attrs = saved.clone();
+    attrs
+        .local_flags
+        .remove(LocalFlags::ICANON | LocalFlags::ECHO);
+    attrs.control_chars[SpecialCharacterIndices::VMIN as usize] = 1;
+    attrs.control_chars[SpecialCharacterIndices::VTIME as usize] = 0;
+    tcsetattr(&stdin, SetArg::TCSANOW, &attrs)?;
+    Ok(saved)
 }
 
 #[cfg(test)]

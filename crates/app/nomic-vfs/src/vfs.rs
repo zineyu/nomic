@@ -109,7 +109,7 @@ pub struct VfsMetadata {
 impl VfsMetadata {
     /// 便捷构造：文件元数据。
     #[must_use]
-    pub fn file(content_type: ContentType, source_path: Option<PathBuf>) -> Self {
+    pub const fn file(content_type: ContentType, source_path: Option<PathBuf>) -> Self {
         Self {
             kind: VfsKind::File,
             content_type,
@@ -121,7 +121,7 @@ impl VfsMetadata {
 
     /// 便捷构造：目录元数据。
     #[must_use]
-    pub fn directory(source_path: Option<PathBuf>) -> Self {
+    pub const fn directory(source_path: Option<PathBuf>) -> Self {
         Self {
             kind: VfsKind::Directory,
             content_type: ContentType::Plain,

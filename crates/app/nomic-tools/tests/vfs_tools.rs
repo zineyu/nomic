@@ -83,10 +83,7 @@ impl nomic_vfs::Vfs for MemVfs {
     }
 }
 
-fn mem_router() -> (
-    std::sync::Arc<nomic_vfs::VfsRouter>,
-    std::sync::Arc<MemVfs>,
-) {
+fn mem_router() -> (std::sync::Arc<nomic_vfs::VfsRouter>, std::sync::Arc<MemVfs>) {
     let mem = std::sync::Arc::new(MemVfs {
         store: std::sync::Mutex::new(std::collections::HashMap::new()),
     });

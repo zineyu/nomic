@@ -117,10 +117,10 @@ impl VfsRouter {
     /// immutable 盖章：单资源覆盖优先；否则只读 VFS 全量不可变，
     /// 目录清单（派生内容）恒不可变。
     fn stamp(meta: &mut VfsMetadata, vfs: &dyn Vfs) {
-        meta.immutable = Some(
-            meta.immutable
-                .unwrap_or(vfs.capabilities().immutable || meta.kind == VfsKind::Directory),
-        );
+        meta.immutable =
+            Some(meta.immutable.unwrap_or_else(|| {
+                vfs.capabilities().immutable || meta.kind == VfsKind::Directory
+            }));
     }
 
     /// 路由：解析 + 查表；未知 scheme 报附带可用列表的错误。
@@ -182,7 +182,11 @@ mod tests {
         }
         async fn read(&self, uri: &InternalUri) -> Result<VfsFile, VfsError> {
             let meta = self.stat(uri).await?;
-            Ok(VfsFile::text(uri.raw_href.clone(), self.content.clone(), meta))
+            Ok(VfsFile::text(
+                uri.raw_href.clone(),
+                self.content.clone(),
+                meta,
+            ))
         }
     }
 
@@ -377,7 +381,9 @@ mod tests {
         // 未覆盖 list 的 VFS 报「不支持目录清单」
         let error = router.list("local://a.md").await.unwrap_err();
         assert!(
-            error.to_string().contains("does not support directory listing"),
+            error
+                .to_string()
+                .contains("does not support directory listing"),
             "{error}"
         );
     }

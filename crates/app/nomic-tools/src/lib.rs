@@ -150,7 +150,9 @@ pub fn default_tools_with_skills_in_shared(
     )));
     // nix://shell：workspace nix 环境定义（ADR-0041），与下方 BashTool 的
     // env 缓存经文件 mtime 解耦（改写即失效重解析，无需跨组件通知）
-    vfs_router.mount(std::sync::Arc::new(nomic_vfs::fs::NixVfs::new(base.clone())));
+    vfs_router.mount(std::sync::Arc::new(nomic_vfs::fs::NixVfs::new(
+        base.clone(),
+    )));
     let vfs_router = std::sync::Arc::new(vfs_router);
     let nix_env = nix_env::NixEnvCache::new();
     prewarm_nix_env(&nix_env, base);

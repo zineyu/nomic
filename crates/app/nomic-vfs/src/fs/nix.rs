@@ -1,42 +1,31 @@
-//! `nix://` VFS：workspace 级 nix 环境定义（ADR-0041，ADR-0042 VFS 化）。
+//! `nix://` 挂载：workspace 级 nix 环境定义（ADR-0041，ADR-0042 VFS 化，
+//! ADR-0043 目录化挂载）。
 //!
 //! - `nix://shell` → `<workspace>/.nomic/flake.nix`（唯一资源），可读写：
 //!   agent 经 write/edit 修改环境定义；bash 工具的 env 缓存按 mtime 失效，
 //!   无需跨组件通知。
-//! - 纯文件型 VFS：不覆盖 `list`（trait 缺省报「不支持目录清单」）。
+//! - 纯文件型挂载：`supports_listing = false`（DirMount 报「不支持目录
+//!   清单」）。
 //! - 其余路径报 Resolve 错误并列出可用资源。
-//! - `source_path` 始终为底层真实路径，grep/bash 据此与 fs 路径对齐。
+//! - 背书路径即底层真实路径，grep/bash 据此与 fs 路径对齐。
+//!
+//! 全部文件系统语义由 [`DirMount`] 统一实现；本模块只声明 `locate`
+//! （`shell` → `flake.nix` 映射）、「写入即创建」引导与补全钩子。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use async_trait::async_trait;
-
+use crate::mount::{DirMount, Mount};
 use crate::parse::InternalUri;
 use crate::root::WorkspaceRoot;
-use crate::vfs::{
-    ContentType, UrlCompletion, Vfs, VfsCapabilities, VfsError, VfsFile, VfsMetadata,
-};
+use crate::vfs::{UrlCompletion, VfsCapabilities, VfsError};
 
-/// `nix://shell` VFS：workspace `.nomic/flake.nix` 的可读写视图。
-pub struct NixVfs {
+/// `nix://` 的挂载声明。
+#[derive(Debug)]
+pub struct NixMount {
     root: WorkspaceRoot,
 }
 
-impl std::fmt::Debug for NixVfs {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NixVfs")
-            .field("root", &self.root.snapshot())
-            .finish()
-    }
-}
-
-impl NixVfs {
-    /// 以共享 workspace 根句柄构造。
-    #[must_use]
-    pub const fn new(root: WorkspaceRoot) -> Self {
-        Self { root }
-    }
-
+impl NixMount {
     /// `nix://shell` → `<workspace>/.nomic/flake.nix`；其余路径报错。
     fn resolve_path(&self, uri: &InternalUri) -> Result<PathBuf, VfsError> {
         if uri.raw_host != "shell" || !uri.raw_path.is_empty() {
@@ -52,24 +41,9 @@ impl NixVfs {
             .unwrap_or_else(|| PathBuf::from("."));
         Ok(root.join(".nomic").join("flake.nix"))
     }
-
-    /// 取底层路径并要求其存在；缺失时报「写入即创建」的引导错误。
-    async fn existing_path(&self, uri: &InternalUri) -> Result<(PathBuf, u64), VfsError> {
-        let path = self.resolve_path(uri)?;
-        let metadata = tokio::fs::metadata(&path).await.map_err(|_| {
-            VfsError::Resolve(format!(
-                "Could not resolve {}: {} does not exist yet. \
-                 Write nix://shell to create the workspace nix environment definition.",
-                uri.without_query(),
-                path.display()
-            ))
-        })?;
-        Ok((path, metadata.len()))
-    }
 }
 
-#[async_trait]
-impl Vfs for NixVfs {
+impl Mount for NixMount {
     fn scheme(&self) -> &'static str {
         "nix"
     }
@@ -78,39 +52,21 @@ impl Vfs for NixVfs {
         VfsCapabilities::READ_WRITE_COMPLETION
     }
 
-    async fn stat(&self, uri: &InternalUri) -> Result<VfsMetadata, VfsError> {
-        let (path, len) = self.existing_path(uri).await?;
-        let mut meta = VfsMetadata::file(ContentType::Plain, Some(path));
-        meta.size = usize::try_from(len).ok();
-        Ok(meta)
+    fn locate(&self, uri: &InternalUri) -> Result<PathBuf, VfsError> {
+        self.resolve_path(uri)
     }
 
-    async fn read(&self, uri: &InternalUri) -> Result<VfsFile, VfsError> {
-        let (path, _) = self.existing_path(uri).await?;
-        let content = tokio::fs::read_to_string(&path).await.map_err(|error| {
-            VfsError::Resolve(format!(
-                "Could not resolve {}. {error}",
-                uri.without_query()
-            ))
-        })?;
-        let mut meta = VfsMetadata::file(ContentType::Plain, Some(path));
-        meta.size = Some(content.len());
-        Ok(VfsFile::text(uri.without_query(), content, meta))
+    fn not_found(&self, uri: &InternalUri, path: &Path, _error: &std::io::Error) -> VfsError {
+        VfsError::Resolve(format!(
+            "Could not resolve {}: {} does not exist yet. \
+             Write nix://shell to create the workspace nix environment definition.",
+            uri.without_query(),
+            path.display()
+        ))
     }
 
-    async fn write(&self, uri: &InternalUri, content: &str) -> Result<(), VfsError> {
-        let path = self.resolve_path(uri)?;
-        let href = uri.without_query();
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|error| {
-                VfsError::Resolve(format!(
-                    "Could not create parent directories for {href}: {error}"
-                ))
-            })?;
-        }
-        tokio::fs::write(&path, content)
-            .await
-            .map_err(|error| VfsError::Resolve(format!("Could not write {href}: {error}")))
+    fn supports_listing(&self) -> bool {
+        false
     }
 
     fn complete(&self, query: &str) -> Vec<UrlCompletion> {
@@ -126,13 +82,25 @@ impl Vfs for NixVfs {
     }
 }
 
+/// `nix://shell` VFS：workspace `.nomic/flake.nix` 的可读写目录化挂载
+///（ADR-0043）。
+pub type NixVfs = DirMount<NixMount>;
+
+impl DirMount<NixMount> {
+    /// 以共享 workspace 根句柄构造。
+    #[must_use]
+    pub const fn new(root: WorkspaceRoot) -> Self {
+        Self::from_decl(NixMount { root })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
 
     use super::*;
     use crate::parse::parse_internal_uri;
-    use crate::vfs::VfsKind;
+    use crate::vfs::{Vfs, VfsKind};
 
     struct Fixture {
         _dir: TempDir,
@@ -181,10 +149,7 @@ mod tests {
             .expect("read back");
         assert_eq!(file.content, "{ description = \"env\"; }\n");
         assert!(!file.meta.is_immutable());
-        assert_eq!(
-            file.meta.source_path.expect("source path"),
-            fixture.flake_path
-        );
+        assert_eq!(file.meta.source_path, fixture.flake_path);
 
         let meta = fixture.vfs.stat(&uri("nix://shell")).await.expect("stat");
         assert_eq!(meta.kind, VfsKind::File);

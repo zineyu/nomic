@@ -9,16 +9,21 @@
 //! - [`parse`] / `selector`：寻址层（容错 URI 解析、尾挂选择器）；
 //! - [`vfs`]：契约层（[`Vfs`] trait、[`VfsCapabilities`]、[`VfsMetadata`]、
 //!   [`VfsFile`]、[`VfsEntry`]）；
+//! - [`mount`]：目录化挂载层（[`Mount`] 声明 + [`DirMount`] 适配器，
+//!   ADR-0043——每个 scheme 都是一个 backing root 目录）；
 //! - [`router`]：挂载表层（immutable 盖章、未知 scheme 纠错）；
-//! - [`fs`]：内置 VFS 实现。
+//! - [`fs`]：内置挂载声明（[`fs::LocalMount`] / [`fs::NixMount`] /
+//!   [`fs::SkillMount`]，经 [`DirMount`] 获得完整 [`Vfs`] 语义）。
 
 pub mod fs;
+pub mod mount;
 pub mod parse;
 mod root;
 pub mod router;
 mod selector;
 pub mod vfs;
 
+pub use mount::{DirMount, Mount};
 pub use parse::{InternalUri, extract_uri_scheme, parse_internal_uri};
 pub use root::WorkspaceRoot;
 pub use router::VfsRouter;

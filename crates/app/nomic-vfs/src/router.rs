@@ -144,6 +144,7 @@ impl VfsRouter {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -173,8 +174,8 @@ mod tests {
         }
         async fn stat(&self, _uri: &InternalUri) -> Result<VfsMetadata, VfsError> {
             let mut meta = match self.kind {
-                VfsKind::File => VfsMetadata::file(ContentType::Plain, None),
-                VfsKind::Directory => VfsMetadata::directory(None),
+                VfsKind::File => VfsMetadata::file(ContentType::Plain, PathBuf::from("/static")),
+                VfsKind::Directory => VfsMetadata::directory(PathBuf::from("/static")),
             };
             meta.immutable = self.resource_immutable;
             meta.size = Some(self.content.len());
@@ -205,13 +206,16 @@ mod tests {
             }
         }
         async fn stat(&self, _uri: &InternalUri) -> Result<VfsMetadata, VfsError> {
-            Ok(VfsMetadata::file(ContentType::Plain, None))
+            Ok(VfsMetadata::file(
+                ContentType::Plain,
+                PathBuf::from("/static"),
+            ))
         }
         async fn read(&self, uri: &InternalUri) -> Result<VfsFile, VfsError> {
             Ok(VfsFile::text(
                 uri.raw_href.clone(),
                 "sandbox",
-                VfsMetadata::file(ContentType::Plain, None),
+                VfsMetadata::file(ContentType::Plain, PathBuf::from("/static")),
             ))
         }
         async fn write(&self, _uri: &InternalUri, _content: &str) -> Result<(), VfsError> {
@@ -344,14 +348,14 @@ mod tests {
                 READ_ONLY
             }
             async fn stat(&self, _uri: &InternalUri) -> Result<VfsMetadata, VfsError> {
-                Ok(VfsMetadata::directory(None))
+                Ok(VfsMetadata::directory(PathBuf::from("/static")))
             }
             async fn read(&self, uri: &InternalUri) -> Result<VfsFile, VfsError> {
                 let entries = self.list(uri).await?;
                 Ok(VfsFile::text(
                     uri.raw_href.clone(),
                     crate::vfs::render_listing(&entries),
-                    VfsMetadata::directory(None),
+                    VfsMetadata::directory(PathBuf::from("/static")),
                 ))
             }
             async fn list(&self, _uri: &InternalUri) -> Result<Vec<VfsEntry>, VfsError> {

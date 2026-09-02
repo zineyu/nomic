@@ -1,19 +1,22 @@
-//! 内置 VFS 实现：一个 URI scheme 对应一个 VFS（ADR-0042）。
+//! 内置挂载声明：一个 URI scheme 对应一个 [`Mount`](crate::Mount)
+//! （ADR-0042，ADR-0043 目录化挂载）。
 //!
-//! - [`skill::SkillVfs`]：`skill://`，只读提示词资产（复用 `SkillResolver`）
-//! - [`local::LocalVfs`]：`local://`，可写的会话 workspace 视图
-//! - [`nix::NixVfs`]：`nix://`，可写的 workspace nix 环境定义（ADR-0041）
+//! - [`skill::SkillMount`]：`skill://`，只读提示词资产（复用 `SkillResolver`）
+//! - [`local::LocalMount`]：`local://`，可写的会话 workspace 视图
+//! - [`nix::NixMount`]：`nix://`，可写的 workspace nix 环境定义（ADR-0041）
 //!
-//! 后续协议（artifact/history/agent，ADR-0040 §协议目录）各自新增一个
-//! VFS 实现并挂载进 router，无需改动工具层。
+//! 声明经 [`DirMount`](crate::DirMount) 适配为完整 VFS（类型别名
+//! [`SkillVfs`] / [`LocalVfs`] / [`NixVfs`]）。后续协议
+//! （artifact/history/agent，ADR-0040 §协议目录）各自新增一个挂载
+//! 声明并挂载进 router，无需改动工具层。
 
 pub mod local;
 pub mod nix;
 pub mod skill;
 
-pub use local::LocalVfs;
-pub use nix::NixVfs;
-pub use skill::SkillVfs;
+pub use local::{LocalMount, LocalVfs};
+pub use nix::{NixMount, NixVfs};
+pub use skill::{SkillMount, SkillVfs};
 
 use std::path::Path;
 

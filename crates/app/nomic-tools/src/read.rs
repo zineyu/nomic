@@ -200,11 +200,7 @@ impl ReadTool {
             })
             .collect();
         let joined = slice_line_ranges(&file.content, &line_ranges, &file.url)?;
-        let hint = file
-            .meta
-            .source_path
-            .clone()
-            .unwrap_or_else(|| PathBuf::from(&file.url));
+        let hint = file.meta.source_path.clone();
         let mut result = read_text_path(&hint, &file.url, Some(joined), None, None).await?;
         result.details = Some(merge_details(
             Some(merge_details(result.details.take(), &conflict_details)),
@@ -220,11 +216,7 @@ async fn read_resource(
     selector: &ParsedSelector,
     params: &ReadParams,
 ) -> Result<ToolResult, ToolError> {
-    let hint = file
-        .meta
-        .source_path
-        .clone()
-        .unwrap_or_else(|| PathBuf::from(&file.url));
+    let hint = file.meta.source_path.clone();
     let display = file.url.as_str();
     let explicit = params.offset.is_some() || params.limit.is_some();
     let mut result = if explicit {

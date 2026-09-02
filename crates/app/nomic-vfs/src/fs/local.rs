@@ -1,44 +1,31 @@
-//! `local://` VFS：会话 workspace 内的文件/目录（ADR-0040 §协议目录，
-//! ADR-0042 VFS 化）。
+//! `local://` 挂载：会话 workspace 内的文件/目录（ADR-0040 §协议目录，
+//! ADR-0042 VFS 化，ADR-0043 目录化挂载）。
 //!
 //! - `local://<path>` 以 workspace 根为基准；路径经词法规范化，越出根即拒绝
 //!   （`..` 穿越、绝对路径、`~` 不展开——与 oh-my-pi 的 local 安全边界一致）。
 //! - `local://`（空路径）列根目录清单。
 //! - 可写：write/edit 经 router 分发到这里；目录清单是派生内容（router 盖
 //!   不可变章）。
-//! - `source_path` 始终为底层真实路径，grep/bash 据此与 fs 路径对齐。
+//! - 背书路径即底层真实路径，grep/bash 据此与 fs 路径对齐。
+//!
+//! 全部文件系统语义由 [`DirMount`] 统一实现；本模块只声明 `locate`
+//! （containment）与补全钩子。
 
 use std::path::{Component, Path, PathBuf};
 
-use async_trait::async_trait;
-
-use crate::fs::{MAX_LISTING_ENTRIES, content_type_for, dir_entries};
+use crate::fs::MAX_LISTING_ENTRIES;
+use crate::mount::{DirMount, Mount};
 use crate::parse::{InternalUri, percent_decode};
 use crate::root::WorkspaceRoot;
-use crate::vfs::{
-    UrlCompletion, Vfs, VfsCapabilities, VfsEntry, VfsError, VfsFile, VfsMetadata, render_listing,
-};
+use crate::vfs::{UrlCompletion, VfsCapabilities, VfsError};
 
-/// `local://<path>` VFS。
-pub struct LocalVfs {
+/// `local://` 的挂载声明。
+#[derive(Debug)]
+pub struct LocalMount {
     root: WorkspaceRoot,
 }
 
-impl std::fmt::Debug for LocalVfs {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LocalVfs")
-            .field("root", &self.root.snapshot())
-            .finish()
-    }
-}
-
-impl LocalVfs {
-    /// 以共享 workspace 根句柄构造。
-    #[must_use]
-    pub const fn new(root: WorkspaceRoot) -> Self {
-        Self { root }
-    }
-
+impl LocalMount {
     /// 解析 `local://` 目标到 workspace 内绝对路径；空路径 = 根本身。
     fn resolve_path(&self, uri: &InternalUri) -> Result<PathBuf, VfsError> {
         // raw_path 不含前导 `/`：host 与 path 段之间手动补分隔
@@ -62,8 +49,7 @@ impl LocalVfs {
     }
 }
 
-#[async_trait]
-impl Vfs for LocalVfs {
+impl Mount for LocalMount {
     fn scheme(&self) -> &'static str {
         "local"
     }
@@ -72,75 +58,8 @@ impl Vfs for LocalVfs {
         VfsCapabilities::READ_WRITE_COMPLETION
     }
 
-    async fn stat(&self, uri: &InternalUri) -> Result<VfsMetadata, VfsError> {
-        let path = self.resolve_path(uri)?;
-        let href = uri.without_query();
-        let metadata = tokio::fs::metadata(&path)
-            .await
-            .map_err(|error| VfsError::Resolve(format!("Could not resolve {href}. {error}")))?;
-        if metadata.is_dir() {
-            return Ok(VfsMetadata::directory(Some(path)));
-        }
-        let mut meta = VfsMetadata::file(content_type_for(&path), Some(path));
-        meta.size = usize::try_from(metadata.len()).ok();
-        Ok(meta)
-    }
-
-    async fn read(&self, uri: &InternalUri) -> Result<VfsFile, VfsError> {
-        let path = self.resolve_path(uri)?;
-        let href = uri.without_query();
-        let metadata = tokio::fs::metadata(&path)
-            .await
-            .map_err(|error| VfsError::Resolve(format!("Could not resolve {href}. {error}")))?;
-        if metadata.is_dir() {
-            let entries = dir_entries(&path, MAX_LISTING_ENTRIES)
-                .await
-                .map_err(|error| VfsError::Resolve(format!("Could not resolve {href}. {error}")))?;
-            return Ok(VfsFile::text(
-                href,
-                render_listing(&entries),
-                VfsMetadata::directory(Some(path)),
-            ));
-        }
-        let content = tokio::fs::read_to_string(&path)
-            .await
-            .map_err(|error| VfsError::Resolve(format!("Could not resolve {href}. {error}")))?;
-        let mut meta = VfsMetadata::file(content_type_for(&path), Some(path));
-        meta.size = Some(content.len());
-        Ok(VfsFile::text(href, content, meta))
-    }
-
-    async fn list(&self, uri: &InternalUri) -> Result<Vec<VfsEntry>, VfsError> {
-        let path = self.resolve_path(uri)?;
-        let href = uri.without_query();
-        let metadata = tokio::fs::metadata(&path)
-            .await
-            .map_err(|error| VfsError::Resolve(format!("Could not resolve {href}. {error}")))?;
-        if !metadata.is_dir() {
-            return Err(VfsError::Resolve(format!(
-                "{href} is a file, not a directory."
-            )));
-        }
-        dir_entries(&path, MAX_LISTING_ENTRIES)
-            .await
-            .map_err(|error| VfsError::Resolve(format!("Could not resolve {href}. {error}")))
-    }
-
-    async fn write(&self, uri: &InternalUri, content: &str) -> Result<(), VfsError> {
-        let path = self.resolve_path(uri)?;
-        let href = uri.without_query();
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            tokio::fs::create_dir_all(parent).await.map_err(|error| {
-                VfsError::Resolve(format!(
-                    "Could not create parent directories for {href}: {error}"
-                ))
-            })?;
-        }
-        tokio::fs::write(&path, content)
-            .await
-            .map_err(|error| VfsError::Resolve(format!("Could not write {href}. {error}")))
+    fn locate(&self, uri: &InternalUri) -> Result<PathBuf, VfsError> {
+        self.resolve_path(uri)
     }
 
     fn complete(&self, query: &str) -> Vec<UrlCompletion> {
@@ -152,6 +71,17 @@ impl Vfs for LocalVfs {
             return Vec::new();
         };
         complete_paths(&root, query, MAX_LISTING_ENTRIES)
+    }
+}
+
+/// `local://<path>` VFS：workspace 的目录化挂载（ADR-0043）。
+pub type LocalVfs = DirMount<LocalMount>;
+
+impl DirMount<LocalMount> {
+    /// 以共享 workspace 根句柄构造。
+    #[must_use]
+    pub const fn new(root: WorkspaceRoot) -> Self {
+        Self::from_decl(LocalMount { root })
     }
 }
 
@@ -229,7 +159,7 @@ fn complete_paths(root: &Path, query: &str, cap: usize) -> Vec<UrlCompletion> {
 mod tests {
     use super::*;
     use crate::parse::parse_internal_uri;
-    use crate::vfs::{ContentType, VfsKind};
+    use crate::vfs::{ContentType, Vfs, VfsEntry, VfsKind};
     use tempfile::TempDir;
 
     struct Fixture {
@@ -264,7 +194,7 @@ mod tests {
         assert_eq!(file.content, "# Demo\nline 2\n");
         assert_eq!(file.meta.content_type, ContentType::Markdown);
         assert!(!file.meta.is_immutable());
-        assert!(file.meta.source_path.expect("path").ends_with("README.md"));
+        assert!(file.meta.source_path.ends_with("README.md"));
 
         let file = vfs.read(&uri("local://src")).await.expect("dir");
         assert_eq!(file.content, "main.rs");

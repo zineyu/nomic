@@ -117,7 +117,8 @@ impl BashTool {
     }
 
     /// `cd <uri>`（且仅这种单一命令形态）重写为底层路径；URI 解析失败
-    /// 与虚拟资源（无 source_path）报错，其余命令原样返回。
+    /// `cd <uri>` 重写为底层 source_path（目录化不变量下恒有值，
+    /// ADR-0043），其余命令原样返回。
     async fn rewrite_cd_uri(&self, command: &str) -> Result<String, ToolError> {
         let Some(router) = &self.vfs_router else {
             return Ok(command.to_string());

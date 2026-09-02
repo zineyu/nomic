@@ -21,9 +21,22 @@ fn temp_dir() -> std::path::PathBuf {
 
 // ── T5：write/edit 的 URI immutable 闸 ─────────────────────────────────────
 
-/// 测试用可写内存 VFS（local:// 之外的虚拟协议验证）。
+/// 测试用可写目录背书 VFS（local:// 之外的协议分发验证；ADR-0043
+/// 目录化不变量下，参与寻址的 scheme 都有 backing 目录）。
 struct MemVfs {
-    store: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    dir: std::path::PathBuf,
+}
+
+impl MemVfs {
+    /// `mem://<host>[/<path>]` → 背书目录内的路径。
+    fn path_of(&self, uri: &nomic_vfs::InternalUri) -> std::path::PathBuf {
+        let rel = if uri.raw_path.is_empty() {
+            uri.raw_host.clone()
+        } else {
+            format!("{}/{}", uri.raw_host, uri.raw_path)
+        };
+        self.dir.join(rel)
+    }
 }
 
 #[async_trait::async_trait]
@@ -42,31 +55,27 @@ impl nomic_vfs::Vfs for MemVfs {
         &self,
         uri: &nomic_vfs::InternalUri,
     ) -> Result<nomic_vfs::VfsMetadata, nomic_vfs::VfsError> {
-        let key = uri.without_query();
-        let content = self
-            .store
-            .lock()
-            .expect("lock")
-            .get(&key)
-            .cloned()
-            .unwrap_or_default();
-        let mut meta = nomic_vfs::VfsMetadata::file(nomic_vfs::ContentType::Plain, None);
-        meta.size = Some(content.len());
+        let path = self.path_of(uri);
+        let metadata = tokio::fs::metadata(&path).await.map_err(|error| {
+            nomic_vfs::VfsError::Resolve(format!(
+                "Could not resolve {}. {error}",
+                uri.without_query()
+            ))
+        })?;
+        let mut meta = nomic_vfs::VfsMetadata::file(nomic_vfs::ContentType::Plain, path);
+        meta.size = usize::try_from(metadata.len()).ok();
         Ok(meta)
     }
     async fn read(
         &self,
         uri: &nomic_vfs::InternalUri,
     ) -> Result<nomic_vfs::VfsFile, nomic_vfs::VfsError> {
-        // 以不含 query 的 href 为键（query 是选择器参数，非资源标识）
+        // 以不含 query 的 href 为 URL（query 是选择器参数，非资源标识）
         let key = uri.without_query();
-        let content = self
-            .store
-            .lock()
-            .expect("lock")
-            .get(&key)
-            .cloned()
-            .unwrap_or_default();
+        let path = self.path_of(uri);
+        let content = tokio::fs::read_to_string(&path).await.map_err(|error| {
+            nomic_vfs::VfsError::Resolve(format!("Could not resolve {key}. {error}"))
+        })?;
         let meta = self.stat(uri).await?;
         Ok(nomic_vfs::VfsFile::text(key, content, meta))
     }
@@ -75,21 +84,24 @@ impl nomic_vfs::Vfs for MemVfs {
         uri: &nomic_vfs::InternalUri,
         content: &str,
     ) -> Result<(), nomic_vfs::VfsError> {
-        self.store
-            .lock()
-            .expect("lock")
-            .insert(uri.raw_href.clone(), content.to_string());
-        Ok(())
+        let path = self.path_of(uri);
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|error| {
+                nomic_vfs::VfsError::Resolve(format!("Could not create parent: {error}"))
+            })?;
+        }
+        tokio::fs::write(&path, content)
+            .await
+            .map_err(|error| nomic_vfs::VfsError::Resolve(format!("Could not write: {error}")))
     }
 }
 
-fn mem_router() -> (std::sync::Arc<nomic_vfs::VfsRouter>, std::sync::Arc<MemVfs>) {
-    let mem = std::sync::Arc::new(MemVfs {
-        store: std::sync::Mutex::new(std::collections::HashMap::new()),
-    });
+/// mem:// 路由器 + 背书目录（测试直接向目录写文件布置数据）。
+fn mem_router() -> (std::sync::Arc<nomic_vfs::VfsRouter>, std::path::PathBuf) {
+    let dir = temp_dir();
     let mut router = nomic_vfs::VfsRouter::new();
-    router.mount(mem.clone());
-    (std::sync::Arc::new(router), mem)
+    router.mount(std::sync::Arc::new(MemVfs { dir: dir.clone() }));
+    (std::sync::Arc::new(router), dir)
 }
 
 fn skill_router(dir: &std::path::Path) -> std::sync::Arc<nomic_vfs::VfsRouter> {
@@ -148,7 +160,7 @@ async fn write_and_edit_reject_immutable_skill_uri() {
 
 #[tokio::test]
 async fn write_rejects_unknown_scheme_and_selectors() {
-    let (router, _mem) = mem_router();
+    let (router, _dir) = mem_router();
 
     let error = WriteTool::new()
         .with_vfs_router(router.clone())
@@ -183,7 +195,7 @@ async fn write_rejects_unknown_scheme_and_selectors() {
 
 #[tokio::test]
 async fn write_and_edit_roundtrip_writable_uri() {
-    let (router, mem) = mem_router();
+    let (router, dir) = mem_router();
 
     let result = WriteTool::new()
         .with_vfs_router(router.clone())
@@ -202,12 +214,8 @@ async fn write_and_edit_roundtrip_writable_uri() {
     };
     assert!(text.text.contains("Successfully wrote"), "{}", text.text);
     assert_eq!(
-        mem.store
-            .lock()
-            .expect("lock")
-            .get("mem://doc")
-            .map(String::as_str),
-        Some("alpha\nbeta\n")
+        std::fs::read_to_string(dir.join("doc")).expect("fs read"),
+        "alpha\nbeta\n"
     );
 
     let result = EditTool::new()
@@ -224,12 +232,8 @@ async fn write_and_edit_roundtrip_writable_uri() {
         .await
         .expect("edit");
     assert_eq!(
-        mem.store
-            .lock()
-            .expect("lock")
-            .get("mem://doc")
-            .map(String::as_str),
-        Some("alpha\nBETA\n")
+        std::fs::read_to_string(dir.join("doc")).expect("fs read"),
+        "alpha\nBETA\n"
     );
     let details = result.details.expect("details");
     assert!(details["diff"].as_str().expect("diff").contains("-beta"));
@@ -245,11 +249,8 @@ async fn read_conflicts_selector_returns_conflict_regions() {
     std::fs::write(&base, "a\nb\nc\n").expect("write base");
     std::fs::write(&theirs, "a\nB-theirs\nc\n").expect("write theirs");
 
-    let (router, mem) = mem_router();
-    mem.store
-        .lock()
-        .expect("lock")
-        .insert("mem://ours".to_string(), "a\nB-ours\nc\n".to_string());
+    let (router, mem_dir) = mem_router();
+    std::fs::write(mem_dir.join("ours"), "a\nB-ours\nc\n").expect("write ours");
 
     let target = format!(
         "mem://ours:conflicts?base={}&theirs={}",
@@ -279,10 +280,7 @@ async fn read_conflicts_selector_returns_conflict_regions() {
     let theirs_clean = dir.join("theirs-clean.md");
     std::fs::write(&base_wide, "a\nb\nc\nd\ne\n").expect("write base");
     std::fs::write(&theirs_clean, "a\nb\nc\nD\ne\n").expect("write theirs");
-    mem.store
-        .lock()
-        .expect("lock")
-        .insert("mem://clean".to_string(), "a\nB\nc\nd\ne\n".to_string());
+    std::fs::write(mem_dir.join("clean"), "a\nB\nc\nd\ne\n").expect("write clean");
     let target = format!(
         "mem://clean:conflicts?base={}&theirs={}",
         base_wide.display(),
@@ -304,7 +302,8 @@ async fn read_conflicts_selector_returns_conflict_regions() {
 
 #[tokio::test]
 async fn read_conflicts_selector_requires_theirs() {
-    let (router, _mem) = mem_router();
+    let (router, mem_dir) = mem_router();
+    std::fs::write(mem_dir.join("ours"), "a\nb\nc\n").expect("write ours");
     let error = ReadTool::with_vfs_router(router)
         .execute(
             serde_json::from_value(serde_json::json!({"path": "mem://ours:conflicts"}))
@@ -475,19 +474,24 @@ async fn grep_accepts_uri_search_root() {
         .unwrap_err();
     assert!(error.to_string().contains("no meaning for grep"), "{error}");
 
-    // 虚拟资源（无底层路径）报错
-    let (mem_only, _mem) = mem_router();
-    let error = nomic_tools::GrepTool::new()
-        .with_vfs_router(mem_only)
+    // 目录化不变量（ADR-0043）：任何已挂载 scheme 都有背书路径，
+    // grep 直接搜索其内容
+    let (mem_router, mem_dir) = mem_router();
+    std::fs::write(mem_dir.join("doc"), "needle in a haystack\n").expect("write doc");
+    let result = nomic_tools::GrepTool::new()
+        .with_vfs_router(mem_router)
         .execute(
-            serde_json::from_value(serde_json::json!({"pattern": "x", "path": "mem://doc"}))
+            serde_json::from_value(serde_json::json!({"pattern": "needle", "path": "mem://doc"}))
                 .expect("params"),
             CancellationToken::new(),
             no_update(),
         )
         .await
-        .unwrap_err();
-    assert!(error.to_string().contains("virtual resource"), "{error}");
+        .expect("grep mem");
+    let nomic_ai::UserContent::Text(text) = &result.content[0] else {
+        panic!("expected text")
+    };
+    assert!(text.text.contains("needle"), "{}", text.text);
 }
 
 #[tokio::test]

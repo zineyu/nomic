@@ -80,8 +80,8 @@ pub async fn guard_writable<'a>(
 /// 把 URI 输入对齐到底层文件系统路径（grep 搜索根、bash `cd` 目标）。
 ///
 /// - 未挂载 / 非 URI 输入 → `Ok(None)`（调用方走原路径解析）；
-/// - 已挂载 → stat（纯元数据，不读内容）；有 `source_path` 则返回它，
-///   虚拟资源报错；
+/// - 已挂载 → stat（纯元数据，不读内容）后返回 `source_path`——目录化
+///   不变量下恒有值（ADR-0043）；
 /// - 尾挂选择器对搜索/执行无语义 → 明确报错而非静默忽略。
 pub async fn vfs_source_path(
     router: &VfsRouter,
@@ -102,9 +102,5 @@ pub async fn vfs_source_path(
         .stat(&clean)
         .await
         .map_err(|error| ToolError::new(error.to_string()))?;
-    meta.source_path.map(Some).ok_or_else(|| {
-        ToolError::new(format!(
-            "{tool} cannot use {clean}: it is a virtual resource not backed by a filesystem path."
-        ))
-    })
+    Ok(Some(meta.source_path))
 }

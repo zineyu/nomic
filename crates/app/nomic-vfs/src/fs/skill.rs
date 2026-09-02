@@ -1,32 +1,33 @@
-//! `skill://` VFS（ADR-0040 §协议目录，ADR-0042 VFS 化）。
+//! `skill://` 挂载：只读提示词资产（ADR-0040 §协议目录，ADR-0042 VFS 化，
+//! ADR-0043 目录化挂载）。
 //!
-//! 语义完全复用 [`SkillResolver::resolve_resource`]：host 段为 skill 名，
-//! path 段为根目录内相对子路径（词法防穿越由 resolver 保证）；
-//! 无子路径返回 `SKILL.md` 正文，目录返回渲染清单文档。
+//! 语义复用 [`SkillResolver`]：host 段为 skill 名（查表定位 backing
+//! root），path 段为根目录内相对子路径（词法防穿越由 resolver 保证）；
+//! 根经 `index` 钩子映射到 SKILL.md——read/stat 以索引文件代表目录，
+//! list 仍列根目录条目。`transform` 钩子把根读出的内容替换为去
+//! frontmatter 的正文并附加 `details.source` 标注。
 //! 只读：skill 是提示词资产，agent 不应直接改写（ADR-0040 §8.1）。
 
-use async_trait::async_trait;
+use std::path::PathBuf;
+
 use nomic_skills::{SKILL_SCHEME, Skill, SkillResolver, SkillResource};
 
-use crate::fs::{MAX_LISTING_ENTRIES, content_type_for, dir_entries};
+use crate::mount::{DirMount, Mount};
 use crate::parse::InternalUri;
-use crate::vfs::{
-    ContentType, UrlCompletion, Vfs, VfsCapabilities, VfsEntry, VfsError, VfsFile, VfsMetadata,
-    render_listing,
-};
+use crate::vfs::{UrlCompletion, VfsCapabilities, VfsError, VfsFile, VfsKind};
 
-/// `skill://<name>[/<path>]` VFS。
-pub struct SkillVfs {
+/// `skill://` 的挂载声明。
+pub struct SkillMount {
     resolver: SkillResolver,
 }
 
-impl std::fmt::Debug for SkillVfs {
+impl std::fmt::Debug for SkillMount {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SkillVfs").finish_non_exhaustive()
+        f.debug_struct("SkillMount").finish_non_exhaustive()
     }
 }
 
-impl SkillVfs {
+impl SkillMount {
     /// 以会话的 skill resolver 构造。
     #[must_use]
     pub const fn new(resolver: SkillResolver) -> Self {
@@ -34,7 +35,7 @@ impl SkillVfs {
     }
 
     /// 解析 URI 目标为（skill 名，根内相对子路径）；空 / `"."` 子路径
-    /// 退化为正文（`None`）。与 ADR-0040 时代 read.rs 的特判一致。
+    /// 退化为根（`None`）。
     fn target(uri: &InternalUri) -> Result<(&str, Option<&str>), VfsError> {
         let name = uri.raw_host.as_str();
         if name.is_empty() {
@@ -48,18 +49,9 @@ impl SkillVfs {
         };
         Ok((name, rel))
     }
-
-    /// 经 resolver 定位资源；错误附带原始 href 上下文。
-    fn locate(&self, uri: &InternalUri) -> Result<SkillResource, VfsError> {
-        let (name, rel) = Self::target(uri)?;
-        self.resolver.resolve_resource(name, rel).map_err(|error| {
-            VfsError::Resolve(format!("Could not resolve {}. {error}", uri.raw_href))
-        })
-    }
 }
 
-#[async_trait]
-impl Vfs for SkillVfs {
+impl Mount for SkillMount {
     fn scheme(&self) -> &'static str {
         "skill"
     }
@@ -68,80 +60,61 @@ impl Vfs for SkillVfs {
         VfsCapabilities::READ_ONLY_COMPLETION
     }
 
-    async fn stat(&self, uri: &InternalUri) -> Result<VfsMetadata, VfsError> {
-        match self.locate(uri)? {
-            SkillResource::Instructions(skill) => {
-                let mut meta = VfsMetadata::file(ContentType::Markdown, Some(skill.path.clone()));
-                meta.size = Some(skill.document.body.len());
-                Ok(meta)
-            }
-            SkillResource::File { path, .. } => {
-                Ok(VfsMetadata::file(content_type_for(&path), Some(path)))
-            }
-            SkillResource::Directory { path, .. } => Ok(VfsMetadata::directory(Some(path))),
-        }
-    }
-
-    async fn read(&self, uri: &InternalUri) -> Result<VfsFile, VfsError> {
-        let (_, rel) = Self::target(uri)?;
-        match self.locate(uri)? {
-            SkillResource::Instructions(skill) => {
-                let meta = VfsMetadata::file(ContentType::Markdown, Some(skill.path.clone()));
-                let mut file =
-                    VfsFile::text(uri.raw_href.clone(), skill.document.body.clone(), meta);
-                file.details = Some(skill_details(&uri.raw_href, &skill, None));
-                Ok(file)
-            }
-            SkillResource::File { skill, path } => {
-                let content = tokio::fs::read_to_string(&path).await.map_err(|error| {
-                    VfsError::Resolve(format!("Could not resolve {}. {error}", uri.raw_href))
-                })?;
-                let meta = VfsMetadata::file(content_type_for(&path), Some(path));
-                let mut file = VfsFile::text(uri.raw_href.clone(), content, meta);
-                file.details = Some(skill_details(&uri.raw_href, &skill, rel));
-                Ok(file)
-            }
-            SkillResource::Directory { skill, path } => {
-                let entries = dir_entries(&path, MAX_LISTING_ENTRIES)
-                    .await
-                    .map_err(|error| {
-                        VfsError::Resolve(format!("Could not resolve {}. {error}", uri.raw_href))
-                    })?;
-                let meta = VfsMetadata::directory(Some(path));
-                let mut file = VfsFile::text(uri.raw_href.clone(), render_listing(&entries), meta);
-                // 目录清单的 resource 标注带尾随 `/`（ADR-0040 时代 read.rs 的既有契约）
-                let listed = rel.map(|r| format!("{}/", r.trim_end_matches('/')));
-                file.details = Some(skill_details(&uri.raw_href, &skill, listed.as_deref()));
-                Ok(file)
-            }
-        }
-    }
-
-    async fn list(&self, uri: &InternalUri) -> Result<Vec<VfsEntry>, VfsError> {
+    fn locate(&self, uri: &InternalUri) -> Result<PathBuf, VfsError> {
         let (name, rel) = Self::target(uri)?;
-        // 根（`skill://<name>`）经 resolver 退化为正文资源，但对 list 而言
-        // 应视作 skill 根目录。
-        if rel.is_none() {
-            let skill = self.resolver.resolve(name).map_err(|error| {
-                VfsError::Resolve(format!("Could not resolve {}. {error}", uri.raw_href))
-            })?;
-            return dir_entries(&skill.root, MAX_LISTING_ENTRIES)
-                .await
-                .map_err(|error| {
-                    VfsError::Resolve(format!("Could not resolve {}. {error}", uri.raw_href))
-                });
+        let resolve_error = |error: nomic_skills::SkillsError| {
+            VfsError::Resolve(format!("Could not resolve {}. {error}", uri.raw_href))
+        };
+        match rel {
+            // 根：backing 路径为 skill 根目录；read/stat 经 index 钩子
+            // 展开到 SKILL.md，list 列根目录条目
+            None => self
+                .resolver
+                .resolve(name)
+                .map(|skill| skill.root)
+                .map_err(resolve_error),
+            Some(rel) => match self
+                .resolver
+                .resolve_resource(name, Some(rel))
+                .map_err(resolve_error)?
+            {
+                SkillResource::File { path, .. } | SkillResource::Directory { path, .. } => {
+                    Ok(path)
+                }
+                // rel 非空时 resolver 不返回 Instructions；防御性落到根目录
+                SkillResource::Instructions(skill) => Ok(skill.root),
+            },
         }
-        match self.locate(uri)? {
-            SkillResource::Directory { path, .. } => dir_entries(&path, MAX_LISTING_ENTRIES)
-                .await
-                .map_err(|error| {
-                    VfsError::Resolve(format!("Could not resolve {}. {error}", uri.raw_href))
-                }),
-            _ => Err(VfsError::Resolve(format!(
-                "{} is a file, not a directory.",
-                uri.raw_href
-            ))),
+    }
+
+    fn index(&self, uri: &InternalUri) -> Option<&'static str> {
+        // 索引仅对根生效：子目录即使含 SKILL.md 也仍是普通清单
+        match Self::target(uri) {
+            Ok((_, None)) => Some("SKILL.md"),
+            _ => None,
         }
+    }
+
+    fn transform(&self, uri: &InternalUri, file: VfsFile) -> VfsFile {
+        let Ok((name, rel)) = Self::target(uri) else {
+            return file;
+        };
+        let Ok(skill) = self.resolver.resolve(name) else {
+            return file;
+        };
+        let mut file = file;
+        let resource = match (rel, file.meta.kind) {
+            // 根（索引文件）：内容替换为去 frontmatter 的正文
+            (None, _) => {
+                file.content.clone_from(&skill.document.body);
+                None
+            }
+            // 目录清单的 resource 标注带尾随 `/`
+            (Some(rel), VfsKind::Directory) => Some(format!("{}/", rel.trim_end_matches('/'))),
+            (Some(rel), VfsKind::File) => Some(rel.to_string()),
+        };
+        file.details = Some(skill_details(&uri.raw_href, &skill, resource.as_deref()));
+        file
     }
 
     fn complete(&self, _query: &str) -> Vec<UrlCompletion> {
@@ -158,7 +131,19 @@ impl Vfs for SkillVfs {
     }
 }
 
-/// `details.source` 的 skill 标注（与 ADR-0040 时代 read.rs 的字段形状一致）。
+/// `skill://<name>[/<path>]` VFS：skill 根目录的只读目录化挂载
+///（ADR-0043）。
+pub type SkillVfs = DirMount<SkillMount>;
+
+impl DirMount<SkillMount> {
+    /// 以会话的 skill resolver 构造。
+    #[must_use]
+    pub const fn new(resolver: SkillResolver) -> Self {
+        Self::from_decl(SkillMount::new(resolver))
+    }
+}
+
+/// `details.source` 的 skill 标注。
 fn skill_details(uri: &str, skill: &Skill, resource: Option<&str>) -> serde_json::Value {
     serde_json::json!({
         "source": {
@@ -176,7 +161,7 @@ fn skill_details(uri: &str, skill: &Skill, resource: Option<&str>) -> serde_json
 mod tests {
     use super::*;
     use crate::parse::parse_internal_uri;
-    use crate::vfs::VfsKind;
+    use crate::vfs::{ContentType, Vfs, VfsEntry};
     use nomic_skills::{ProjectDiscovery, SkillRoot, SkillScope};
     use tempfile::TempDir;
 
@@ -223,7 +208,7 @@ mod tests {
         let file = vfs.read(&uri("skill://demo")).await.expect("instructions");
         assert_eq!(file.content, "demo body");
         assert_eq!(file.meta.content_type, ContentType::Markdown);
-        assert!(file.meta.source_path.expect("path").ends_with("SKILL.md"));
+        assert!(file.meta.source_path.ends_with("SKILL.md"));
         assert_eq!(
             file.details.as_ref().expect("details")["source"]["name"].as_str(),
             Some("demo")
@@ -258,14 +243,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stat_reports_kind_without_content() {
+    async fn stat_reports_backing_file_facts() {
         let fixture = fixture();
         let vfs = &fixture.vfs;
 
+        // 根经索引展开为 SKILL.md；stat 报告背书文件的事实（不应用
+        // 内容变换——size 为原始文件字节数，ADR-0043 §语义对齐）
         let meta = vfs.stat(&uri("skill://demo")).await.expect("instructions");
         assert_eq!(meta.kind, VfsKind::File);
         assert_eq!(meta.content_type, ContentType::Markdown);
-        assert_eq!(meta.size, Some("demo body".len()));
+        assert_eq!(
+            meta.size,
+            Some("---\ndescription: Demo skill\n---\ndemo body".len())
+        );
 
         let meta = vfs.stat(&uri("skill://demo/scripts")).await.expect("dir");
         assert_eq!(meta.kind, VfsKind::Directory);

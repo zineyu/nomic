@@ -98,8 +98,9 @@ pub struct VfsMetadata {
     pub kind: VfsKind,
     /// 内容类别（目录清单恒为 [`ContentType::Plain`]）
     pub content_type: ContentType,
-    /// 底层文件系统路径（grep/bash 用；虚拟资源为 `None`）
-    pub source_path: Option<PathBuf>,
+    /// 底层文件系统路径（grep/bash 用）。目录化不变量下恒有值：
+    /// 每个挂载的 scheme 都有 backing root（ADR-0043）。
+    pub source_path: PathBuf,
     /// 单个资源的不可变覆盖；`None` = 用 VFS 默认 + 目录规则（router 盖章）
     pub immutable: Option<bool>,
     /// 内容字节数（已知时）
@@ -109,7 +110,7 @@ pub struct VfsMetadata {
 impl VfsMetadata {
     /// 便捷构造：文件元数据。
     #[must_use]
-    pub const fn file(content_type: ContentType, source_path: Option<PathBuf>) -> Self {
+    pub const fn file(content_type: ContentType, source_path: PathBuf) -> Self {
         Self {
             kind: VfsKind::File,
             content_type,
@@ -121,7 +122,7 @@ impl VfsMetadata {
 
     /// 便捷构造：目录元数据。
     #[must_use]
-    pub const fn directory(source_path: Option<PathBuf>) -> Self {
+    pub const fn directory(source_path: PathBuf) -> Self {
         Self {
             kind: VfsKind::Directory,
             content_type: ContentType::Plain,

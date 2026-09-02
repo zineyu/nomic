@@ -56,6 +56,11 @@ impl Mount for NixMount {
         self.resolve_path(uri)
     }
 
+    fn describe(&self) -> &'static str {
+        "workspace nix environment definition; nix://shell maps to .nomic/flake.nix \
+         (write it to install tools into the bash environment)"
+    }
+
     fn not_found(&self, uri: &InternalUri, path: &Path, _error: &std::io::Error) -> VfsError {
         VfsError::Resolve(format!(
             "Could not resolve {}: {} does not exist yet. \

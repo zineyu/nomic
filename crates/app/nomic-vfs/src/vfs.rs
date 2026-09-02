@@ -259,4 +259,11 @@ pub trait Vfs: Send + Sync {
     fn complete(&self, _query: &str) -> Vec<UrlCompletion> {
         Vec::new()
     }
+
+    /// 系统提示词用的一行语义描述（`None` = 不进提示词）。
+    /// 目录化挂载（[`crate::DirMount`]）恒有描述——模型必须知道已挂载
+    /// 的 prefix；即席/测试 VFS 可保持隐藏。
+    fn describe(&self) -> Option<&'static str> {
+        None
+    }
 }

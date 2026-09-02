@@ -30,6 +30,7 @@ nomic-prompts.workspace = true
 nomic-session.workspace = true
 nomic-skills.workspace = true
 nomic-tools.workspace = true
+nomic-vfs.workspace = true
 png.workspace = true
 pulldown-cmark.workspace = true
 ratatui.workspace = true

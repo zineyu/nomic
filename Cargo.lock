@@ -2311,6 +2311,7 @@ dependencies = [
  "nomic-session",
  "nomic-skills",
  "nomic-tools",
+ "nomic-vfs",
  "png",
  "pulldown-cmark",
  "ratatui",

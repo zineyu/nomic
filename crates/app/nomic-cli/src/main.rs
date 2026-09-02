@@ -21,6 +21,7 @@ mod picker;
 mod print;
 mod sessions;
 mod settings;
+mod system_prompt;
 mod tui;
 mod web;
 

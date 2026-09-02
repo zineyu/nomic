@@ -66,6 +66,10 @@ pub trait Mount: Send + Sync {
         true
     }
 
+    /// 系统提示词用的一行语义描述（必填——模型必须知道已挂载的
+    /// prefix；读写性由 router 渲染时按能力位附加）。
+    fn describe(&self) -> &'static str;
+
     /// 可选补全（语义同 [`Vfs::complete`]）：**必须快且本地**。实现
     /// 本方法的挂载必须让 [`VfsCapabilities::completion`] 为 `true`。
     fn complete(&self, _query: &str) -> Vec<UrlCompletion> {
@@ -227,5 +231,9 @@ impl<M: Mount> Vfs for DirMount<M> {
 
     fn complete(&self, query: &str) -> Vec<UrlCompletion> {
         self.decl.complete(query)
+    }
+
+    fn describe(&self) -> Option<&'static str> {
+        Some(self.decl.describe())
     }
 }

@@ -19,8 +19,29 @@ pub use nix::{NixMount, NixVfs};
 pub use skill::{SkillMount, SkillVfs};
 
 use std::path::Path;
+use std::sync::Arc;
 
+use nomic_skills::SkillResolver;
+
+use crate::root::WorkspaceRoot;
+use crate::router::VfsRouter;
 use crate::vfs::{ContentType, VfsEntry, VfsKind};
+
+/// 会话默认挂载表（ADR-0042/0043）：skill/local/nix 共享同一 workspace
+/// 根句柄（句柄更新即切换挂载视图，无需重建）。工具装配与系统提示词
+/// 目录渲染（[`VfsRouter::prompt_catalog`]）共用此函数，保证两侧
+/// 挂载集一致。
+///
+/// nix://shell 与 bash 工具的 env 缓存经文件 mtime 解耦（改写即失效
+/// 重解析，无需跨组件通知）。
+#[must_use]
+pub fn session_router(skill_resolver: SkillResolver, root: WorkspaceRoot) -> VfsRouter {
+    let mut router = VfsRouter::new();
+    router.mount(Arc::new(SkillVfs::new(skill_resolver)));
+    router.mount(Arc::new(LocalVfs::new(root.clone())));
+    router.mount(Arc::new(NixVfs::new(root)));
+    router
+}
 
 /// 目录清单 / 补全的条目数上限。
 pub(crate) const MAX_LISTING_ENTRIES: usize = 1000;

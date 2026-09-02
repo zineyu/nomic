@@ -62,6 +62,11 @@ impl Mount for LocalMount {
         self.resolve_path(uri)
     }
 
+    fn describe(&self) -> &'static str {
+        "files and directories inside the session workspace \
+         (local:// alone lists the root; paths must stay inside the workspace)"
+    }
+
     fn complete(&self, query: &str) -> Vec<UrlCompletion> {
         let Some(root) = self
             .root

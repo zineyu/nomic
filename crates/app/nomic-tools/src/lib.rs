@@ -139,21 +139,11 @@ pub fn default_tools_with_skills_in_shared(
     todo_store: TodoStore,
     question_sink: std::sync::Arc<dyn QuestionSink>,
 ) -> Vec<nomic_core::DynTool> {
-    // 会话级 VFS 挂载表（ADR-0042）：工具共享同一实例，VFS 后端
-    // 在构造期注入。后续协议（artifact/history…）在此追加挂载。
-    let mut vfs_router = nomic_vfs::VfsRouter::new();
-    vfs_router.mount(std::sync::Arc::new(nomic_vfs::fs::SkillVfs::new(
-        skill_resolver,
-    )));
-    vfs_router.mount(std::sync::Arc::new(nomic_vfs::fs::LocalVfs::new(
-        base.clone(),
-    )));
-    // nix://shell：workspace nix 环境定义（ADR-0041），与下方 BashTool 的
-    // env 缓存经文件 mtime 解耦（改写即失效重解析，无需跨组件通知）
-    vfs_router.mount(std::sync::Arc::new(nomic_vfs::fs::NixVfs::new(
-        base.clone(),
-    )));
-    let vfs_router = std::sync::Arc::new(vfs_router);
+    // 会话级 VFS 挂载表（ADR-0042/0043）：工具共享同一实例，装配与
+    // 系统提示词目录渲染共用 fs::session_router，保证两侧挂载集一致。
+    // 后续协议（artifact/history…）在 session_router 中追加挂载。
+    let vfs_router =
+        std::sync::Arc::new(nomic_vfs::fs::session_router(skill_resolver, base.clone()));
     let nix_env = nix_env::NixEnvCache::new();
     prewarm_nix_env(&nix_env, base);
     vec![

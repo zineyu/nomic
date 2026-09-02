@@ -95,6 +95,11 @@ impl Mount for SkillMount {
         }
     }
 
+    fn describe(&self) -> &'static str {
+        "skill instructions and resources; skill://<name> reads the SKILL.md body, \
+         skill://<name>/<path> reads a file inside the skill directory"
+    }
+
     fn transform(&self, uri: &InternalUri, file: VfsFile) -> VfsFile {
         let Ok((name, rel)) = Self::target(uri) else {
             return file;

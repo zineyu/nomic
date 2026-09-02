@@ -114,6 +114,29 @@ impl VfsRouter {
         schemes
     }
 
+    /// 系统提示词用的内部 URI 目录：各挂载的一行描述（prefix + 语义 +
+    /// 读写性，按 scheme 升序）。未提供描述的挂载不入列；全空返回
+    /// `None`（调用方省略整个提示词块）。
+    #[must_use]
+    pub fn prompt_catalog(&self) -> Option<String> {
+        let mut lines: Vec<String> = self
+            .mounts
+            .values()
+            .filter_map(|vfs| {
+                vfs.describe().map(|desc| {
+                    let access = if vfs.capabilities().writable {
+                        "read-write"
+                    } else {
+                        "read-only"
+                    };
+                    format!("- {}:// — {desc} ({access})", vfs.scheme())
+                })
+            })
+            .collect();
+        lines.sort_unstable();
+        (!lines.is_empty()).then(|| lines.join("\n"))
+    }
+
     /// immutable 盖章：单资源覆盖优先；否则只读 VFS 全量不可变，
     /// 目录清单（派生内容）恒不可变。
     fn stamp(meta: &mut VfsMetadata, vfs: &dyn Vfs) {
@@ -390,5 +413,63 @@ mod tests {
                 .contains("does not support directory listing"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn prompt_catalog_lists_described_mounts_sorted() {
+        struct DescribedVfs {
+            scheme: &'static str,
+            writable: bool,
+        }
+        #[async_trait]
+        impl Vfs for DescribedVfs {
+            fn scheme(&self) -> &'static str {
+                self.scheme
+            }
+            fn capabilities(&self) -> VfsCapabilities {
+                VfsCapabilities {
+                    writable: self.writable,
+                    immutable: !self.writable,
+                    completion: false,
+                }
+            }
+            async fn stat(&self, _uri: &InternalUri) -> Result<VfsMetadata, VfsError> {
+                Ok(VfsMetadata::directory(PathBuf::from("/static")))
+            }
+            async fn read(&self, uri: &InternalUri) -> Result<VfsFile, VfsError> {
+                Ok(VfsFile::text(
+                    uri.raw_href.clone(),
+                    "",
+                    VfsMetadata::directory(PathBuf::from("/static")),
+                ))
+            }
+            fn describe(&self) -> Option<&'static str> {
+                Some("described mount")
+            }
+        }
+
+        // 全部无描述 → None（调用方省略提示词块）
+        let empty_catalog = router().prompt_catalog();
+
+        let mut router = VfsRouter::new();
+        router.mount(Arc::new(DescribedVfs {
+            scheme: "zeta",
+            writable: true,
+        }));
+        router.mount(Arc::new(DescribedVfs {
+            scheme: "alpha",
+            writable: false,
+        }));
+        // 无描述的挂载（StaticVfs/WritableVfs）不入列
+        router.mount(Arc::new(WritableVfs));
+
+        let catalog = router.prompt_catalog().expect("catalog");
+        assert_eq!(
+            catalog,
+            "- alpha:// — described mount (read-only)\n- zeta:// — described mount (read-write)"
+        );
+
+        // 全部无描述 → None（调用方省略提示词块）
+        assert_eq!(empty_catalog, None);
     }
 }

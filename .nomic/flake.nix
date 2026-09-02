@@ -27,6 +27,9 @@
               curl
               git
               gh
+              jujutsu
+              devenv
+              gnupg
             ];
           };
         }

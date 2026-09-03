@@ -88,7 +88,7 @@ async fn open_creates_schema_and_is_idempotent() {
 }
 
 #[tokio::test]
-async fn create_session_binds_workspace_and_null_timestamps() {
+async fn create_session_binds_project_and_null_timestamps() {
     let store = SessionStore::in_memory().await.unwrap();
     let id_a = store.create_session("/tmp/project-a").await.unwrap();
     let id_b = store.create_session("/tmp/project-b").await.unwrap();
@@ -96,18 +96,18 @@ async fn create_session_binds_workspace_and_null_timestamps() {
     assert_ne!(id_a, id_b, "session id 应互不相同");
     uuid::Uuid::parse_str(&id_a).expect("session id 应为合法 UUID");
 
-    // 无 user 消息的 session 不进入列表口径；归属经 workspace 查询验证
+    // 无 user 消息的 session 不进入列表口径；归属经 project 查询验证
     assert!(store.list_sessions().await.unwrap().is_empty());
-    let workspace_a = store.workspace_of_session(&id_a).await.unwrap().unwrap();
-    assert_eq!(workspace_a.path, Path::new("/tmp/project-a"));
+    let project_a = store.project_of_session(&id_a).await.unwrap().unwrap();
+    assert_eq!(project_a.path, Path::new("/tmp/project-a"));
 
-    // 同一路径创建第二个 session：复用同一 workspace，不重复登记
+    // 同一路径创建第二个 session：复用同一 project，不重复登记
     let id_a2 = store.create_session("/tmp/project-a").await.unwrap();
-    let workspace_a2 = store.workspace_of_session(&id_a2).await.unwrap().unwrap();
-    assert_eq!(workspace_a2.id, workspace_a.id);
-    let workspaces = store.list_workspaces().await.unwrap();
-    assert_eq!(workspaces.len(), 2);
-    let wa = workspaces.iter().find(|w| w.id == workspace_a.id).unwrap();
+    let project_a2 = store.project_of_session(&id_a2).await.unwrap().unwrap();
+    assert_eq!(project_a2.id, project_a.id);
+    let projects = store.list_projects().await.unwrap();
+    assert_eq!(projects.len(), 2);
+    let wa = projects.iter().find(|w| w.id == project_a.id).unwrap();
     assert_eq!(wa.path, Path::new("/tmp/project-a"));
     assert_eq!(wa.session_count, 0, "空壳 session 不计入统计");
     assert!(wa.last_active_at.is_some(), "创建 session 推进活跃时间");
@@ -119,12 +119,12 @@ async fn create_session_binds_workspace_and_null_timestamps() {
         .unwrap();
     let summaries = store.list_sessions().await.unwrap();
     let a = summaries.iter().find(|s| s.id == id_a).unwrap();
-    assert_eq!(a.workspace, Path::new("/tmp/project-a"));
+    assert_eq!(a.project, Path::new("/tmp/project-a"));
     assert_eq!(a.first_message_at, Some(1_000));
     assert_eq!(a.last_message_at, Some(1_000));
     assert_eq!(a.message_count, 1);
-    let workspaces = store.list_workspaces().await.unwrap();
-    let wa = workspaces.iter().find(|w| w.id == workspace_a.id).unwrap();
+    let projects = store.list_projects().await.unwrap();
+    let wa = projects.iter().find(|w| w.id == project_a.id).unwrap();
     assert_eq!(wa.session_count, 1);
 }
 

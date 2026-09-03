@@ -151,9 +151,9 @@
 3. **T6 的 mention 语法**：nomic 已有 `@skill:`/`@file:` mention 体系（含 chat
    折叠、web 端）。初版以 URI 形式等价并入，随后按评审意见**收敛为仅
    `@skill://`**（旧式 `@skill:` 不再触发补全/展开，原样保留文本）。
-4. **T9 落地为 `local://`**：`LocalProtocolHandler`（workspace 根词法防穿越、
-   目录清单派生内容盖不可变章、workspace 路径补全）。为承载共享 workspace
-   根句柄，`BaseDir` 本体移至 `nomic-uri`（更名 `WorkspaceRoot`），
+4. **T9 落地为 `local://`**：`LocalProtocolHandler`（project 根词法防穿越、
+   目录清单派生内容盖不可变章、project 路径补全）。为承载共享 project
+   根句柄，`BaseDir` 本体移至 `nomic-uri`（更名 `ProjectRoot`），
    `nomic-tools::base` 保留别名与路径解析助手（零调用方扰动）。
    另修闸语义：可写协议允许写入不存在的目标（write 新建），edit 对不存在的
    目标报「先用 write 创建」。

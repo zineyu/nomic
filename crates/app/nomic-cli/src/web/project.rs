@@ -1,8 +1,8 @@
-//! web 模式的 workspace 与 session 生命周期管理：[`Runtime`] 上的相关方法。
+//! web 模式的 project 与 session 生命周期管理：[`Runtime`] 上的相关方法。
 //!
-//! workspace 是文件系统路径的一等实体（见 nomic-session 迁移 0005）：session
-//! 创建时绑定 workspace，其所有操作以 workspace 路径为基准。这里的方法负责
-//! 「按用户指定目录创建 session」「显式登记 workspace」与「删除 / 重命名」，
+//! project 是文件系统路径的一等实体（见 nomic-session 迁移 0005）：session
+//! 创建时绑定 project，其所有操作以 project 路径为基准。这里的方法负责
+//! 「按用户指定目录创建 session」「显式登记 project」与「删除 / 重命名」，
 //! 并对用户输入的目录做存在性校验——不存在的目录返回 `BadRequest`，不静默
 //! 登记无效路径。删除同时摘除注册表中对应的运行时（取消在途运行并关停，
 //! 见 [`SessionRuntime::shutdown`](super::SessionRuntime::shutdown)）。
@@ -16,22 +16,22 @@ use super::{Runtime, SessionRuntime};
 impl Runtime {
     /// 新建一个 session：落库（可用时）+ 以进程默认模型构建 SessionRuntime。
     ///
-    /// 必须指定归属目录（无默认 workspace）：session 归属该目录对应的
-    /// workspace（不存在则登记），工具基准取该目录的规范化路径。
+    /// 必须指定归属目录（无默认 project）：session 归属该目录对应的
+    /// project（不存在则登记），工具基准取该目录的规范化路径。
     /// 指定的目录不存在或不是目录时返回 `BadRequest`，不会静默登记无效路径。
     pub(crate) async fn create_session(
         &self,
-        workspace: &Path,
+        project: &Path,
     ) -> Result<Arc<SessionRuntime>, ApiError> {
-        let base = std::fs::canonicalize(workspace)
-            .map_err(|_| ApiError::BadRequest(format!("目录不存在：{}", workspace.display())))?;
+        let base = std::fs::canonicalize(project)
+            .map_err(|_| ApiError::BadRequest(format!("目录不存在：{}", project.display())))?;
         if !base.is_dir() {
             return Err(ApiError::BadRequest(format!(
                 "不是目录：{}",
                 base.display()
             )));
         }
-        // workspace 首次初始化：惰性生成默认 nix 环境定义（仅 nix 可用时；
+        // project 首次初始化：惰性生成默认 nix 环境定义（仅 nix 可用时；
         // ADR-0041）。失败不阻断，bash 会回退宿主环境
         if let Err(error) = nomic_tools::nix_env::ensure_default_flake(&base) {
             tracing::warn!(%error, "创建默认 nix 环境定义失败");
@@ -44,7 +44,7 @@ impl Runtime {
             .factory
             .resolve_session_model(self.store.as_ref(), &id)
             .await;
-        // 新 session 归属于 base 对应的 workspace：工具基准即 base
+        // 新 session 归属于 base 对应的 project：工具基准即 base
         let session = self.factory.build(
             self.store.clone(),
             id.clone(),
@@ -60,24 +60,24 @@ impl Runtime {
         Ok(session)
     }
 
-    /// 列出全部 workspace 摘要（store 不可用时报错）。
-    pub(crate) async fn list_workspaces(
+    /// 列出全部 project 摘要（store 不可用时报错）。
+    pub(crate) async fn list_projects(
         &self,
-    ) -> Result<Vec<nomic_session::WorkspaceSummary>, ApiError> {
+    ) -> Result<Vec<nomic_session::ProjectSummary>, ApiError> {
         let Some(store) = &self.store else {
             return Err(ApiError::StoreUnavailable);
         };
-        Ok(store.list_workspaces().await?)
+        Ok(store.list_projects().await?)
     }
 
-    /// 登记一个 workspace（按路径查或插，幂等），返回其 id 与规范化路径。
+    /// 登记一个 project（按路径查或插，幂等），返回其 id 与规范化路径。
     ///
     /// 目录不存在或不是目录时返回 `BadRequest`：避免把用户输错的路径
-    /// 静默登记成 workspace。
-    pub(crate) async fn create_workspace(
+    /// 静默登记成 project。
+    pub(crate) async fn create_project(
         &self,
         path: &Path,
-    ) -> Result<nomic_session::Workspace, ApiError> {
+    ) -> Result<nomic_session::Project, ApiError> {
         let Some(store) = &self.store else {
             return Err(ApiError::StoreUnavailable);
         };
@@ -93,7 +93,7 @@ impl Runtime {
         if let Err(error) = nomic_tools::nix_env::ensure_default_flake(&canonical) {
             tracing::warn!(%error, "创建默认 nix 环境定义失败");
         }
-        Ok(store.get_or_create_workspace(&canonical).await?)
+        Ok(store.get_or_create_project(&canonical).await?)
     }
 
     /// 删除 session：摘除注册表中的运行时（在途运行取消、转发任务关停）
@@ -134,11 +134,11 @@ impl Runtime {
         }
     }
 
-    /// 删除 workspace：默认拒绝非空（`BadRequest`，前端据此弹级联确认后
-    /// 以 `force` 重试）；删除后摘除注册表中属于该 workspace 的全部
+    /// 删除 project：默认拒绝非空（`BadRequest`，前端据此弹级联确认后
+    /// 以 `force` 重试）；删除后摘除注册表中属于该 project 的全部
     /// session 运行时（含未落库口径外的空壳），返回被摘除的 session id
     /// 列表（向正在查看这些 session 的客户端广播用）。
-    pub(crate) async fn delete_workspace(
+    pub(crate) async fn delete_project(
         &self,
         id: &str,
         force: bool,
@@ -146,22 +146,22 @@ impl Runtime {
         let Some(store) = &self.store else {
             return Err(ApiError::StoreUnavailable);
         };
-        let Some(workspace) = store.workspace(id).await? else {
-            return Err(ApiError::NotFound(format!("workspace {id} not found")));
+        let Some(project) = store.project(id).await? else {
+            return Err(ApiError::NotFound(format!("project {id} not found")));
         };
-        match store.delete_workspace(id, force).await {
+        match store.delete_project(id, force).await {
             Ok(_) => {}
-            Err(error @ nomic_session::SessionError::WorkspaceNotEmpty { .. }) => {
+            Err(error @ nomic_session::SessionError::ProjectNotEmpty { .. }) => {
                 return Err(ApiError::BadRequest(format!("{error}")));
             }
             Err(error) => return Err(error.into()),
         }
-        // 按路径匹配摘除该 workspace 名下的运行时（registry 不持 workspace
-        // id，SessionRuntime.workspace 与 Workspace.path 同为规范化路径）
+        // 按路径匹配摘除该 project 名下的运行时（registry 不持 project
+        // id，SessionRuntime.project 与 Project.path 同为规范化路径）
         let mut sessions = self.sessions.lock().await;
         let stale: Vec<String> = sessions
             .iter()
-            .filter(|(_, session)| session.workspace == workspace.path)
+            .filter(|(_, session)| session.project == project.path)
             .map(|(id, _)| id.clone())
             .collect();
         let mut removed = Vec::with_capacity(stale.len());
@@ -200,45 +200,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_session_in_specified_workspace() {
+    async fn create_session_in_specified_project() {
         let state = test_state().await;
         let dir = tempfile::tempdir().expect("tempdir");
         let created = state
             .inner
             .create_session(dir.path())
             .await
-            .expect("create session in workspace");
+            .expect("create session in project");
         let canonical = std::fs::canonicalize(dir.path()).expect("canonical");
         assert_eq!(
-            created.workspace, canonical,
-            "session 操作基准应取 workspace 的规范化路径"
+            created.project, canonical,
+            "session 操作基准应取 project 的规范化路径"
         );
         let store = state.inner.store.as_ref().expect("store");
         assert_eq!(
             store
-                .session_workspace_path(&created.id)
+                .session_project_path(&created.id)
                 .await
-                .expect("workspace path"),
+                .expect("project path"),
             canonical,
         );
-        // 同一路径再建 session：复用同一 workspace（get-or-create）
+        // 同一路径再建 session：复用同一 project（get-or-create）
         let another = state
             .inner
             .create_session(dir.path())
             .await
             .expect("second session");
-        let first = store.workspace_of_session(&created.id).await.expect("w1");
-        let second = store.workspace_of_session(&another.id).await.expect("w2");
-        assert_eq!(first.expect("workspace").id, second.expect("workspace").id,);
+        let first = store.project_of_session(&created.id).await.expect("w1");
+        let second = store.project_of_session(&another.id).await.expect("w2");
+        assert_eq!(first.expect("project").id, second.expect("project").id,);
     }
 
-    /// 系统提示词按 session 的 workspace 构建：workspace 祖先链上的
-    /// AGENTS.md 注入提示词，cwd 脚注同为 workspace（严格归属）。
+    /// 系统提示词按 session 的 project 构建：project 祖先链上的
+    /// AGENTS.md 注入提示词，cwd 脚注同为 project（严格归属）。
     #[tokio::test]
-    async fn create_session_builds_system_prompt_from_workspace() {
+    async fn create_session_builds_system_prompt_from_project() {
         let state = test_state().await;
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("AGENTS.md"), "workspace 专属规则").expect("write");
+        std::fs::write(dir.path().join("AGENTS.md"), "project 专属规则").expect("write");
         let created = state
             .inner
             .create_session(dir.path())
@@ -248,8 +248,8 @@ mod tests {
         // 查询无需 flush 屏障
         let prompt = created.handle.system_prompt().expect("查询应成功");
         assert!(
-            prompt.contains("workspace 专属规则"),
-            "workspace 的 AGENTS.md 应注入：{prompt}"
+            prompt.contains("project 专属规则"),
+            "project 的 AGENTS.md 应注入：{prompt}"
         );
         let canonical = std::fs::canonicalize(dir.path()).expect("canonical");
         assert!(
@@ -257,7 +257,7 @@ mod tests {
                 "Current working directory: {}",
                 canonical.display()
             )),
-            "cwd 脚注应为 session 的 workspace：{prompt}"
+            "cwd 脚注应为 session 的 project：{prompt}"
         );
     }
 
@@ -275,41 +275,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_workspace_is_idempotent_and_validates_dir() {
+    async fn create_project_is_idempotent_and_validates_dir() {
         let state = test_state().await;
         let dir = tempfile::tempdir().expect("tempdir");
         let first = state
             .inner
-            .create_workspace(dir.path())
+            .create_project(dir.path())
             .await
-            .expect("create workspace");
+            .expect("create project");
         let second = state
             .inner
-            .create_workspace(dir.path())
+            .create_project(dir.path())
             .await
             .expect("create again");
-        assert_eq!(first.id, second.id, "同一路径应复用同一 workspace");
+        assert_eq!(first.id, second.id, "同一路径应复用同一 project");
         let result = state
             .inner
-            .create_workspace(Path::new("/nonexistent/nomic-test-dir"))
+            .create_project(Path::new("/nonexistent/nomic-test-dir"))
             .await;
         assert!(matches!(result, Err(ApiError::BadRequest(_))));
     }
 
     #[tokio::test]
-    async fn list_workspaces_includes_registered() {
+    async fn list_projects_includes_registered() {
         let state = test_state().await;
         let dir = tempfile::tempdir().expect("tempdir");
         state
             .inner
-            .create_workspace(dir.path())
+            .create_project(dir.path())
             .await
-            .expect("create workspace");
-        let workspaces = state.inner.list_workspaces().await.expect("list");
+            .expect("create project");
+        let projects = state.inner.list_projects().await.expect("list");
         let canonical = std::fs::canonicalize(dir.path()).expect("canonical");
         assert!(
-            workspaces.iter().any(|w| w.path == canonical),
-            "列表应包含新登记的 workspace",
+            projects.iter().any(|w| w.path == canonical),
+            "列表应包含新登记的 project",
         );
     }
 
@@ -377,7 +377,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_workspace_refuses_non_empty_and_force_unregisters() {
+    async fn delete_project_refuses_non_empty_and_force_unregisters() {
         let state = test_state().await;
         let dir = tempfile::tempdir().expect("tempdir");
         let created = state
@@ -386,7 +386,7 @@ mod tests {
             .await
             .expect("create session");
         let store = state.inner.store.as_ref().expect("store");
-        // 让 session 有一条 user 消息（非空 workspace）
+        // 让 session 有一条 user 消息（非空 project）
         store
             .append_message(
                 &created.id,
@@ -398,15 +398,15 @@ mod tests {
             )
             .await
             .expect("append");
-        let workspace = store
-            .workspace_of_session(&created.id)
+        let project = store
+            .project_of_session(&created.id)
             .await
-            .expect("workspace")
-            .expect("workspace row");
+            .expect("project")
+            .expect("project row");
 
         // 默认拒绝非空
         assert!(matches!(
-            state.inner.delete_workspace(&workspace.id, false).await,
+            state.inner.delete_project(&project.id, false).await,
             Err(ApiError::BadRequest(_))
         ));
         assert!(state.inner.sessions.lock().await.contains_key(&created.id));
@@ -414,20 +414,17 @@ mod tests {
         // force 级联：库中 session 删除 + 注册表摘除
         state
             .inner
-            .delete_workspace(&workspace.id, true)
+            .delete_project(&project.id, true)
             .await
             .expect("force delete");
-        assert!(store.workspace(&workspace.id).await.expect("q").is_none());
+        assert!(store.project(&project.id).await.expect("q").is_none());
         assert!(
             !state.inner.sessions.lock().await.contains_key(&created.id),
-            "force 删除应摘除该 workspace 名下的运行时",
+            "force 删除应摘除该 project 名下的运行时",
         );
-        // 未知 workspace 返回 NotFound
+        // 未知 project 返回 NotFound
         assert!(matches!(
-            state
-                .inner
-                .delete_workspace("no-such-workspace", true)
-                .await,
+            state.inner.delete_project("no-such-project", true).await,
             Err(ApiError::NotFound(_))
         ));
     }

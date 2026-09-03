@@ -1,6 +1,6 @@
 //! 测试用迷你 HTTP 服务器：每个连接消费脚本中的一条响应。
 //!
-//! workspace 的 tokio 未启用 `net` feature，这里用阻塞
+//! project 的 tokio 未启用 `net` feature，这里用阻塞
 //! [`std::net::TcpListener`] 加独立线程实现；响应带 `connection: close`，
 //! 保证 reqwest 每次尝试都建立新连接（即脚本的一条响应对应一次请求）。
 

@@ -15,7 +15,7 @@ llm-wiki 模式（区别于 RAG 的"持久复利知识库"）若靠 agent 本体
 
 1. **职责分离**：agent 本体只负责**查询**，不承担任何知识库维护；
    维护由独立角色 **curator** 承担；
-2. **全局单一知识库**：`config.toml` 配置固定路径，跨 workspace 共享；
+2. **全局单一知识库**：`config.toml` 配置固定路径，跨 project 共享；
 3. **文件系统存储**：markdown 文件为 source of truth（Obsidian 可直接
    打开、git 版本历史免费）；因写入者唯一（curator），双向同步与并发
    写冲突问题不成立；
@@ -160,7 +160,7 @@ mem://log                       #   → log.md 尾部
 - curator 单会话写入：页面写走 tmp+rename 原子替换；log.md 用
   `O_APPEND`；进程内 per-path 互斥锁（复用 `mutation_queue` 模式）
   防同会话内并行工具调用撞同一页；
-- 双 curator 并发：靠 git 提交兜底——第二个 curator 提交时若工作区
+- 双 curator 并发：靠 git 提交兜底——第二个 curator 提交时若项目
   已被改动，报错并提示重跑（curate 是幂等倾向的：重新扫描 notes/ 与
   raw/inbox/ 即可）。不引入分布式锁。
 

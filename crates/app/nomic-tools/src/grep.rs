@@ -50,7 +50,7 @@ pub struct GrepTool {
     /// 内部 URI 挂载表：搜索根可为 `skill://` / `local://` 等 URI
     ///（对齐到底层 source_path）；`None` 时仅支持文件系统路径
     vfs_router: Option<Arc<VfsRouter>>,
-    /// 相对路径的解析基准（workspace 严格归属；空句柄 = 进程 cwd）
+    /// 相对路径的解析基准（project 严格归属；空句柄 = 进程 cwd）
     base: crate::base::BaseDir,
 }
 
@@ -60,7 +60,7 @@ impl GrepTool {
         Self::default()
     }
 
-    /// 设置固定基准目录：相对搜索根以它解析（workspace 严格归属）。
+    /// 设置固定基准目录：相对搜索根以它解析（project 严格归属）。
     #[must_use]
     pub fn with_base_dir(mut self, base_dir: Option<PathBuf>) -> Self {
         self.base = crate::base::BaseDir::new(base_dir);
@@ -68,7 +68,7 @@ impl GrepTool {
     }
 
     /// 共享基准目录句柄：句柄更新后本工具的下一次执行即用新基准
-    ///（交互端切换 session 的 workspace 场景）。
+    ///（交互端切换 session 的 project 场景）。
     #[must_use]
     pub fn with_shared_base_dir(mut self, base: &crate::base::BaseDir) -> Self {
         self.base = base.clone();

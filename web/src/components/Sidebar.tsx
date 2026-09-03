@@ -1,20 +1,20 @@
 // 侧栏：模仿 DeepSeek Harness 布局。
 // 宽度由 App 容器统一控制（桌面 320px，移动端抽屉 max-w-[85vw]）。
-// 按 workspace 分组（可折叠）的会话列表，工作区组标题采用卡片样式。
-// 组标题右侧带「新建会话」按钮（在该 workspace 下创建）；「工作区」标题行带
-// 「添加工作区」按钮，展开内联输入框登记新 workspace（可无任何会话）。
+// 按 project 分组（可折叠）的会话列表，项目组标题采用卡片样式。
+// 组标题右侧带「新建会话」按钮（在该 project 下创建）；「项目」标题行带
+// 「添加项目」按钮，展开内联输入框登记新 project（可无任何会话）。
 // 会话行悬停显露「重命名」（内联编辑，空白提交 = 清除自定义标题回退派生）
 // 与「删除」（物理删除不可恢复，弹确认对话框）操作。
-// 展开的会话列表缩进在组标题下方，并带竖向引导线，体现 session 对 workspace 的从属；
+// 展开的会话列表缩进在组标题下方，并带竖向引导线，体现 session 对 project 的从属；
 // 折叠组之间保持紧凑间距，展开的组以额外下边距分隔。
 // 上下文用量由输入区环形指示器（ContextRing）展示，侧栏不再重复显示。
-// 无默认 workspace：新会话必须归属明确的 workspace（组标题按钮或启动页选择栏）。
+// 无默认 project：新会话必须归属明确的 project（组标题按钮或启动页选择栏）。
 
 import { ChevronRight, FolderOpen, FolderPlus, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import { useId, useState } from 'react'
 
-import { groupSessionsWithWorkspaces } from '@/lib/sessions'
-import type { SessionSummary, WorkspaceSummary } from '@/lib/types'
+import { groupSessionsWithProjects } from '@/lib/sessions'
+import type { SessionSummary, ProjectSummary } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 import { Button } from '@/components/ui/button'
@@ -29,27 +29,27 @@ import {
 
 interface SidebarProps {
   sessions: SessionSummary[]
-  /** 已登记的全部 workspace（含无会话的；为空时分组退化为纯会话视图） */
-  workspaces: WorkspaceSummary[]
+  /** 已登记的全部 project（含无会话的；为空时分组退化为纯会话视图） */
+  projects: ProjectSummary[]
   currentSessionId: string | null
   running: boolean
-  /** 新建会话（归属指定 workspace 目录；无默认 workspace，必须显式指定） */
-  onNewSession: (workspace: string) => void
-  /** 登记新 workspace；失败时抛出错误消息（就地展示在输入框下方） */
-  onAddWorkspace: (path: string) => Promise<void>
+  /** 新建会话（归属指定 project 目录；无默认 project，必须显式指定） */
+  onNewSession: (project: string) => void
+  /** 登记新 project；失败时抛出错误消息（就地展示在输入框下方） */
+  onAddProject: (path: string) => Promise<void>
   /** 重命名会话（空白标题 = 清除自定义，回退派生标题）；失败时抛出错误消息 */
   onRenameSession: (id: string, title: string) => Promise<void>
   /** 删除会话（物理删除不可恢复）；失败时抛出错误消息 */
   onDeleteSession: (id: string) => Promise<void>
-  /** 删除 workspace；`force` 级联删除名下全部会话；失败时抛出错误消息 */
-  onDeleteWorkspace: (id: string, force: boolean) => Promise<void>
+  /** 删除 project；`force` 级联删除名下全部会话；失败时抛出错误消息 */
+  onDeleteProject: (id: string, force: boolean) => Promise<void>
   onResume: (id: string) => void
 }
 
-/** 删除确认目标（会话 / 工作区共用一个确认对话框）。 */
+/** 删除确认目标（会话 / 项目共用一个确认对话框）。 */
 type ConfirmTarget =
   | { kind: 'session'; id: string; title: string }
-  | { kind: 'workspace'; id: string; name: string; path: string; sessionCount: number }
+  | { kind: 'project'; id: string; name: string; path: string; sessionCount: number }
 
 /** 行内操作按钮样式（悬停行时由父级 group/item 控制显现）。 */
 const rowActionClass =
@@ -57,19 +57,19 @@ const rowActionClass =
 
 export function Sidebar({
   sessions,
-  workspaces,
+  projects,
   currentSessionId,
   running,
   onNewSession,
-  onAddWorkspace,
+  onAddProject,
   onRenameSession,
   onDeleteSession,
-  onDeleteWorkspace,
+  onDeleteProject,
   onResume,
 }: SidebarProps) {
-  const groups = groupSessionsWithWorkspaces(workspaces, sessions)
+  const groups = groupSessionsWithProjects(projects, sessions)
   const listIdPrefix = useId()
-  // 折叠态为本地 UI 状态：记录被折叠的 workspace，新出现的组默认展开
+  // 折叠态为本地 UI 状态：记录被折叠的 project，新出现的组默认展开
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const toggleGroup = (key: string) =>
     setCollapsed((prev) => {
@@ -79,7 +79,7 @@ export function Sidebar({
       return next
     })
 
-  // 「添加工作区」内联输入：展开状态 + 输入值 + 提交中 + 就地错误
+  // 「添加项目」内联输入：展开状态 + 输入值 + 提交中 + 就地错误
   const [adding, setAdding] = useState(false)
   const [newPath, setNewPath] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -89,13 +89,13 @@ export function Sidebar({
     setNewPath('')
     setAddError(null)
   }
-  const submitWorkspace = async () => {
+  const submitProject = async () => {
     const path = newPath.trim()
     if (!path || submitting) return
     setSubmitting(true)
     setAddError(null)
     try {
-      await onAddWorkspace(path)
+      await onAddProject(path)
       closeAddInput()
     } catch (error) {
       setAddError(error instanceof Error ? error.message : String(error))
@@ -126,7 +126,7 @@ export function Sidebar({
     }
   }
 
-  // 删除确认：会话与工作区共用一个对话框，失败就地展示在对话框内
+  // 删除确认：会话与项目共用一个对话框，失败就地展示在对话框内
   const [confirm, setConfirm] = useState<ConfirmTarget | null>(null)
   const [confirming, setConfirming] = useState(false)
   const [confirmError, setConfirmError] = useState<string | null>(null)
@@ -143,7 +143,7 @@ export function Sidebar({
       if (confirm.kind === 'session') {
         await onDeleteSession(confirm.id)
       } else {
-        await onDeleteWorkspace(confirm.id, confirm.sessionCount > 0)
+        await onDeleteProject(confirm.id, confirm.sessionCount > 0)
       }
       setConfirm(null)
     } catch (error) {
@@ -155,10 +155,10 @@ export function Sidebar({
 
   return (
     <div className="flex h-full w-full shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
-      {/* 工作区区域标题（实际工作区在下方会话列表中以卡片样式分组展示） */}
+      {/* 项目区域标题（实际项目在下方会话列表中以卡片样式分组展示） */}
       <div className="px-3 pt-3 pb-1">
         <div className="flex items-center justify-between px-1 pb-1.5">
-          <span className="text-xs font-medium text-muted-foreground">工作区</span>
+          <span className="text-xs font-medium text-muted-foreground">项目</span>
           <div className="flex items-center gap-0.5">
             <button
               type="button"
@@ -169,17 +169,17 @@ export function Sidebar({
             </button>
             <button
               type="button"
-              aria-label="添加工作区"
+              aria-label="添加项目"
               aria-expanded={adding}
               className="flex size-5 items-center justify-center rounded text-muted-foreground/60 transition-all outline-none hover:bg-sidebar-accent hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-90"
-              title="添加工作区"
+              title="添加项目"
               onClick={() => (adding ? closeAddInput() : setAdding(true))}
             >
               <FolderPlus className="size-3.5" />
             </button>
           </div>
         </div>
-        {/* 添加工作区：内联路径输入（回车提交，Esc 取消） */}
+        {/* 添加项目：内联路径输入（回车提交，Esc 取消） */}
         {adding && (
           <div className="px-1 pb-1.5">
             <input
@@ -188,12 +188,12 @@ export function Sidebar({
               autoFocus
               disabled={submitting}
               placeholder="目录路径"
-              aria-label="工作区路径"
+              aria-label="项目路径"
               aria-invalid={addError !== null}
               className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-60"
               onChange={(e) => setNewPath(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') void submitWorkspace()
+                if (e.key === 'Enter') void submitProject()
                 else if (e.key === 'Escape') closeAddInput()
               }}
             />
@@ -206,20 +206,20 @@ export function Sidebar({
         )}
       </div>
 
-      {/* 会话列表（按 workspace 分组，组标题点击折叠/展开）
+      {/* 会话列表（按 project 分组，组标题点击折叠/展开）
           间距按折叠态区分：折叠组间紧凑（space-y-1），展开的组用
           mb-2 补出分组边界；展开的会话列表带缩进与竖向引导线，
-          视觉上一眼看出 session 从属于哪个 workspace */}
+          视觉上一眼看出 session 从属于哪个 project */}
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pt-1">
         <div className="space-y-1 pb-3">
           {groups.map((group, index) => {
-            const isCollapsed = collapsed.has(group.workspace)
+            const isCollapsed = collapsed.has(group.project)
             const hasActive = group.sessions.some((s) => s.id === currentSessionId)
             const listId = `${listIdPrefix}-group-${index}`
             return (
               <section
-                key={group.workspace}
-                aria-label={group.workspace}
+                key={group.project}
+                aria-label={group.project}
                 className={cn('group', !isCollapsed && 'mb-2')}
               >
                 <h3 className="flex items-center pb-1 text-xs font-medium text-muted-foreground">
@@ -227,8 +227,8 @@ export function Sidebar({
                     type="button"
                     aria-expanded={!isCollapsed}
                     aria-controls={listId}
-                    onClick={() => toggleGroup(group.workspace)}
-                    title={group.workspace}
+                    onClick={() => toggleGroup(group.project)}
+                    title={group.project}
                     className={cn(
                       'flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
                       'bg-sidebar-accent/50 hover:bg-sidebar-accent hover:text-sidebar-foreground',
@@ -251,27 +251,27 @@ export function Sidebar({
                       {group.sessions.length}
                     </span>
                   </button>
-                  {/* 在该 workspace 下新建会话（悬停组标题时显现） */}
+                  {/* 在该 project 下新建会话（悬停组标题时显现） */}
                   <button
                     type="button"
-                    aria-label={`在 ${group.workspace} 下新建会话`}
-                    title={`在 ${group.workspace} 下新建会话`}
-                    onClick={() => onNewSession(group.workspace)}
+                    aria-label={`在 ${group.project} 下新建会话`}
+                    title={`在 ${group.project} 下新建会话`}
+                    onClick={() => onNewSession(group.project)}
                     className="ml-1 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 opacity-0 transition-all outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-90 group-hover:opacity-100"
                   >
                     <Plus className="size-3" aria-hidden="true" />
                   </button>
-                  {/* 删除 workspace（悬停组标题时显现；含会话时确认对话框提示级联） */}
+                  {/* 删除 project（悬停组标题时显现；含会话时确认对话框提示级联） */}
                   <button
                     type="button"
-                    aria-label={`删除工作区 ${group.name}`}
-                    title={`删除工作区 ${group.name}`}
+                    aria-label={`删除项目 ${group.name}`}
+                    title={`删除项目 ${group.name}`}
                     onClick={() =>
                       setConfirm({
-                        kind: 'workspace',
-                        id: group.workspaceId,
+                        kind: 'project',
+                        id: group.projectId,
                         name: group.name,
-                        path: group.workspace,
+                        path: group.project,
                         sessionCount: group.sessions.length,
                       })
                     }
@@ -392,7 +392,7 @@ export function Sidebar({
         </div>
       </div>
 
-      {/* 删除确认：会话 / 工作区共用（物理删除不可恢复；非空工作区级联删除会话） */}
+      {/* 删除确认：会话 / 项目共用（物理删除不可恢复；非空项目级联删除会话） */}
       <Dialog
         open={confirm !== null}
         onOpenChange={(open) => {
@@ -402,18 +402,18 @@ export function Sidebar({
         <DialogContent className="sm:max-w-md" showCloseButton={false}>
           <DialogHeader>
             <DialogTitle className="text-base">
-              {confirm?.kind === 'workspace' ? '删除工作区' : '删除会话'}
+              {confirm?.kind === 'project' ? '删除项目' : '删除会话'}
             </DialogTitle>
             <DialogDescription className="break-words">
-              {confirm?.kind === 'workspace' ? (
+              {confirm?.kind === 'project' ? (
                 confirm.sessionCount > 0 ? (
                   <>
-                    工作区 {confirm.name}（{confirm.path}）含 {confirm.sessionCount}{' '}
+                    项目 {confirm.name}（{confirm.path}）含 {confirm.sessionCount}{' '}
                     个会话，将一并永久删除，不可恢复。
                   </>
                 ) : (
                   <>
-                    工作区 {confirm.name}（{confirm.path}）将从列表移除，不影响磁盘上的目录。
+                    项目 {confirm.name}（{confirm.path}）将从列表移除，不影响磁盘上的目录。
                   </>
                 )
               ) : (

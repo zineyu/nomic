@@ -23,12 +23,12 @@ use crate::settings::Settings;
 pub use crate::system_prompt::SystemPromptRecipe;
 
 /// session 初始化策略：交互/print 模式启动即建/恢复 session；web 模式只开库，
-/// session 由前端按 workspace 显式创建（无默认 workspace，见 ADR-0030）。
+/// session 由前端按 project 显式创建（无默认 project，见 ADR-0030）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionPolicy {
     /// 启动即初始化 session（新建或按 --continue/--session 恢复）
     Init,
-    /// 只打开库，不创建/恢复 session（web 模式：无默认 workspace）
+    /// 只打开库，不创建/恢复 session（web 模式：无默认 project）
     OpenStoreOnly,
 }
 
@@ -46,19 +46,19 @@ pub struct Bootstrap {
     pub system_prompt: String,
     /// 上下文压缩配置（settings 表 `compaction.*` 合并内置默认）
     pub compaction: nomic_core::CompactionSettings,
-    /// session 库句柄（模型选择与 workspace/session 列表共用）；不可用时为 `None`
+    /// session 库句柄（模型选择与 project/session 列表共用）；不可用时为 `None`
     pub store: Option<SessionStore>,
     /// `Some((store, session_id))` 时开启落库；session 库不可用时降级为 `None`。
     /// web 模式（[`SessionPolicy::OpenStoreOnly`]）恒为 `None`：不预建 session。
     pub session: Option<(SessionStore, String)>,
-    /// 当前 session 的操作基准（workspace 严格归属）：持久化时为 session 的
-    /// workspace 路径，未持久化时为规范化进程 cwd。前端以此构建工具基准。
-    pub workspace: PathBuf,
+    /// 当前 session 的操作基准（project 严格归属）：持久化时为 session 的
+    /// project 路径，未持久化时为规范化进程 cwd。前端以此构建工具基准。
+    pub project: PathBuf,
     /// resume 恢复的历史消息（新会话为空）
     pub history: Vec<Message>,
-    /// 系统提示词配方（workspace 无关部分）：`system_prompt` 已按
-    /// `workspace` 构建；web 按 session workspace 构建、TUI `/resume` 跨
-    /// workspace 重建时经配方重新生成
+    /// 系统提示词配方（project 无关部分）：`system_prompt` 已按
+    /// `project` 构建；web 按 session project 构建、TUI `/resume` 跨
+    /// project 重建时经配方重新生成
     pub prompt_recipe: SystemPromptRecipe,
     /// skill 解析器（同时注入 read 工具）
     pub skill_resolver: SkillResolver,
@@ -164,8 +164,8 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
                 .with_context(|| format!("激活 skill {name:?} 失败"))
         })
         .collect::<Result<Vec<_>>>()?;
-    // 提示词配方（workspace 无关部分）；AGENTS.md 发现与 cwd 脚注在
-    // session 的 workspace 确定后以其为基准构建
+    // 提示词配方（project 无关部分）；AGENTS.md 发现与 cwd 脚注在
+    // session 的 project 确定后以其为基准构建
     let prompt_recipe = SystemPromptRecipe {
         append_system: append_system.map(str::to_string),
         active_skills,
@@ -175,18 +175,18 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
         SessionPolicy::Init => init_session(cli, &cwd, store.clone()).await?,
         SessionPolicy::OpenStoreOnly => None,
     };
-    let workspace = session
+    let project = session
         .as_ref()
-        .map_or_else(|| normalize_path(&cwd), |init| init.workspace.clone());
-    // workspace 首次初始化：惰性生成默认 nix 环境定义（仅 nix 可用时；
+        .map_or_else(|| normalize_path(&cwd), |init| init.project.clone());
+    // project 首次初始化：惰性生成默认 nix 环境定义（仅 nix 可用时；
     // ADR-0041）。失败不阻断启动，bash 会回退宿主环境
-    if let Err(error) = nomic_tools::nix_env::ensure_default_flake(&workspace) {
+    if let Err(error) = nomic_tools::nix_env::ensure_default_flake(&project) {
         tracing::warn!(%error, "创建默认 nix 环境定义失败");
     }
-    // AGENTS.md 与 cwd 脚注以 session 的 workspace 为基准（workspace 严格
+    // AGENTS.md 与 cwd 脚注以 session 的 project 为基准（project 严格
     // 归属，与工具基准同口径）：--session 跨目录恢复时提示词跟随目标
-    // workspace 而非进程 cwd
-    let system_prompt = prompt_recipe.build(&workspace, &skill_resolver);
+    // project 而非进程 cwd
+    let system_prompt = prompt_recipe.build(&project, &skill_resolver);
     tracing::debug!(
         session_id = session.as_ref().map_or("none", |s| s.id.as_str()),
         history = session.as_ref().map_or(0, |s| s.history.len()),
@@ -226,7 +226,7 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
         session: session
             .as_ref()
             .map(|init| (init.store.clone(), init.id.clone())),
-        workspace,
+        project,
         history,
         prompt_recipe,
         skill_resolver,
@@ -301,8 +301,8 @@ struct SessionInit {
     store: SessionStore,
     id: String,
     history: Vec<Message>,
-    /// session 所属 workspace 的规范化路径（本 session 所有操作的基准）
-    workspace: PathBuf,
+    /// session 所属 project 的规范化路径（本 session 所有操作的基准）
+    project: PathBuf,
 }
 
 /// 初始化 session：按 `--continue`/`--session` 恢复既有会话，否则新建。
@@ -348,30 +348,30 @@ async fn init_session_in(
         // 对话历史带入 B 项目的工具执行环境，是明确的误操作风险。
         let id = latest_session_in(&store, cwd).await?;
         let history = load_history(&store, &id).await?;
-        let workspace = store.session_workspace_path(&id).await?;
+        let project = store.session_project_path(&id).await?;
         return Ok(Some(SessionInit {
             store,
             id,
             history,
-            workspace,
+            project,
         }));
     }
     if let Some(id) = &cli.session {
         // 显式 --session 尊重用户意图，可跨目录恢复，但跨目录时提示
         warn_if_cross_cwd(&store, id, cwd).await;
         let history = load_history(&store, id).await?;
-        let workspace = store.session_workspace_path(id).await?;
+        let project = store.session_project_path(id).await?;
         return Ok(Some(SessionInit {
             store,
             id: id.clone(),
             history,
-            workspace,
+            project,
         }));
     }
 
     match store.create_session(cwd).await {
         Ok(id) => Ok(Some(SessionInit {
-            workspace: store.session_workspace_path(&id).await?,
+            project: store.session_project_path(&id).await?,
             store,
             id,
             history: Vec::new(),
@@ -389,7 +389,7 @@ async fn latest_session_in(store: &SessionStore, cwd: &Path) -> Result<String> {
     let sessions = store.list_sessions().await.context("列出 session 失败")?;
     sessions
         .into_iter()
-        .find(|summary| normalize_path(&summary.workspace) == target)
+        .find(|summary| normalize_path(&summary.project) == target)
         .map(|summary| summary.id)
         .with_context(|| {
             format!(
@@ -414,11 +414,11 @@ async fn warn_if_cross_cwd(store: &SessionStore, id: &str, cwd: &Path) {
         return;
     };
     if let Some(summary) = sessions.iter().find(|s| s.id == id)
-        && normalize_path(&summary.workspace) != normalize_path(cwd)
+        && normalize_path(&summary.project) != normalize_path(cwd)
     {
         tracing::warn!(
             "session belongs to {}, different from current cwd",
-            summary.workspace.display()
+            summary.project.display()
         );
     }
 }
@@ -477,9 +477,9 @@ mod tests {
         assert_eq!(init.id, session_b);
         assert_eq!(init.history.len(), 1);
         assert_eq!(
-            init.workspace,
+            init.project,
             normalize_path(dir_b.path()),
-            "--continue 恢复的 session 以所属 workspace 为操作基准"
+            "--continue 恢复的 session 以所属 project 为操作基准"
         );
     }
 
@@ -516,9 +516,9 @@ mod tests {
         assert_eq!(init.id, id);
         assert_eq!(init.history.len(), 1);
         assert_eq!(
-            init.workspace,
+            init.project,
             normalize_path(dir_a.path()),
-            "跨目录恢复：操作基准是 session 的 workspace 而非进程 cwd"
+            "跨目录恢复：操作基准是 session 的 project 而非进程 cwd"
         );
     }
 

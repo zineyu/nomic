@@ -125,7 +125,7 @@ describe('ChatInput 补全弹层', () => {
     expect(candidate).not.toBeInTheDocument()
   })
 
-  it('@file: 候选经服务端按 session workspace 前缀查询', async () => {
+  it('@file: 候选经服务端按 session project 前缀查询', async () => {
     const user = userEvent.setup()
     mockedApi.files.mockResolvedValue(['src/main.rs', 'src/mod.rs'])
     renderChatInput({ sessionId: 's1' })

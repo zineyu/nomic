@@ -33,8 +33,8 @@ pub struct ResolvedSessionModel {
 /// 构建新 [`SessionRuntime`] 所需的 bootstrap 输入（进程级共享、不可变）。
 pub struct SessionFactory {
     pub models: Arc<ModelResolver>,
-    /// 系统提示词配方：按各 session 的 workspace 构建（AGENTS.md 祖先链
-    /// 与 cwd 脚注跟随 workspace，严格归属；见 bootstrap 模块）
+    /// 系统提示词配方：按各 session 的 project 构建（AGENTS.md 祖先链
+    /// 与 cwd 脚注跟随 project，严格归属；见 bootstrap 模块）
     pub prompt_recipe: crate::bootstrap::SystemPromptRecipe,
     pub skill_resolver: SkillResolver,
     pub stream_options: StreamOptions,
@@ -117,7 +117,7 @@ impl SessionFactory {
 
     /// 构建并注册一个 [`SessionRuntime`]（含 agent actor 与事件转发任务）。
     ///
-    /// `workspace` 是本 session 的操作基准（workspace 严格归属）：工具的
+    /// `project` 是本 session 的操作基准（project 严格归属）：工具的
     /// 相对路径以它解析，快照展示同一值。
     pub fn build(
         &self,
@@ -125,7 +125,7 @@ impl SessionFactory {
         id: String,
         history: Vec<Message>,
         tip: Option<String>,
-        workspace: PathBuf,
+        project: PathBuf,
         resolved: ResolvedSessionModel,
     ) -> Arc<SessionRuntime> {
         let events_tx = self.events.clone();
@@ -143,17 +143,17 @@ impl SessionFactory {
         // 运行中提交的 prompt 由 handler 入队，mention 在投递时展开
         let queue = MessageQueue::new(id.clone(), events_tx.clone(), {
             let skills = self.skill_resolver.clone();
-            let base = workspace.clone();
+            let base = project.clone();
             Some(Arc::new(move |text: &str| {
                 crate::mention::expand_mentions(text, &skills, &base)
             }))
         });
         // 工具配方（组装收在 agent_recipe 模块）：web 的差异点——主/子
         // agent 各自独立的 todo 清单、提问走事件总线、steering 经统一
-        // 消息队列注入；主/子 agent 工具都以本 session 的 workspace 为
+        // 消息队列注入；主/子 agent 工具都以本 session 的 project 为
         // 基准（严格归属）
         let recipe = crate::agent_recipe::assemble(crate::agent_recipe::RecipeOpts {
-            base: nomic_tools::BaseDir::new(Some(workspace.clone())),
+            base: nomic_tools::BaseDir::new(Some(project.clone())),
             skill_resolver: self.skill_resolver.clone(),
             question_sink: sink,
             todo: crate::agent_recipe::TodoPolicy::Isolated,
@@ -176,9 +176,9 @@ impl SessionFactory {
                 Agent::builder()
                     .model(resolved.model)
                     .provider(resolved.provider)
-                    // 系统提示词按本 session 的 workspace 构建：AGENTS.md
+                    // 系统提示词按本 session 的 project 构建：AGENTS.md
                     // 祖先链与 cwd 脚注与工具基准同口径（严格归属）
-                    .system_prompt(self.prompt_recipe.build(&workspace, &self.skill_resolver)),
+                    .system_prompt(self.prompt_recipe.build(&project, &self.skill_resolver)),
             )
             .messages(history)
             .stream_options(resolved.options)
@@ -196,7 +196,7 @@ impl SessionFactory {
             runner,
             questions,
             queue,
-            workspace,
+            project,
             normal_tools,
             inherited_model,
             goal: std::sync::Mutex::new(nomic_tools::GoalNudger::new()),
@@ -406,8 +406,8 @@ pub struct Snapshot {
     pub queue: Vec<QueueEntryView>,
     pub session: Option<(String, Option<String>)>,
     pub pending_question: Option<(String, AskUserQuestion)>,
-    /// 本 session 的 workspace 路径（操作基准）
-    pub workspace: PathBuf,
+    /// 本 session 的 project 路径（操作基准）
+    pub project: PathBuf,
     /// 进行中的目标原文（`/goal <目标>` 启动；前端徽标用）
     pub goal: Option<String>,
     /// 会话统计信息
@@ -451,7 +451,7 @@ pub async fn snapshot(session: &SessionRuntime) -> Result<Snapshot> {
         queue,
         session: Some((session.id.clone(), title)),
         pending_question,
-        workspace: session.workspace.clone(),
+        project: session.project.clone(),
         goal,
         stats: session_stats,
     })

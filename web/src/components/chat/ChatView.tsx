@@ -1,6 +1,6 @@
 // 聊天主视图：顶栏（标题）+ 消息流 + 输入区 + 提问弹层 + 错误提示。页面列 max-w-page 居中。
-// 启动页（未选中任何 session）：输入框上方渲染工作区选择栏（WorkspaceBar），
-// 首条消息在选定 workspace 下创建 session；无默认 workspace。
+// 启动页（未选中任何 session）：输入框上方渲染项目选择栏（ProjectBar），
+// 首条消息在选定 project 下创建 session；无默认 project。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, MessageCircleQuestion, PanelLeft, X } from 'lucide-react'
@@ -11,7 +11,7 @@ import { QuestionModal } from '@/components/chat/QuestionModal'
 import { QueuePanel } from '@/components/chat/QueuePanel'
 import { RunHint } from '@/components/chat/RunHint'
 import { TodoPanel } from '@/components/chat/TodoPanel'
-import { WorkspaceBar } from '@/components/chat/WorkspaceBar'
+import { ProjectBar } from '@/components/chat/ProjectBar'
 import { Button } from '@/components/ui/button'
 import { fadeSlideIn } from '@/lib/anim'
 import { runPhase } from '@/lib/chat'
@@ -86,7 +86,7 @@ export function ChatView({
     model,
     reasoning,
     contextTokens,
-    workspaces,
+    projects,
     send,
     stop,
     startSession,
@@ -100,19 +100,19 @@ export function ChatView({
 
   const [minimizedId, setMinimizedId] = useState<string | null>(null)
 
-  // 启动页（无默认 workspace/session）：未选中任何 session 时展示工作区选择栏
+  // 启动页（无默认 project/session）：未选中任何 session 时展示项目选择栏
   const startPage = sessionId === null
-  // 用户手动选择/输入的目录；未选择时回落到 workspace 列表首个（仅 UI 预选）
+  // 用户手动选择/输入的目录；未选择时回落到 project 列表首个（仅 UI 预选）
   const [startChoice, setStartChoice] = useState<string | null>(null)
-  const startWorkspace = startChoice ?? workspaces[0]?.path ?? ''
+  const startProject = startChoice ?? projects[0]?.path ?? ''
 
-  // 启动页发送：在选定 workspace 下创建 session 并发出首条消息
+  // 启动页发送：在选定 project 下创建 session 并发出首条消息
   const handleStartSend = useCallback(
     (text: string, images?: ImageContent[]) => {
-      if (!startWorkspace) return
-      void startSession(startWorkspace, text, images)
+      if (!startProject) return
+      void startSession(startProject, text, images)
     },
-    [startSession, startWorkspace],
+    [startSession, startProject],
   )
 
   // 运行中按 Escape 停止当前运行
@@ -160,7 +160,7 @@ export function ChatView({
       <div className="min-h-0 flex-1">
         <MessageList
           items={items}
-          onExample={startPage ? (startWorkspace ? handleStartSend : undefined) : send}
+          onExample={startPage ? (startProject ? handleStartSend : undefined) : send}
         />
       </div>
 
@@ -171,9 +171,9 @@ export function ChatView({
       )}
 
       {startPage && (
-        <WorkspaceBar
-          workspaces={workspaces}
-          value={startWorkspace}
+        <ProjectBar
+          projects={projects}
+          value={startProject}
           onChange={setStartChoice}
         />
       )}
@@ -208,9 +208,9 @@ export function ChatView({
         contextTokens={contextTokens}
         contextWindow={model?.context_window ?? null}
         sessionId={sessionId}
-        sendDisabled={startPage && !startWorkspace}
+        sendDisabled={startPage && !startProject}
         placeholder={
-          startPage && !startWorkspace ? '先选择工作区，再给智能体发消息' : undefined
+          startPage && !startProject ? '先选择项目，再给智能体发消息' : undefined
         }
         onSend={startPage ? handleStartSend : send}
         onStop={stop}

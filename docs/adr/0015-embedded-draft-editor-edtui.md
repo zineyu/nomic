@@ -78,7 +78,7 @@ mouse，只要最基础 vim 编辑），以薄封装接入：
 
 edtui 的 `EditorState` 内含 `Rc<RefCell<dyn ClipboardTrait>>`
 （内部剪贴板，`set_clipboard` 也只能替换内容、Rc 壳仍在），使
-`App` 及所有持其跨 await 的 future 非 Send，触发 workspace deny
+`App` 及所有持其跨 await 的 future 非 Send，触发 project deny
 的 nursery lint `future_not_send`。`unsafe impl Send` 被
 `forbid(unsafe_code)` 排除。
 

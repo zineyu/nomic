@@ -1,7 +1,7 @@
-//! `nix://` 挂载：workspace 级 nix 环境定义（ADR-0041，ADR-0042 VFS 化，
+//! `nix://` 挂载：project 级 nix 环境定义（ADR-0041，ADR-0042 VFS 化，
 //! ADR-0043 目录化挂载）。
 //!
-//! - `nix://shell` → `<workspace>/.nomic/flake.nix`（唯一资源），可读写：
+//! - `nix://shell` → `<project>/.nomic/flake.nix`（唯一资源），可读写：
 //!   agent 经 write/edit 修改环境定义；bash 工具的 env 缓存按 mtime 失效，
 //!   无需跨组件通知。
 //! - 纯文件型挂载：`supports_listing = false`（DirMount 报「不支持目录
@@ -16,17 +16,17 @@ use std::path::{Path, PathBuf};
 
 use crate::mount::{DirMount, Mount};
 use crate::parse::InternalUri;
-use crate::root::WorkspaceRoot;
+use crate::root::ProjectRoot;
 use crate::vfs::{UrlCompletion, VfsCapabilities, VfsError};
 
 /// `nix://` 的挂载声明。
 #[derive(Debug)]
 pub struct NixMount {
-    root: WorkspaceRoot,
+    root: ProjectRoot,
 }
 
 impl NixMount {
-    /// `nix://shell` → `<workspace>/.nomic/flake.nix`；其余路径报错。
+    /// `nix://shell` → `<project>/.nomic/flake.nix`；其余路径报错。
     fn resolve_path(&self, uri: &InternalUri) -> Result<PathBuf, VfsError> {
         if uri.raw_host != "shell" || !uri.raw_path.is_empty() {
             return Err(VfsError::Resolve(format!(
@@ -57,14 +57,14 @@ impl Mount for NixMount {
     }
 
     fn describe(&self) -> &'static str {
-        "workspace nix environment definition; nix://shell maps to .nomic/flake.nix \
+        "project nix environment definition; nix://shell maps to .nomic/flake.nix \
          (write it to install tools into the bash environment)"
     }
 
     fn not_found(&self, uri: &InternalUri, path: &Path, _error: &std::io::Error) -> VfsError {
         VfsError::Resolve(format!(
             "Could not resolve {}: {} does not exist yet. \
-             Write nix://shell to create the workspace nix environment definition.",
+             Write nix://shell to create the project nix environment definition.",
             uri.without_query(),
             path.display()
         ))
@@ -79,7 +79,7 @@ impl Mount for NixMount {
             vec![UrlCompletion {
                 value: "shell".to_string(),
                 label: None,
-                description: Some("workspace nix environment (.nomic/flake.nix)".to_string()),
+                description: Some("project nix environment (.nomic/flake.nix)".to_string()),
             }]
         } else {
             Vec::new()
@@ -87,14 +87,14 @@ impl Mount for NixMount {
     }
 }
 
-/// `nix://shell` VFS：workspace `.nomic/flake.nix` 的可读写目录化挂载
+/// `nix://shell` VFS：project `.nomic/flake.nix` 的可读写目录化挂载
 ///（ADR-0043）。
 pub type NixVfs = DirMount<NixMount>;
 
 impl DirMount<NixMount> {
-    /// 以共享 workspace 根句柄构造。
+    /// 以共享 project 根句柄构造。
     #[must_use]
-    pub const fn new(root: WorkspaceRoot) -> Self {
+    pub const fn new(root: ProjectRoot) -> Self {
         Self::from_decl(NixMount { root })
     }
 }
@@ -116,7 +116,7 @@ mod tests {
     fn fixture() -> Fixture {
         let dir = TempDir::new().expect("temp dir");
         let flake_path = dir.path().join(".nomic").join("flake.nix");
-        let root = WorkspaceRoot::new(Some(dir.path().to_path_buf()));
+        let root = ProjectRoot::new(Some(dir.path().to_path_buf()));
         Fixture {
             _dir: dir,
             vfs: NixVfs::new(root),

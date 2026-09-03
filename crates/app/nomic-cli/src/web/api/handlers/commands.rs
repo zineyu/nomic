@@ -61,7 +61,7 @@ pub fn goal_command(
             let objective = crate::mention::expand_mentions(
                 &objective,
                 &state.inner.factory.skill_resolver,
-                &session.workspace,
+                &session.project,
             );
             session.start_goal(objective)
         }

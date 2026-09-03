@@ -42,9 +42,9 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
 
     // 工具配方（组装收在 agent_recipe 模块）：print 的差异点——主/子
     // agent 各自独立的 todo 清单（非交互，无进度观察方）、提问走 stdin、
-    // 无 turn 注入点；工具相对路径以 session 的 workspace 为基准（严格归属）
+    // 无 turn 注入点；工具相对路径以 session 的 project 为基准（严格归属）
     let recipe = agent_recipe::assemble(agent_recipe::RecipeOpts {
-        base: nomic_tools::BaseDir::new(Some(boot.workspace.clone())),
+        base: nomic_tools::BaseDir::new(Some(boot.project.clone())),
         skill_resolver: boot.skill_resolver.clone(),
         question_sink: std::sync::Arc::new(StdinQuestionSink),
         todo: agent_recipe::TodoPolicy::Isolated,

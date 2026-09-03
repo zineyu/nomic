@@ -25,7 +25,7 @@ pub mod vfs;
 
 pub use mount::{DirMount, Mount};
 pub use parse::{InternalUri, extract_uri_scheme, parse_internal_uri};
-pub use root::WorkspaceRoot;
+pub use root::ProjectRoot;
 pub use router::VfsRouter;
 pub use selector::{LineRange, ParsedSelector, SelectorError, parse_selector, split_uri_selector};
 pub use vfs::{

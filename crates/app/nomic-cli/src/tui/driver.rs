@@ -110,7 +110,7 @@ pub(super) struct Driver {
     model: ModelSwitcher,
     /// skill 解析器（ListSkills/LoadSkill 接线用，仅本文件访问）
     skill_resolver: SkillResolver,
-    /// 系统提示词配方（`/resume` 跨 workspace 时按新 workspace 重建）
+    /// 系统提示词配方（`/resume` 跨 project 时按新 project 重建）
     prompt_recipe: crate::bootstrap::SystemPromptRecipe,
     /// 正常态工具集（goal 模式换出/换回的基准；`DynTool` 是 `Arc` 共享
     /// 句柄，克隆廉价）
@@ -629,7 +629,7 @@ fn submit_prompt(
     driver.goal.reset();
     discard_pending_question(driver);
     // 发送前展开有效 `@skill://` / `@file:` mention；无效标记原样保留
-    // （`@file:` 相对路径以当前 session 的 workspace 为基准）
+    // （`@file:` 相对路径以当前 session 的 project 为基准）
     let text = mention::expand_mentions(text, &driver.skill_resolver, &driver.session.base_dir());
     if driver
         .runner

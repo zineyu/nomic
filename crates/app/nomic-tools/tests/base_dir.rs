@@ -1,4 +1,4 @@
-//! base_dir 集成测试：workspace 严格归属下的相对路径解析与共享基准句柄。
+//! base_dir 集成测试：project 严格归属下的相对路径解析与共享基准句柄。
 
 use nomic_core::{AgentTool, ToolUpdateCallback};
 use nomic_tools::{BashTool, ReadTool, WriteTool};
@@ -47,7 +47,7 @@ async fn read_text(tool: &ReadTool, path: &str) -> String {
     text.text.clone()
 }
 
-// ── base_dir：workspace 严格归属下的相对路径解析 ─────────────────────────
+// ── base_dir：project 严格归属下的相对路径解析 ─────────────────────────
 
 #[tokio::test]
 async fn write_and_read_resolve_relative_to_base_dir() {
@@ -150,7 +150,7 @@ async fn shared_base_dir_switch_applies_to_next_execution() {
     let base = nomic_tools::BaseDir::new(Some(dir_a.clone()));
     let read = ReadTool::new().with_shared_base_dir(&base);
     assert!(read_text(&read, "a.txt").await.contains("in a"));
-    // 切换到另一个 workspace：同一工具的下一次执行以新基准解析
+    // 切换到另一个 project：同一工具的下一次执行以新基准解析
     base.set(dir_b.clone());
     assert!(read_text(&read, "b.txt").await.contains("in b"));
 
@@ -173,6 +173,6 @@ async fn shared_base_dir_switch_applies_to_next_execution() {
     assert_eq!(
         std::fs::read_to_string(dir_b.join("c.txt")).expect("read back"),
         "in c",
-        "共享句柄的工具集应写入切换后的 workspace"
+        "共享句柄的工具集应写入切换后的 project"
     );
 }

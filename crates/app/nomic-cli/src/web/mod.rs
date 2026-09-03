@@ -22,10 +22,10 @@
 
 mod api;
 mod assets;
+mod project;
 mod question;
 mod queue;
 mod session;
-mod workspace;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -126,10 +126,10 @@ pub enum ServerEvent {
         request_id: String,
         sessions: Vec<nomic_session::SessionSummary>,
     },
-    /// 全部 workspace 摘要响应（`list_workspaces` 查询的回复）
-    WorkspacesList {
+    /// 全部 project 摘要响应（`list_projects` 查询的回复）
+    ProjectsList {
         request_id: String,
-        workspaces: Vec<nomic_session::WorkspaceSummary>,
+        projects: Vec<nomic_session::ProjectSummary>,
     },
     /// skill 清单响应（`list_skills` 查询的回复；`@skill://` 补全用）
     SkillsList {
@@ -155,20 +155,20 @@ pub enum ServerEvent {
         choice: crate::model::ModelChoice,
     },
     /// 新建 session 确认（响应 `create_session`，携带 request_id；同时经
-    /// 总线广播，其他客户端据此刷新会话与 workspace 列表）
+    /// 总线广播，其他客户端据此刷新会话与 project 列表）
     SessionCreated {
         request_id: String,
         id: String,
         title: Option<String>,
     },
-    /// 新建（或复用）workspace 确认（响应 `create_workspace`，携带 request_id）
-    WorkspaceCreated {
+    /// 新建（或复用）project 确认（响应 `create_project`，携带 request_id）
+    ProjectCreated {
         request_id: String,
         id: String,
         path: String,
     },
     /// 删除 session 确认（响应 `delete_session` 时携带 request_id；
-    /// workspace 级联删除名下已打开 session 时的广播不带 request_id）。
+    /// project 级联删除名下已打开 session 时的广播不带 request_id）。
     /// 其他客户端据此刷新列表并跳出被删会话的视图
     SessionDeleted {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -182,9 +182,9 @@ pub enum ServerEvent {
         id: String,
         title: Option<String>,
     },
-    /// 删除 workspace 确认（响应 `delete_workspace`；名下 session 已级联
+    /// 删除 project 确认（响应 `delete_project`；名下 session 已级联
     /// 删除；同时经总线广播，其他客户端据此刷新列表）
-    WorkspaceDeleted { request_id: String, id: String },
+    ProjectDeleted { request_id: String, id: String },
     /// 设置快照响应（`get_settings` 查询的回复；ADR-0039）
     SettingsSnapshot {
         request_id: String,
@@ -232,9 +232,9 @@ pub struct SessionRuntime {
     /// steering 统一消息队列（ADR-0014/0027，web 侧实现）：运行中提交的
     /// prompt 入队，core 在 turn 边界经注入点弹出；编辑按条目 id 寻址
     pub queue: MessageQueue,
-    /// 本 session 的操作基准（workspace 严格归属）：工具相对路径以它解析，
+    /// 本 session 的操作基准（project 严格归属）：工具相对路径以它解析，
     /// 快照展示给用户
-    pub workspace: PathBuf,
+    pub project: PathBuf,
     /// 正常态工具集（goal 模式换出/换回的基准；`DynTool` 是 `Arc` 共享
     /// 句柄，克隆廉价）
     pub normal_tools: Vec<nomic_core::DynTool>,
@@ -393,10 +393,10 @@ impl Runtime {
             .factory
             .resolve_session_model(self.store.as_ref(), id)
             .await;
-        // workspace 严格归属：工具基准取 session 的 workspace 路径；
+        // project 严格归属：工具基准取 session 的 project 路径；
         // store 不可用时退回进程 cwd
-        let workspace = match &self.store {
-            Some(store) => store.session_workspace_path(id).await?,
+        let project = match &self.store {
+            Some(store) => store.session_project_path(id).await?,
             None => std::env::current_dir().context("get cwd")?,
         };
         let session = self.factory.build(
@@ -404,7 +404,7 @@ impl Runtime {
             id.to_string(),
             history,
             tip,
-            workspace,
+            project,
             resolved,
         );
         let mut sessions = self.sessions.lock().await;
@@ -435,7 +435,7 @@ pub struct AppState {
 }
 
 /// 进入 web 模式：bootstrap 装配运行时（只开 session 库，不预建 session——
-/// 无默认 workspace，session 由前端在启动页选择 workspace 后显式创建）→ 起 HTTP 服务。
+/// 无默认 project，session 由前端在启动页选择 project 后显式创建）→ 起 HTTP 服务。
 pub async fn run(cli: &Cli) -> Result<()> {
     let boot = bootstrap::bootstrap(cli, bootstrap::SessionPolicy::OpenStoreOnly).await?;
     let state = build_app_state(boot);
@@ -464,8 +464,8 @@ pub async fn run(cli: &Cli) -> Result<()> {
 const DEFAULT_HOST: &str = "127.0.0.1";
 
 /// 构建进程级运行时：session 注册表（空）+ 工厂。不预建初始 session：
-/// web 模式没有默认 workspace，session 全部由 `create_session` 按前端选定
-/// 的 workspace 创建，历史 session 由 `open_session` 首访时惰性构建。
+/// web 模式没有默认 project，session 全部由 `create_session` 按前端选定
+/// 的 project 创建，历史 session 由 `open_session` 首访时惰性构建。
 fn build_app_state(boot: Bootstrap) -> AppState {
     let models = Arc::new(boot.models);
     let store = boot.store.clone();

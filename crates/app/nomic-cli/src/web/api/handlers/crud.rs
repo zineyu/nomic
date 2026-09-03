@@ -1,22 +1,22 @@
-//! session / workspace 生命周期命令 handler：创建（登记）、物理删除、
+//! session / project 生命周期命令 handler：创建（登记）、物理删除、
 //! 重命名，以及共享的 ack 广播与目录展开辅助。
 
 use super::super::ApiError;
 use crate::web::{AppState, ServerEvent};
 
-/// 新建 session（新对话语义，默认模型）；必须指定归属目录 `workspace`
-/// （无默认 workspace；目录不存在或不是目录时拒绝，不静默登记无效路径）。
+/// 新建 session（新对话语义，默认模型）；必须指定归属目录 `project`
+/// （无默认 project；目录不存在或不是目录时拒绝，不静默登记无效路径）。
 /// ack 携带 `request_id` 且经总线广播（其他客户端据此刷新列表）。
 pub async fn handle_create_session(
     state: &AppState,
     request_id: &str,
-    workspace: String,
+    project: String,
 ) -> ServerEvent {
-    let workspace = match expand_workspace_dir(&workspace) {
-        Ok(workspace) => workspace,
+    let project = match expand_project_dir(&project) {
+        Ok(project) => project,
         Err(error) => return error.to_ws_response(Some(request_id)),
     };
-    match state.inner.create_session(&workspace).await {
+    match state.inner.create_session(&project).await {
         Ok(session) => broadcast_ack(
             state,
             ServerEvent::SessionCreated {
@@ -29,21 +29,21 @@ pub async fn handle_create_session(
     }
 }
 
-/// 登记新 workspace（按路径查或插，幂等）；响应携带 `request_id` 供客户端关联。
-pub async fn handle_create_workspace(
+/// 登记新 project（按路径查或插，幂等）；响应携带 `request_id` 供客户端关联。
+pub async fn handle_create_project(
     state: &AppState,
     request_id: &str,
     path: String,
 ) -> ServerEvent {
-    let path = match expand_workspace_dir(&path) {
+    let path = match expand_project_dir(&path) {
         Ok(path) => path,
         Err(error) => return error.to_ws_response(Some(request_id)),
     };
-    match state.inner.create_workspace(&path).await {
-        Ok(workspace) => ServerEvent::WorkspaceCreated {
+    match state.inner.create_project(&path).await {
+        Ok(project) => ServerEvent::ProjectCreated {
             request_id: request_id.to_string(),
-            id: workspace.id,
-            path: workspace.path.display().to_string(),
+            id: project.id,
+            path: project.path.display().to_string(),
         },
         Err(error) => error.to_ws_response(Some(request_id)),
     }
@@ -94,17 +94,17 @@ pub async fn handle_rename_session(
     }
 }
 
-/// 删除 workspace：默认拒绝非空（error 事件提示剩余会话数，前端据此弹
+/// 删除 project：默认拒绝非空（error 事件提示剩余会话数，前端据此弹
 /// 级联确认后以 `force` 重试）；删除后名下 session 运行时一并摘除关停，
 /// 并向正在查看这些 session 的客户端广播 `session_deleted`（不带
 /// request_id），使其跳出已失效的视图。
-pub async fn handle_delete_workspace(
+pub async fn handle_delete_project(
     state: &AppState,
     request_id: &str,
     id: &str,
     force: bool,
 ) -> ServerEvent {
-    match state.inner.delete_workspace(id, force).await {
+    match state.inner.delete_project(id, force).await {
         Ok(removed) => {
             for session_id in removed {
                 let _ = state.inner.events.send(ServerEvent::SessionDeleted {
@@ -114,7 +114,7 @@ pub async fn handle_delete_workspace(
             }
             broadcast_ack(
                 state,
-                ServerEvent::WorkspaceDeleted {
+                ServerEvent::ProjectDeleted {
                     request_id: request_id.to_string(),
                     id: id.to_string(),
                 },
@@ -124,12 +124,12 @@ pub async fn handle_delete_workspace(
     }
 }
 
-/// 展开用户输入的 workspace 目录：去空白、`~/` 展开为家目录。
+/// 展开用户输入的 project 目录：去空白、`~/` 展开为家目录。
 /// 空白输入返回 `BadRequest`；目录存在性由 `Runtime` 层校验。
-fn expand_workspace_dir(input: &str) -> Result<std::path::PathBuf, ApiError> {
+fn expand_project_dir(input: &str) -> Result<std::path::PathBuf, ApiError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err(ApiError::BadRequest("workspace 目录为空".to_string()));
+        return Err(ApiError::BadRequest("project 目录为空".to_string()));
     }
     if let Some(rest) = trimmed.strip_prefix("~/") {
         let home = dirs::home_dir()
@@ -235,9 +235,9 @@ mod tests {
         assert!(matches!(event, ServerEvent::Error { .. }));
     }
 
-    /// 删除 workspace：非空默认拒绝（error 事件），force 级联删除并广播。
+    /// 删除 project：非空默认拒绝（error 事件），force 级联删除并广播。
     #[tokio::test]
-    async fn delete_workspace_refuse_then_force() {
+    async fn delete_project_refuse_then_force() {
         let (state, session_id) = crate::web::tests::test_state_with_session().await;
         let store = state.inner.store.as_ref().expect("store");
         store
@@ -251,20 +251,20 @@ mod tests {
             )
             .await
             .expect("append");
-        let workspace = store
-            .workspace_of_session(&session_id)
+        let project = store
+            .project_of_session(&session_id)
             .await
-            .expect("workspace")
-            .expect("workspace row");
+            .expect("project")
+            .expect("project row");
 
-        let event = handle_delete_workspace(&state, "r-ws", &workspace.id, false).await;
+        let event = handle_delete_project(&state, "r-ws", &project.id, false).await;
         let ServerEvent::Error { message, .. } = event else {
-            panic!("非空 workspace 应返回 error 事件");
+            panic!("非空 project 应返回 error 事件");
         };
         assert!(message.contains("force"), "{message}");
 
         let mut events = state.inner.events.subscribe();
-        let event = handle_delete_workspace(&state, "r-ws2", &workspace.id, true).await;
+        let event = handle_delete_project(&state, "r-ws2", &project.id, true).await;
         // 级联删除名下已打开 session：先广播 session_deleted（不带 request_id）
         assert!(matches!(
             events.try_recv().expect("cascaded session_deleted"),
@@ -273,14 +273,14 @@ mod tests {
                 ..
             }
         ));
-        let ServerEvent::WorkspaceDeleted { request_id, id } = event else {
-            panic!("应返回 WorkspaceDeleted");
+        let ServerEvent::ProjectDeleted { request_id, id } = event else {
+            panic!("应返回 ProjectDeleted");
         };
         assert_eq!(request_id, "r-ws2");
-        assert_eq!(id, workspace.id);
+        assert_eq!(id, project.id);
         assert!(matches!(
             events.try_recv().expect("broadcast"),
-            ServerEvent::WorkspaceDeleted { .. }
+            ServerEvent::ProjectDeleted { .. }
         ));
         assert!(
             !state.inner.sessions.lock().await.contains_key(&session_id),

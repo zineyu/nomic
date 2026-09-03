@@ -1,10 +1,10 @@
 // Sidebar 测试：模仿 DeepSeek Harness 布局。
 //
-// 按 workspace 分组（可折叠）的会话列表，工作区组标题为卡片样式。
-// 组标题右侧带「新建会话」按钮（在该 workspace 下创建）；「工作区」标题行带
-// 「添加工作区」内联输入。每个 session 只展示标题，长标题被 CSS 截断但可通过
+// 按 project 分组（可折叠）的会话列表，项目组标题为卡片样式。
+// 组标题右侧带「新建会话」按钮（在该 project 下创建）；「项目」标题行带
+// 「添加项目」内联输入。每个 session 只展示标题，长标题被 CSS 截断但可通过
 // title 读取全文；当前会话以主色高亮；侧栏与聊天区之间有右侧分隔边框。
-// 无默认 workspace：新建会话必须经组标题按钮显式指定归属。
+// 无默认 project：新建会话必须经组标题按钮显式指定归属。
 
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -16,17 +16,17 @@ const LONG_TITLE =
   '左侧session列表与右侧会话界面不够清晰明确，session名称被硬遮盖，需要调整布局与对比度让左右两侧边界分明'
 
 const sessions = [
-  { id: 'a', title: LONG_TITLE, workspace_id: 'wa', workspace: '/tmp', first_message_at: null, last_message_at: 1786960000000, message_count: 101 },
-  { id: 'b', title: null, workspace_id: 'wb', workspace: '/tmp', first_message_at: null, last_message_at: 1786960000000, message_count: 3 },
+  { id: 'a', title: LONG_TITLE, project_id: 'wa', project: '/tmp', first_message_at: null, last_message_at: 1786960000000, message_count: 101 },
+  { id: 'b', title: null, project_id: 'wb', project: '/tmp', first_message_at: null, last_message_at: 1786960000000, message_count: 3 },
 ]
 
 const groupedSessions = [
-  { id: 'a1', title: '项目 A 会话一', workspace_id: 'wa', workspace: '/home/zine/alpha', first_message_at: null, last_message_at: 300, message_count: 5 },
-  { id: 'b1', title: '项目 B 会话一', workspace_id: 'wb', workspace: '/home/zine/beta', first_message_at: null, last_message_at: 200, message_count: 2 },
-  { id: 'a2', title: '项目 A 会话二', workspace_id: 'wa', workspace: '/home/zine/alpha', first_message_at: null, last_message_at: 100, message_count: 1 },
+  { id: 'a1', title: '项目 A 会话一', project_id: 'wa', project: '/home/zine/alpha', first_message_at: null, last_message_at: 300, message_count: 5 },
+  { id: 'b1', title: '项目 B 会话一', project_id: 'wb', project: '/home/zine/beta', first_message_at: null, last_message_at: 200, message_count: 2 },
+  { id: 'a2', title: '项目 A 会话二', project_id: 'wa', project: '/home/zine/alpha', first_message_at: null, last_message_at: 100, message_count: 1 },
 ]
 
-function workspace(id: string, path: string, sessionCount = 0) {
+function project(id: string, path: string, sessionCount = 0) {
   return { id, path, session_count: sessionCount, last_active_at: null }
 }
 
@@ -34,14 +34,14 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
   return render(
     <Sidebar
       sessions={sessions}
-      workspaces={[]}
+      projects={[]}
       currentSessionId="a"
       running={false}
       onNewSession={vi.fn()}
-      onAddWorkspace={vi.fn().mockResolvedValue(undefined)}
+      onAddProject={vi.fn().mockResolvedValue(undefined)}
       onRenameSession={vi.fn().mockResolvedValue(undefined)}
       onDeleteSession={vi.fn().mockResolvedValue(undefined)}
-      onDeleteWorkspace={vi.fn().mockResolvedValue(undefined)}
+      onDeleteProject={vi.fn().mockResolvedValue(undefined)}
       onResume={vi.fn()}
       {...overrides}
     />,
@@ -63,7 +63,7 @@ describe('Sidebar', () => {
 
   it('侧栏根部带右侧分隔边框（与聊天区边界清晰）', () => {
     renderSidebar()
-    const root = screen.getByText('工作区').closest('div')
+    const root = screen.getByText('项目').closest('div')
     expect(root?.parentElement).not.toBeNull()
     // 向上找到主容器 div（有 border-r）
     let container = root?.parentElement
@@ -87,7 +87,7 @@ describe('Sidebar', () => {
     expect(active.querySelector('span[aria-hidden="true"]')).not.toBeNull()
   })
 
-  it('会话按 workspace 分组，组标题为路径最后一段且 title 为完整路径', () => {
+  it('会话按 project 分组，组标题为路径最后一段且 title 为完整路径', () => {
     renderSidebar({ sessions: groupedSessions })
     const alpha = screen.getByRole('heading', { name: /alpha/ })
     const beta = screen.getByRole('heading', { name: /beta/ })
@@ -106,7 +106,7 @@ describe('Sidebar', () => {
     expect(headings[0]).toContain('alpha')
     expect(headings[1]).toContain('beta')
 
-    // 会话归属到对应分组（section aria-label 为 workspace 路径）
+    // 会话归属到对应分组（section aria-label 为 project 路径）
     const alphaGroup = screen.getByRole('region', { name: '/home/zine/alpha' })
     expect(
       within(alphaGroup).getAllByRole('button', { name: /^项目 A/ }).map((b) => b.textContent),
@@ -115,15 +115,15 @@ describe('Sidebar', () => {
     expect(within(betaGroup).getAllByRole('button', { name: /^项目 B/ })).toHaveLength(1)
   })
 
-  it('工作区组标题为卡片样式，各组样式一致，且不存在额外的固定工作区卡片', () => {
+  it('项目组标题为卡片样式，各组样式一致，且不存在额外的固定项目卡片', () => {
     renderSidebar({ sessions: groupedSessions })
     const alphaToggle = screen.getByRole('button', { name: /^alpha/ })
     const betaToggle = screen.getByRole('button', { name: /^beta/ })
-    // 实际工作区采用卡片样式（圆角 + accent 底色）；无「当前工作区」特殊高亮
+    // 实际项目采用卡片样式（圆角 + accent 底色）；无「当前项目」特殊高亮
     expect(alphaToggle.className).toContain('rounded-lg')
     expect(alphaToggle.className).toContain('bg-sidebar-accent/50')
     expect(betaToggle.className).toContain('bg-sidebar-accent/50')
-    // 不再有固定工作区卡片：工作区路径只出现在组标题的 title 上
+    // 不再有固定项目卡片：项目路径只出现在组标题的 title 上
     const titled = screen.getAllByTitle('/home/zine/alpha')
     expect(titled).toHaveLength(1)
     expect(titled[0]).toBe(alphaToggle)
@@ -194,14 +194,14 @@ describe('Sidebar', () => {
     expect(betaGroup.className).not.toContain('mb-2')
   })
 
-  it('不存在不指定 workspace 的顶部新会话按钮（无默认 workspace）', () => {
+  it('不存在不指定 project 的顶部新会话按钮（无默认 project）', () => {
     renderSidebar({ sessions: [] })
     // 「新会话」文本只允许出现在缺省标题回退的会话列表项中；
     // 空会话列表下不应有任何「新会话」按钮
     expect(screen.queryByRole('button', { name: '新会话' })).not.toBeInTheDocument()
   })
 
-  it('组标题「新建会话」按钮在该 workspace 下创建会话', async () => {
+  it('组标题「新建会话」按钮在该 project 下创建会话', async () => {
     const user = userEvent.setup()
     const onNewSession = vi.fn()
     renderSidebar({ sessions: groupedSessions, onNewSession })
@@ -212,15 +212,15 @@ describe('Sidebar', () => {
     expect(onNewSession).toHaveBeenCalledWith('/home/zine/alpha')
   })
 
-  it('无会话的已登记 workspace 也展示为空组', () => {
+  it('无会话的已登记 project 也展示为空组', () => {
     renderSidebar({
       sessions: groupedSessions,
-      workspaces: [
-        workspace('wa', '/home/zine/alpha', 2),
-        workspace('wc', '/home/zine/gamma'),
+      projects: [
+        project('wa', '/home/zine/alpha', 2),
+        project('wc', '/home/zine/gamma'),
       ],
     })
-    // 无会话的 gamma 也成组（顺序跟 workspace 列表）
+    // 无会话的 gamma 也成组（顺序跟 project 列表）
     const gammaGroup = screen.getByRole('region', { name: '/home/zine/gamma' })
     expect(within(gammaGroup).getByText('暂无会话')).toBeInTheDocument()
     const headings = screen.getAllByRole('heading').map((h) => h.textContent)
@@ -231,40 +231,40 @@ describe('Sidebar', () => {
     ])
   })
 
-  it('添加工作区：内联输入回车提交，成功后关闭输入框', async () => {
+  it('添加项目：内联输入回车提交，成功后关闭输入框', async () => {
     const user = userEvent.setup()
-    const onAddWorkspace = vi.fn().mockResolvedValue(undefined)
-    renderSidebar({ onAddWorkspace })
+    const onAddProject = vi.fn().mockResolvedValue(undefined)
+    renderSidebar({ onAddProject })
 
-    await user.click(screen.getByRole('button', { name: '添加工作区' }))
-    const input = screen.getByRole('textbox', { name: '工作区路径' })
+    await user.click(screen.getByRole('button', { name: '添加项目' }))
+    const input = screen.getByRole('textbox', { name: '项目路径' })
     await user.type(input, '~/code/proj{Enter}')
-    expect(onAddWorkspace).toHaveBeenCalledWith('~/code/proj')
+    expect(onAddProject).toHaveBeenCalledWith('~/code/proj')
     // 成功后输入框关闭
-    expect(screen.queryByRole('textbox', { name: '工作区路径' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: '项目路径' })).not.toBeInTheDocument()
   })
 
-  it('添加工作区失败时就地展示错误，输入框保留', async () => {
+  it('添加项目失败时就地展示错误，输入框保留', async () => {
     const user = userEvent.setup()
-    const onAddWorkspace = vi.fn().mockRejectedValue(new Error('目录不存在：/nope'))
-    renderSidebar({ onAddWorkspace })
+    const onAddProject = vi.fn().mockRejectedValue(new Error('目录不存在：/nope'))
+    renderSidebar({ onAddProject })
 
-    await user.click(screen.getByRole('button', { name: '添加工作区' }))
-    const input = screen.getByRole('textbox', { name: '工作区路径' })
+    await user.click(screen.getByRole('button', { name: '添加项目' }))
+    const input = screen.getByRole('textbox', { name: '项目路径' })
     await user.type(input, '/nope{Enter}')
     expect(await screen.findByRole('alert')).toHaveTextContent('目录不存在：/nope')
-    expect(screen.getByRole('textbox', { name: '工作区路径' })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: '项目路径' })).toBeInTheDocument()
   })
 
-  it('添加工作区输入框 Esc 取消', async () => {
+  it('添加项目输入框 Esc 取消', async () => {
     const user = userEvent.setup()
-    const onAddWorkspace = vi.fn()
-    renderSidebar({ onAddWorkspace })
+    const onAddProject = vi.fn()
+    renderSidebar({ onAddProject })
 
-    await user.click(screen.getByRole('button', { name: '添加工作区' }))
-    await user.type(screen.getByRole('textbox', { name: '工作区路径' }), '/tmp{Escape}')
-    expect(onAddWorkspace).not.toHaveBeenCalled()
-    expect(screen.queryByRole('textbox', { name: '工作区路径' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '添加项目' }))
+    await user.type(screen.getByRole('textbox', { name: '项目路径' }), '/tmp{Escape}')
+    expect(onAddProject).not.toHaveBeenCalled()
+    expect(screen.queryByRole('textbox', { name: '项目路径' })).not.toBeInTheDocument()
   })
 
   // ── 会话重命名 / 删除 ────────────────────────────────────────────
@@ -346,40 +346,40 @@ describe('Sidebar', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
-  // ── 工作区删除 ──────────────────────────────────────────────────
+  // ── 项目删除 ──────────────────────────────────────────────────
 
-  it('删除空工作区：确认后以 force=false 删除', async () => {
+  it('删除空项目：确认后以 force=false 删除', async () => {
     const user = userEvent.setup()
-    const onDeleteWorkspace = vi.fn().mockResolvedValue(undefined)
+    const onDeleteProject = vi.fn().mockResolvedValue(undefined)
     renderSidebar({
       sessions: [],
-      workspaces: [workspace('wc', '/home/zine/gamma')],
+      projects: [project('wc', '/home/zine/gamma')],
       currentSessionId: null,
-      onDeleteWorkspace,
+      onDeleteProject,
     })
 
     const gammaGroup = screen.getByRole('region', { name: '/home/zine/gamma' })
-    await user.click(within(gammaGroup).getByRole('button', { name: '删除工作区 gamma' }))
+    await user.click(within(gammaGroup).getByRole('button', { name: '删除项目 gamma' }))
     const dialog = screen.getByRole('dialog')
     expect(dialog).toHaveTextContent('不影响磁盘上的目录')
     await user.click(within(dialog).getByRole('button', { name: '删除' }))
-    expect(onDeleteWorkspace).toHaveBeenCalledWith('wc', false)
+    expect(onDeleteProject).toHaveBeenCalledWith('wc', false)
   })
 
-  it('删除非空工作区：对话框提示级联删除会话数，确认后 force 删除', async () => {
+  it('删除非空项目：对话框提示级联删除会话数，确认后 force 删除', async () => {
     const user = userEvent.setup()
-    const onDeleteWorkspace = vi.fn().mockResolvedValue(undefined)
+    const onDeleteProject = vi.fn().mockResolvedValue(undefined)
     renderSidebar({
       sessions: groupedSessions,
-      onDeleteWorkspace,
+      onDeleteProject,
     })
 
     const alphaGroup = screen.getByRole('region', { name: '/home/zine/alpha' })
-    await user.click(within(alphaGroup).getByRole('button', { name: '删除工作区 alpha' }))
+    await user.click(within(alphaGroup).getByRole('button', { name: '删除项目 alpha' }))
     const dialog = screen.getByRole('dialog')
     expect(dialog).toHaveTextContent('含 2 个会话')
     expect(dialog).toHaveTextContent('不可恢复')
     await user.click(within(dialog).getByRole('button', { name: '删除' }))
-    expect(onDeleteWorkspace).toHaveBeenCalledWith('wa', true)
+    expect(onDeleteProject).toHaveBeenCalledWith('wa', true)
   })
 })

@@ -1,7 +1,7 @@
-//! `local://` 挂载：会话 workspace 内的文件/目录（ADR-0040 §协议目录，
+//! `local://` 挂载：会话 project 内的文件/目录（ADR-0040 §协议目录，
 //! ADR-0042 VFS 化，ADR-0043 目录化挂载）。
 //!
-//! - `local://<path>` 以 workspace 根为基准；路径经词法规范化，越出根即拒绝
+//! - `local://<path>` 以 project 根为基准；路径经词法规范化，越出根即拒绝
 //!   （`..` 穿越、绝对路径、`~` 不展开——与 oh-my-pi 的 local 安全边界一致）。
 //! - `local://`（空路径）列根目录清单。
 //! - 可写：write/edit 经 router 分发到这里；目录清单是派生内容（router 盖
@@ -16,17 +16,17 @@ use std::path::{Component, Path, PathBuf};
 use crate::fs::MAX_LISTING_ENTRIES;
 use crate::mount::{DirMount, Mount};
 use crate::parse::{InternalUri, percent_decode};
-use crate::root::WorkspaceRoot;
+use crate::root::ProjectRoot;
 use crate::vfs::{UrlCompletion, VfsCapabilities, VfsError};
 
 /// `local://` 的挂载声明。
 #[derive(Debug)]
 pub struct LocalMount {
-    root: WorkspaceRoot,
+    root: ProjectRoot,
 }
 
 impl LocalMount {
-    /// 解析 `local://` 目标到 workspace 内绝对路径；空路径 = 根本身。
+    /// 解析 `local://` 目标到 project 内绝对路径；空路径 = 根本身。
     fn resolve_path(&self, uri: &InternalUri) -> Result<PathBuf, VfsError> {
         // raw_path 不含前导 `/`：host 与 path 段之间手动补分隔
         let rel = if uri.raw_path.is_empty() {
@@ -42,8 +42,8 @@ impl LocalMount {
             .unwrap_or_else(|| PathBuf::from("."));
         normalize_within(&root, &rel).ok_or_else(|| {
             VfsError::Resolve(format!(
-                "Invalid local:// path: {rel} escapes the workspace root. \
-             Paths under local:// must stay inside the session workspace."
+                "Invalid local:// path: {rel} escapes the project root. \
+             Paths under local:// must stay inside the session project."
             ))
         })
     }
@@ -63,8 +63,8 @@ impl Mount for LocalMount {
     }
 
     fn describe(&self) -> &'static str {
-        "files and directories inside the session workspace \
-         (local:// alone lists the root; paths must stay inside the workspace)"
+        "files and directories inside the session project \
+         (local:// alone lists the root; paths must stay inside the project)"
     }
 
     fn complete(&self, query: &str) -> Vec<UrlCompletion> {
@@ -79,13 +79,13 @@ impl Mount for LocalMount {
     }
 }
 
-/// `local://<path>` VFS：workspace 的目录化挂载（ADR-0043）。
+/// `local://<path>` VFS：project 的目录化挂载（ADR-0043）。
 pub type LocalVfs = DirMount<LocalMount>;
 
 impl DirMount<LocalMount> {
-    /// 以共享 workspace 根句柄构造。
+    /// 以共享 project 根句柄构造。
     #[must_use]
-    pub const fn new(root: WorkspaceRoot) -> Self {
+    pub const fn new(root: ProjectRoot) -> Self {
         Self::from_decl(LocalMount { root })
     }
 }
@@ -116,7 +116,7 @@ fn normalize_within(root: &Path, rel: &str) -> Option<PathBuf> {
     Some(path)
 }
 
-/// workspace 内路径补全：两层内的文件/目录（目录带 `/`），按前缀过滤。
+/// project 内路径补全：两层内的文件/目录（目录带 `/`），按前缀过滤。
 fn complete_paths(root: &Path, query: &str, cap: usize) -> Vec<UrlCompletion> {
     let mut out = Vec::new();
     let mut frontier: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), String::new())];
@@ -169,7 +169,7 @@ mod tests {
 
     struct Fixture {
         _dir: TempDir,
-        root: WorkspaceRoot,
+        root: ProjectRoot,
         vfs: LocalVfs,
     }
 
@@ -178,7 +178,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src")).expect("mkdir");
         std::fs::write(dir.path().join("README.md"), "# Demo\nline 2\n").expect("write");
         std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").expect("write");
-        let root = WorkspaceRoot::new(Some(dir.path().to_path_buf()));
+        let root = ProjectRoot::new(Some(dir.path().to_path_buf()));
         Fixture {
             _dir: dir,
             root: root.clone(),
@@ -267,7 +267,7 @@ mod tests {
         ] {
             let error = vfs.stat(&uri(input)).await.unwrap_err();
             assert!(
-                error.to_string().contains("escapes the workspace root"),
+                error.to_string().contains("escapes the project root"),
                 "{input}: {error}"
             );
         }
@@ -304,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn completes_workspace_paths() {
+    fn completes_project_paths() {
         let fixture = fixture();
         assert!(fixture.vfs.capabilities().completion);
         let completions = fixture.vfs.complete("");

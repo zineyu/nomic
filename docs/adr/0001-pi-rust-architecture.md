@@ -29,7 +29,7 @@ pi 是 TypeScript 实现，分为 `pi-ai`（provider 抽象）、`pi-agent-core`
 
 ## Decision
 
-### Crate 划分（workspace）
+### Crate 划分（project）
 
 ```
 crates/
@@ -183,7 +183,7 @@ M1 只实现 `before_tool_call` / `after_tool_call`（权限门控的挂点）�
 ## Consequences
 
 - 需要自建 SSE 解析与两个 provider 的消息变换（约 1.5k 行），换取对协议的完全控制。
-- 移除 rig 依赖；workspace 从单 binary 变为多 crate。
+- 移除 rig 依赖；project 从单 binary 变为多 crate。
 - 所有测试基于 fixture，CI 无需 API key。
 - M2 待办清单（已在 ADR 中锚定）：SQLite session（树结构 + branching）、prompt caching、
   compaction、skills/prompt templates/AGENTS.md 加载、交互 TUI、图片输入。

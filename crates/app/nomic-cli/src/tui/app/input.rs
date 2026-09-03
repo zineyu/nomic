@@ -106,7 +106,7 @@ pub(in crate::tui) struct Input {
     completion_enabled: bool,
     /// `@` mention 补全是否启用：聊天草稿启用，命令栏不启用
     mention_enabled: bool,
-    /// `@file:` 补全的路径基准（与工具共享的 session workspace 句柄；
+    /// `@file:` 补全的路径基准（与工具共享的 session project 句柄；
     /// 未设置时退回进程 cwd）
     mention_base: Option<nomic_tools::BaseDir>,
 }
@@ -129,7 +129,7 @@ impl Input {
 
     // ── 快照（补全数据源） ──────────────────────────────────────────────────
 
-    /// 设置 `@file:` 补全的路径基准（与工具共享句柄，session 切换 workspace
+    /// 设置 `@file:` 补全的路径基准（与工具共享句柄，session 切换 project
     /// 时自动跟随）。
     pub(in crate::tui) fn set_mention_base(&mut self, base: &nomic_tools::BaseDir) {
         self.mention_base = Some(base.clone());
@@ -673,7 +673,7 @@ impl Input {
         })
     }
 
-    /// `@file:` 后的文件路径候选（相对 session workspace 基准，按前缀匹配）。
+    /// `@file:` 后的文件路径候选（相对 session project 基准，按前缀匹配）。
     fn file_mention_candidates(&self, path_fragment: &str) -> Option<MentionCompletion> {
         let base = self
             .mention_base

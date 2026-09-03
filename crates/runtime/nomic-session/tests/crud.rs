@@ -1,4 +1,4 @@
-//! session / workspace 管理操作：删除（含级联与 force 语义）与自定义标题。
+//! session / project 管理操作：删除（含级联与 force 语义）与自定义标题。
 
 use nomic_ai::{Message, UserMessage, UserMessageContent};
 use nomic_session::{SessionError, SessionStore};
@@ -65,7 +65,7 @@ async fn delete_session_keeps_sibling_sessions() {
     assert!(store.delete_session(&a).await.unwrap());
     let rest = store.list_sessions().await.unwrap();
     assert_eq!(rest.len(), 1);
-    assert_eq!(rest[0].id, b, "同 workspace 的其他 session 不受影响");
+    assert_eq!(rest[0].id, b, "同 project 的其他 session 不受影响");
 }
 
 // ── rename_session / 自定义标题 ───────────────────────────────────────────
@@ -127,61 +127,61 @@ async fn rename_session_rejects_unknown_session() {
     );
 }
 
-// ── delete_workspace ──────────────────────────────────────────────────────
+// ── delete_project ──────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn delete_workspace_removes_empty_workspace() {
+async fn delete_project_removes_empty_project() {
     let store = SessionStore::in_memory().await.unwrap();
-    let workspace = store.get_or_create_workspace("/tmp/ws").await.unwrap();
+    let project = store.get_or_create_project("/tmp/ws").await.unwrap();
 
-    assert!(store.delete_workspace(&workspace.id, false).await.unwrap());
-    assert!(store.workspace(&workspace.id).await.unwrap().is_none());
+    assert!(store.delete_project(&project.id, false).await.unwrap());
+    assert!(store.project(&project.id).await.unwrap().is_none());
     // 幂等：重复删除返回 false
-    assert!(!store.delete_workspace(&workspace.id, false).await.unwrap());
+    assert!(!store.delete_project(&project.id, false).await.unwrap());
 }
 
 #[tokio::test]
-async fn delete_workspace_refuses_sessions_with_user_messages() {
+async fn delete_project_refuses_sessions_with_user_messages() {
     let store = SessionStore::in_memory().await.unwrap();
     let session = store.create_session("/tmp/ws").await.unwrap();
     store
         .append_message(&session, None, &user_message("hi", 1_000))
         .await
         .unwrap();
-    let workspace = store.workspace_of_session(&session).await.unwrap().unwrap();
+    let project = store.project_of_session(&session).await.unwrap().unwrap();
 
-    let Err(SessionError::WorkspaceNotEmpty { id, count }) =
-        store.delete_workspace(&workspace.id, false).await
+    let Err(SessionError::ProjectNotEmpty { id, count }) =
+        store.delete_project(&project.id, false).await
     else {
-        panic!("非空 workspace 应拒绝删除");
+        panic!("非空 project 应拒绝删除");
     };
-    assert_eq!(id, workspace.id);
+    assert_eq!(id, project.id);
     assert_eq!(count, 1);
     // 数据保持原样
     assert_eq!(store.list_sessions().await.unwrap().len(), 1);
-    assert!(store.workspace(&workspace.id).await.unwrap().is_some());
+    assert!(store.project(&project.id).await.unwrap().is_some());
 }
 
 #[tokio::test]
-async fn delete_workspace_allows_shell_only_workspace() {
+async fn delete_project_allows_shell_only_project() {
     let store = SessionStore::in_memory().await.unwrap();
     // 只有空壳 session（无 user 消息）：不进列表口径，不拦截删除
     let shell = store.create_session("/tmp/ws").await.unwrap();
-    let workspace = store.workspace_of_session(&shell).await.unwrap().unwrap();
+    let project = store.project_of_session(&shell).await.unwrap().unwrap();
 
-    assert!(store.delete_workspace(&workspace.id, false).await.unwrap());
-    assert!(store.workspace(&workspace.id).await.unwrap().is_none());
+    assert!(store.delete_project(&project.id, false).await.unwrap());
+    assert!(store.project(&project.id).await.unwrap().is_none());
     assert!(
         matches!(
             store.load_messages(&shell).await,
             Err(SessionError::SessionNotFound(_))
         ),
-        "空壳 session 应随 workspace 一并清除"
+        "空壳 session 应随 project 一并清除"
     );
 }
 
 #[tokio::test]
-async fn delete_workspace_force_cascades_sessions() {
+async fn delete_project_force_cascades_sessions() {
     let store = SessionStore::in_memory().await.unwrap();
     let a = store.create_session("/tmp/ws").await.unwrap();
     let b = store.create_session("/tmp/ws").await.unwrap();
@@ -192,11 +192,11 @@ async fn delete_workspace_force_cascades_sessions() {
             .await
             .unwrap();
     }
-    let workspace = store.workspace_of_session(&a).await.unwrap().unwrap();
+    let project = store.project_of_session(&a).await.unwrap().unwrap();
 
-    assert!(store.delete_workspace(&workspace.id, true).await.unwrap());
-    assert!(store.workspace(&workspace.id).await.unwrap().is_none());
+    assert!(store.delete_project(&project.id, true).await.unwrap());
+    assert!(store.project(&project.id).await.unwrap().is_none());
     let rest = store.list_sessions().await.unwrap();
     assert_eq!(rest.len(), 1);
-    assert_eq!(rest[0].id, other, "其他 workspace 的 session 不受影响");
+    assert_eq!(rest[0].id, other, "其他 project 的 session 不受影响");
 }

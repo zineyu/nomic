@@ -2,8 +2,8 @@
 //! （ADR-0042，ADR-0043 目录化挂载）。
 //!
 //! - [`skill::SkillMount`]：`skill://`，只读提示词资产（复用 `SkillResolver`）
-//! - [`local::LocalMount`]：`local://`，可写的会话 workspace 视图
-//! - [`nix::NixMount`]：`nix://`，可写的 workspace nix 环境定义（ADR-0041）
+//! - [`local::LocalMount`]：`local://`，可写的会话 project 视图
+//! - [`nix::NixMount`]：`nix://`，可写的 project nix 环境定义（ADR-0041）
 //!
 //! 声明经 [`DirMount`](crate::DirMount) 适配为完整 VFS（类型别名
 //! [`SkillVfs`] / [`LocalVfs`] / [`NixVfs`]）。后续协议
@@ -23,11 +23,11 @@ use std::sync::Arc;
 
 use nomic_skills::SkillResolver;
 
-use crate::root::WorkspaceRoot;
+use crate::root::ProjectRoot;
 use crate::router::VfsRouter;
 use crate::vfs::{ContentType, VfsEntry, VfsKind};
 
-/// 会话默认挂载表（ADR-0042/0043）：skill/local/nix 共享同一 workspace
+/// 会话默认挂载表（ADR-0042/0043）：skill/local/nix 共享同一 project
 /// 根句柄（句柄更新即切换挂载视图，无需重建）。工具装配与系统提示词
 /// 目录渲染（[`VfsRouter::prompt_catalog`]）共用此函数，保证两侧
 /// 挂载集一致。
@@ -35,7 +35,7 @@ use crate::vfs::{ContentType, VfsEntry, VfsKind};
 /// nix://shell 与 bash 工具的 env 缓存经文件 mtime 解耦（改写即失效
 /// 重解析，无需跨组件通知）。
 #[must_use]
-pub fn session_router(skill_resolver: SkillResolver, root: WorkspaceRoot) -> VfsRouter {
+pub fn session_router(skill_resolver: SkillResolver, root: ProjectRoot) -> VfsRouter {
     let mut router = VfsRouter::new();
     router.mount(Arc::new(SkillVfs::new(skill_resolver)));
     router.mount(Arc::new(LocalVfs::new(root.clone())));

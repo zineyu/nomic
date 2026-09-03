@@ -85,10 +85,10 @@ pub async fn run(cli: &Cli) -> Result<()> {
     }
     // `--image` 附件在 TUI 模式同样生效：作为首轮消息的暂存附件
     effects::stage_cli_images(&mut app, &cli.image);
-    // 工具基准（workspace 严格归属）：工具、`@file:` 补全与 session 绑定
+    // 工具基准（project 严格归属）：工具、`@file:` 补全与 session 绑定
     // 共享同一句柄，resume/new 切换 session 时基准经句柄原地更新，
     // 下一次工具执行/补全即生效
-    let base_dir = nomic_tools::BaseDir::new(Some(boot.workspace.clone()));
+    let base_dir = nomic_tools::BaseDir::new(Some(boot.project.clone()));
     let skill_resolver = boot.skill_resolver.clone();
     let skill_entries: Vec<SkillEntry> = skill_resolver
         .catalog()
@@ -103,7 +103,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
     app.command_mut()
         .set_available_skills(skill_entries.clone());
     app.input_mut().set_available_skills(skill_entries);
-    // `@file:` 补全与工具共享同一基准：resume 切换 workspace 时自动跟随
+    // `@file:` 补全与工具共享同一基准：resume 切换 project 时自动跟随
     app.input_mut().set_mention_base(&base_dir);
     app.command_mut()
         .set_available_templates(boot.prompt_templates.clone());

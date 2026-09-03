@@ -15,15 +15,15 @@ pub enum SessionError {
     /// session id 不存在
     #[error("session not found: {0}")]
     SessionNotFound(String),
-    /// workspace 不存在（`get_or_create_workspace` 登记后读取仍缺失，
+    /// project 不存在（`get_or_create_project` 登记后读取仍缺失，
     /// 仅在库被并发破坏时可能出现）
-    #[error("workspace not found: {0}")]
-    WorkspaceNotFound(String),
-    /// workspace 下仍有 session，非 force 删除被拒（只统计有 user 消息的
-    /// session；空壳不拦截删除，随 workspace 一并清除）
-    #[error("workspace {id} 下仍有 {count} 个 session（force 可级联删除）")]
-    WorkspaceNotEmpty {
-        /// workspace id
+    #[error("project not found: {0}")]
+    ProjectNotFound(String),
+    /// project 下仍有 session，非 force 删除被拒（只统计有 user 消息的
+    /// session；空壳不拦截删除，随 project 一并清除）
+    #[error("project {id} 下仍有 {count} 个 session（force 可级联删除）")]
+    ProjectNotEmpty {
+        /// project id
         id: String,
         /// 有 user 消息的 session 数
         count: u64,

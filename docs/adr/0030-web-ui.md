@@ -59,8 +59,8 @@ print/TUI 完全复用。前端产物编译期内嵌进二进制（见下），�
 多 session 并行：会话操作按路径参数 `session_id` 路由到对应 `SessionRuntime`；
 模型选择 / prompt / 取消 / 提问 / WebSocket 均为会话级，各会话独立运行互不阻塞。
 
-- 无默认 workspace/session：服务端启动不预建 session；前端启动页要求先选择
-  （或输入）workspace，首条消息经 `create_session`（必须携带 workspace 目录）
+- 无默认 project/session：服务端启动不预建 session；前端启动页要求先选择
+  （或输入）project，首条消息经 `create_session`（必须携带 project 目录）
   创建会话。历史 session 由前端从会话列表显式恢复。
 - `GET /api/sessions` / `POST /api/sessions`（新建）：复用 `SessionStore`。
 - `GET /api/sessions/{id}/state`：当前会话快照——消息历史、模型、思考级别、
@@ -85,9 +85,9 @@ print/TUI 完全复用。前端产物编译期内嵌进二进制（见下），�
 在此之上补齐了与 TUI 对齐的输入能力：
 
 - **mention**：输入框 `@` 弹出补全（`@skill:<name>` / `@file:<path>`）。补全候选经
-  `list_skills`（进程级 skill 清单）与 `list_files`（按目标 session 的 workspace
+  `list_skills`（进程级 skill 清单）与 `list_files`（按目标 session 的 project
   前缀匹配）查询事件获取；发送时由服务端在 `prompt` handler 展开有效标记
-  （复用 TUI 的 `mention` 模块，相对路径以本 session 的 workspace 为基准），无效
+  （复用 TUI 的 `mention` 模块，相对路径以本 session 的 project 为基准），无效
   标记原样发送。
 - **斜杠命令**：`/compact [聚焦指令]`、`/continue`（web 命令子集，语法带 `/`
   前缀——Web 没有 TUI 的 NORMAL/COMMAND 模式区分）。命令与 prompt 经
@@ -139,7 +139,7 @@ print/TUI 完全复用。前端产物编译期内嵌进二进制（见下），�
 
 ## Consequences
 
-- workspace 新增 `axum`、`tower-http` 依赖（仅 nomic-cli 使用）。
+- project 新增 `axum`、`tower-http` 依赖（仅 nomic-cli 使用）。
 - nomic-cli 新增 `rust-embed` 依赖（仅 nomic-cli 使用），`cargo build` 时
   `web/dist` 必须已存在（`check`/`web-build` 先构建前端）；干净 checkout 直接
   `cargo build` 会因内嵌目录缺失而编译失败，属于有意的前后端同版本耦合。

@@ -4,7 +4,7 @@
 // 补全弹层（`@` mention 与 `/` 命令）：
 // - `@` 触发类型候选（@skill:// / @file:）；`@skill://` 后为 skill 名候选
 //   （进程级清单，懒加载缓存）；`@file:` 后为文件候选（服务端按 session
-//   workspace 前缀匹配，防抖查询）
+//   project 前缀匹配，防抖查询）
 // - `/` 开头触发斜杠命令候选（/compact、/continue、/goal；执行在服务端，
 //   见 crates/app/nomic-cli/src/web/api/handlers.rs）
 // - 弹层打开时 ↑/↓ 选择、Tab/Enter 接受、Esc 关闭；弹层关闭时 Enter 发送
@@ -63,9 +63,9 @@ interface ChatInputProps {
   reasoning?: string | null
   contextTokens?: number
   contextWindow?: number | null
-  /** 当前 session id（`@file:` 候选查询的 workspace 基准；无 session 时文件补全不可用） */
+  /** 当前 session id（`@file:` 候选查询的 project 基准；无 session 时文件补全不可用） */
   sessionId?: string | null
-  /** 额外禁用发送（启动页未选择工作区时） */
+  /** 额外禁用发送（启动页未选择项目时） */
   sendDisabled?: boolean
   /** 输入框占位文本（缺省为「给智能体发消息」） */
   placeholder?: string
@@ -181,7 +181,7 @@ export function ChatInput({
       return
     }
 
-    // `@file:` 路径候选（服务端按 session workspace 前缀匹配，防抖）
+    // `@file:` 路径候选（服务端按 session project 前缀匹配，防抖）
     if (!sessionId) {
       apply([], 0)
       return

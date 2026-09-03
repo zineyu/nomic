@@ -1,6 +1,6 @@
 //! 系统提示词装配（对齐 pi 的结构与措辞）：基础契约 → AGENTS.md（根到叶）→
 //! `<available_skills>` → `<internal_uris>` → 激活 skill → `append_system` →
-//! 工作目录脚注。`workspace` 是 session 的操作基准（严格归属）：发现与脚注
+//! 工作目录脚注。`project` 是 session 的操作基准（严格归属）：发现与脚注
 //! 都以它为准，而非进程 cwd。
 
 use std::path::Path;
@@ -9,10 +9,10 @@ use nomic_skills::{ActivatedSkill, SkillResolver};
 
 use crate::context_files::{ContextFile, discover_agents_files};
 
-/// 系统提示词配方：workspace 无关的进程级输入（`--append-system` 与
-/// `--skill` 激活）。AGENTS.md 按 session 的 workspace 祖先链发现
-///（workspace 严格归属，与工具基准同口径）；启动（TUI/print）、web 按
-/// session workspace 构建、TUI `/resume` 跨 workspace 重建，共用同一配方。
+/// 系统提示词配方：project 无关的进程级输入（`--append-system` 与
+/// `--skill` 激活）。AGENTS.md 按 session 的 project 祖先链发现
+///（project 严格归属，与工具基准同口径）；启动（TUI/print）、web 按
+/// session project 构建、TUI `/resume` 跨 project 重建，共用同一配方。
 #[derive(Debug, Clone, Default)]
 pub struct SystemPromptRecipe {
     /// `--append-system` / settings 的追加提示词
@@ -22,12 +22,12 @@ pub struct SystemPromptRecipe {
 }
 
 impl SystemPromptRecipe {
-    /// 以 `workspace` 为基准构建完整系统提示词：AGENTS.md 从 workspace
-    /// 沿祖先链发现（根到叶），末尾脚注的工作目录同为 workspace。
-    pub fn build(&self, workspace: &Path, skill_resolver: &SkillResolver) -> String {
-        let context_files = discover_agents_files(workspace);
+    /// 以 `project` 为基准构建完整系统提示词：AGENTS.md 从 project
+    /// 沿祖先链发现（根到叶），末尾脚注的工作目录同为 project。
+    pub fn build(&self, project: &Path, skill_resolver: &SkillResolver) -> String {
+        let context_files = discover_agents_files(project);
         build_system_prompt(
-            workspace,
+            project,
             self.append_system.as_deref(),
             &context_files,
             skill_resolver,
@@ -37,10 +37,10 @@ impl SystemPromptRecipe {
 }
 
 /// 系统提示词（对齐 pi 的结构与措辞）：基础契约 → AGENTS.md（根到叶）→
-/// `append_system` → 当前工作目录脚注。`workspace` 是 session 的操作基准
+/// `append_system` → 当前工作目录脚注。`project` 是 session 的操作基准
 ///（严格归属）：发现与脚注都以它为准，而非进程 cwd。
 fn build_system_prompt(
-    workspace: &Path,
+    project: &Path,
     append: Option<&str>,
     context_files: &[ContextFile],
     skill_resolver: &SkillResolver,
@@ -84,7 +84,7 @@ fn build_system_prompt(
     // fs::session_router，保证提示词与实际挂载集一致
     let vfs_router = nomic_vfs::fs::session_router(
         skill_resolver.clone(),
-        nomic_vfs::WorkspaceRoot::new(Some(workspace.to_path_buf())),
+        nomic_vfs::ProjectRoot::new(Some(project.to_path_buf())),
     );
     if let Some(catalog) = vfs_router.prompt_catalog() {
         prompt.push_str("\n\n<internal_uris>\n");
@@ -108,7 +108,7 @@ fn build_system_prompt(
         let _ = write!(
             prompt,
             "\n\nCurrent working directory: {}",
-            workspace.display()
+            project.display()
         );
     }
     prompt
@@ -190,10 +190,10 @@ mod tests {
         assert!(base_at < ctx_at && ctx_at < append_at && append_at < cwd_at);
     }
 
-    /// 配方以 workspace 为基准：AGENTS.md 从 workspace 沿祖先链发现
-    ///（根到叶），append_system 保留，cwd 脚注同为 workspace。
+    /// 配方以 project 为基准：AGENTS.md 从 project 沿祖先链发现
+    ///（根到叶），append_system 保留，cwd 脚注同为 project。
     #[test]
-    fn recipe_discovers_agents_files_from_workspace() {
+    fn recipe_discovers_agents_files_from_project() {
         let root = tempfile::tempdir().expect("tempdir");
         let leaf = root.path().join("sub");
         std::fs::create_dir_all(&leaf).expect("mkdir");
@@ -211,7 +211,7 @@ mod tests {
         assert!(prompt.contains("额外指令"));
         assert!(
             prompt.contains(&format!("Current working directory: {}", leaf.display())),
-            "cwd 脚注应跟随 workspace"
+            "cwd 脚注应跟随 project"
         );
     }
 

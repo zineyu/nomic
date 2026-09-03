@@ -42,7 +42,7 @@ pub enum TodoPolicy {
 /// supervisor 配置（[`SupervisorConfig::default`]）刻意**不是**选项——
 /// 三入口当前一致，属于配方本身；某入口需要分化时再提升为选项。
 pub struct RecipeOpts {
-    /// 工具的相对路径基准句柄（workspace 严格归属）。交互端保留句柄
+    /// 工具的相对路径基准句柄（project 严格归属）。交互端保留句柄
     /// 副本，session 切换时经 [`BaseDir::set`] 原地更新，已构建工具的
     /// 下一次执行即读到新基准；print / web 入口新建后不再更新。
     pub base: BaseDir,

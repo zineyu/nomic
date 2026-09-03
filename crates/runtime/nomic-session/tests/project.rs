@@ -1,17 +1,17 @@
-//! workspace：登记去重、路径规范化、按 workspace 过滤 session、0005 迁移语义。
+//! project：登记去重、路径规范化、按 project 过滤 session、0005 迁移语义。
 
 use std::path::{Path, PathBuf};
 
 use nomic_session::SessionStore;
 
 #[tokio::test]
-async fn get_or_create_workspace_dedups_by_path() {
+async fn get_or_create_project_dedups_by_path() {
     let store = SessionStore::in_memory().await.unwrap();
-    let first = store.get_or_create_workspace("/tmp/ws-a").await.unwrap();
-    let second = store.get_or_create_workspace("/tmp/ws-a").await.unwrap();
-    assert_eq!(first.id, second.id, "同路径复用同一 workspace");
+    let first = store.get_or_create_project("/tmp/ws-a").await.unwrap();
+    let second = store.get_or_create_project("/tmp/ws-a").await.unwrap();
+    assert_eq!(first.id, second.id, "同路径复用同一 project");
 
-    let listed = store.list_workspaces().await.unwrap();
+    let listed = store.list_projects().await.unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].path, Path::new("/tmp/ws-a"));
     assert_eq!(listed[0].session_count, 0);
@@ -22,21 +22,21 @@ async fn get_or_create_workspace_dedups_by_path() {
 }
 
 #[tokio::test]
-async fn workspace_path_is_normalized() {
+async fn project_path_is_normalized() {
     let store = SessionStore::in_memory().await.unwrap();
     // 相对路径按进程 cwd 解析（canonicalize）
-    let workspace = store.get_or_create_workspace(".").await.unwrap();
-    assert!(workspace.path.is_absolute(), "{}", workspace.path.display());
+    let project = store.get_or_create_project(".").await.unwrap();
+    assert!(project.path.is_absolute(), "{}", project.path.display());
     // 不存在的路径退回原始文本（不报错）
     let missing = store
-        .get_or_create_workspace("/tmp/nomic-test-nonexistent-ws")
+        .get_or_create_project("/tmp/nomic-test-nonexistent-ws")
         .await
         .unwrap();
     assert_eq!(missing.path, Path::new("/tmp/nomic-test-nonexistent-ws"));
 }
 
 #[tokio::test]
-async fn list_sessions_in_filters_by_workspace() {
+async fn list_sessions_in_filters_by_project() {
     use nomic_ai::{Message, UserMessage, UserMessageContent};
     let store = SessionStore::in_memory().await.unwrap();
     let a = store.create_session("/tmp/ws-a").await.unwrap();
@@ -57,13 +57,13 @@ async fn list_sessions_in_filters_by_workspace() {
         .iter()
         .find(|s| s.id == a)
         .unwrap()
-        .workspace_id
+        .project_id
         .clone();
     let ws_b = summaries
         .iter()
         .find(|s| s.id == b)
         .unwrap()
-        .workspace_id
+        .project_id
         .clone();
 
     let in_a: Vec<String> = store
@@ -77,17 +77,17 @@ async fn list_sessions_in_filters_by_workspace() {
     assert!(in_a.contains(&a) && in_a.contains(&a2));
     assert_eq!(store.list_sessions_in(&ws_b).await.unwrap().len(), 1);
 
-    let workspace = store.workspace_of_session(&a).await.unwrap().unwrap();
-    assert_eq!(workspace.id, ws_a);
-    assert_eq!(workspace.path, Path::new("/tmp/ws-a"));
+    let project = store.project_of_session(&a).await.unwrap().unwrap();
+    assert_eq!(project.id, ws_a);
+    assert_eq!(project.path, Path::new("/tmp/ws-a"));
     assert_eq!(
-        store.session_workspace_path(&a).await.unwrap(),
+        store.session_project_path(&a).await.unwrap(),
         Path::new("/tmp/ws-a")
     );
 }
 
 #[tokio::test]
-async fn append_message_advances_workspace_activity() {
+async fn append_message_advances_project_activity() {
     use nomic_ai::{Message, UserMessage, UserMessageContent};
     let store = SessionStore::in_memory().await.unwrap();
     let session = store.create_session("/tmp/ws-a").await.unwrap();
@@ -100,15 +100,15 @@ async fn append_message_advances_workspace_activity() {
         .await
         .unwrap();
 
-    let workspaces = store.list_workspaces().await.unwrap();
-    assert_eq!(workspaces[0].last_active_at, Some(1_000));
+    let projects = store.list_projects().await.unwrap();
+    assert_eq!(projects[0].last_active_at, Some(1_000));
 }
 
 #[tokio::test]
-async fn list_workspaces_keeps_registration_order_despite_activity() {
+async fn list_projects_keeps_registration_order_despite_activity() {
     use nomic_ai::{Message, UserMessage, UserMessageContent};
     let store = SessionStore::in_memory().await.unwrap();
-    store.get_or_create_workspace("/tmp/ws-a").await.unwrap();
+    store.get_or_create_project("/tmp/ws-a").await.unwrap();
     let b = store.create_session("/tmp/ws-b").await.unwrap();
     // ws-b 产生活动（推进 last_active_at），但列表顺序不随活跃度浮动
     let message = Message::User(UserMessage {
@@ -117,24 +117,22 @@ async fn list_workspaces_keeps_registration_order_despite_activity() {
     });
     store.append_message(&b, None, &message).await.unwrap();
 
-    let workspaces = store.list_workspaces().await.unwrap();
+    let projects = store.list_projects().await.unwrap();
     assert_eq!(
-        workspaces
-            .iter()
-            .map(|w| w.path.clone())
-            .collect::<Vec<_>>(),
+        projects.iter().map(|w| w.path.clone()).collect::<Vec<_>>(),
         vec![PathBuf::from("/tmp/ws-a"), PathBuf::from("/tmp/ws-b")],
         "列表顺序以登记时间为准，活跃度不置顶",
     );
 }
 
 /// 0005 迁移脚本语义：旧库（sessions.cwd）迁移后每个 distinct cwd 登记为
-/// workspace，sessions.workspace_id 回填，cwd 列删除。
+/// workspace，sessions.workspace_id 回填，cwd 列删除；再经 0009 改名为
+/// projects / project_id。
 ///
-/// 在临时库上依次执行 0001..0005 的 SQL 原文验证（不走 sqlx 迁移记录，
-/// 仅验证脚本本身的数据迁移正确性）。
+/// 在临时库上依次执行 0001..0005 与 0009 的 SQL 原文验证（不走 sqlx 迁移
+/// 记录，仅验证脚本本身的数据迁移正确性）。
 #[tokio::test]
-async fn migration_0005_moves_cwd_into_workspaces() {
+async fn migration_0005_moves_cwd_into_projects() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("old.db");
     let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}?mode=rwc", path.display()))
@@ -167,20 +165,25 @@ async fn migration_0005_moves_cwd_into_workspaces() {
         .execute(&pool)
         .await
         .unwrap();
+    // 0009 改名：workspaces → projects，sessions.workspace_id → project_id
+    sqlx::raw_sql(include_str!("../migrations/0009_rename_projects.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
 
-    // distinct cwd 各登记一个 workspace
-    let workspaces: Vec<(String, String)> =
-        sqlx::query_as("SELECT id, path FROM workspaces ORDER BY path")
+    // distinct cwd 各登记一个 project
+    let projects: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, path FROM projects ORDER BY path")
             .fetch_all(&pool)
             .await
             .unwrap();
-    assert_eq!(workspaces.len(), 2);
-    assert_eq!(workspaces[0].1, "/tmp/other");
-    assert_eq!(workspaces[1].1, "/tmp/proj");
+    assert_eq!(projects.len(), 2);
+    assert_eq!(projects[0].1, "/tmp/other");
+    assert_eq!(projects[1].1, "/tmp/proj");
 
-    // sessions.workspace_id 回填：同 cwd 归入同一 workspace
+    // sessions.project_id 回填：同 cwd 归入同一 project
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT s.id, w.path FROM sessions s JOIN workspaces w ON w.id = s.workspace_id ORDER BY s.id",
+        "SELECT s.id, w.path FROM sessions s JOIN projects w ON w.id = s.project_id ORDER BY s.id",
     )
     .fetch_all(&pool)
     .await
@@ -200,5 +203,5 @@ async fn migration_0005_moves_cwd_into_workspaces() {
         .await
         .unwrap();
     assert!(!columns.contains(&"cwd".to_string()));
-    assert!(columns.contains(&"workspace_id".to_string()));
+    assert!(columns.contains(&"project_id".to_string()));
 }

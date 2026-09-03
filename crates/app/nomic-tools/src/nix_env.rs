@@ -1,6 +1,6 @@
 //! nix 纯净环境：定义模板、env 解析与缓存（ADR-0041）。
 //!
-//! workspace 的环境定义为 `<workspace>/.nomic/flake.nix`（devShell）。
+//! project 的环境定义为 `<project>/.nomic/flake.nix`（devShell）。
 //! `nix develop` 求值有数百 ms～秒级延迟，不能摊到每次 bash 调用：
 //! [`NixEnvCache`] 首次/定义变更后解析一次（`nix develop
 //! --ignore-environment --command env -0`），之后 plain bash + 注入缓存
@@ -22,13 +22,13 @@ const RESOLVE_BUDGET: Duration = Duration::from_mins(10);
 /// 解析后必须存在（缺失 = 输出被 shellHook 等污染 / 非预期输出）。
 const ENV_MARKER: &str = "__NOMIC_ENV_BEGIN__";
 
-/// workspace 环境定义文件（相对 workspace 根）。
+/// project 环境定义文件（相对 project 根）。
 pub const FLAKE_RELATIVE_PATH: &str = ".nomic/flake.nix";
 
 /// 默认模板：bash + jq + curl + git + gh（coreutils 等基础工具由 stdenv
 /// 隐式提供）。
 pub const DEFAULT_FLAKE: &str = r#"{
-  description = "nomic workspace shell (edit via nix://shell)";
+  description = "nomic project shell (edit via nix://shell)";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -64,11 +64,11 @@ pub const DEFAULT_FLAKE: &str = r#"{
 }
 "#;
 
-/// workspace 的 flake 定义路径与 lock 路径。
+/// project 的 flake 定义路径与 lock 路径。
 #[must_use]
-pub fn flake_paths(workspace: &Path) -> (PathBuf, PathBuf) {
-    let flake = workspace.join(FLAKE_RELATIVE_PATH);
-    let lock = workspace.join(".nomic").join("flake.lock");
+pub fn flake_paths(project: &Path) -> (PathBuf, PathBuf) {
+    let flake = project.join(FLAKE_RELATIVE_PATH);
+    let lock = project.join(".nomic").join("flake.lock");
     (flake, lock)
 }
 
@@ -117,8 +117,8 @@ pub struct FlakeKey {
 impl FlakeKey {
     /// stat 当前文件状态生成键（每次 bash 调用一次的廉价检查）。
     #[must_use]
-    pub fn stat(workspace: &Path) -> Self {
-        let (flake, lock) = flake_paths(workspace);
+    pub fn stat(project: &Path) -> Self {
+        let (flake, lock) = flake_paths(project);
         let mtime = |path: &Path| {
             std::fs::metadata(path)
                 .and_then(|meta| meta.modified())
@@ -141,7 +141,7 @@ impl FlakeKey {
 /// `Err(reason)` = 回退宿主环境的原因（面向模型/用户的提示文本）。
 type ResolveResult = Result<Option<Arc<HashMap<String, String>>>, Arc<str>>;
 
-/// 缓存状态：键含 workspace 路径（交互端可切换 session workspace）。
+/// 缓存状态：键含 project 路径（交互端可切换 session project）。
 #[derive(Debug)]
 struct CacheState {
     key: Option<(PathBuf, FlakeKey)>,
@@ -183,42 +183,42 @@ impl NixEnvCache {
         Arc::new(Self::default())
     }
 
-    /// 后台预解析（session/workspace 初始化时调用，给首个 bash 调用提前量）；
+    /// 后台预解析（session/project 初始化时调用，给首个 bash 调用提前量）；
     /// 已就绪/进行中/无 flake 时为 no-op。
-    pub fn prewarm(self: &Arc<Self>, workspace: &Path) {
-        let key = FlakeKey::stat(workspace);
+    pub fn prewarm(self: &Arc<Self>, project: &Path) {
+        let key = FlakeKey::stat(project);
         if !key.has_flake() {
             return;
         }
         let Ok(mut state) = self.state.try_lock() else {
             return; // 另一调用正在裁决，交由它处理
         };
-        if state.key.as_ref() == Some(&(workspace.to_path_buf(), key))
+        if state.key.as_ref() == Some(&(project.to_path_buf(), key))
             && (state.result.is_some() || state.resolving)
         {
             return;
         }
-        state.key = Some((workspace.to_path_buf(), key));
+        state.key = Some((project.to_path_buf(), key));
         state.result = None;
         state.resolving = true;
         drop(state);
-        self.spawn_resolve(workspace.to_path_buf(), key);
+        self.spawn_resolve(project.to_path_buf(), key);
     }
 
-    /// 取 workspace 的执行环境（详见类型别名 `ResolveResult` 的语义）。
+    /// 取 project 的执行环境（详见类型别名 `ResolveResult` 的语义）。
     /// 解析在进行中时最多等待 `RESOLVE_WAIT`，超时本次回退宿主环境。
-    pub async fn env_for(self: &Arc<Self>, workspace: &Path) -> ResolveResult {
-        let key = FlakeKey::stat(workspace);
+    pub async fn env_for(self: &Arc<Self>, project: &Path) -> ResolveResult {
+        let key = FlakeKey::stat(project);
         let notified = self.notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable(); // 先注册等待者再查状态，消除 notify 竞态
-        if let Some(result) = self.ensure_started(workspace, key).await {
+        if let Some(result) = self.ensure_started(project, key).await {
             return result;
         }
         let _ = tokio::time::timeout(RESOLVE_WAIT, notified).await;
         let result = {
             let state = self.state.lock().await;
-            if state.key.as_ref() == Some(&(workspace.to_path_buf(), key)) {
+            if state.key.as_ref() == Some(&(project.to_path_buf(), key)) {
                 state.result.clone()
             } else {
                 None
@@ -233,14 +233,14 @@ impl NixEnvCache {
 
     /// 等待解析完成（上限 `RESOLVE_BUDGET` + 余量）：冷构建可能耗时
     /// 数分钟，供测试与显式预解析使用；常规 bash 调用走 [`Self::env_for`]。
-    pub async fn resolve_fully(self: &Arc<Self>, workspace: &Path) -> ResolveResult {
-        let key = FlakeKey::stat(workspace);
+    pub async fn resolve_fully(self: &Arc<Self>, project: &Path) -> ResolveResult {
+        let key = FlakeKey::stat(project);
         let deadline = tokio::time::Instant::now() + RESOLVE_BUDGET + Duration::from_secs(30);
         loop {
             let notified = self.notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if let Some(result) = self.ensure_started(workspace, key).await {
+            if let Some(result) = self.ensure_started(project, key).await {
                 return result;
             }
             if tokio::time::timeout_at(deadline, notified).await.is_err() {
@@ -251,15 +251,15 @@ impl NixEnvCache {
         }
     }
 
-    /// 确保 (workspace, key) 的解析已启动；已有结果则直接返回。
+    /// 确保 (project, key) 的解析已启动；已有结果则直接返回。
     async fn ensure_started(
         self: &Arc<Self>,
-        workspace: &Path,
+        project: &Path,
         key: FlakeKey,
     ) -> Option<ResolveResult> {
         {
             let mut state = self.state.lock().await;
-            let target = (workspace.to_path_buf(), key);
+            let target = (project.to_path_buf(), key);
             if state.key.as_ref() == Some(&target) {
                 return state.result.clone();
             }
@@ -267,17 +267,17 @@ impl NixEnvCache {
             state.result = None;
             state.resolving = true;
         }
-        self.spawn_resolve(workspace.to_path_buf(), key);
+        self.spawn_resolve(project.to_path_buf(), key);
         None
     }
 
-    /// 后台解析任务：完成后仅当键仍一致（期间文件/ workspace 未再变）
+    /// 后台解析任务：完成后仅当键仍一致（期间文件/ project 未再变）
     /// 才写入结果并唤醒等待者。
-    fn spawn_resolve(self: &Arc<Self>, workspace: PathBuf, key: FlakeKey) {
+    fn spawn_resolve(self: &Arc<Self>, project: PathBuf, key: FlakeKey) {
         let cache = Arc::clone(self);
         tokio::spawn(async move {
             let result =
-                match tokio::time::timeout(RESOLVE_BUDGET, resolve_env(&workspace, key)).await {
+                match tokio::time::timeout(RESOLVE_BUDGET, resolve_env(&project, key)).await {
                     Ok(result) => result,
                     Err(_) => Err(Arc::from(
                         "nix environment resolution timed out after 10 minutes",
@@ -285,7 +285,7 @@ impl NixEnvCache {
                 };
             {
                 let mut state = cache.state.lock().await;
-                if state.key.as_ref() == Some(&(workspace, key)) {
+                if state.key.as_ref() == Some(&(project, key)) {
                     state.result = Some(result);
                     state.resolving = false;
                 }
@@ -297,11 +297,11 @@ impl NixEnvCache {
 
 /// 实际解析：`nix develop --ignore-environment` 进 devShell 后导出完整
 /// 环境。哨兵变量校验输出完整性；HOME/USER/TMPDIR 缺失时从宿主补齐。
-async fn resolve_env(workspace: &Path, key: FlakeKey) -> ResolveResult {
+async fn resolve_env(project: &Path, key: FlakeKey) -> ResolveResult {
     if !key.has_flake() {
         return Ok(None);
     }
-    let (flake, _) = flake_paths(workspace);
+    let (flake, _) = flake_paths(project);
     let nomic_dir = flake.parent().expect("flake path has .nomic parent");
     let installable = format!("path:{}", nomic_dir.display());
     let marker_arg = format!("{ENV_MARKER}=1");
@@ -317,7 +317,7 @@ async fn resolve_env(workspace: &Path, key: FlakeKey) -> ResolveResult {
             "-0",
             &marker_arg,
         ])
-        .current_dir(workspace)
+        .current_dir(project)
         .stdin(std::process::Stdio::null())
         .output()
         .await
@@ -401,22 +401,22 @@ fn nix_on_path() -> bool {
 /// 默认模板。flake 在 git 仓库内只对 git 可见的文件生效，因此写入后
 /// best-effort `git add -N`（intent-to-add 不暂存内容，只让 nix 可见）。
 /// 返回是否创建了文件。
-pub fn ensure_default_flake(workspace: &Path) -> std::io::Result<bool> {
+pub fn ensure_default_flake(project: &Path) -> std::io::Result<bool> {
     if !nix_on_path() {
         return Ok(false);
     }
-    let (flake, _) = flake_paths(workspace);
+    let (flake, _) = flake_paths(project);
     if flake.exists() {
         return Ok(false);
     }
     let parent = flake.parent().expect("flake path has .nomic parent");
     std::fs::create_dir_all(parent)?;
     std::fs::write(&flake, DEFAULT_FLAKE)?;
-    tracing::info!(flake = %flake.display(), "created default nix workspace environment");
+    tracing::info!(flake = %flake.display(), "created default nix project environment");
     let status = std::process::Command::new("git")
         .args([
             "-C",
-            &workspace.display().to_string(),
+            &project.display().to_string(),
             "add",
             "-N",
             "--",

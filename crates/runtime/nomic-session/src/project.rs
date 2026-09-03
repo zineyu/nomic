@@ -1,10 +1,10 @@
-//! workspace：文件系统路径的一等实体。
+//! project：文件系统路径的一等实体。
 //!
-//! 一个 workspace 对应一个规范化路径（`workspaces.path` 全局唯一），session
-//! 创建时绑定 workspace（`sessions.workspace_id`），其所有操作以 workspace
+//! 一个 project 对应一个规范化路径（`projects.path` 全局唯一），session
+//! 创建时绑定 project（`sessions.project_id`），其所有操作以 project
 //! 路径为基准（工具相对路径解析、mention 展开、`--continue` 匹配等）。
 //! `last_active_at` 在 session 创建与条目追加时推进，仅作活跃时间记录；
-//! workspace 列表按登记时间排序（稳定顺序，不随活跃度浮动）。
+//! project 列表按登记时间排序（稳定顺序，不随活跃度浮动）。
 
 use std::path::{Path, PathBuf};
 
@@ -13,19 +13,19 @@ use sqlx::Row as _;
 
 use crate::{SessionError, SessionStore, to_i64, to_u64};
 
-/// workspace 实体（`get_or_create_workspace` 等返回）。
+/// project 实体（`get_or_create_project` 等返回）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Workspace {
-    /// workspace id（UUID v7；迁移历史行可能为随机 hex）
+pub struct Project {
+    /// project id（UUID v7；迁移历史行可能为随机 hex）
     pub id: String,
     /// 规范化路径（创建时 canonicalize，符号链接已解析）
     pub path: PathBuf,
 }
 
-/// workspace 摘要（`list_workspaces` 返回，列表展示用）。
+/// project 摘要（`list_projects` 返回，列表展示用）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct WorkspaceSummary {
-    /// workspace id
+pub struct ProjectSummary {
+    /// project id
     pub id: String,
     /// 规范化路径
     pub path: PathBuf,
@@ -37,104 +37,104 @@ pub struct WorkspaceSummary {
 }
 
 impl SessionStore {
-    /// 按路径取 workspace，不存在则登记（路径先规范化：优先 canonicalize，
+    /// 按路径取 project，不存在则登记（路径先规范化：优先 canonicalize，
     /// 不存在时退回原始路径）。
     ///
     /// 「查或插」分两步而非单事务：并发插入撞 `path` UNIQUE 时回退为读取，
     /// 无需为幂等登记引入事务开销。
-    pub async fn get_or_create_workspace(
+    pub async fn get_or_create_project(
         &self,
         path: impl AsRef<Path>,
-    ) -> Result<Workspace, SessionError> {
+    ) -> Result<Project, SessionError> {
         let path = normalize_path(path.as_ref());
         let text = path.to_string_lossy().into_owned();
-        if let Some(workspace) = self.workspace_by_path(&text).await? {
-            tracing::debug!(workspace_id = %workspace.id, path = %text, "workspace: existing found");
-            return Ok(workspace);
+        if let Some(project) = self.project_by_path(&text).await? {
+            tracing::debug!(project_id = %project.id, path = %text, "project: existing found");
+            return Ok(project);
         }
         let id = uuid::Uuid::now_v7().to_string();
-        tracing::info!(workspace_id = %id, path = %text, "workspace: creating new");
-        sqlx::query("INSERT OR IGNORE INTO workspaces (id, path, created_at) VALUES (?, ?, ?)")
+        tracing::info!(project_id = %id, path = %text, "project: creating new");
+        sqlx::query("INSERT OR IGNORE INTO projects (id, path, created_at) VALUES (?, ?, ?)")
             .bind(&id)
             .bind(&text)
             .bind(to_i64(now_millis()))
             .execute(&self.pool)
             .await?;
         // 并发撞唯一约束时上面是 no-op，统一以读取为准
-        self.workspace_by_path(&text)
+        self.project_by_path(&text)
             .await?
-            .ok_or_else(|| SessionError::WorkspaceNotFound(text))
+            .ok_or_else(|| SessionError::ProjectNotFound(text))
     }
 
-    /// 在指定 workspace 下创建 session，返回 session id（UUID v7 字符串）。
+    /// 在指定 project 下创建 session，返回 session id（UUID v7 字符串）。
     ///
-    /// 同事务内推进 `workspaces.last_active_at`；`workspace_id` 不存在时由
+    /// 同事务内推进 `projects.last_active_at`；`project_id` 不存在时由
     /// 外键约束拒绝。
-    pub async fn create_session_in(&self, workspace_id: &str) -> Result<String, SessionError> {
+    pub async fn create_session_in(&self, project_id: &str) -> Result<String, SessionError> {
         let id = uuid::Uuid::now_v7().to_string();
-        tracing::debug!(session_id = %id, workspace_id = %workspace_id, "creating session in workspace");
+        tracing::debug!(session_id = %id, project_id = %project_id, "creating session in project");
         let mut tx = self.pool.begin().await?;
-        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?, ?)")
+        sqlx::query("INSERT INTO sessions (id, project_id) VALUES (?, ?)")
             .bind(&id)
-            .bind(workspace_id)
+            .bind(project_id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("UPDATE workspaces SET last_active_at = ? WHERE id = ?")
+        sqlx::query("UPDATE projects SET last_active_at = ? WHERE id = ?")
             .bind(to_i64(now_millis()))
-            .bind(workspace_id)
+            .bind(project_id)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
         Ok(id)
     }
 
-    /// 按 id 取 workspace。
-    pub async fn workspace(&self, workspace_id: &str) -> Result<Option<Workspace>, SessionError> {
-        let row = sqlx::query("SELECT id, path FROM workspaces WHERE id = ?")
-            .bind(workspace_id)
+    /// 按 id 取 project。
+    pub async fn project(&self, project_id: &str) -> Result<Option<Project>, SessionError> {
+        let row = sqlx::query("SELECT id, path FROM projects WHERE id = ?")
+            .bind(project_id)
             .fetch_optional(&self.pool)
             .await?;
-        Ok(row.map(|row| Workspace {
+        Ok(row.map(|row| Project {
             id: row.get("id"),
             path: PathBuf::from(row.get::<String, _>("path")),
         }))
     }
 
-    /// 按规范化路径取 workspace（未登记为 `None`）。
-    pub async fn workspace_by_path(&self, path: &str) -> Result<Option<Workspace>, SessionError> {
-        let row = sqlx::query("SELECT id, path FROM workspaces WHERE path = ?")
+    /// 按规范化路径取 project（未登记为 `None`）。
+    pub async fn project_by_path(&self, path: &str) -> Result<Option<Project>, SessionError> {
+        let row = sqlx::query("SELECT id, path FROM projects WHERE path = ?")
             .bind(path)
             .fetch_optional(&self.pool)
             .await?;
-        Ok(row.map(|row| Workspace {
+        Ok(row.map(|row| Project {
             id: row.get("id"),
             path: PathBuf::from(row.get::<String, _>("path")),
         }))
     }
 
-    /// session 所属的 workspace。
-    pub async fn workspace_of_session(
+    /// session 所属的 project。
+    pub async fn project_of_session(
         &self,
         session_id: &str,
-    ) -> Result<Option<Workspace>, SessionError> {
+    ) -> Result<Option<Project>, SessionError> {
         let row = sqlx::query(
-            "SELECT w.id, w.path FROM workspaces w
-             JOIN sessions s ON s.workspace_id = w.id WHERE s.id = ?",
+            "SELECT w.id, w.path FROM projects w
+             JOIN sessions s ON s.project_id = w.id WHERE s.id = ?",
         )
         .bind(session_id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|row| Workspace {
+        Ok(row.map(|row| Project {
             id: row.get("id"),
             path: PathBuf::from(row.get::<String, _>("path")),
         }))
     }
 
-    /// session 的 workspace 路径（严格归属：resume 后以此为操作基准）。
-    pub async fn session_workspace_path(&self, session_id: &str) -> Result<PathBuf, SessionError> {
+    /// session 的 project 路径（严格归属：resume 后以此为操作基准）。
+    pub async fn session_project_path(&self, session_id: &str) -> Result<PathBuf, SessionError> {
         let path: String = sqlx::query_scalar(
-            "SELECT w.path FROM workspaces w
-             JOIN sessions s ON s.workspace_id = w.id WHERE s.id = ?",
+            "SELECT w.path FROM projects w
+             JOIN sessions s ON s.project_id = w.id WHERE s.id = ?",
         )
         .bind(session_id)
         .fetch_optional(&self.pool)
@@ -143,20 +143,20 @@ impl SessionStore {
         Ok(PathBuf::from(path))
     }
 
-    /// 列出全部 workspace 摘要（按登记时间升序：稳定顺序，不随活跃度浮动，
+    /// 列出全部 project 摘要（按登记时间升序：稳定顺序，不随活跃度浮动，
     /// 新登记的排最后）。
     ///
     /// `session_count` 只统计有 user 消息的 session（与 `list_sessions`
     /// 同一口径：空壳 session 不进统计）。
-    pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceSummary>, SessionError> {
+    pub async fn list_projects(&self) -> Result<Vec<ProjectSummary>, SessionError> {
         let rows = sqlx::query(
             "SELECT w.id, w.path, w.last_active_at,
-                    (SELECT COUNT(*) FROM sessions s WHERE s.workspace_id = w.id
+                    (SELECT COUNT(*) FROM sessions s WHERE s.project_id = w.id
                        AND EXISTS(SELECT 1 FROM entries e
                                   WHERE e.session_id = s.id
                                     AND e.kind = 'message' AND e.role = 'user')
                     ) AS session_count
-             FROM workspaces w
+             FROM projects w
              ORDER BY w.created_at, w.rowid",
         )
         .fetch_all(&self.pool)
@@ -166,7 +166,7 @@ impl SessionStore {
             .map(|row| {
                 let last: Option<i64> = row.get("last_active_at");
                 let count: i64 = row.get("session_count");
-                WorkspaceSummary {
+                ProjectSummary {
                     id: row.get("id"),
                     path: PathBuf::from(row.get::<String, _>("path")),
                     session_count: to_u64(count),
@@ -176,67 +176,66 @@ impl SessionStore {
             .collect())
     }
 
-    /// 删除 workspace，返回是否实际删除（不存在返回 `Ok(false)`）。
+    /// 删除 project，返回是否实际删除（不存在返回 `Ok(false)`）。
     ///
-    /// 默认拒绝删除仍有 session 的 workspace（[`SessionError::WorkspaceNotEmpty`]；
+    /// 默认拒绝删除仍有 session 的 project（[`SessionError::ProjectNotEmpty`]；
     /// 只统计有 user 消息的 session——空壳不进列表口径，不拦截删除，随
-    /// workspace 一并清除）；`force` 时级联删除名下全部 session（entries
+    /// project 一并清除）；`force` 时级联删除名下全部 session（entries
     /// 与会话级 config 经外键 `ON DELETE CASCADE` 清除）。同事务执行，
     /// 拒绝与删除之间不会因并发创建 session 而漂移。
-    pub async fn delete_workspace(
+    pub async fn delete_project(
         &self,
-        workspace_id: &str,
+        project_id: &str,
         force: bool,
     ) -> Result<bool, SessionError> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
 
-        let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?)")
-                .bind(workspace_id)
-                .fetch_one(&mut *tx)
-                .await?;
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?)")
+            .bind(project_id)
+            .fetch_one(&mut *tx)
+            .await?;
         if !exists {
             return Ok(false);
         }
 
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sessions s WHERE s.workspace_id = ?
+            "SELECT COUNT(*) FROM sessions s WHERE s.project_id = ?
                AND EXISTS(SELECT 1 FROM entries e
                           WHERE e.session_id = s.id
                             AND e.kind = 'message' AND e.role = 'user')",
         )
-        .bind(workspace_id)
+        .bind(project_id)
         .fetch_one(&mut *tx)
         .await?;
         if count > 0 && !force {
-            return Err(SessionError::WorkspaceNotEmpty {
-                id: workspace_id.to_string(),
+            return Err(SessionError::ProjectNotEmpty {
+                id: project_id.to_string(),
                 count: to_u64(count),
             });
         }
 
-        sqlx::query("DELETE FROM sessions WHERE workspace_id = ?")
-            .bind(workspace_id)
+        sqlx::query("DELETE FROM sessions WHERE project_id = ?")
+            .bind(project_id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM workspaces WHERE id = ?")
-            .bind(workspace_id)
+        sqlx::query("DELETE FROM projects WHERE id = ?")
+            .bind(project_id)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        tracing::info!(workspace_id = %workspace_id, force, "workspace deleted");
+        tracing::info!(project_id = %project_id, force, "project deleted");
         Ok(true)
     }
 
-    /// 条目追加时推进所属 workspace 的活跃时间（`append_entry` 事务内调用）。
-    pub(crate) async fn touch_workspace(
+    /// 条目追加时推进所属 project 的活跃时间（`append_entry` 事务内调用）。
+    pub(crate) async fn touch_project(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         session_id: &str,
         timestamp: u64,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "UPDATE workspaces SET last_active_at = ?
-             WHERE id = (SELECT workspace_id FROM sessions WHERE id = ?)",
+            "UPDATE projects SET last_active_at = ?
+             WHERE id = (SELECT project_id FROM sessions WHERE id = ?)",
         )
         .bind(to_i64(timestamp))
         .bind(session_id)

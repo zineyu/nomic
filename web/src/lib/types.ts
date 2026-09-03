@@ -197,7 +197,7 @@ export type ServerEvent =
   | { type: 'state_snapshot'; session_id: string; request_id: string; snapshot: SnapshotView }
   | { type: 'models_list'; request_id: string; candidates: ModelChoice[] }
   | { type: 'sessions_list'; request_id: string; sessions: SessionSummary[] }
-  | { type: 'workspaces_list'; request_id: string; workspaces: WorkspaceSummary[] }
+  | { type: 'projects_list'; request_id: string; projects: ProjectSummary[] }
   | { type: 'skills_list'; request_id: string; skills: SkillSummary[] }
   | { type: 'files_list'; request_id: string; files: string[] }
   // ── 命令 ack 事件
@@ -206,10 +206,10 @@ export type ServerEvent =
   | { type: 'answer_ack'; session_id: string }
   | { type: 'switch_model_ack'; session_id: string; choice: ModelChoice }
   | { type: 'session_created'; request_id: string; id: string; title: string | null }
-  | { type: 'workspace_created'; request_id: string; id: string; path: string }
+  | { type: 'project_created'; request_id: string; id: string; path: string }
   | { type: 'session_deleted'; request_id?: string; id: string }
   | { type: 'session_renamed'; request_id: string; id: string; title: string | null }
-  | { type: 'workspace_deleted'; request_id: string; id: string }
+  | { type: 'project_deleted'; request_id: string; id: string }
   // ── 设置（ADR-0039）
   | { type: 'settings_snapshot'; request_id: string; snapshot: SettingsSnapshot }
   | { type: 'settings_updated'; request_id: string }
@@ -222,7 +222,7 @@ export type ClientEvent =
   | { type: 'get_state'; session_id: string; request_id: string }
   | { type: 'list_models'; request_id: string }
   | { type: 'list_sessions'; request_id: string }
-  | { type: 'list_workspaces'; request_id: string }
+  | { type: 'list_projects'; request_id: string }
   | { type: 'list_skills'; request_id: string }
   | { type: 'list_files'; session_id: string; prefix: string; request_id: string }
   // ── 命令类（fire-and-forget，由后续 ServerEvent 驱动状态）
@@ -236,11 +236,11 @@ export type ClientEvent =
   | { type: 'remove_queue_entry'; session_id: string; id: string }
   | { type: 'move_queue_entry'; session_id: string; id: string; direction: 'up' | 'down' }
   // ── 查询式命令（携带 request_id，响应/错误事件带同一 request_id）
-  | { type: 'create_session'; request_id: string; workspace: string }
-  | { type: 'create_workspace'; request_id: string; path: string }
+  | { type: 'create_session'; request_id: string; project: string }
+  | { type: 'create_project'; request_id: string; path: string }
   | { type: 'delete_session'; request_id: string; session_id: string }
   | { type: 'rename_session'; request_id: string; session_id: string; title: string }
-  | { type: 'delete_workspace'; request_id: string; id: string; force: boolean }
+  | { type: 'delete_project'; request_id: string; id: string; force: boolean }
   // ── 设置（ADR-0039；upsert 为逐字段补丁三态：字段缺失 = 不更新，null = 清除）
   | { type: 'get_settings'; request_id: string }
   | {
@@ -299,15 +299,15 @@ export interface ModelChoice {
 export interface SessionSummary {
   id: string
   title: string | null
-  workspace_id: string
-  workspace: string
+  project_id: string
+  project: string
   first_message_at: number | null
   last_message_at: number | null
   message_count: number
 }
 
-/** workspace 摘要（nomic-session WorkspaceSummary；path 为规范化路径） */
-export interface WorkspaceSummary {
+/** project 摘要（nomic-session ProjectSummary；path 为规范化路径） */
+export interface ProjectSummary {
   id: string
   path: string
   session_count: number
@@ -352,7 +352,7 @@ export interface StateResponse {
   queue: QueueEntry[]
   session: { id: string; title: string | null } | null
   pending_question: { id: string; question: AskUserQuestion } | null
-  workspace: string
+  project: string
   /** 进行中的目标原文（/goal <目标> 启动；目标驱动运行徽标用） */
   goal: string | null
   /** 会话统计信息 */

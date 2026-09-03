@@ -49,7 +49,7 @@ pub struct BashTool {
     /// VFS 挂载表：`cd <uri>` 重写为底层 source_path
     ///（ADR-0040 §9）；`None` 时命令原样执行
     vfs_router: Option<Arc<VfsRouter>>,
-    /// 命令执行的基准目录（workspace 严格归属；空句柄 = 进程 cwd）
+    /// 命令执行的基准目录（project 严格归属；空句柄 = 进程 cwd）
     base: crate::base::BaseDir,
     /// 会话级 nix 环境缓存（ADR-0041）；`None` 时始终用宿主环境
     nix_env: Option<Arc<crate::nix_env::NixEnvCache>>,
@@ -61,7 +61,7 @@ impl BashTool {
         Self::default()
     }
 
-    /// 设置固定基准目录：命令在该目录下执行（workspace 严格归属）。
+    /// 设置固定基准目录：命令在该目录下执行（project 严格归属）。
     #[must_use]
     pub fn with_base_dir(mut self, base_dir: Option<PathBuf>) -> Self {
         self.base = crate::base::BaseDir::new(base_dir);
@@ -69,7 +69,7 @@ impl BashTool {
     }
 
     /// 共享基准目录句柄：句柄更新后本工具的下一次执行即用新基准
-    ///（交互端切换 session 的 workspace 场景）。
+    ///（交互端切换 session 的 project 场景）。
     #[must_use]
     pub fn with_shared_base_dir(mut self, base: &crate::base::BaseDir) -> Self {
         self.base = base.clone();
@@ -83,7 +83,7 @@ impl BashTool {
         self
     }
 
-    /// 挂会话级 nix 环境缓存：命令注入 workspace 的纯净环境执行，
+    /// 挂会话级 nix 环境缓存：命令注入 project 的纯净环境执行，
     /// 不可用时回退宿主环境并附尾注（ADR-0041）。
     #[must_use]
     pub fn with_nix_env(mut self, cache: Arc<crate::nix_env::NixEnvCache>) -> Self {
@@ -100,13 +100,13 @@ impl BashTool {
         let Some(cache) = &self.nix_env else {
             return (None, None);
         };
-        let workspace = base
+        let project = base
             .map(Path::to_path_buf)
             .or_else(|| std::env::current_dir().ok());
-        let Some(workspace) = workspace else {
+        let Some(project) = project else {
             return (None, None);
         };
-        match cache.env_for(&workspace).await {
+        match cache.env_for(&project).await {
             Ok(Some(env)) => (Some(env), None),
             Ok(None) => (None, None),
             Err(reason) => (
@@ -188,7 +188,7 @@ fn spawn_bash(
         .spawn()
         .map_err(|e| ToolError::new(format!("Could not spawn bash: {e}")))
 }
-const DESCRIPTION: &str = "Execute a bash command in the current working directory. If the workspace defines a nix environment (.nomic/flake.nix, readable and editable via the nix://shell URI), the command runs inside that pure environment; otherwise it falls back to the host environment. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds (defaults to 60); on timeout the process group is forcibly killed and the output collected so far is returned.";
+const DESCRIPTION: &str = "Execute a bash command in the current working directory. If the project defines a nix environment (.nomic/flake.nix, readable and editable via the nix://shell URI), the command runs inside that pure environment; otherwise it falls back to the host environment. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds (defaults to 60); on timeout the process group is forcibly killed and the output collected so far is returned.";
 
 #[async_trait]
 impl AgentTool for BashTool {

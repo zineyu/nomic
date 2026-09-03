@@ -56,11 +56,11 @@ pub enum ClientEvent {
     ListModels { request_id: String },
     /// 列出全部 session 摘要。
     ListSessions { request_id: String },
-    /// 列出全部 workspace 摘要。
-    ListWorkspaces { request_id: String },
+    /// 列出全部 project 摘要。
+    ListProjects { request_id: String },
     /// 查询 skill 清单（`@skill://` 补全用；进程级 skill 解析器快照）。
     ListSkills { request_id: String },
-    /// 查询文件候选（`@file:` 补全用；相对目标 session 的 workspace 前缀匹配）。
+    /// 查询文件候选（`@file:` 补全用；相对目标 session 的 project 前缀匹配）。
     ListFiles {
         session_id: String,
         prefix: String,
@@ -109,15 +109,12 @@ pub enum ClientEvent {
     },
     /// 新建 session（查询式命令：携带 `request_id`，响应 `session_created`
     /// 或 error 事件带同一 `request_id`，ack 同时经总线广播供其他客户端
-    /// 刷新列表）。新对话语义，默认模型；必须指定归属目录 `workspace`
-    /// （无默认 workspace；不存在则报错，不会静默归属进程 cwd）。
-    CreateSession {
-        request_id: String,
-        workspace: String,
-    },
-    /// 登记新 workspace（查询式命令：携带 `request_id`，响应 `workspace_created`
+    /// 刷新列表）。新对话语义，默认模型；必须指定归属目录 `project`
+    /// （无默认 project；不存在则报错，不会静默归属进程 cwd）。
+    CreateSession { request_id: String, project: String },
+    /// 登记新 project（查询式命令：携带 `request_id`，响应 `project_created`
     /// 或 error 事件带同一 `request_id`；按路径查或插，幂等）。
-    CreateWorkspace { request_id: String, path: String },
+    CreateProject { request_id: String, path: String },
     /// 删除 session（查询式命令：响应 `session_deleted` 或 error 事件带同一
     /// `request_id`；物理删除，entries 与会话级 config 级联清除）。
     DeleteSession {
@@ -131,9 +128,9 @@ pub enum ClientEvent {
         session_id: String,
         title: String,
     },
-    /// 删除 workspace（查询式命令：响应 `workspace_deleted` 或 error 事件；
-    /// 默认拒绝非空 workspace，`force` 级联删除名下全部 session）。
-    DeleteWorkspace {
+    /// 删除 project（查询式命令：响应 `project_deleted` 或 error 事件；
+    /// 默认拒绝非空 project，`force` 级联删除名下全部 session）。
+    DeleteProject {
         request_id: String,
         id: String,
         #[serde(default)]
@@ -360,8 +357,8 @@ async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
             ClientEvent::ListSessions { request_id } => {
                 Some(handlers::handle_list_sessions(state, &request_id).await)
             }
-            ClientEvent::ListWorkspaces { request_id } => {
-                Some(handlers::handle_list_workspaces(state, &request_id).await)
+            ClientEvent::ListProjects { request_id } => {
+                Some(handlers::handle_list_projects(state, &request_id).await)
             }
             ClientEvent::ListSkills { request_id } => {
                 Some(handlers::handle_list_skills(state, &request_id))
@@ -409,10 +406,10 @@ async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
             } => Some(handlers::handle_switch_model(state, &session_id, spec, reasoning).await),
             ClientEvent::CreateSession {
                 request_id,
-                workspace,
-            } => Some(handlers::handle_create_session(state, &request_id, workspace).await),
-            ClientEvent::CreateWorkspace { request_id, path } => {
-                Some(handlers::handle_create_workspace(state, &request_id, path).await)
+                project,
+            } => Some(handlers::handle_create_session(state, &request_id, project).await),
+            ClientEvent::CreateProject { request_id, path } => {
+                Some(handlers::handle_create_project(state, &request_id, path).await)
             }
             ClientEvent::DeleteSession {
                 request_id,
@@ -425,11 +422,11 @@ async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
             } => {
                 Some(handlers::handle_rename_session(state, &request_id, &session_id, &title).await)
             }
-            ClientEvent::DeleteWorkspace {
+            ClientEvent::DeleteProject {
                 request_id,
                 id,
                 force,
-            } => Some(handlers::handle_delete_workspace(state, &request_id, &id, force).await),
+            } => Some(handlers::handle_delete_project(state, &request_id, &id, force).await),
             event @ (ClientEvent::GetSettings { .. }
             | ClientEvent::UpsertProvider { .. }
             | ClientEvent::DeleteProvider { .. }
@@ -473,11 +470,11 @@ fn client_event_span(event: &ClientEvent) -> tracing::Span {
         ),
         ClientEvent::ListModels { request_id }
         | ClientEvent::ListSessions { request_id }
-        | ClientEvent::ListWorkspaces { request_id }
+        | ClientEvent::ListProjects { request_id }
         | ClientEvent::ListSkills { request_id }
         | ClientEvent::CreateSession { request_id, .. }
-        | ClientEvent::CreateWorkspace { request_id, .. }
-        | ClientEvent::DeleteWorkspace { request_id, .. }
+        | ClientEvent::CreateProject { request_id, .. }
+        | ClientEvent::DeleteProject { request_id, .. }
         | ClientEvent::GetSettings { request_id }
         | ClientEvent::UpsertProvider { request_id, .. }
         | ClientEvent::DeleteProvider { request_id, .. }

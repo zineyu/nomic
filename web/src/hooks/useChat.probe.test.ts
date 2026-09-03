@@ -33,7 +33,7 @@ vi.mock('@/lib/api', () => ({
       return () => handlers.delete(h)
     },
     sessions: vi.fn(() => Promise.resolve([])),
-    workspaces: vi.fn(() => Promise.resolve([])),
+    projects: vi.fn(() => Promise.resolve([])),
     state: vi.fn(() =>
       Promise.resolve({
         session_id: 's1',
@@ -46,7 +46,7 @@ vi.mock('@/lib/api', () => ({
           queue: [],
           session: { id: 's1', title: 't' },
           pending_question: null,
-          workspace: '/tmp',
+          project: '/tmp',
           goal: null,
         },
       }),

@@ -6,9 +6,9 @@
 // 多 session 并行：所有已打开 session 的事件都通过同一连接推送。`sessionId` 为
 // 当前查看的 session；切换查看仅影响 UI 展示，后台 session 的事件流不受影响。
 //
-// 启动页：无默认 workspace/session——挂载时不加载任何 session（`sessionId` 为
-// null），前端展示启动页（workspace 选择栏 + 输入框），首条消息经 startSession
-// 在选定 workspace 下创建 session 并发送。
+// 启动页：无默认 project/session——挂载时不加载任何 session（`sessionId` 为
+// null），前端展示启动页（project 选择栏 + 输入框），首条消息经 startSession
+// 在选定 project 下创建 session 并发送。
 //
 // 纯事件驱动：所有前端↔后端通信通过 WebSocket 双向事件流，无 REST。
 
@@ -26,7 +26,7 @@ import type {
   SessionStats,
   SessionSummary,
   SnapshotView,
-  WorkspaceSummary,
+  ProjectSummary,
 } from '@/lib/types'
 
 export interface QuestionState {
@@ -46,8 +46,8 @@ export interface ChatState {
   reasoning: string | null
   contextTokens: number
   session: { id: string; title: string | null } | null
-  /** 已登记的全部 workspace（含无会话的；store 不可用时为空，分组退化为纯会话） */
-  workspaces: WorkspaceSummary[]
+  /** 已登记的全部 project（含无会话的；store 不可用时为空，分组退化为纯会话） */
+  projects: ProjectSummary[]
   question: QuestionState | null
   error: string | null
   /** 进行中的目标原文（/goal <目标> 启动；目标驱动运行徽标用） */
@@ -78,7 +78,7 @@ const initialState: ChatState = {
   reasoning: null,
   contextTokens: 0,
   session: null,
-  workspaces: [],
+  projects: [],
   question: null,
   error: null,
   goal: null,
@@ -197,12 +197,12 @@ export function useChat() {
     }
   }, [])
 
-  const refreshWorkspaces = useCallback(async () => {
+  const refreshProjects = useCallback(async () => {
     try {
-      const workspaces = await api.workspaces()
-      setState((prev) => ({ ...prev, workspaces }))
+      const projects = await api.projects()
+      setState((prev) => ({ ...prev, projects }))
     } catch {
-      // workspace 列表加载失败不阻塞主流程（分组退化为纯会话视图）
+      // project 列表加载失败不阻塞主流程（分组退化为纯会话视图）
     }
   }, [])
 
@@ -211,7 +211,7 @@ export function useChat() {
     setState((prev) => ({
       ...initialState,
       sessions: prev.sessions,
-      workspaces: prev.workspaces,
+      projects: prev.projects,
     }))
   }, [])
 
@@ -225,15 +225,15 @@ export function useChat() {
           void api.state(sid).then(({ snapshot }) => applySnapshot(snapshot))
         }
         void refreshSessions()
-        void refreshWorkspaces()
+        void refreshProjects()
       } else if (event.type === 'session_created') {
-        // 新 session 创建：刷新会话列表（可能伴随新 workspace，一并刷新）
+        // 新 session 创建：刷新会话列表（可能伴随新 project，一并刷新）
         void refreshSessions()
-        void refreshWorkspaces()
+        void refreshProjects()
       } else if (event.type === 'session_deleted') {
-        // 会话被删除（含 workspace 级联）：刷新列表；正在查看则回启动页
+        // 会话被删除（含 project 级联）：刷新列表；正在查看则回启动页
         void refreshSessions()
-        void refreshWorkspaces()
+        void refreshProjects()
         if (sessionIdRef.current === event.id) resetView()
       } else if (event.type === 'session_renamed') {
         // 重命名：刷新列表；当前查看的 session 同步顶栏标题
@@ -245,16 +245,16 @@ export function useChat() {
               : prev,
           )
         }
-      } else if (event.type === 'workspace_deleted') {
-        // 工作区被删除：刷新列表；当前查看的 session 属于该 workspace 时回启动页
+      } else if (event.type === 'project_deleted') {
+        // 项目被删除：刷新列表；当前查看的 session 属于该 project 时回启动页
         // （其 session 已打开时另有 session_deleted 广播兜底，此处覆盖未打开
         // 但仍在列表中的情况）
         void refreshSessions()
-        void refreshWorkspaces()
+        void refreshProjects()
         const sid = sessionIdRef.current
         if (
           sid &&
-          sessionsRef.current.some((s) => s.id === sid && s.workspace_id === event.id)
+          sessionsRef.current.some((s) => s.id === sid && s.project_id === event.id)
         ) {
           resetView()
         }
@@ -274,10 +274,10 @@ export function useChat() {
         }
       }
     })
-  }, [applyEvent, applySnapshot, refreshSessions, refreshWorkspaces, resetView])
+  }, [applyEvent, applySnapshot, refreshSessions, refreshProjects, resetView])
 
-  // 挂载：确保 WebSocket 连接 → 拉取会话与 workspace 列表。
-  // 不加载默认 session（无默认 workspace）：启动页由用户选择 workspace 后
+  // 挂载：确保 WebSocket 连接 → 拉取会话与 project 列表。
+  // 不加载默认 session（无默认 project）：启动页由用户选择 project 后
   // 显式创建 session，或从侧栏恢复历史 session。
   useEffect(() => {
     let cancelled = false
@@ -285,7 +285,7 @@ export function useChat() {
       await api.connect()
       if (cancelled) return
       void refreshSessions()
-      void refreshWorkspaces()
+      void refreshProjects()
     }
     void boot().catch((error) => {
       if (!cancelled) {
@@ -298,7 +298,7 @@ export function useChat() {
     return () => {
       cancelled = true
     }
-  }, [refreshSessions, refreshWorkspaces])
+  }, [refreshSessions, refreshProjects])
 
   const send = useCallback(async (text: string, images?: ImageContent[]) => {
     const trimmed = text.trim()
@@ -322,13 +322,13 @@ export function useChat() {
   }, [])
 
   const newSession = useCallback(
-    async (workspace: string) => {
+    async (project: string) => {
       try {
-        const { id } = await api.createSession(workspace)
+        const { id } = await api.createSession(project)
         // 拉取新 session 快照并切换查看（其事件流已自动并入当前连接）
         await loadSession(id)
         await refreshSessions()
-        await refreshWorkspaces()
+        await refreshProjects()
       } catch (error) {
         setState((prev) => ({
           ...prev,
@@ -336,22 +336,22 @@ export function useChat() {
         }))
       }
     },
-    [loadSession, refreshSessions, refreshWorkspaces],
+    [loadSession, refreshSessions, refreshProjects],
   )
 
-  /** 启动页首条消息：在选定 workspace 下创建 session，切换到它并发送。 */
+  /** 启动页首条消息：在选定 project 下创建 session，切换到它并发送。 */
   const startSession = useCallback(
-    async (workspace: string, text: string, images?: ImageContent[]) => {
+    async (project: string, text: string, images?: ImageContent[]) => {
       const trimmed = text.trim()
-      if (!workspace || !trimmed) return
+      if (!project || !trimmed) return
       try {
-        const { id } = await api.createSession(workspace)
+        const { id } = await api.createSession(project)
         // 先切换查看（快照为空会话），再提交 prompt：后续流式事件
         // 经 applyEvent 增量驱动 UI
         await loadSession(id)
         await api.prompt(id, trimmed, images)
         await refreshSessions()
-        await refreshWorkspaces()
+        await refreshProjects()
       } catch (error) {
         setState((prev) => ({
           ...prev,
@@ -359,16 +359,16 @@ export function useChat() {
         }))
       }
     },
-    [loadSession, refreshSessions, refreshWorkspaces],
+    [loadSession, refreshSessions, refreshProjects],
   )
 
-  /** 登记新 workspace；失败时抛出（调用方就地展示错误）。 */
-  const addWorkspace = useCallback(
+  /** 登记新 project；失败时抛出（调用方就地展示错误）。 */
+  const addProject = useCallback(
     async (path: string) => {
-      await api.createWorkspace(path)
-      await refreshWorkspaces()
+      await api.createProject(path)
+      await refreshProjects()
     },
-    [refreshWorkspaces],
+    [refreshProjects],
   )
 
   /** 删除 session（物理删除）；列表刷新与视图跳转经广播事件回填，
@@ -383,10 +383,10 @@ export function useChat() {
     await api.renameSession(id, title)
   }, [])
 
-  /** 删除 workspace（非空须 force 级联）；列表刷新与视图跳转经广播事件
+  /** 删除 project（非空须 force 级联）；列表刷新与视图跳转经广播事件
       回填，失败时抛出（调用方就地展示错误）。 */
-  const deleteWorkspace = useCallback(async (id: string, force: boolean) => {
-    await api.deleteWorkspace(id, force)
+  const deleteProject = useCallback(async (id: string, force: boolean) => {
+    await api.deleteProject(id, force)
   }, [])
 
   const resumeSession = useCallback(
@@ -442,10 +442,10 @@ export function useChat() {
     stop,
     newSession,
     startSession,
-    addWorkspace,
+    addProject,
     deleteSession,
     renameSession,
-    deleteWorkspace,
+    deleteProject,
     resumeSession,
     switchModel,
     answerQuestion,

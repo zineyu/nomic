@@ -316,12 +316,12 @@ async fn read_conflicts_selector_requires_theirs() {
     assert!(error.to_string().contains("?theirs=<path>"), "{error}");
 }
 
-// ── T9：local:// 工作区协议 ────────────────────────────────────────────────
+// ── T9：local:// 项目协议 ────────────────────────────────────────────────
 
 fn local_router(dir: &std::path::Path) -> std::sync::Arc<nomic_vfs::VfsRouter> {
     let mut router = nomic_vfs::VfsRouter::new();
     router.mount(std::sync::Arc::new(nomic_vfs::fs::LocalVfs::new(
-        nomic_vfs::WorkspaceRoot::new(Some(dir.to_path_buf())),
+        nomic_vfs::ProjectRoot::new(Some(dir.to_path_buf())),
     )));
     std::sync::Arc::new(router)
 }
@@ -418,7 +418,7 @@ async fn local_uri_read_write_edit_roundtrip() {
         .unwrap_err();
     assert!(error.to_string().contains("read-only"), "{error}");
 
-    // 越出 workspace 根：拒绝
+    // 越出 project 根：拒绝
     let error = ReadTool::with_vfs_router(router)
         .execute(
             serde_json::from_value(serde_json::json!({"path": "local://../escape"}))
@@ -429,7 +429,7 @@ async fn local_uri_read_write_edit_roundtrip() {
         .await
         .unwrap_err();
     assert!(
-        error.to_string().contains("escapes the workspace root"),
+        error.to_string().contains("escapes the project root"),
         "{error}"
     );
 }

@@ -4,7 +4,7 @@
 // mention 是输入草稿里的内联标记，支持两类：
 // - `@skill://<name>`：引用一个已发现的 skill（内部 URI 形式，ADR-0040；
 //   名称为 skill 目录名）
-// - `@file:<path>`：引用一个文件（相对 session workspace 或绝对路径）
+// - `@file:<path>`：引用一个文件（相对 session project 或绝对路径）
 //
 // 补全弹层只负责填好标记文本；发送后由服务端展开有效标记（无效标记原样保留）。
 

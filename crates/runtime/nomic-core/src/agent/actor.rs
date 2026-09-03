@@ -72,8 +72,8 @@ enum AgentCommand {
     ClearMessages,
     /// 以既有消息历史整体替换当前上下文（session resume 语义）
     RestoreMessages(Vec<Message>),
-    /// 运行时整体替换系统提示词（跨 workspace 恢复 session 后按新
-    /// workspace 重建）
+    /// 运行时整体替换系统提示词（跨 project 恢复 session 后按新
+    /// project 重建）
     SetSystemPrompt(String),
     /// 运行时切换模型（上下文保留）
     SetModel(Model),

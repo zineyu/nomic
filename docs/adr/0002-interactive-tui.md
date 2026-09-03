@@ -84,7 +84,7 @@ slash 命令按是否触碰 agent/driver 状态分流：**本地命令**（`/hel
 
 ## Consequences
 
-- workspace 新增 `ratatui`、`crossterm`（`event-stream` feature）两个依赖，
+- project 新增 `ratatui`、`crossterm`（`event-stream` feature）两个依赖，
   仅 nomic-cli 使用。
 - `main.rs` 重构为分发器；print 模式行为不变（代码搬移，无逻辑改动）。
 - app 状态层脱离终端可测：delta 累积、工具状态迁移、滚动边界均有单测；

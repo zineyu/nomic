@@ -83,7 +83,7 @@ impl VfsCapabilities {
         completion: true,
     };
 
-    /// 可写 + 可补全（local/nix 等工作区资源）。
+    /// 可写 + 可补全（local/nix 等项目资源）。
     pub const READ_WRITE_COMPLETION: Self = Self {
         writable: true,
         immutable: false,
@@ -216,7 +216,7 @@ pub struct UrlCompletion {
 /// 一个内部 URI scheme 的虚拟文件系统实现。
 ///
 /// 实现必须是**无状态的**或只持有构造期注入的会话后端（skill resolver、
-/// workspace 根等）；router 按会话构建，天然会话隔离。
+/// project 根等）；router 按会话构建，天然会话隔离。
 #[async_trait]
 pub trait Vfs: Send + Sync {
     /// 本 VFS 挂载的 scheme（不含 `://`，小写）

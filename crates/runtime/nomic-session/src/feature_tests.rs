@@ -46,11 +46,11 @@ async fn connections_enforce_foreign_keys_with_busy_timeout() {
     assert_eq!(busy_timeout_ms, 5000);
 }
 
-/// 外键约束行为验证：引用不存在 workspace 的 session 写入被拒绝。
+/// 外键约束行为验证：引用不存在 project 的 session 写入被拒绝。
 #[tokio::test]
 async fn foreign_key_violation_is_rejected() {
     let store = SessionStore::in_memory().await.unwrap();
-    let result = store.create_session_in("no-such-workspace").await;
+    let result = store.create_session_in("no-such-project").await;
     assert!(result.is_err());
 }
 
@@ -59,7 +59,7 @@ async fn foreign_key_violation_is_rejected() {
 #[tokio::test]
 async fn business_tables_are_strict() {
     let store = SessionStore::in_memory().await.unwrap();
-    for table in ["workspaces", "sessions", "entries", "config"] {
+    for table in ["projects", "sessions", "entries", "config"] {
         let ddl: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name = ?")
             .bind(table)
             .fetch_one(&store.pool)

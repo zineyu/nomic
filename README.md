@@ -24,7 +24,7 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 - **九件工具**：`read` / `write` / `edit` / `bash` / `grep` / `find` / `todo_read` /
   `todo_write` / `ask_user_question`（单选/多选/填空，自动追加自定义填写选项，
   TUI 弹出模态提问框），schemars + serde 即校验，parallel 执行
-- **持久会话**：SQLite 树形存储，session 归属 workspace（文件系统路径的一等实体），工具与 mention 的相对路径以 session 的 workspace 为基准；支持 resume（按 workspace 隔离）、会话分支浏览与创建、`sessions list`
+- **持久会话**：SQLite 树形存储，session 归属 project（文件系统路径的一等实体），工具与 mention 的相对路径以 session 的 project 为基准；支持 resume（按 project 隔离）、会话分支浏览与创建、`sessions list`
 - **上下文工程**：AGENTS.md 向上发现注入、skills 系统、prompt templates、自动/手动上下文压缩
 - **图片输入**：`--image` 附件、`image` 命令暂存、`Ctrl+V` 剪贴板图片粘贴
 - **外部编辑器**：INSERT 下 `Ctrl+G` 挂起 TUI，用 `$VISUAL`/`$EDITOR`
@@ -189,15 +189,15 @@ nomic --cwd /path/to/project
 - **流式聊天**：markdown 渲染、thinking 折叠、工具执行卡片（点击展开参数与结果）；
   运行中发送的消息进入统一消息队列，当前步骤完成后注入本轮运行（与 TUI 同一语义），
   输入框上方的队列区展示排队消息并支持就地编辑 / 删除 / 上移下移
-- **会话管理**：启动页选择 workspace 后开始新会话（无默认 workspace，session 严格归属
-  选定目录）；侧栏按 workspace 分组列出历史 session，支持新建 / 恢复（复用 SQLite 存储，
+- **会话管理**：启动页选择 project 后开始新会话（无默认 project，session 严格归属
+  选定目录）；侧栏按 project 分组列出历史 session，支持新建 / 恢复（复用 SQLite 存储，
   与 TUI/print 共用）
 - **模型选择**：跨 provider 候选列表 + 思考级别；切换结果落库，与 TUI `/models` 同一口径
 - **设置**：左侧 Rail 的「设置」页管理 providers / 模型覆盖 / 标量设置
   （走 WS 设置事件，与 CLI / TUI `config` 命令同一存储与校验；api_key 脱敏回显）
 - **提问**：`ask_user_question` 以弹层呈现（单选/多选/填空 + 自定义填写）
 - **mention 与命令**：输入 `@` 弹出行内补全（`@skill://` 引用 skill、`@file:` 引用
-  当前 session workspace 内的文件，发送时由服务端展开有效标记，与 TUI 同一口径）；
+  当前 session project 内的文件，发送时由服务端展开有效标记，与 TUI 同一口径）；
   输入 `/` 弹出命令补全——`/compact [聚焦指令]` 压缩上下文、`/continue` 续跑上次
   运行（命令走 runner 串行队列，运行中提交则等本轮结束）、`/goal <目标>` 启动
   目标驱动运行（与 TUI 同一语义：`goal_done` 汇报完成前持续追问；运行期间输入框
@@ -219,11 +219,11 @@ nomic --web [--port N] [--host H]
 ### 会话恢复与分支
 
 ```bash
-nomic --continue        # 当前目录对应 workspace 下最近的 session（按 workspace 隔离）
+nomic --continue        # 当前目录对应 project 下最近的 session（按 project 隔离）
 nomic --session <ID>    # 指定 session（可跨目录，会有提示）
 nomic resume            # 交互选择器（↑/↓ 或 j/k 移动，Enter 确认，Esc/q 取消）
 
-# 查看历史 session（标题、最后更新时间、消息数、所属 workspace）
+# 查看历史 session（标题、最后更新时间、消息数、所属 project）
 nomic sessions list
 ```
 
@@ -358,15 +358,15 @@ TUI 内 `models` 命令跨 provider 选择（`<provider>/<模型id>` 格式）�
 
 ### AGENTS.md
 
-从 session 的 workspace（操作基准目录）一路向上走到文件系统根，加载沿途
+从 session 的 project（操作基准目录）一路向上走到文件系统根，加载沿途
 每个目录的 `AGENTS.md`，作为系统提示词的一部分注入
 （`<project_instructions path="...">` 块）。按**根到叶**排序：越靠近
-workspace 的指令越靠后，可细化上层（如工作区级）约定。
+project 的指令越靠后，可细化上层（如项目级）约定。
 缺失或空白文件跳过；文件不可读时告警后继续，不阻断启动。
 
-启动、`--session` 跨目录恢复、TUI `/resume` 切换与 web 按 workspace 创建
-session 时，提示词（含末尾的 cwd 脚注）都以该 session 的 workspace 为基准
-构建——与工具相对路径同一口径（workspace 严格归属）。
+启动、`--session` 跨目录恢复、TUI `/resume` 切换与 web 按 project 创建
+session 时，提示词（含末尾的 cwd 脚注）都以该 session 的 project 为基准
+构建——与工具相对路径同一口径（project 严格归属）。
 
 ```markdown
 # 项目根 AGENTS.md 示例

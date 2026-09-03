@@ -75,9 +75,9 @@ pub trait Mount: Send + Sync {
 
 | scheme | backing root | locate 映射 | 钩子 |
 |---|---|---|---|
-| `local://` | workspace 根 | host+path 拼接 + 词法 containment | complete |
+| `local://` | project 根 | host+path 拼接 + 词法 containment | complete |
 | `skill://` | skill 根目录 | host=skill 名（resolver 查表）+ 根内子路径 | index=SKILL.md（仅根）、transform（正文抽取 + `details.source` 标注）、complete |
-| `nix://` | `<workspace>/.nomic/` | `shell` → `flake.nix` | not_found（「写入即创建」引导）、supports_listing=false、complete |
+| `nix://` | `<project>/.nomic/` | `shell` → `flake.nix` | not_found（「写入即创建」引导）、supports_listing=false、complete |
 
 ### `source_path` 变为强制字段
 
@@ -114,7 +114,7 @@ read 的 url 回退 hint 一并删除。
 逻辑资源（`history://`、`agent://` 等）以 **Materialized mount** 参与
 目录化语义：backing root 是会话缓存目录
 （`<data_dir>/nomic/vfs-cache/<session-id>/<scheme>/`，刻意在
-workspace 之外），内容由 `MountSource` 钩子生成：
+project 之外），内容由 `MountSource` 钩子生成：
 
 ```rust
 #[async_trait]

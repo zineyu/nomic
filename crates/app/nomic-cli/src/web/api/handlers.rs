@@ -1,7 +1,7 @@
 //! WebSocket 事件 handler：查询类（`get_state` / `list_models` / `list_sessions` /
-//! `list_workspaces`）与命令类（`prompt` / `cancel` / `answer_question` /
+//! `list_projects`）与命令类（`prompt` / `cancel` / `answer_question` /
 //! `switch_model`）的具体实现，以及共享类型与辅助函数。
-//! session / workspace 生命周期命令收在 [`crud`] 子模块（查询式命令携带
+//! session / project 生命周期命令收在 [`crud`] 子模块（查询式命令携带
 //! `request_id` 关联响应）、斜杠命令解析与 goal 命令处置收在 [`commands`]
 //! 子模块（800 行封顶拆分）。
 
@@ -22,7 +22,7 @@ mod settings;
 use commands::{SlashCommand, goal_command, parse_slash_command};
 
 pub use crud::{
-    handle_create_session, handle_create_workspace, handle_delete_session, handle_delete_workspace,
+    handle_create_project, handle_create_session, handle_delete_project, handle_delete_session,
     handle_rename_session,
 };
 pub use settings::{SettingsSnapshotView, dispatch_settings};
@@ -72,12 +72,12 @@ pub async fn handle_list_sessions(state: &AppState, request_id: &str) -> ServerE
     }
 }
 
-/// 列出全部 workspace 摘要。
-pub async fn handle_list_workspaces(state: &AppState, request_id: &str) -> ServerEvent {
-    match state.inner.list_workspaces().await {
-        Ok(workspaces) => ServerEvent::WorkspacesList {
+/// 列出全部 project 摘要。
+pub async fn handle_list_projects(state: &AppState, request_id: &str) -> ServerEvent {
+    match state.inner.list_projects().await {
+        Ok(projects) => ServerEvent::ProjectsList {
             request_id: request_id.to_string(),
-            workspaces,
+            projects,
         },
         Err(error) => error.to_ws_response(Some(request_id)),
     }
@@ -102,7 +102,7 @@ pub fn handle_list_skills(state: &AppState, request_id: &str) -> ServerEvent {
     }
 }
 
-/// 文件候选（`@file:` 补全用；相对目标 session 的 workspace 前缀匹配）。
+/// 文件候选（`@file:` 补全用；相对目标 session 的 project 前缀匹配）。
 /// 最多返回 [`MAX_FILE_CANDIDATES`] 条，避免大目录撑爆事件负载。
 pub async fn handle_list_files(
     state: &AppState,
@@ -114,7 +114,7 @@ pub async fn handle_list_files(
         Ok(session) => session,
         Err(error) => return error.to_ws_response(Some(request_id)),
     };
-    let mut files = crate::mention::file_mention_candidates(prefix, &session.workspace);
+    let mut files = crate::mention::file_mention_candidates(prefix, &session.project);
     files.truncate(MAX_FILE_CANDIDATES);
     ServerEvent::FilesList {
         request_id: request_id.to_string(),
@@ -191,7 +191,7 @@ pub async fn handle_prompt(
     let expanded = crate::mention::expand_mentions(
         trimmed,
         &state.inner.factory.skill_resolver,
-        &session.workspace,
+        &session.project,
     );
     if let Err(error) = session.runner.submit(nomic_core::SessionJob::Prompt {
         text: expanded,
@@ -386,7 +386,7 @@ pub async fn handle_switch_model(
     }
 }
 
-// 新建 session、登记 workspace、删除 / 重命名等生命周期 handler 见 [`crud`]。
+// 新建 session、登记 project、删除 / 重命名等生命周期 handler 见 [`crud`]。
 
 // ── 共享类型 ──────────────────────────────────────────────────────────────
 
@@ -409,8 +409,8 @@ pub struct SnapshotView {
     pub queue: Vec<crate::web::QueueEntryView>,
     pub session: Option<(String, Option<String>)>,
     pub pending_question: Option<(String, AskUserQuestion)>,
-    /// 本 session 的 workspace 路径（操作基准）
-    pub workspace: String,
+    /// 本 session 的 project 路径（操作基准）
+    pub project: String,
     /// 进行中的目标原文（`/goal <目标>` 启动；前端徽标用）
     pub goal: Option<String>,
     /// 会话统计信息（前端状态栏展示用）
@@ -429,7 +429,7 @@ impl SnapshotView {
             queue: snap.queue,
             session: snap.session,
             pending_question: snap.pending_question,
-            workspace: snap.workspace.display().to_string(),
+            project: snap.project.display().to_string(),
             goal: snap.goal,
             stats: snap.stats,
         }
@@ -494,10 +494,10 @@ fn parse_thinking_level(level: &str) -> Result<Option<ThinkingLevel>, ApiError> 
 mod tests {
     use super::*;
 
-    /// `list_files` 以目标 session 的 workspace 为基准做前缀匹配（测试
-    /// session 的 workspace 是 crate 根目录）。
+    /// `list_files` 以目标 session 的 project 为基准做前缀匹配（测试
+    /// session 的 project 是 crate 根目录）。
     #[tokio::test]
-    async fn list_files_matches_prefix_under_session_workspace() {
+    async fn list_files_matches_prefix_under_session_project() {
         let (state, session_id) = crate::web::tests::test_state_with_session().await;
 
         let event = handle_list_files(&state, &session_id, "src/mai", "r1").await;

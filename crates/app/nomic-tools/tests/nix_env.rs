@@ -142,7 +142,7 @@ async fn flake_change_triggers_re_resolve() {
     );
 }
 
-/// 无 flake 的 workspace：`env_for` 返回未启用，bash 工具静默走宿主
+/// 无 flake 的 project：`env_for` 返回未启用，bash 工具静默走宿主
 /// 环境（无尾注）。
 #[tokio::test]
 async fn missing_flake_means_not_enabled() {

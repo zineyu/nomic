@@ -13,7 +13,7 @@ ADR-0031 引入多 agent 形态后，「主 agent = 基础工具 + supervisor + 
 | 差异点 | TUI | print | web |
 |--------|-----|-------|-----|
 | todo 清单 | 主/子共享同一份（goal 模式与界面经共享句柄观察进度） | 主/子各自独立 | 主/子各自独立 |
-| 基准目录 | 共享 `BaseDir` 句柄（resume/new 切换原地更新） | 固定 workspace | 固定 workspace |
+| 基准目录 | 共享 `BaseDir` 句柄（resume/new 切换原地更新） | 固定 project | 固定 project |
 | 提问通道 | `TuiQuestionSink`（弹层） | `StdinQuestionSink` | `WebQuestionSink`（事件总线） |
 | turn 注入点 | 统一消息队列（ADR-0014） | 无 | 无 |
 

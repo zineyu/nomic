@@ -61,7 +61,7 @@ pub use write::WriteTool;
 /// todo 工具共享调用方持有的 [`TodoStore`]（clone 即共享同一份数据），
 /// 交互端可持有句柄观察 agent 写入的任务清单；
 /// ask_user_question 经调用方提供的 [`QuestionSink`] 与用户交互。
-/// 相对路径以进程 cwd 为基准；workspace 归属场景用 [`default_tools_in`]。
+/// 相对路径以进程 cwd 为基准；project 归属场景用 [`default_tools_in`]。
 pub fn default_tools(
     todo_store: TodoStore,
     question_sink: std::sync::Arc<dyn QuestionSink>,
@@ -79,7 +79,7 @@ pub fn default_tools_in(
 }
 
 /// 以共享基准目录句柄构建默认工具集：句柄更新（[`BaseDir::set`]）后
-/// 各工具的下一次执行即用新基准（交互端切换 session workspace 场景）。
+/// 各工具的下一次执行即用新基准（交互端切换 session project 场景）。
 pub fn default_tools_in_shared(
     base: &BaseDir,
     todo_store: TodoStore,
@@ -105,7 +105,7 @@ pub fn default_tools_in_shared(
 }
 
 /// 创建支持 `skill://` 的默认工具集（todo store 语义同 [`default_tools`]）。
-/// 相对路径以进程 cwd 为基准；workspace 归属场景用
+/// 相对路径以进程 cwd 为基准；project 归属场景用
 /// [`default_tools_with_skills_in`]。
 pub fn default_tools_with_skills(
     skill_resolver: nomic_skills::SkillResolver,
@@ -132,7 +132,7 @@ pub fn default_tools_with_skills_in(
 
 /// 以共享基准目录句柄构建、支持 `skill://` 的默认工具集：句柄更新
 ///（[`BaseDir::set`]）后各工具的下一次执行即用新基准（交互端切换
-/// session workspace 场景）。
+/// session project 场景）。
 pub fn default_tools_with_skills_in_shared(
     base: &BaseDir,
     skill_resolver: nomic_skills::SkillResolver,
@@ -178,7 +178,7 @@ pub fn default_tools_with_skills_in_shared(
     ]
 }
 
-/// 后台预解析 workspace 的 nix 环境（有 flake 时）：给首个 bash 调用
+/// 后台预解析 project 的 nix 环境（有 flake 时）：给首个 bash 调用
 /// 提前量；无 flake / 无 tokio 运行时时为 no-op。
 fn prewarm_nix_env(nix_env: &std::sync::Arc<nix_env::NixEnvCache>, base: &BaseDir) {
     if tokio::runtime::Handle::try_current().is_err() {

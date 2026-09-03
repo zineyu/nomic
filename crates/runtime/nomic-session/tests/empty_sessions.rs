@@ -55,11 +55,11 @@ async fn list_sessions_excludes_sessions_without_user_messages() {
         vec![active.as_str()],
         "无 user 消息的 session（空的 / 仅 assistant 的）不进入列表"
     );
-    // workspace 过滤口径一致
-    let workspace = store.workspace_of_session(&empty).await.unwrap().unwrap();
+    // project 过滤口径一致
+    let project = store.project_of_session(&empty).await.unwrap().unwrap();
     assert!(
         store
-            .list_sessions_in(&workspace.id)
+            .list_sessions_in(&project.id)
             .await
             .unwrap()
             .is_empty()
@@ -67,7 +67,7 @@ async fn list_sessions_excludes_sessions_without_user_messages() {
 }
 
 #[tokio::test]
-async fn list_workspaces_counts_only_sessions_with_user_messages() {
+async fn list_projects_counts_only_sessions_with_user_messages() {
     let store = SessionStore::in_memory().await.unwrap();
     let empty = store.create_session("/tmp/ws").await.unwrap();
     let active = store.create_session("/tmp/ws").await.unwrap();
@@ -76,10 +76,10 @@ async fn list_workspaces_counts_only_sessions_with_user_messages() {
         .await
         .unwrap();
 
-    let workspace = store.workspace_of_session(&empty).await.unwrap().unwrap();
-    let workspaces = store.list_workspaces().await.unwrap();
-    let ws = workspaces.iter().find(|w| w.id == workspace.id).unwrap();
-    assert_eq!(ws.session_count, 1, "空壳 session 不计入 workspace 统计");
+    let project = store.project_of_session(&empty).await.unwrap().unwrap();
+    let projects = store.list_projects().await.unwrap();
+    let ws = projects.iter().find(|w| w.id == project.id).unwrap();
+    assert_eq!(ws.session_count, 1, "空壳 session 不计入 project 统计");
 }
 
 #[tokio::test]

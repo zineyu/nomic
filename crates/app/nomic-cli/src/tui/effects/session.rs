@@ -14,7 +14,7 @@ use nomic_tools::BaseDir;
 use crate::tui::app::{App, PickerRow};
 
 /// 会话落库绑定：recorder（store、目标 session、父指针）与当前 session 的
-/// 操作基准（workspace 严格归属；与工具共享同一句柄，`set` 后下一次工具
+/// 操作基准（project 严格归属；与工具共享同一句柄，`set` 后下一次工具
 /// 执行即用新基准）。`None` recorder 表示本次不持久化。
 pub(in crate::tui) struct SessionBinding {
     recorder: Option<SessionRecorder>,
@@ -34,7 +34,7 @@ impl SessionBinding {
     }
 
     /// 当前 session 的操作基准（mention 文件路径解析、新建 session 的
-    /// workspace 归属以它为基准）；句柄未设置时退回进程 cwd。
+    /// project 归属以它为基准）；句柄未设置时退回进程 cwd。
     pub(in crate::tui) fn base_dir(&self) -> std::path::PathBuf {
         self.base.snapshot().unwrap_or_else(|| {
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
@@ -95,8 +95,8 @@ pub(in crate::tui) async fn list_sessions(app: &mut App, session: &SessionBindin
 /// `new`：actor 邮箱串行清空上下文（fire-and-forget，紧随的 prompt 一定
 /// 排在清空之后）；本地重置聊天区并新建 session。
 ///
-/// 新 session 归属当前操作基准的 workspace（严格归属：用户在哪个
-/// workspace 的上下文里操作，新 session 就属于哪个 workspace）；基准
+/// 新 session 归属当前操作基准的 project（严格归属：用户在哪个
+/// project 的上下文里操作，新 session 就属于哪个 project）；基准
 /// 不变，工具无需切换。
 pub(in crate::tui) async fn new_session(
     app: &mut App,
@@ -364,7 +364,7 @@ async fn session_store(recorder: Option<&SessionRecorder>) -> Result<SessionStor
 
 /// 恢复选中 session：加载历史 → 替换 agent 上下文与聊天区 → recorder
 /// 换绑该 session（父指针为默认分支末端）。操作基准与系统提示词一同
-/// 切到该 session 的 workspace（严格归属）。
+/// 切到该 session 的 project（严格归属）。
 pub(in crate::tui) async fn resume_session(
     app: &mut App,
     session: &mut SessionBinding,
@@ -388,28 +388,28 @@ pub(in crate::tui) async fn resume_session(
             .latest_entry_id(&id)
             .await
             .context("读取分支末端失败")?;
-        let workspace = store
-            .session_workspace_path(&id)
+        let project = store
+            .session_project_path(&id)
             .await
-            .context("读取 session 的 workspace 失败")?;
-        Ok::<_, anyhow::Error>((store, messages, tip, workspace))
+            .context("读取 session 的 project 失败")?;
+        Ok::<_, anyhow::Error>((store, messages, tip, project))
     }
     .await;
     match loaded {
         Err(error) => app.warn(format!("恢复 session 失败：{error:#}")),
-        Ok((store, messages, tip, workspace)) => {
+        Ok((store, messages, tip, project)) => {
             // actor 邮箱 FIFO：紧随其后的 prompt 一定排在 Restore 之后，
             // 不会出现「新 prompt 跑在旧上下文」的交错
             let _ = handle.restore_messages(messages.clone());
             app.restore_conversation(&messages, id.clone());
-            // workspace 严格归属：操作基准（工具相对路径、mention 展开）切到
-            // 所恢复 session 的 workspace；句柄与工具共享，下一次执行即生效
+            // project 严格归属：操作基准（工具相对路径、mention 展开）切到
+            // 所恢复 session 的 project；句柄与工具共享，下一次执行即生效
             let previous = session.base_dir();
-            session.base.set(workspace.clone());
-            // 系统提示词随 workspace 重建：AGENTS.md 祖先链与 cwd 脚注以新
-            // workspace 为基准（即使路径不变，磁盘内容也可能已更新）。
+            session.base.set(project.clone());
+            // 系统提示词随 project 重建：AGENTS.md 祖先链与 cwd 脚注以新
+            // project 为基准（即使路径不变，磁盘内容也可能已更新）。
             // fire-and-forget：邮箱 FIFO 保证先于紧随的 prompt 生效
-            let _ = handle.set_system_prompt(recipe.build(&workspace, skills));
+            let _ = handle.set_system_prompt(recipe.build(&project, skills));
             match &mut session.recorder {
                 Some(recorder) => recorder.switch(id.clone(), tip),
                 None => {
@@ -428,10 +428,10 @@ pub(in crate::tui) async fn resume_session(
                 "已恢复 session {label}（{} 条消息），后续对话续写该 session。",
                 messages.len()
             ));
-            if workspace != previous {
+            if project != previous {
                 app.chat_mut().push_system(format!(
-                    "操作基准已切换到该 session 的 workspace：{}",
-                    workspace.display()
+                    "操作基准已切换到该 session 的 project：{}",
+                    project.display()
                 ));
             }
         }
@@ -455,15 +455,15 @@ mod tests {
         .expect("empty skill resolver")
     }
 
-    /// `resume` 跨 workspace：recorder 换绑目标 session，操作基准（工具与
-    /// mention 共用的句柄）切到该 session 的 workspace，并给出可见提示。
-    /// 系统提示词随 workspace 重建：目标 workspace 祖先链上的 AGENTS.md
-    /// 注入提示词，cwd 脚注同为该 workspace。
+    /// `resume` 跨 project：recorder 换绑目标 session，操作基准（工具与
+    /// mention 共用的句柄）切到该 session 的 project，并给出可见提示。
+    /// 系统提示词随 project 重建：目标 project 祖先链上的 AGENTS.md
+    /// 注入提示词，cwd 脚注同为该 project。
     #[tokio::test]
-    async fn resume_switches_base_dir_to_session_workspace() {
+    async fn resume_switches_base_dir_to_session_project() {
         let dir_a = tempfile::tempdir().expect("tempdir a");
         let dir_b = tempfile::tempdir().expect("tempdir b");
-        std::fs::write(dir_b.path().join("AGENTS.md"), "b workspace rules").expect("write b");
+        std::fs::write(dir_b.path().join("AGENTS.md"), "b project rules").expect("write b");
         let store = SessionStore::in_memory().await.expect("store");
         let session_a = store.create_session(dir_a.path()).await.expect("create a");
         let session_b = store.create_session(dir_b.path()).await.expect("create b");
@@ -512,12 +512,12 @@ mod tests {
         assert_eq!(
             binding.base_dir(),
             std::fs::canonicalize(dir_b.path()).expect("canonicalize"),
-            "操作基准应切到所恢复 session 的 workspace"
+            "操作基准应切到所恢复 session 的 project"
         );
         let prompt = handle.system_prompt().expect("查询应成功");
         assert!(
-            prompt.contains("b workspace rules"),
-            "系统提示词应注入新 workspace 的 AGENTS.md：{prompt}"
+            prompt.contains("b project rules"),
+            "系统提示词应注入新 project 的 AGENTS.md：{prompt}"
         );
         assert!(
             prompt.contains(&format!(
@@ -526,7 +526,7 @@ mod tests {
                     .expect("canonicalize")
                     .display()
             )),
-            "cwd 脚注应切到新 workspace：{prompt}"
+            "cwd 脚注应切到新 project：{prompt}"
         );
     }
 
@@ -631,9 +631,9 @@ mod tests {
         );
     }
 
-    /// `new` 新建 session 归属当前操作基准的 workspace（基准不变）。
+    /// `new` 新建 session 归属当前操作基准的 project（基准不变）。
     #[tokio::test]
-    async fn new_session_binds_current_base_workspace() {
+    async fn new_session_binds_current_base_project() {
         let dir_a = tempfile::tempdir().expect("tempdir a");
         let store = SessionStore::in_memory().await.expect("store");
         let session_a = store.create_session(dir_a.path()).await.expect("create a");
@@ -653,18 +653,18 @@ mod tests {
             "上下文应已清空"
         );
         let new_id = binding.recorder.as_ref().expect("recorder").session_id();
-        let workspace = binding
+        let project = binding
             .recorder
             .as_ref()
             .expect("recorder")
             .store()
-            .session_workspace_path(new_id)
+            .session_project_path(new_id)
             .await
-            .expect("workspace");
+            .expect("project");
         assert_eq!(
-            workspace,
+            project,
             std::fs::canonicalize(dir_a.path()).expect("canonicalize"),
-            "新 session 应归属当前基准的 workspace"
+            "新 session 应归属当前基准的 project"
         );
     }
 

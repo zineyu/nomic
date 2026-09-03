@@ -55,7 +55,7 @@ web UI（ADR-0030）引入了会话快照语义：切换查看一个 session 时
 - `get_state` 对运行中 session 即时返回：消息到最近一次落史为止，
   切换查看后由事件流增量补齐在途部分（前端合并逻辑对缺失的
   `MessageStart` 已有兜底）。
-- 查询方法签名由 async 改为 sync（内部 workspace，调用点已同步适配）；
+- 查询方法签名由 async 改为 sync（内部 project，调用点已同步适配）；
   新增 `flush()` 屏障 API。
 - 视图维护与消息落史共用同一代码点，不存在两份状态漂移；直接驱动
   `Agent`（不经 actor）时视图照常维护、无人读取，代价为每条落史消息

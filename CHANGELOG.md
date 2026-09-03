@@ -11,7 +11,7 @@
 ### 修复
 
 - 将 tracing 错误日志从 %error 改为 ?error 以记录完整错误链
-- **(cli)** AGENTS.md 与系统提示词以 session 的 workspace 为基准
+- **(cli)** AGENTS.md 与系统提示词以 session 的 project 为基准
 - **(deps)** 升级 chacha20 0.10.1 → 0.10.2（0.10.1 被 yank，cargo deny 拒绝）
 - **(cli)** Sqlite 无模型配置时 TUI/web 以占位模型继续启动，不再启动失败
 - **(session)** 恢复已发布迁移以修复现有数据库启动
@@ -23,7 +23,7 @@
 
 ### 文档
 
-- README 的 AGENTS.md 发现语义改为以 session workspace 为基准
+- README 的 AGENTS.md 发现语义改为以 session project 为基准
 - ADR-0037 目标驱动运行与运行时工具集替换
 - ADR-0037 补充 web 入口 goal 接线与 README 更新
 - ADR-0039 设置全部存储于 SQLite（移除 config.toml）
@@ -89,10 +89,10 @@
 - **(web)** 输入框上方展示 todo 任务清单，完成项删除线置灰
 - **(session)** SQLite 加固——全表重建为 STRICT，显式 busy_timeout，补齐特性保障测试
 - **(todopanel)** Collapse todo list by default with expand toggle
-- **(session)** 补齐 session/workspace 的删除与自定义标题
-- **(web)** Workspace/session 的删除与重命名 WS 事件
-- **(web)** 前端接线 workspace/session 的删除与重命名事件
-- **(web)** 侧栏补齐会话重命名/删除与工作区删除入口
+- **(session)** 补齐 session/project 的删除与自定义标题
+- **(web)** Project/session 的删除与重命名 WS 事件
+- **(web)** 前端接线 project/session 的删除与重命名事件
+- **(web)** 侧栏补齐会话重命名/删除与项目删除入口
 
 ### 杂项
 
@@ -104,9 +104,9 @@
 - **(web)** 页面列水平内边距改为响应式（px-4 sm:px-7）
 - **(web)** 窄屏防溢出：侧栏抽屉与下拉菜单宽度约束
 - **(web)** 小屏组件适配：消息气泡放宽、操作栏可收缩
-- **(web)** Api/handlers.rs 拆出 session/workspace 生命周期子模块
-- **(session)** Workspace 列表按登记时间排序，不再随活跃度浮动
-- **(web)** 移除「当前 workspace」概念
+- **(web)** Api/handlers.rs 拆出 session/project 生命周期子模块
+- **(session)** Project 列表按登记时间排序，不再随活跃度浮动
+- **(web)** 移除「当前 project」概念
 ## [0.3.0] - 2026-08-21
 
 ### 代码风格
@@ -132,7 +132,7 @@
 ### 文档
 
 - 同步 DESIGN.md 与 web 实现（深色 token、Inter Variable、组件定义）
-- **(readme)** 会话恢复措辞从 cwd 隔离更新为 workspace 归属
+- **(readme)** 会话恢复措辞从 cwd 隔离更新为 project 归属
 
 ### 新功能
 
@@ -148,12 +148,12 @@
 - **(web)** 助手消息支持复制与失败重试
 - **(session)** Config 表支持会话级隔离（session_id 列 + 会话级读写 API）
 - **(web)** 多 session 并行（SessionRuntime 注册表 + 会话级路由与模型持久化）
-- **(session)** Workspace 成为一等实体，session 按 workspace 归属
-- **(cli)** Session 操作以 workspace 路径为基准端到端接线
-- **(web)** 侧栏会话列表按 workspace 分组，组可折叠
-- **(session)** WorkspaceSummary 支持序列化
-- **(web)** Create_session 支持指定 workspace，新增 workspace 登记/查询事件
-- **(web)** 侧栏支持按组新建会话与添加工作区
+- **(session)** Project 成为一等实体，session 按 project 归属
+- **(cli)** Session 操作以 project 路径为基准端到端接线
+- **(web)** 侧栏会话列表按 project 分组，组可折叠
+- **(session)** ProjectSummary 支持序列化
+- **(web)** Create_session 支持指定 project，新增 project 登记/查询事件
+- **(web)** 侧栏支持按组新建会话与添加项目
 - **(web)** 重新设计 favicon 并统一替换 UI 图标
 - **(web)** 输入框支持 @skill:/@file: mention 与 /compact、/continue 命令
 - **(core)** Actor 之上新增 SessionRunner 收敛会话级串行 job 语义
@@ -174,7 +174,7 @@
 - **(web)** Remove session id path parameter from websocket endpoint
 - **(web)** Extract handlers module and add session_id to all events
 - **(session)** Config 表方法拆分至独立模块
-- **(web)** Require explicit workspace for session creation, remove default session
+- **(web)** Require explicit project for session creation, remove default session
 - **(cli)** Mention 模块移至 crate 根，供 TUI 与 Web 共享
 - **(chat)** Remove max-w-reading constraint from message components
 - **(cli)** 收敛三入口的 agent 工具配方到 agent_recipe 组装模块

@@ -22,7 +22,7 @@ use crate::vfs::{
 
 /// 目录化挂载声明：一个 scheme 的最小语义面。
 ///
-/// 实现必须是**无状态的**或只持有构造期注入的后端（workspace 根句柄、
+/// 实现必须是**无状态的**或只持有构造期注入的后端（project 根句柄、
 /// skill resolver 等）；钩子均为同步——文件系统 I/O 由 [`DirMount`]
 /// 统一执行。
 pub trait Mount: Send + Sync {

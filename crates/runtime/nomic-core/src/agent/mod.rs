@@ -193,8 +193,8 @@ impl Agent {
         self.config.stream_options.reasoning
     }
 
-    /// 运行时整体替换系统提示词（交互端跨 workspace 恢复 session 后按新
-    /// workspace 重建提示词的语义，如 TUI 的 `/resume`）。
+    /// 运行时整体替换系统提示词（交互端跨 project 恢复 session 后按新
+    /// project 重建提示词的语义，如 TUI 的 `/resume`）。
     ///
     /// 下一次请求即携带新提示词；消息历史、工具与配置保留。应在非运行
     /// 状态（`prompt` 返回后）调用。静默替换，不发出事件。

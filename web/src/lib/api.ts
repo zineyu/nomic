@@ -2,9 +2,9 @@
 //
 // 所有前端↔后端通信通过 `ws://{host}/ws` 双向事件流。服务端维护进程级全局事件
 // 总线，连接后自动接收所有 session 的事件（每个事件携带 `session_id` 供路由）：
-// - **查询类**（`get_state` / `list_models` / `list_sessions` / `list_workspaces`，
-//   以及查询式命令 `create_session` / `create_workspace` / `delete_session` /
-//   `rename_session` / `delete_workspace`）：携带 `request_id`，
+// - **查询类**（`get_state` / `list_models` / `list_sessions` / `list_projects`，
+//   以及查询式命令 `create_session` / `create_project` / `delete_session` /
+//   `rename_session` / `delete_project`）：携带 `request_id`，
 //   服务端响应事件带同一 `request_id` 供关联。
 // - **命令类**（`prompt` / `cancel` / `answer_question` / `switch_model`）：
 //   携带 `session_id` 指定目标 session，fire-and-forget，
@@ -22,7 +22,7 @@ import type {
   SessionSummary,
   SkillSummary,
   SnapshotView,
-  WorkspaceSummary,
+  ProjectSummary,
   ModelSpecPatch,
   ProviderPatch,
   SettingsSnapshot,
@@ -34,14 +34,14 @@ type QueryEventInput =
   | { type: 'get_state'; session_id: string }
   | { type: 'list_models' }
   | { type: 'list_sessions' }
-  | { type: 'list_workspaces' }
+  | { type: 'list_projects' }
   | { type: 'list_skills' }
   | { type: 'list_files'; session_id: string; prefix: string }
-  | { type: 'create_session'; workspace: string }
-  | { type: 'create_workspace'; path: string }
+  | { type: 'create_session'; project: string }
+  | { type: 'create_project'; path: string }
   | { type: 'delete_session'; session_id: string }
   | { type: 'rename_session'; session_id: string; title: string }
-  | { type: 'delete_workspace'; id: string; force: boolean }
+  | { type: 'delete_project'; id: string; force: boolean }
   | { type: 'get_settings' }
   | ({ type: 'upsert_provider'; name: string } & ProviderPatch)
   | { type: 'delete_provider'; name: string }
@@ -235,15 +235,15 @@ export const api = {
       (r) => r.sessions,
     ),
 
-  /** 列出全部 workspace 摘要。 */
-  workspaces: () =>
-    client.request<{ workspaces: WorkspaceSummary[] }>({ type: 'list_workspaces' }).then(
-      (r) => r.workspaces,
+  /** 列出全部 project 摘要。 */
+  projects: () =>
+    client.request<{ projects: ProjectSummary[] }>({ type: 'list_projects' }).then(
+      (r) => r.projects,
     ),
 
-  /** 登记新 workspace（查询式命令；目录不存在时 reject 服务端错误消息）。 */
-  createWorkspace: (path: string) =>
-    client.request<{ id: string; path: string }>({ type: 'create_workspace', path }),
+  /** 登记新 project（查询式命令；目录不存在时 reject 服务端错误消息）。 */
+  createProject: (path: string) =>
+    client.request<{ id: string; path: string }>({ type: 'create_project', path }),
 
   /** 删除 session（查询式命令；物理删除不可恢复，列表刷新经广播事件回填）。 */
   deleteSession: (id: string) =>
@@ -257,27 +257,27 @@ export const api = {
       title,
     }),
 
-  /** 删除 workspace（查询式命令；非空须 force 级联，被拒时 reject 服务端错误消息）。 */
-  deleteWorkspace: (id: string, force: boolean) =>
-    client.request<{ id: string }>({ type: 'delete_workspace', id, force }),
+  /** 删除 project（查询式命令；非空须 force 级联，被拒时 reject 服务端错误消息）。 */
+  deleteProject: (id: string, force: boolean) =>
+    client.request<{ id: string }>({ type: 'delete_project', id, force }),
 
   /** skill 清单（`@skill://` 补全用；进程级解析器快照）。 */
   skills: () =>
     client.request<{ skills: SkillSummary[] }>({ type: 'list_skills' }).then((r) => r.skills),
 
-  /** 文件候选（`@file:` 补全用；相对目标 session 的 workspace 前缀匹配）。 */
+  /** 文件候选（`@file:` 补全用；相对目标 session 的 project 前缀匹配）。 */
   files: (sessionId: string, prefix: string) =>
     client
       .request<{ files: string[] }>({ type: 'list_files', session_id: sessionId, prefix })
       .then((r) => r.files),
 
   /** 新建 session（查询式命令；新对话语义，默认模型，列表刷新经广播
-      事件回填）。必须指定归属目录 `workspace`（无默认 workspace；不存在
+      事件回填）。必须指定归属目录 `project`（无默认 project；不存在
       则 reject 服务端错误消息）。 */
-  createSession: (workspace: string) =>
+  createSession: (project: string) =>
     client.request<{ id: string; title: string | null }>({
       type: 'create_session',
-      workspace,
+      project,
     }),
 
   /** 候选模型列表。 */

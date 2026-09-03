@@ -53,7 +53,7 @@ builder `AgentBuilder<M, P, S>`，全面替代旧公开 API：
 - 新增必填创建项 = 加一个类型参数 + 一个翻转 setter，扩展路径清晰；
   新增可选创建项只加普通 setter，不影响类型签名。
 - breaking change：`Agent::new` / `Agent::with_messages` / 公开的
-  `AgentConfig` 移除，下游（当前仅 workspace 内 CLI 与测试）需迁移到
+  `AgentConfig` 移除，下游（当前仅 project 内 CLI 与测试）需迁移到
   `Agent::builder()`。
 - `build()` 内部对必填项 `expect("typestate 保证已设置")`：panic 在
   类型层之外不可达，但保留显式断言以便阅读。

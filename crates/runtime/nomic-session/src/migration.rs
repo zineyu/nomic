@@ -2,11 +2,14 @@
 //! `CompactionRecord` JSON）→ 统一 [`Entry`] JSON（ADR-0045）。
 //!
 //! payload 重写无法用纯 SQL 表达（字段重组依赖 serde 类型的格式定义），
-//! 因此在 sqlx 迁移之后由本模块在 Rust 侧执行，以 `PRAGMA user_version`
-//! 把关（0 → 1；sqlx 自身不使用该 pragma）。判别是纯结构性的：
-//! 含 `parts` 字段即新格式（跳过，幂等）；含 `role` 为旧 `Message`；
-//! 含 `summary` 为旧 `CompactionRecord`。解析失败的行保留原样并告警
-//! （加载行为与迁移前一致：该 entry 报错，不阻断整体）。
+//! 因此由本模块在 Rust 侧执行，以 `PRAGMA user_version` 把关（0 → 1；
+//! sqlx 自身不使用该 pragma）。**执行顺序**：本迁移先于 sqlx 迁移运行
+//! （`SessionStore::migrate`），因为 migration 0013 的 parts 表拆解 SQL
+//! 只认 Entry 格式；全新库（entries 表尚不存在）直接跳过，新库写入
+//! 天然是新格式。判别是纯结构性的：含 `parts` 字段即新格式（跳过，幂等）；
+//! 含 `role` 为旧 `Message`；含 `summary` 为旧 `CompactionRecord`。
+//! 解析失败的行保留原样并告警（加载行为与迁移前一致：该 entry 报错，
+//! 不阻断整体）。
 
 use nomic_ai::{CompactionRecord, Entry, Message};
 use sqlx::{Row as _, SqlitePool};
@@ -26,8 +29,17 @@ enum PayloadMigration {
     Unparsable,
 }
 
-/// 执行 payload 数据迁移（幂等）：版本达标时直接返回。
+/// 执行 payload 数据迁移（幂等）：版本达标或 entries 表尚未建立
+/// （全新库）时直接返回。
 pub async fn migrate_entry_payloads(pool: &SqlitePool) -> Result<(), SessionError> {
+    let table_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entries')",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !table_exists {
+        return Ok(());
+    }
     let version: i64 = sqlx::query_scalar("PRAGMA user_version")
         .fetch_one(pool)
         .await?;
@@ -115,9 +127,19 @@ mod tests {
     use super::*;
     use crate::SessionStore;
 
-    /// 构造「旧格式库」：按 0001..0012 的 SQL 原文建 schema（不走 sqlx
-    /// 迁移记录），插入旧双格式 payload（外加一条新格式 entry 验证幂等
-    /// 跳过、一条损坏 payload 验证保留原样）。
+    /// 旧格式行：(id, parent_id, role, kind, timestamp, payload)
+    type LegacyRow = (
+        &'static str,
+        Option<&'static str>,
+        &'static str,
+        &'static str,
+        i64,
+        &'static str,
+    );
+
+    /// 构造「旧格式库」：按 0001..0011 的 SQL 原文建 schema（不走 sqlx
+    /// 迁移记录；payload 列与 kind 列仍在），插入旧双格式 payload（外加
+    /// 一条损坏 payload 验证 json_valid 守卫）。
     // 建库 + 插数据本质是声明式脚本，拆开反而打断阅读
     #[allow(clippy::too_many_lines)]
     async fn legacy_db() -> (tempfile::TempDir, SqlitePool) {
@@ -141,7 +163,6 @@ mod tests {
             include_str!("../migrations/0009_rename_projects.sql"),
             include_str!("../migrations/0010_works.sql"),
             include_str!("../migrations/0011_sessions_work_index.sql"),
-            include_str!("../migrations/0012_drop_entry_kind.sql"),
         ] {
             sqlx::raw_sql(sql).execute(&pool).await.unwrap();
         }
@@ -163,17 +184,18 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO sessions (id, work_id, first_message_at, last_message_at)
-             VALUES ('s1', 'w-s1', 1000, 8000)",
+             VALUES ('s1', 'w-s1', 1000, 6000)",
         )
         .execute(&pool)
         .await
         .unwrap();
 
-        let legacy: [(&str, Option<&str>, &str, i64, &str); 8] = [
+        let legacy: [LegacyRow; 6] = [
             (
                 "e1",
                 None,
                 "user",
+                "message",
                 1_000,
                 r#"{"role":"user","content":"第一条","timestamp":1000}"#,
             ),
@@ -181,56 +203,47 @@ mod tests {
                 "e2",
                 Some("e1"),
                 "assistant",
+                "message",
                 2_000,
-                r#"{"role":"assistant","content":[{"type":"text","text":"回答一"}],"api":"anthropic_messages","provider":"anthropic","model":"claude","usage":{"input":1,"output":2,"cache_read":0,"cache_write":0,"total_tokens":3,"cost":{"input":0.0,"output":0.0,"cache_read":0.0,"cache_write":0.0,"total":0.0}},"stop_reason":"stop","timestamp":2000}"#,
+                r#"{"role":"assistant","content":[{"type":"thinking","thinking":"想一下","thinking_signature":"sig"},{"type":"text","text":"回答一"},{"type":"tool_call","id":"call-1","name":"read","arguments":{"path":"a.rs"}}],"api":"anthropic_messages","provider":"anthropic","model":"claude","usage":{"input":1,"output":2,"cache_read":0,"cache_write":0,"total_tokens":3,"cost":{"input":0.0,"output":0.0,"cache_read":0.0,"cache_write":0.0,"total":0.0}},"stop_reason":"tool_use","timestamp":2000}"#,
             ),
             (
                 "e3",
                 Some("e2"),
-                "user",
+                "tool_result",
+                "message",
                 3_000,
-                r#"{"role":"user","content":"第二条","timestamp":3000}"#,
+                r#"{"role":"tool_result","tool_call_id":"call-1","tool_name":"read","content":[{"type":"text","text":"文件内容"},{"type":"image","data":"aW1n","mime_type":"image/png"}],"is_error":false,"timestamp":3000}"#,
             ),
             (
                 "e4",
                 Some("e3"),
                 "user",
+                "message",
                 4_000,
-                r#"{"role":"user","content":"第三条","timestamp":4000}"#,
+                r#"{"role":"user","content":[{"type":"text","text":"第二条"},{"type":"image","data":"aW1n","mime_type":"image/png"}],"timestamp":4000}"#,
             ),
             (
                 "e5",
                 Some("e4"),
                 "compaction",
+                "compaction",
                 5_000,
-                r#"{"summary":"前两条摘要","kept_count":2,"tokens_before":999}"#,
+                r#"{"summary":"前四条摘要","kept_count":2,"tokens_before":999}"#,
             ),
-            (
-                "e6",
-                Some("e5"),
-                "user",
-                6_000,
-                r#"{"role":"user","content":"第四条","timestamp":6000}"#,
-            ),
-            (
-                "e7",
-                Some("e6"),
-                "user",
-                7_000,
-                r#"{"role":"user","parts":[{"type":"text","text":"已是新格式"}],"timestamp":7000}"#,
-            ),
-            ("e8", Some("e7"), "user", 8_000, "not json"),
+            ("e6", Some("e5"), "user", "message", 6_000, "not json"),
         ];
-        for (id, parent, role, ts, payload) in &legacy {
+        for (id, parent, role, kind, ts, payload) in &legacy {
             sqlx::query(
-                "INSERT INTO entries (id, session_id, parent_id, role, timestamp, payload)
-                 VALUES (?, 's1', ?, ?, ?, ?)",
+                "INSERT INTO entries (id, session_id, parent_id, role, timestamp, payload, kind)
+                 VALUES (?, 's1', ?, ?, ?, ?, ?)",
             )
             .bind(id)
             .bind(parent)
             .bind(role)
             .bind(ts)
             .bind(payload)
+            .bind(kind)
             .execute(&pool)
             .await
             .unwrap();
@@ -238,87 +251,137 @@ mod tests {
         (dir, pool)
     }
 
-    /// 旧 payload 全部重写为统一 Entry 格式；新格式与损坏行原样保留；
-    /// user_version 推进且重复执行为 no-op（幂等）。
+    /// 走完新代码的完整迁移管线：Rust 旧格式转换（v0→v1）+ SQL 迁移
+    /// 0012（删 kind）与 0013（拆 parts 表）。
+    async fn run_full_migration(pool: &SqlitePool) {
+        migrate_entry_payloads(pool).await.unwrap();
+        for sql in [
+            include_str!("../migrations/0012_drop_entry_kind.sql"),
+            include_str!("../migrations/0013_entry_parts.sql"),
+        ] {
+            sqlx::raw_sql(sql).execute(pool).await.unwrap();
+        }
+    }
+
+    /// 旧 payload 经管线后：parts 行按类型各归其列（含 thinking 签名、
+    /// 工具调用参数、tool_result 嵌套块），meta 列承载 assistant 响应
+    /// 元数据，payload/kind 列删除；损坏 payload 行降级为空 parts 条目。
+    // 逐类断言是测试本体，拆开反而割裂语境
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
-    async fn legacy_payloads_are_rewritten_to_entries() {
+    async fn legacy_payloads_decompose_into_parts_table() {
         let (_dir, pool) = legacy_db().await;
-        migrate_entry_payloads(&pool).await.unwrap();
+        run_full_migration(&pool).await;
 
         let version: i64 = sqlx::query_scalar("PRAGMA user_version")
             .fetch_one(&pool)
             .await
             .unwrap();
         assert_eq!(version, ENTRY_PAYLOAD_VERSION);
-        migrate_entry_payloads(&pool).await.unwrap();
 
-        let rows = sqlx::query("SELECT id, payload FROM entries ORDER BY rowid")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-        for row in &rows {
-            let id: String = row.get("id");
-            let payload: String = row.get("payload");
-            if id == "e8" {
-                assert_eq!(payload, "not json", "损坏 payload 应原样保留");
-                continue;
-            }
-            let entry: Entry = serde_json::from_str(&payload)
-                .unwrap_or_else(|e| panic!("{id} 应为 Entry 格式：{e}"));
-            let expected_role = match id.as_str() {
-                "e5" => "compaction",
-                "e2" => "assistant",
-                _ => "user",
-            };
-            assert_eq!(entry.role.as_str(), expected_role);
-        }
+        // entries 表形态：无 payload / kind，有 meta
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('entries')")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(!columns.contains(&"payload".to_string()));
+        assert!(!columns.contains(&"kind".to_string()));
+        assert!(columns.contains(&"meta".to_string()));
 
-        // compaction 记录内容完整（时间戳从行列回填）
-        let payload: String = sqlx::query_scalar("SELECT payload FROM entries WHERE id = 'e5'")
+        // e2（assistant）：thinking/text/tool_call 三块，签名与参数落列
+        let rows = sqlx::query(
+            "SELECT seq, type, text, signature, tool_name, arguments FROM parts
+             WHERE entry_id = 'e2' ORDER BY seq, sub_seq",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].get::<&str, _>("type"), "thinking");
+        assert_eq!(rows[0].get::<Option<&str>, _>("signature"), Some("sig"));
+        assert_eq!(rows[1].get::<Option<&str>, _>("text"), Some("回答一"));
+        assert_eq!(rows[2].get::<&str, _>("type"), "tool_call");
+        assert_eq!(rows[2].get::<Option<&str>, _>("tool_name"), Some("read"));
+        assert_eq!(
+            rows[2].get::<Option<&str>, _>("arguments"),
+            Some(r#"{"path":"a.rs"}"#)
+        );
+        let meta: String = sqlx::query_scalar("SELECT meta FROM entries WHERE id = 'e2'")
             .fetch_one(&pool)
             .await
             .unwrap();
-        let entry: Entry = serde_json::from_str(&payload).unwrap();
-        let record = entry.compaction_record().unwrap();
-        assert_eq!(record.summary, "前两条摘要");
-        assert_eq!(record.kept_count, 2);
-        assert_eq!(record.tokens_before, 999);
-        assert_eq!(entry.timestamp, 5_000);
+        let response: nomic_ai::ResponseMeta = serde_json::from_str(&meta).unwrap();
+        assert_eq!(response.model, "claude");
+        assert_eq!(response.stop_reason, nomic_ai::StopReason::ToolUse);
+
+        // e3（tool_result）：顶层块 sub_seq=0，两个嵌套内容块 sub_seq=1/2
+        let rows = sqlx::query(
+            "SELECT sub_seq, type, text, mime_type FROM parts
+             WHERE entry_id = 'e3' ORDER BY sub_seq",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].get::<&str, _>("type"), "tool_result");
+        assert_eq!(rows[1].get::<Option<&str>, _>("text"), Some("文件内容"));
+        assert_eq!(
+            rows[2].get::<Option<&str>, _>("mime_type"),
+            Some("image/png")
+        );
+
+        // e5（compaction）：记录落列
+        let (summary, kept, tokens): (String, i64, i64) = sqlx::query_as(
+            "SELECT summary, kept_count, tokens_before FROM parts WHERE entry_id = 'e5'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((summary.as_str(), kept, tokens), ("前四条摘要", 2, 999));
+
+        // e6（损坏 payload）：json_valid 守卫跳过，降级为空 parts 条目
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM parts WHERE entry_id = 'e6'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     /// 迁移后重放语义逐字节不变：kept_count=2 → 摘要 + e3/e4（压缩前的
-    /// 有效尾部）+ e6 + e7（损坏的 e8 使完整加载报错，逐段验证到 e7）。
+    /// 有效尾部）；损坏的 e6 降级为空内容的 user 消息。
     #[tokio::test]
     async fn replay_semantics_survive_migration() {
         let (_dir, pool) = legacy_db().await;
-        migrate_entry_payloads(&pool).await.unwrap();
+        run_full_migration(&pool).await;
 
         let store = SessionStore { pool };
-        let loaded = store.load_branch("s1", "e7").await.unwrap();
+        let loaded = store.load_branch("s1", "e6").await.unwrap();
         let texts: Vec<String> = loaded
             .iter()
             .map(|message| match message {
                 Message::User(user) => match &user.content {
                     nomic_ai::UserMessageContent::Text(text) => text.clone(),
-                    nomic_ai::UserMessageContent::Blocks(_) => "blocks".to_string(),
+                    nomic_ai::UserMessageContent::Blocks(blocks) => {
+                        format!("blocks×{}", blocks.len())
+                    }
                 },
                 Message::Assistant(_) => "assistant".to_string(),
-                Message::ToolResult(_) => "tool_result".to_string(),
+                Message::ToolResult(result) => format!("tool_result:{}", result.tool_name),
             })
             .collect();
         assert_eq!(
             texts,
             [
-                "The conversation history before this point was compacted into the following summary:\n<summary>\n前两条摘要\n</summary>",
-                "第二条",
-                "第三条",
-                "第四条",
-                "已是新格式",
+                "The conversation history before this point was compacted into the following summary:\n<summary>\n前四条摘要\n</summary>",
+                "tool_result:read",
+                "blocks×2",
+                "blocks×0",
             ]
         );
     }
 
-    /// 新库（无任何旧数据）迁移为 no-op，user_version 照常推进。
+    /// 新库（无任何旧数据）迁移为空转，user_version 照常推进。
     #[tokio::test]
     async fn fresh_store_marks_payload_version() {
         let store = SessionStore::in_memory().await.unwrap();

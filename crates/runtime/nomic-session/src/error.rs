@@ -40,4 +40,7 @@ pub enum SessionError {
     /// 库中 payload 的 role/parts 组合非法（数据损坏）
     #[error("entry payload invalid: {0}")]
     InvalidEntry(#[from] nomic_ai::EntryError),
+    /// entry 行无法重建（role/meta/parts 任一环损坏；值为 entry id）
+    #[error("entry row corrupted: {0}")]
+    CorruptEntry(String),
 }

@@ -59,7 +59,7 @@ async fn foreign_key_violation_is_rejected() {
 #[tokio::test]
 async fn business_tables_are_strict() {
     let store = SessionStore::in_memory().await.unwrap();
-    for table in ["projects", "sessions", "entries", "config"] {
+    for table in ["projects", "sessions", "entries", "parts", "config"] {
         let ddl: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name = ?")
             .bind(table)
             .fetch_one(&store.pool)

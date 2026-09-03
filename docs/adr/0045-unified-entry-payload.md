@@ -55,6 +55,17 @@ pub enum Part {
 - **assistant 响应元数据挂在条目上**（`response` 字段）：usage/stop_reason
   等是一次响应一份的属性，不属于任何单个 part。
 
+### 存储形状：parts 独立成表（migration 0012/0013）
+
+entry 的内容块不以 JSON 嵌套在 entries 行内，而是规范化到独立
+`parts` 表：每块一行，主键 `(entry_id, seq, sub_seq)`——`seq` 为顶层
+块序，tool_result 的嵌套内容块（text/image）以 `sub_seq > 0` 挂在所属
+块下；类型特有字段各归其列（text/signature/data/mime_type/
+tool_call_id/tool_name/arguments/details/is_error/summary/kept_count/
+tokens_before），可按类型、工具名直接索引。assistant 响应元数据
+（api/model/usage/stop_reason/…，一次响应一份、字段稳定）存
+`entries.meta` JSON 列。`entries.payload` 与 `kind` 列删除。
+
 ### 只改存储层，内存模型不动
 
 agent 持有的历史仍是 `Vec<Message>`，provider wire 转换、agent loop、
@@ -74,19 +85,30 @@ compaction 条目仍经 `apply_compaction` 截尾 + 前置合成摘要消息。�
 
 ### 存量数据一次性迁移
 
-- SQL 迁移 0012 删除 `entries.kind` 列；
-- payload 重写（旧 `Message` / `CompactionRecord` JSON → `Entry` JSON）由
-  `nomic_session::migration` 在 sqlx 迁移后于 Rust 侧执行（格式定义依赖
-  serde 类型，无法用纯 SQL 表达），`PRAGMA user_version`（0 → 1）把关，
-  结构性判别（含 `parts` 即新格式）保证幂等；解析失败的行保留原样并告警
-  （加载行为与迁移前一致）；
-- 迁移后加载路径只认 Entry 格式，不保留双格式兼容代码。
+两段式迁移，打开库时自动完成：
+
+1. **Rust 侧 payload 统一**（`nomic_session::migration`，`PRAGMA
+   user_version` 0→1 把关）：旧双格式 payload（`Message` /
+   `CompactionRecord` JSON）重写为统一 `Entry` JSON。字段重组依赖 serde
+   类型的格式定义，无法用纯 SQL 表达，故在 Rust 侧执行；结构性判别
+   （含 `parts` 即新格式）保证幂等。**先于 sqlx 迁移运行**（0013 的拆解
+   SQL 只认 Entry 格式）；全新库（entries 表尚未建立）跳过，版本标记
+   在 sqlx 迁移后补齐。
+2. **SQL 侧规范化拆解**（migration 0012 删 `kind` 列、0013 建 `parts`
+   表）：`json_each(payload, '$.parts')` 把 Entry JSON 拆解为 parts 行、
+   `$.response` 移至 `meta` 列、删除 `payload` 列，单迁移事务内完成；
+   `json_valid` 守卫跳过损坏 payload（该行降级为空 parts 条目）。
+
+迁移后加载路径只认新格式，不保留旧格式兼容代码。
 
 ## Consequences
 
-- 新增内容块种类（如未来的引用/附件块）只需扩展 `Part` enum 与各角色的
-  转换规则，存储形状不变；
-- `entries` 表少一列，所有「消息条目」过滤条件统一为 `role <> 'compaction'`
-  / `role = 'user'`；
-- 旧版本应用打开迁移后的库将无法解析 payload（视为损坏数据）：存储格式
-  前向不兼容，属可接受的升级路径（桌面单用户场景，版本随应用升级）。
+- 新增内容块种类（如未来的引用/附件块）需同时扩展 `Part` enum、转换
+  规则与 parts 表列（加列即可，形状不变）；
+- 内容块可直接按类型/工具名等列索引查询，不再依赖 JSON 函数提取；
+- 所有「消息条目」过滤条件统一为 `role <> 'compaction'` / `role = 'user'`；
+- 损坏 payload 的降级语义微调：旧格式下损坏行加载报错；parts 表下该行
+  在迁移时被跳过（`json_valid` 守卫），降级为空内容条目。写入期损坏
+  （parts/meta 不一致）仍在加载时报错；
+- 旧版本应用打开迁移后的库将无法解析（视为损坏数据）：存储格式前向
+  不兼容，属可接受的升级路径（桌面单用户场景，版本随应用升级）。

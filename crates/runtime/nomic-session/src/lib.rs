@@ -5,11 +5,11 @@
 //!   的完整协作过程（见 [`Work`]）；session 必须归属 work，其所有操作以
 //!   所属 project 的路径为基准
 //! - 消息与压缩记录统一存 `entries` 表，按 `parent_id` 组织为**树**
-//!   （顺序会话是树的特例）；payload 为统一 [`Entry`] 序列化格式（角色 +
-//!   `Part` 内容块，ADR-0045），压缩条目即 `role = 'compaction'` 的 entry；
+//!   （顺序会话是树的特例）；条目模型为统一 [`Entry`]（角色 + `Part`
+//!   内容块，ADR-0045），压缩条目即 `role = 'compaction'` 的 entry；
 //!   加载时重放重建有效上下文（重建语义见 `nomic_ai::compaction` module 文档）
-//! - 存量库经一次性数据迁移改写为 Entry payload（`migration` 模块，
-//!   `PRAGMA user_version` 把关）；迁移后加载路径只认 Entry 格式
+//! - 存量库经一次性迁移切换到新存储形状（`migration` 模块 + migration
+//!   0012/0013，`PRAGMA user_version` 把关）；迁移后加载路径只认新格式
 //! - 分支能力：[`SessionStore::list_tree`] 浏览树、[`SessionStore::load_branch`]
 //!   加载指定 entry 所在分支、追加时显式 `parent_id` 即创建分支
 //! - `config` 表存配置历史（append-only，实现见 `config` 模块）：每次修改
@@ -28,15 +28,17 @@
 //!   session）、[`SessionStore::delete_project`] 删除 project（默认拒绝
 //!   非空，`force` 级联删除名下全部 work 与 session）
 //!
-//! payload 原样存 [`Entry`] 的 serde JSON；`role`/`timestamp` 为提取列，
-//! 供查询与维护 session 时间字段。
+//! payload 不再整体 JSON 化：内容块规范化存 `parts` 表（migration 0013，
+//! 编解码见 `parts` 模块），assistant 响应元数据存 `entries.meta` JSON 列；
+//! `role`/`timestamp` 为提取列，供查询与维护 session 时间字段。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use nomic_ai::{
-    Entry, EntryError, EntryRole, Message, Part, StopReason, apply_compaction, now_millis,
+    Entry, EntryError, EntryRole, Message, Part, ResponseMeta, StopReason, apply_compaction,
+    now_millis,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row as _, SqlitePool};
@@ -46,6 +48,7 @@ mod error;
 #[cfg(test)]
 mod feature_tests;
 mod migration;
+mod parts;
 mod project;
 mod recorder;
 mod session;
@@ -172,8 +175,15 @@ impl SessionStore {
     }
 
     async fn migrate(pool: SqlitePool) -> Result<Self, SessionError> {
-        MIGRATOR.run(&pool).await?;
+        // 旧双格式 payload（Message/CompactionRecord JSON）先经 Rust 侧统一为
+        // Entry JSON（migration 0013 的 SQL 拆解只认 Entry 格式）；全新库无
+        // entries 表，该步骤为空转
         migration::migrate_entry_payloads(&pool).await?;
+        MIGRATOR.run(&pool).await?;
+        // 全新库补齐版本标记（迁移库已在转换时推进）
+        sqlx::query("PRAGMA user_version = 1")
+            .execute(&pool)
+            .await?;
         Ok(Self { pool })
     }
 
@@ -203,10 +213,7 @@ impl SessionStore {
             parent_id = ?parent_id,
             "appending message to session"
         );
-        let payload = serde_json::to_string(&entry)?;
-        let entry_id = self
-            .append_entry(session_id, parent_id, entry.role, entry.timestamp, payload)
-            .await?;
+        let entry_id = self.append_entry(session_id, parent_id, &entry).await?;
         tracing::debug!(session_id = %session_id, entry_id = %entry_id, "message appended");
         Ok(entry_id)
     }
@@ -229,23 +236,19 @@ impl SessionStore {
             "appending compaction record"
         );
         let entry = Entry::compaction(record.clone(), now_millis());
-        let payload = serde_json::to_string(&entry)?;
-        let entry_id = self
-            .append_entry(session_id, parent_id, entry.role, entry.timestamp, payload)
-            .await?;
+        let entry_id = self.append_entry(session_id, parent_id, &entry).await?;
         tracing::debug!(session_id = %session_id, entry_id = %entry_id, "compaction record appended");
         Ok(entry_id)
     }
 
     /// 追加一条 entry 的实现内核（消息与压缩条目共用）：同事务内校验
-    /// session 存在、解析父指针、插入条目并维护 `sessions` 的首/末消息时间。
+    /// session 存在、解析父指针、插入条目与内容块（parts 表）、维护
+    /// `sessions` 的首/末消息时间。
     async fn append_entry(
         &self,
         session_id: &str,
         parent_id: Option<&str>,
-        role: EntryRole,
-        timestamp: u64,
-        payload: String,
+        entry: &Entry,
     ) -> Result<String, SessionError> {
         // `BEGIN IMMEDIATE` 在事务一开始就取得写锁，避免 WAL 模式下「先读后写」
         // 升级写锁时因另一连接已提交而产生的 SQLITE_BUSY_SNAPSHOT（code 517）：
@@ -260,19 +263,26 @@ impl SessionStore {
         let parent = resolve_parent(&mut tx, session_id, parent_id).await?;
 
         let id = uuid::Uuid::now_v7().to_string();
-        let timestamp = to_i64(timestamp);
+        let timestamp = to_i64(entry.timestamp);
+        let meta = entry
+            .response
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         sqlx::query(
-            "INSERT INTO entries (id, session_id, parent_id, role, timestamp, payload)
+            "INSERT INTO entries (id, session_id, parent_id, role, timestamp, meta)
              VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(session_id)
         .bind(parent)
-        .bind(role.as_str())
+        .bind(entry.role.as_str())
         .bind(timestamp)
-        .bind(payload)
+        .bind(meta)
         .execute(&mut *tx)
         .await?;
+
+        parts::insert_parts(&mut tx, &id, &entry.parts).await?;
 
         sqlx::query(
             "UPDATE sessions SET
@@ -351,30 +361,41 @@ impl SessionStore {
         Ok(entries.iter().map(tree_entry).collect())
     }
 
-    /// 读取 session 的全部 entries（按插入序）；session 不存在时报
-    /// [`SessionError::SessionNotFound`]。
+    /// 读取 session 的全部 entries（按插入序，含 parts 重建）；session
+    /// 不存在时报 [`SessionError::SessionNotFound`]。
     async fn fetch_entries(&self, session_id: &str) -> Result<Vec<BranchEntry>, SessionError> {
         let mut tx = self.pool.begin().await?;
         if !session_exists(&mut tx, session_id).await? {
             return Err(SessionError::SessionNotFound(session_id.to_string()));
         }
         let rows = sqlx::query(
-            "SELECT id, parent_id, role, timestamp, payload FROM entries
+            "SELECT id, parent_id, role, timestamp, meta FROM entries
              WHERE session_id = ? ORDER BY rowid",
         )
         .bind(session_id)
         .fetch_all(&mut *tx)
         .await?;
+        let mut parts_by_entry = parts::load_parts(&mut tx, session_id).await?;
         tx.commit().await?;
 
         let mut entries = Vec::with_capacity(rows.len());
         for row in &rows {
+            let id: String = row.get("id");
+            let role: String = row.get("role");
+            let timestamp = to_u64(row.get("timestamp"));
+            let meta: Option<String> = row.get("meta");
+            let entry = assemble_entry(
+                &role,
+                timestamp,
+                meta,
+                parts_by_entry.remove(&id).unwrap_or(Some(Vec::new())),
+            );
             entries.push(BranchEntry {
-                id: row.get("id"),
+                id,
                 parent_id: row.get("parent_id"),
-                role: row.get("role"),
-                timestamp: to_u64(row.get("timestamp")),
-                payload: row.get("payload"),
+                role,
+                timestamp,
+                entry,
             });
         }
         Ok(entries)
@@ -423,13 +444,41 @@ pub fn default_db_path() -> Result<PathBuf, SessionError> {
     Ok(dir.join("nomic").join("sessions.db"))
 }
 
-/// 分支重放用的一行 entry（`fetch_entries` 内部表示）。
+/// 分支重放用的一行 entry（`fetch_entries` 内部表示）。`entry` 为重建
+/// 结果：行数据损坏（role/meta/parts 任一环非法）时为 `None`。
 struct BranchEntry {
     id: String,
     parent_id: Option<String>,
     role: String,
     timestamp: u64,
-    payload: String,
+    entry: Option<Entry>,
+}
+
+/// 行数据 → [`Entry`]：role 词、meta JSON（assistant 响应元数据）与
+/// parts 块列表三者皆合法才成立，任一环损坏返回 `None`。
+fn assemble_entry(
+    role: &str,
+    timestamp: u64,
+    meta: Option<String>,
+    parts: Option<Vec<Part>>,
+) -> Option<Entry> {
+    let role = match role {
+        "user" => EntryRole::User,
+        "assistant" => EntryRole::Assistant,
+        "tool_result" => EntryRole::ToolResult,
+        "compaction" => EntryRole::Compaction,
+        _ => return None,
+    };
+    let response = meta
+        .map(|raw| serde_json::from_str::<ResponseMeta>(&raw))
+        .transpose()
+        .ok()?;
+    Some(Entry {
+        role,
+        parts: parts?,
+        response,
+        timestamp,
+    })
 }
 
 /// 默认分支路径：从根沿「每级最新子节点」（rowid 升序排列的最后一个）走到叶子。
@@ -479,7 +528,10 @@ fn ancestor_path<'a>(entries: &'a [BranchEntry], entry_id: &str) -> Option<Vec<&
 fn replay(path: Vec<&BranchEntry>) -> Result<Vec<Message>, SessionError> {
     let mut effective: Vec<Message> = Vec::new();
     for entry in path {
-        let parsed: Entry = serde_json::from_str(&entry.payload)?;
+        let parsed = entry
+            .entry
+            .as_ref()
+            .ok_or_else(|| SessionError::CorruptEntry(entry.id.clone()))?;
         if parsed.role == EntryRole::Compaction {
             let record = parsed
                 .compaction_record()
@@ -497,12 +549,12 @@ fn replay(path: Vec<&BranchEntry>) -> Result<Vec<Message>, SessionError> {
     Ok(effective)
 }
 
-/// `BranchEntry` → 展示用的 [`TreeEntry`]（payload 损坏时摘要退化为占位文本）。
+/// `BranchEntry` → 展示用的 [`TreeEntry`]（行数据损坏时摘要退化为占位文本）。
 fn tree_entry(entry: &BranchEntry) -> TreeEntry {
-    let (preview, has_tool_calls) = serde_json::from_str::<Entry>(&entry.payload).map_or_else(
-        |_| ("（payload 损坏）".to_string(), false),
-        |parsed| entry_preview(&parsed),
-    );
+    let (preview, has_tool_calls) = entry
+        .entry
+        .as_ref()
+        .map_or_else(|| ("（payload 损坏）".to_string(), false), entry_preview);
     TreeEntry {
         id: entry.id.clone(),
         parent_id: entry.parent_id.clone(),

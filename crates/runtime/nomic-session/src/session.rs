@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use sqlx::Row as _;
 
-use crate::{SessionError, SessionStore, session_title, to_u64};
+use crate::{SessionError, SessionStore, to_u64};
 
 /// session 摘要（`list_sessions` / `list_sessions_in` 返回）。
 ///
@@ -191,29 +191,58 @@ impl SessionStore {
 
 impl SessionStore {
     /// 各 session 的派生标题（首条 user 消息摘要）：一次分组查询取每个
-    /// session 最早一条 user 消息的 payload，在内存计算摘要；payload 损坏或
-    /// 无 user 消息的 session 不出现在结果中（派生标题为 `None`）。
+    /// session 最早一条 user entry 的顶层块（text 拼接 / image 计数），
+    /// 在内存计算摘要；无 user 消息或首条无正文的 session 不出现在结果中
+    /// （派生标题为 `None`）。摘要口径与树列表的条目预览一致（lib.rs
+    /// `entry_preview` 的 user 分支）。
     pub(crate) async fn fetch_titles(&self) -> Result<HashMap<String, String>, SessionError> {
         let rows = sqlx::query(
-            "SELECT e.session_id, e.payload FROM entries e
+            "SELECT e.session_id, p.type, p.text FROM entries e
              JOIN (SELECT session_id, MIN(rowid) AS first_rowid FROM entries
                    WHERE role = 'user' GROUP BY session_id) f
-             ON e.rowid = f.first_rowid",
+             ON e.rowid = f.first_rowid
+             JOIN parts p ON p.entry_id = e.id AND p.sub_seq = 0
+             ORDER BY e.session_id, p.seq",
         )
         .fetch_all(&self.pool)
         .await?;
 
-        let mut titles = HashMap::with_capacity(rows.len());
+        let mut titles = HashMap::new();
+        let mut current: Option<(String, String, u64)> = None; // (session_id, text, images)
         for row in &rows {
-            let payload: String = row.get("payload");
-            let title = serde_json::from_str::<nomic_ai::Entry>(&payload)
-                .ok()
-                .and_then(|entry| entry.to_message().ok())
-                .and_then(|message| session_title(std::slice::from_ref(&message)));
-            if let Some(title) = title {
-                titles.insert(row.get::<String, _>("session_id"), title);
+            let session_id: String = row.get("session_id");
+            if current.as_ref().is_none_or(|(id, ..)| *id != session_id) {
+                flush_title(&mut titles, current.take());
+                current = Some((session_id, String::new(), 0));
+            }
+            let Some((_, text, images)) = current.as_mut() else {
+                continue;
+            };
+            match row.get::<&str, _>("type") {
+                "text" => text.push_str(row.get::<Option<&str>, _>("text").unwrap_or_default()),
+                "image" => *images += 1,
+                _ => {}
             }
         }
+        flush_title(&mut titles, current.take());
         Ok(titles)
+    }
+}
+
+/// 汇总一个 session 的首条 user entry 摘要（文本首行 + 图片计数前缀），
+/// 空摘要不入结果（口径同 lib.rs `entry_preview` 的 user 分支）。
+fn flush_title(titles: &mut HashMap<String, String>, current: Option<(String, String, u64)>) {
+    let Some((session_id, text, images)) = current else {
+        return;
+    };
+    let title = if images == 0 {
+        crate::first_line(&text)
+    } else {
+        format!("🖼 图片 ×{images} {}", crate::first_line(&text))
+    }
+    .trim()
+    .to_string();
+    if !title.is_empty() {
+        titles.insert(session_id, title);
     }
 }

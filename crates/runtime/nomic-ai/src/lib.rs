@@ -2,6 +2,8 @@
 //!
 //! 核心内容：
 //! - `types`：统一消息模型（`Message` / 内容块 / `Usage` / `StopReason`）
+//! - [`entry`]：统一历史条目模型（`Entry` = 角色 + `Part` 内容块），
+//!   会话历史在存储层的唯一 payload 格式（ADR-0045）
 //! - `compaction`：压缩摘要消息的构造与识别、有效上下文重建语义
 //! - `stream`：流式事件协议与 [`Provider`] 契约（错误编码进流，不抛出）
 //! - [`providers`]：Anthropic Messages 与 `OpenAI` Completions 兼容实现
@@ -10,6 +12,7 @@
 //! 设计决策见仓库 `docs/adr/0001-pi-rust-architecture.md`。
 
 pub mod compaction;
+pub mod entry;
 pub mod models_dev;
 pub mod providers;
 mod stream;
@@ -18,6 +21,9 @@ mod types;
 pub use compaction::{
     SUMMARY_PREFIX, SUMMARY_SUFFIX, apply_compaction, extract_summary, is_summary_message,
     summary_message,
+};
+pub use entry::{
+    CompactionRecord, Entry, EntryError, EntryRole, Part, ResponseMeta, ToolResultPart,
 };
 pub use models_dev::{Catalog, ModelSpec};
 pub use stream::{

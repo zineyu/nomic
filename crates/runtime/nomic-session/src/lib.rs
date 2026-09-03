@@ -36,7 +36,6 @@ use nomic_ai::{
     AssistantContent, Message, StopReason, UserContent, UserMessageContent, apply_compaction,
     now_millis,
 };
-use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row as _, SqlitePool};
 
@@ -50,6 +49,9 @@ mod session;
 mod settings;
 mod work;
 pub use error::SessionError;
+/// 压缩记录的唯一定义已上移至 `nomic_ai`（作为 compaction 条目的内容块，
+/// 见 `docs/adr/0045`）；此处重导出保持既有调用路径不变。
+pub use nomic_ai::CompactionRecord;
 pub use project::{Project, ProjectSummary};
 pub use recorder::SessionRecorder;
 pub use session::SessionSummary;
@@ -58,23 +60,6 @@ pub use work::{Work, WorkCreated, WorkSummary};
 
 /// 内嵌迁移（`crates/runtime/nomic-session/migrations/`）。
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
-
-/// 压缩条目（`entries.kind = 'compaction'`）的 payload。
-///
-/// 记录一次上下文压缩的结果：摘要正文、保留的近期消息条数与压缩前的
-/// token 估算。重建语义（`kept_count` 相对计数代替 pi 的
-/// `first_kept_entry_id` 绝对指针、重复压缩的递归成立性、分支路径重放的
-/// 精确性）唯一定义于 `nomic_ai::compaction` module，加载路径经
-/// [`nomic_ai::apply_compaction`] 应用（见 `docs/adr/0005`）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CompactionRecord {
-    /// 结构化摘要（含 `<read-files>` / `<modified-files>` 附加段）
-    pub summary: String,
-    /// 压缩时保留的近期消息条数（相对压缩前的有效上下文计数）
-    pub kept_count: u64,
-    /// 压缩前的上下文 token 估算
-    pub tokens_before: u64,
-}
 
 /// 从消息序列计算会话标题：第一条含正文的 user 消息的首行摘要
 /// （[`first_line`] 截断）；无符合条件的消息时为 `None`。

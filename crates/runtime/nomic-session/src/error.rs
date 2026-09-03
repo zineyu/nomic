@@ -34,7 +34,10 @@ pub enum SessionError {
     /// entry id 不存在（或不属于目标 session）
     #[error("entry not found: {0}")]
     EntryNotFound(String),
-    /// 库中 payload 不是合法的 [`Message`](nomic_ai::Message) JSON（数据损坏）
-    #[error("message payload corrupted: {0}")]
+    /// 库中 payload 不是合法的 [`Entry`](nomic_ai::Entry) JSON（数据损坏）
+    #[error("entry payload corrupted: {0}")]
     Corrupt(#[from] serde_json::Error),
+    /// 库中 payload 的 role/parts 组合非法（数据损坏）
+    #[error("entry payload invalid: {0}")]
+    InvalidEntry(#[from] nomic_ai::EntryError),
 }

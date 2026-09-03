@@ -4,11 +4,14 @@
 //!   git repo（文件系统路径的一等实体，见 [`Project`]）；work 是一次任务
 //!   的完整协作过程（见 [`Work`]）；session 必须归属 work，其所有操作以
 //!   所属 project 的路径为基准
-//! - 消息存 `entries` 表，按 `parent_id` 组织为**树**（顺序会话是树的特例）；
-//!   分支能力：[`SessionStore::list_tree`] 浏览树、[`SessionStore::load_branch`]
+//! - 消息与压缩记录统一存 `entries` 表，按 `parent_id` 组织为**树**
+//!   （顺序会话是树的特例）；payload 为统一 [`Entry`] 序列化格式（角色 +
+//!   `Part` 内容块，ADR-0045），压缩条目即 `role = 'compaction'` 的 entry；
+//!   加载时重放重建有效上下文（重建语义见 `nomic_ai::compaction` module 文档）
+//! - 存量库经一次性数据迁移改写为 Entry payload（`migration` 模块，
+//!   `PRAGMA user_version` 把关）；迁移后加载路径只认 Entry 格式
+//! - 分支能力：[`SessionStore::list_tree`] 浏览树、[`SessionStore::load_branch`]
 //!   加载指定 entry 所在分支、追加时显式 `parent_id` 即创建分支
-//! - 压缩条目（`kind = 'compaction'`）记录上下文压缩结果；加载时重放重建
-//!   有效上下文（重建语义见 `nomic_ai::compaction` module 文档）
 //! - `config` 表存配置历史（append-only，实现见 `config` 模块）：每次修改
 //!   新增一行（含更新时间戳），读取方从最新一行向最老一行逐步回退
 //!   （feedback），直到无可回退的行为止；值用 sqlite 原生 JSON 类型（JSONB）存储
@@ -25,7 +28,7 @@
 //!   session）、[`SessionStore::delete_project`] 删除 project（默认拒绝
 //!   非空，`force` 级联删除名下全部 work 与 session）
 //!
-//! 消息 payload 原样存 [`Message`] 的 serde JSON；`role`/`timestamp` 为提取列，
+//! payload 原样存 [`Entry`] 的 serde JSON；`role`/`timestamp` 为提取列，
 //! 供查询与维护 session 时间字段。
 
 use std::collections::HashMap;
@@ -33,8 +36,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use nomic_ai::{
-    AssistantContent, Message, StopReason, UserContent, UserMessageContent, apply_compaction,
-    now_millis,
+    Entry, EntryError, EntryRole, Message, Part, StopReason, apply_compaction, now_millis,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Row as _, SqlitePool};
@@ -43,6 +45,7 @@ mod config;
 mod error;
 #[cfg(test)]
 mod feature_tests;
+mod migration;
 mod project;
 mod recorder;
 mod session;
@@ -170,6 +173,7 @@ impl SessionStore {
 
     async fn migrate(pool: SqlitePool) -> Result<Self, SessionError> {
         MIGRATOR.run(&pool).await?;
+        migration::migrate_entry_payloads(&pool).await?;
         Ok(Self { pool })
     }
 
@@ -192,22 +196,16 @@ impl SessionStore {
         parent_id: Option<&str>,
         message: &Message,
     ) -> Result<String, SessionError> {
+        let entry = Entry::from(message);
         tracing::debug!(
             session_id = %session_id,
-            role = message_role(message),
+            role = %entry.role,
             parent_id = ?parent_id,
             "appending message to session"
         );
-        let payload = serde_json::to_string(message)?;
+        let payload = serde_json::to_string(&entry)?;
         let entry_id = self
-            .append_entry(
-                session_id,
-                parent_id,
-                "message",
-                message_role(message),
-                message_timestamp(message),
-                payload,
-            )
+            .append_entry(session_id, parent_id, entry.role, entry.timestamp, payload)
             .await?;
         tracing::debug!(session_id = %session_id, entry_id = %entry_id, "message appended");
         Ok(entry_id)
@@ -230,16 +228,10 @@ impl SessionStore {
             summary_len = record.summary.len(),
             "appending compaction record"
         );
-        let payload = serde_json::to_string(record)?;
+        let entry = Entry::compaction(record.clone(), now_millis());
+        let payload = serde_json::to_string(&entry)?;
         let entry_id = self
-            .append_entry(
-                session_id,
-                parent_id,
-                "compaction",
-                "compaction",
-                now_millis(),
-                payload,
-            )
+            .append_entry(session_id, parent_id, entry.role, entry.timestamp, payload)
             .await?;
         tracing::debug!(session_id = %session_id, entry_id = %entry_id, "compaction record appended");
         Ok(entry_id)
@@ -251,8 +243,7 @@ impl SessionStore {
         &self,
         session_id: &str,
         parent_id: Option<&str>,
-        kind: &str,
-        role: &str,
+        role: EntryRole,
         timestamp: u64,
         payload: String,
     ) -> Result<String, SessionError> {
@@ -271,16 +262,15 @@ impl SessionStore {
         let id = uuid::Uuid::now_v7().to_string();
         let timestamp = to_i64(timestamp);
         sqlx::query(
-            "INSERT INTO entries (id, session_id, parent_id, role, timestamp, payload, kind)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO entries (id, session_id, parent_id, role, timestamp, payload)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(session_id)
         .bind(parent)
-        .bind(role)
+        .bind(role.as_str())
         .bind(timestamp)
         .bind(payload)
-        .bind(kind)
         .execute(&mut *tx)
         .await?;
 
@@ -369,7 +359,7 @@ impl SessionStore {
             return Err(SessionError::SessionNotFound(session_id.to_string()));
         }
         let rows = sqlx::query(
-            "SELECT id, parent_id, role, kind, timestamp, payload FROM entries
+            "SELECT id, parent_id, role, timestamp, payload FROM entries
              WHERE session_id = ? ORDER BY rowid",
         )
         .bind(session_id)
@@ -383,7 +373,6 @@ impl SessionStore {
                 id: row.get("id"),
                 parent_id: row.get("parent_id"),
                 role: row.get("role"),
-                kind: row.get("kind"),
                 timestamp: to_u64(row.get("timestamp")),
                 payload: row.get("payload"),
             });
@@ -404,7 +393,7 @@ impl SessionStore {
             "DELETE FROM sessions WHERE id = ?
                AND NOT EXISTS(SELECT 1 FROM entries e
                               WHERE e.session_id = sessions.id
-                                AND e.kind = 'message' AND e.role = 'user')",
+                                AND e.role = 'user')",
         )
         .bind(session_id)
         .execute(&self.pool)
@@ -439,7 +428,6 @@ struct BranchEntry {
     id: String,
     parent_id: Option<String>,
     role: String,
-    kind: String,
     timestamp: u64,
     payload: String,
 }
@@ -485,13 +473,17 @@ fn ancestor_path<'a>(entries: &'a [BranchEntry], entry_id: &str) -> Option<Vec<&
     Some(path)
 }
 
-/// 沿路径重放重建有效上下文：message 直接追加；compaction 条目经
-/// `apply_compaction` 应用（语义见 `nomic_ai::compaction`）。
+/// 沿路径重放重建有效上下文：消息条目转回 [`Message`] 直接追加；
+/// compaction 条目（`role = 'compaction'`）提取压缩记录经
+/// `apply_compaction` 应用（语义见 `nomic_ai::compaction`，ADR-0005）。
 fn replay(path: Vec<&BranchEntry>) -> Result<Vec<Message>, SessionError> {
     let mut effective: Vec<Message> = Vec::new();
     for entry in path {
-        if entry.kind == "compaction" {
-            let record: CompactionRecord = serde_json::from_str(&entry.payload)?;
+        let parsed: Entry = serde_json::from_str(&entry.payload)?;
+        if parsed.role == EntryRole::Compaction {
+            let record = parsed
+                .compaction_record()
+                .ok_or(EntryError::MissingPart(EntryRole::Compaction))?;
             effective = apply_compaction(
                 &effective,
                 &record.summary,
@@ -499,7 +491,7 @@ fn replay(path: Vec<&BranchEntry>) -> Result<Vec<Message>, SessionError> {
                 entry.timestamp,
             );
         } else {
-            effective.push(serde_json::from_str::<Message>(&entry.payload)?);
+            effective.push(parsed.to_message()?);
         }
     }
     Ok(effective)
@@ -507,18 +499,10 @@ fn replay(path: Vec<&BranchEntry>) -> Result<Vec<Message>, SessionError> {
 
 /// `BranchEntry` → 展示用的 [`TreeEntry`]（payload 损坏时摘要退化为占位文本）。
 fn tree_entry(entry: &BranchEntry) -> TreeEntry {
-    let (preview, has_tool_calls) = if entry.kind == "compaction" {
-        let preview = serde_json::from_str::<CompactionRecord>(&entry.payload).map_or_else(
-            |_| "（payload 损坏）".to_string(),
-            |record| format!("上下文压缩（保留 {} 条近期消息）", record.kept_count),
-        );
-        (preview, false)
-    } else {
-        serde_json::from_str::<Message>(&entry.payload).map_or_else(
-            |_| ("（payload 损坏）".to_string(), false),
-            |m| message_preview(&m),
-        )
-    };
+    let (preview, has_tool_calls) = serde_json::from_str::<Entry>(&entry.payload).map_or_else(
+        |_| ("（payload 损坏）".to_string(), false),
+        |parsed| entry_preview(&parsed),
+    );
     TreeEntry {
         id: entry.id.clone(),
         parent_id: entry.parent_id.clone(),
@@ -529,27 +513,23 @@ fn tree_entry(entry: &BranchEntry) -> TreeEntry {
     }
 }
 
-/// 消息的单行内容摘要与工具调用标记（`list_tree` 展示用）。
-fn message_preview(message: &Message) -> (String, bool) {
-    match message {
-        Message::User(user) => {
-            let (text, images) = match &user.content {
-                UserMessageContent::Text(text) => (text.clone(), 0),
-                UserMessageContent::Blocks(blocks) => {
-                    let text = blocks
-                        .iter()
-                        .filter_map(|block| match block {
-                            UserContent::Text(text) => Some(text.text.as_str()),
-                            UserContent::Image(_) => None,
-                        })
-                        .collect::<String>();
-                    let images = blocks
-                        .iter()
-                        .filter(|block| matches!(block, UserContent::Image(_)))
-                        .count();
-                    (text, images)
-                }
-            };
+/// 条目的单行内容摘要与工具调用标记（`list_tree` 展示用）。
+fn entry_preview(entry: &Entry) -> (String, bool) {
+    match entry.role {
+        EntryRole::User => {
+            let text: String = entry
+                .parts
+                .iter()
+                .filter_map(|part| match part {
+                    Part::Text(text) => Some(text.text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let images = entry
+                .parts
+                .iter()
+                .filter(|part| matches!(part, Part::Image(_)))
+                .count();
             let preview = if images == 0 {
                 first_line(&text)
             } else {
@@ -557,25 +537,19 @@ fn message_preview(message: &Message) -> (String, bool) {
             };
             (preview.trim().to_string(), false)
         }
-        Message::Assistant(assistant) => {
-            let has_tool_calls = assistant
-                .content
-                .iter()
-                .any(|content| matches!(content, AssistantContent::ToolCall(_)));
-            if matches!(
-                assistant.stop_reason,
-                StopReason::Error | StopReason::Aborted
-            ) {
-                let detail = assistant.error_message.as_deref().unwrap_or("未知错误");
+        EntryRole::Assistant => {
+            let has_tool_calls = entry.has_tool_calls();
+            if let Some(meta) = &entry.response
+                && matches!(meta.stop_reason, StopReason::Error | StopReason::Aborted)
+            {
+                let detail = meta.error_message.as_deref().unwrap_or("未知错误");
                 return (
                     format!("（响应失败：{}）", first_line(detail)),
                     has_tool_calls,
                 );
             }
-            let text = assistant.content.iter().find_map(|content| match content {
-                AssistantContent::Text(text) if !text.text.trim().is_empty() => {
-                    Some(first_line(&text.text))
-                }
+            let text = entry.parts.iter().find_map(|part| match part {
+                Part::Text(text) if !text.text.trim().is_empty() => Some(first_line(&text.text)),
                 _ => None,
             });
             let preview = match text {
@@ -585,11 +559,34 @@ fn message_preview(message: &Message) -> (String, bool) {
             };
             (preview, has_tool_calls)
         }
-        Message::ToolResult(result) => {
-            let marker = if result.is_error { "失败" } else { "结果" };
-            (format!("工具{marker}：{}", result.tool_name), false)
+        EntryRole::ToolResult => {
+            let preview = entry
+                .parts
+                .iter()
+                .find_map(|part| match part {
+                    Part::ToolResult(result) => {
+                        let marker = if result.is_error { "失败" } else { "结果" };
+                        Some(format!("工具{marker}：{}", result.tool_name))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| "（payload 损坏）".to_string());
+            (preview, false)
+        }
+        EntryRole::Compaction => {
+            let preview = entry.compaction_record().map_or_else(
+                || "（payload 损坏）".to_string(),
+                |record| format!("上下文压缩（保留 {} 条近期消息）", record.kept_count),
+            );
+            (preview, false)
         }
     }
+}
+
+/// 消息的单行内容摘要（会话标题用）：经 Entry 统一格式计算，与树列表
+/// 摘要同源（工具调用标记在此无用，弃之）。
+fn message_preview(message: &Message) -> (String, bool) {
+    entry_preview(&Entry::from(message))
 }
 
 /// 解析追加操作的父 entry：`Some` 时校验其属于本 session（不存在报
@@ -631,22 +628,6 @@ async fn session_exists(
         .bind(session_id)
         .fetch_one(&mut **tx)
         .await
-}
-
-const fn message_role(message: &Message) -> &'static str {
-    match message {
-        Message::User(_) => "user",
-        Message::Assistant(_) => "assistant",
-        Message::ToolResult(_) => "tool_result",
-    }
-}
-
-const fn message_timestamp(message: &Message) -> u64 {
-    match message {
-        Message::User(m) => m.timestamp,
-        Message::Assistant(m) => m.timestamp,
-        Message::ToolResult(m) => m.timestamp,
-    }
 }
 
 /// Unix 毫秒时间戳在可预见的未来不会超出 i64 范围

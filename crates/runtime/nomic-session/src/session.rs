@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use nomic_ai::Message;
 use sqlx::Row as _;
 
 use crate::{SessionError, SessionStore, session_title, to_u64};
@@ -81,14 +80,13 @@ impl SessionStore {
                     p.path AS project_path, s.title,
                     s.first_message_at, s.last_message_at,
                     (SELECT COUNT(*) FROM entries e
-                     WHERE e.session_id = s.id AND e.kind = 'message') AS message_count
+                     WHERE e.session_id = s.id AND e.role <> 'compaction') AS message_count
              FROM sessions s
              JOIN works w ON w.id = s.work_id
              JOIN projects p ON p.id = w.project_id
              WHERE (?1 IS NULL OR w.project_id = ?1)
                AND EXISTS(SELECT 1 FROM entries e
-                          WHERE e.session_id = s.id
-                            AND e.kind = 'message' AND e.role = 'user')
+                          WHERE e.session_id = s.id AND e.role = 'user')
              ORDER BY s.last_message_at IS NULL, s.last_message_at DESC",
         )
         .bind(project_id)
@@ -199,7 +197,7 @@ impl SessionStore {
         let rows = sqlx::query(
             "SELECT e.session_id, e.payload FROM entries e
              JOIN (SELECT session_id, MIN(rowid) AS first_rowid FROM entries
-                   WHERE kind = 'message' AND role = 'user' GROUP BY session_id) f
+                   WHERE role = 'user' GROUP BY session_id) f
              ON e.rowid = f.first_rowid",
         )
         .fetch_all(&self.pool)
@@ -208,8 +206,9 @@ impl SessionStore {
         let mut titles = HashMap::with_capacity(rows.len());
         for row in &rows {
             let payload: String = row.get("payload");
-            let title = serde_json::from_str::<Message>(&payload)
+            let title = serde_json::from_str::<nomic_ai::Entry>(&payload)
                 .ok()
+                .and_then(|entry| entry.to_message().ok())
                 .and_then(|message| session_title(std::slice::from_ref(&message)));
             if let Some(title) = title {
                 titles.insert(row.get::<String, _>("session_id"), title);

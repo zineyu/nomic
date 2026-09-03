@@ -147,7 +147,7 @@ impl SessionStore {
                      WHERE w.project_id = p.id
                        AND EXISTS(SELECT 1 FROM entries e
                                   WHERE e.session_id = s.id
-                                    AND e.kind = 'message' AND e.role = 'user')
+                                    AND e.role = 'user')
                     ) AS session_count
              FROM projects p
              ORDER BY p.created_at, p.rowid",
@@ -197,7 +197,7 @@ impl SessionStore {
              WHERE w.project_id = ?
                AND EXISTS(SELECT 1 FROM entries e
                           WHERE e.session_id = s.id
-                            AND e.kind = 'message' AND e.role = 'user')",
+                            AND e.role = 'user')",
         )
         .bind(project_id)
         .fetch_one(&mut *tx)

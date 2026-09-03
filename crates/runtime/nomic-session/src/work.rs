@@ -219,13 +219,13 @@ impl SessionStore {
              message_counts AS (
                  SELECT s.work_id, COUNT(*) AS message_count
                  FROM entries e JOIN sessions s ON s.id = e.session_id
-                 WHERE e.kind = 'message'
+                 WHERE e.role <> 'compaction'
                  GROUP BY s.work_id
              ),
              works_with_user AS (
                  SELECT DISTINCT s.work_id
                  FROM entries e JOIN sessions s ON s.id = e.session_id
-                 WHERE e.kind = 'message' AND e.role = 'user'
+                 WHERE e.role = 'user'
              )
              SELECT w.id, w.project_id, p.path AS project_path, w.title,
                     m.id AS main_session_id,
@@ -351,7 +351,7 @@ impl SessionStore {
                               WHERE s.work_id = works.id
                                 AND EXISTS(SELECT 1 FROM entries e
                                            WHERE e.session_id = s.id
-                                             AND e.kind = 'message' AND e.role = 'user'))",
+                                             AND e.role = 'user'))",
         )
         .bind(work_id)
         .execute(&self.pool)

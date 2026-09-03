@@ -136,9 +136,9 @@ pub(crate) struct Cli {
 /// 顶层子命令。
 #[derive(Debug, Clone, Subcommand)]
 pub(crate) enum Commands {
-    /// 交互选择并恢复历史 session
+    /// 交互选择并恢复历史 work 的主 session
     Resume,
-    /// 管理历史 session
+    /// 管理历史 work
     Sessions {
         #[command(subcommand)]
         command: SessionsCommand,
@@ -153,7 +153,7 @@ pub(crate) enum Commands {
 /// `nomic sessions` 子命令。
 #[derive(Debug, Clone, Subcommand)]
 pub(crate) enum SessionsCommand {
-    /// 列出全部 session（标题、最后更新时间、消息数、目录）
+    /// 列出全部 work（标题、最后更新时间、消息数、目录）
     List,
 }
 

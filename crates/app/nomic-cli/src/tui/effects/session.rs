@@ -68,20 +68,21 @@ async fn discard_empty_session(store: &SessionStore, session_id: &str) {
     }
 }
 
-/// `resume`：列出历史 session 并打开选择器。
+/// `resume`：列出历史 work 并打开选择器（work 是一等入口，ADR-0044；
+/// 确认后恢复其主 session）。
 pub(in crate::tui) async fn list_sessions(app: &mut App, session: &SessionBinding) {
     match session_store(session.recorder.as_ref()).await {
         Err(error) => app.warn(format!("{error:#}")),
-        Ok(store) => match store.list_sessions().await {
-            Err(error) => app.warn(format!("列出 session 失败：{error}")),
-            Ok(sessions) if sessions.is_empty() => {
-                app.chat_mut().push_system("没有历史 session。");
+        Ok(store) => match store.list_works().await {
+            Err(error) => app.warn(format!("列出 work 失败：{error}")),
+            Ok(works) if works.is_empty() => {
+                app.chat_mut().push_system("没有历史 work。");
             }
-            Ok(sessions) => {
-                let rows = sessions
+            Ok(works) => {
+                let rows = works
                     .iter()
                     .map(|summary| PickerRow {
-                        id: summary.id.clone(),
+                        id: summary.main_session_id.clone(),
                         text: crate::sessions::row_text(summary),
                         selectable: true,
                     })

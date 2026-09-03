@@ -14,7 +14,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { projectName } from '@/lib/sessions'
+import { projectName } from '@/lib/works'
 import type { ProjectSummary } from '@/lib/types'
 
 interface ProjectBarProps {

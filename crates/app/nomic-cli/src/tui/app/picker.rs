@@ -20,7 +20,7 @@ pub(in crate::tui) const PICKER_ROW_CAPACITY: usize = 10;
 /// 选择器种类：决定确认动作（[`super::Effect`]）与渲染标题。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::tui) enum PickerKind {
-    /// `resume`：恢复历史 session
+    /// `resume`：恢复历史 work 的主 session
     Resume,
     /// `tree`：选择分支起点
     Tree,

@@ -80,7 +80,7 @@ pub(super) const COMMANDS: &[Command] = &[
     Command {
         name: "resume",
         aliases: &[],
-        summary: "选择并恢复历史 session（切换上下文与落库目标）",
+        summary: "选择并恢复历史 work 的主 session（切换上下文与落库目标）",
         usage: "resume",
     },
     Command {
@@ -493,7 +493,7 @@ pub(super) enum Effect {
     /// 缺省 `vi`，ADR-0017）编辑当前草稿；编辑器退出后由事件循环
     /// 把结果写回（[`App::apply_editor_result`]）
     OpenEditor,
-    /// `resume`：列出历史 session 并打开选择器
+    /// `resume`：列出历史 work 并打开选择器
     ListSessions,
     /// picker 确认：恢复选中的 session（加载历史 + 切换落库目标）
     Resume(String),

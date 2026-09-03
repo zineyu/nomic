@@ -66,26 +66,15 @@ impl SessionStore {
             .ok_or_else(|| SessionError::ProjectNotFound(text))
     }
 
-    /// 在指定 project 下创建 session，返回 session id（UUID v7 字符串）。
+    /// 在指定 project 下创建 work 与主 session，返回 session id
+    /// （UUID v7 字符串）。
     ///
     /// 同事务内推进 `projects.last_active_at`；`project_id` 不存在时由
     /// 外键约束拒绝。
     pub async fn create_session_in(&self, project_id: &str) -> Result<String, SessionError> {
-        let id = uuid::Uuid::now_v7().to_string();
-        tracing::debug!(session_id = %id, project_id = %project_id, "creating session in project");
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("INSERT INTO sessions (id, project_id) VALUES (?, ?)")
-            .bind(&id)
-            .bind(project_id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("UPDATE projects SET last_active_at = ? WHERE id = ?")
-            .bind(to_i64(now_millis()))
-            .bind(project_id)
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        Ok(id)
+        let created = self.create_work_in(project_id).await?;
+        tracing::debug!(session_id = %created.session_id, project_id, "session created in project");
+        Ok(created.session_id)
     }
 
     /// 按 id 取 project。
@@ -112,14 +101,15 @@ impl SessionStore {
         }))
     }
 
-    /// session 所属的 project。
+    /// session 所属的 project（经 work 派生）。
     pub async fn project_of_session(
         &self,
         session_id: &str,
     ) -> Result<Option<Project>, SessionError> {
         let row = sqlx::query(
-            "SELECT w.id, w.path FROM projects w
-             JOIN sessions s ON s.project_id = w.id WHERE s.id = ?",
+            "SELECT p.id, p.path FROM projects p
+             JOIN works w ON w.project_id = p.id
+             JOIN sessions s ON s.work_id = w.id WHERE s.id = ?",
         )
         .bind(session_id)
         .fetch_optional(&self.pool)
@@ -133,8 +123,9 @@ impl SessionStore {
     /// session 的 project 路径（严格归属：resume 后以此为操作基准）。
     pub async fn session_project_path(&self, session_id: &str) -> Result<PathBuf, SessionError> {
         let path: String = sqlx::query_scalar(
-            "SELECT w.path FROM projects w
-             JOIN sessions s ON s.project_id = w.id WHERE s.id = ?",
+            "SELECT p.path FROM projects p
+             JOIN works w ON w.project_id = p.id
+             JOIN sessions s ON s.work_id = w.id WHERE s.id = ?",
         )
         .bind(session_id)
         .fetch_optional(&self.pool)
@@ -150,14 +141,16 @@ impl SessionStore {
     /// 同一口径：空壳 session 不进统计）。
     pub async fn list_projects(&self) -> Result<Vec<ProjectSummary>, SessionError> {
         let rows = sqlx::query(
-            "SELECT w.id, w.path, w.last_active_at,
-                    (SELECT COUNT(*) FROM sessions s WHERE s.project_id = w.id
+            "SELECT p.id, p.path, p.last_active_at,
+                    (SELECT COUNT(*) FROM sessions s
+                     JOIN works w ON w.id = s.work_id
+                     WHERE w.project_id = p.id
                        AND EXISTS(SELECT 1 FROM entries e
                                   WHERE e.session_id = s.id
                                     AND e.kind = 'message' AND e.role = 'user')
                     ) AS session_count
-             FROM projects w
-             ORDER BY w.created_at, w.rowid",
+             FROM projects p
+             ORDER BY p.created_at, p.rowid",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -199,7 +192,9 @@ impl SessionStore {
         }
 
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sessions s WHERE s.project_id = ?
+            "SELECT COUNT(*) FROM sessions s
+             JOIN works w ON w.id = s.work_id
+             WHERE w.project_id = ?
                AND EXISTS(SELECT 1 FROM entries e
                           WHERE e.session_id = s.id
                             AND e.kind = 'message' AND e.role = 'user')",
@@ -214,7 +209,14 @@ impl SessionStore {
             });
         }
 
-        sqlx::query("DELETE FROM sessions WHERE project_id = ?")
+        sqlx::query(
+            "DELETE FROM sessions WHERE work_id IN
+             (SELECT id FROM works WHERE project_id = ?)",
+        )
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM works WHERE project_id = ?")
             .bind(project_id)
             .execute(&mut *tx)
             .await?;
@@ -235,7 +237,8 @@ impl SessionStore {
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE projects SET last_active_at = ?
-             WHERE id = (SELECT project_id FROM sessions WHERE id = ?)",
+             WHERE id = (SELECT w.project_id FROM works w
+                         JOIN sessions s ON s.work_id = w.id WHERE s.id = ?)",
         )
         .bind(to_i64(timestamp))
         .bind(session_id)

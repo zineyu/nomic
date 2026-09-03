@@ -1,4 +1,7 @@
-//! 历史 session CLI：`nomic sessions list`，以及顶层 `nomic resume` 交互选择器。
+//! 历史 work CLI：`nomic sessions list`，以及顶层 `nomic resume` 交互选择器。
+//!
+//! work 是用户可见的一等入口（ADR-0044）：列出/选择/恢复的单位是 work，
+//! 进入 work 默认定位其主 session。
 
 use std::io::{self, IsTerminal as _, Write};
 
@@ -9,32 +12,32 @@ use crossterm::{
     style::{self, Attribute},
     terminal::{self, ClearType},
 };
-use nomic_session::{SessionStore, SessionSummary};
+use nomic_session::{SessionStore, WorkSummary};
 use time::macros::format_description;
 
 use crate::Cli;
 use crate::picker::{Picker, PickerRow};
 
-/// 列出全部 session：标题、最后更新时间、消息数与启动目录。
-/// session id 是内部标识，不展示。
+/// 列出全部 work：标题、最后更新时间、消息数与所属 project。
+/// work id 是内部标识，不展示。
 pub async fn list() -> Result<()> {
-    tracing::debug!("sessions: listing all sessions");
+    tracing::debug!("sessions: listing all works");
     let store = SessionStore::open_default()
         .await
         .context("打开 session 库失败")?;
-    let sessions = store.list_sessions().await.context("列出 session 失败")?;
-    tracing::debug!(count = sessions.len(), "sessions: listed");
-    if sessions.is_empty() {
-        println!("没有历史 session。");
+    let works = store.list_works().await.context("列出 work 失败")?;
+    tracing::debug!(count = works.len(), "sessions: listed works");
+    if works.is_empty() {
+        println!("没有历史 work。");
         return Ok(());
     }
-    for summary in sessions {
+    for summary in works {
         println!("{}", row_text(&summary));
     }
     Ok(())
 }
 
-/// 交互选择历史 session 并恢复：确认后按原运行模式（TUI/print）载入该 session。
+/// 交互选择历史 work 并恢复其主 session：确认后按原运行模式（TUI/print）载入。
 ///
 /// 选择器需要交互终端；非 TTY 场景（管道、脚本）报错并提示用 `--session <ID>`。
 /// 用户取消（Esc/q/Ctrl-C）时静默退出，不进入对话。
@@ -46,26 +49,27 @@ pub async fn resume(cli: &Cli) -> Result<()> {
     let store = SessionStore::open_default()
         .await
         .context("打开 session 库失败")?;
-    let sessions = store.list_sessions().await.context("列出 session 失败")?;
-    if sessions.is_empty() {
-        println!("没有历史 session。");
+    let works = store.list_works().await.context("列出 work 失败")?;
+    if works.is_empty() {
+        println!("没有历史 work。");
         return Ok(());
     }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!(
-            "resume 需要交互终端选择 session；\
-             非交互场景请用 `nomic --continue` 恢复当前目录最近的 session"
+            "resume 需要交互终端选择 work；\
+             非交互场景请用 `nomic --continue` 恢复当前目录最近的 work"
         );
     }
-    let Some(id) = pick_session(&sessions)? else {
+    let Some(id) = pick_work(&works)? else {
         tracing::debug!("sessions: user cancelled picker");
         return Ok(());
     };
-    tracing::info!(session_id = %id, "sessions: user selected session");
+    tracing::info!(session_id = %id, "sessions: user selected work's main session");
     crate::dispatch(&resume_cli(cli, id)).await
 }
 
-/// 选中 session 后的常规 CLI：仅清除子命令与 `--continue`，再复用 `--session` 恢复路径。
+/// 选中 work 后的常规 CLI：仅清除子命令与 `--continue`，再复用 `--session`
+/// 恢复路径（work 的主 session）。
 fn resume_cli(cli: &Cli, id: String) -> Cli {
     let mut cli = cli.clone();
     cli.command = None;
@@ -112,23 +116,23 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// 终端选择器：返回选中 session 的 id；取消返回 `None`。
-fn pick_session(sessions: &[SessionSummary]) -> Result<Option<String>> {
+/// 终端选择器：返回选中 work 的主 session id；取消返回 `None`。
+fn pick_work(works: &[WorkSummary]) -> Result<Option<String>> {
     terminal::enable_raw_mode().context("初始化选择器失败")?;
     let _guard = TerminalGuard;
     let mut stdout = io::stdout();
-    pick_loop(&mut stdout, sessions)
+    pick_loop(&mut stdout, works)
 }
 
 /// 选择器主循环（raw mode 内）：重绘 → 读键 → 更新状态，直到确认或取消。
 /// 返回前总是清理选择器区域，即使绘制或读键中途失败。
-fn pick_loop(stdout: &mut impl Write, sessions: &[SessionSummary]) -> Result<Option<String>> {
-    if sessions.is_empty() {
+fn pick_loop(stdout: &mut impl Write, works: &[WorkSummary]) -> Result<Option<String>> {
+    if works.is_empty() {
         return Ok(None);
     }
     execute!(stdout, cursor::Hide)?;
     let mut printed = 0_u16;
-    let result = pick_events(stdout, sessions, &mut printed);
+    let result = pick_events(stdout, works, &mut printed);
     let clear = clear_picker(stdout, printed);
     match (result, clear) {
         (Ok(selection), Ok(())) => Ok(selection),
@@ -141,13 +145,13 @@ fn pick_loop(stdout: &mut impl Write, sessions: &[SessionSummary]) -> Result<Opt
 /// 选择状态全在 [`Picker`] 内核（`crate::picker`），本层只管终端接线。
 fn pick_events(
     stdout: &mut impl Write,
-    sessions: &[SessionSummary],
+    works: &[WorkSummary],
     printed: &mut u16,
 ) -> Result<Option<String>> {
-    let rows = sessions
+    let rows = works
         .iter()
         .map(|summary| PickerRow {
-            id: summary.id.clone(),
+            id: summary.main_session_id.clone(),
             text: row_text(summary),
             selectable: true,
         })
@@ -184,7 +188,7 @@ fn terminal_height() -> u16 {
     terminal::size().map_or(24, |(_, height)| height)
 }
 
-/// 帧布局：是否显示表头，以及 session 行容量。
+/// 帧布局：是否显示表头，以及 work 行容量。
 /// 高度 1 时只绘制选中行；高度 0 时不绘制，避免越界写屏。
 fn frame_layout(height: u16) -> (bool, usize) {
     match height {
@@ -215,7 +219,7 @@ fn draw_picker_with_height(
     if show_header {
         queue!(
             stdout,
-            style::Print("选择要恢复的 session（↑/↓ 或 j/k 移动，Enter 确认，Esc/q 取消）\r\n")
+            style::Print("选择要恢复的 work（↑/↓ 或 j/k 移动，Enter 确认，Esc/q 取消）\r\n")
         )?;
         lines += 1;
     }
@@ -259,9 +263,9 @@ fn clear_picker(stdout: &mut impl Write, printed: u16) -> io::Result<()> {
 }
 
 /// 一行的展示文本：标题、最后更新时间、消息数与所属 project。
-/// CLI 选择器与 TUI `/resume` 弹层共用；session id 是内部标识，不展示。
-pub fn row_text(summary: &SessionSummary) -> String {
-    let title = summary.title.as_deref().unwrap_or("（空 session）");
+/// CLI 选择器与 TUI `/resume` 弹层共用；work id 是内部标识，不展示。
+pub fn row_text(summary: &WorkSummary) -> String {
+    let title = summary.title.as_deref().unwrap_or("（空 work）");
     format!(
         "{}  {}  {:>4} 条消息  {}",
         title,
@@ -381,27 +385,27 @@ mod tests {
         assert_eq!(lines, 1);
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("实现会话命名"), "{output:?}");
-        assert!(!output.contains("选择要恢复的 session"), "{output:?}");
+        assert!(!output.contains("选择要恢复的 work"), "{output:?}");
 
         let mut output = Vec::new();
         let lines = draw_picker_with_height(&mut output, &picker, 2).unwrap();
         assert_eq!(lines, 2);
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("选择要恢复的 session"), "{output:?}");
+        assert!(output.contains("选择要恢复的 work"), "{output:?}");
         assert!(output.contains("实现会话命名"), "{output:?}");
     }
 
     #[test]
-    fn row_text_shows_title_without_session_id() {
+    fn row_text_shows_title_without_work_id() {
         let mut summary = picker_summary("实现会话命名");
         let row = row_text(&summary);
         assert!(row.contains("实现会话命名"), "{row}");
-        assert!(!row.contains(&summary.id), "不应展示 session id：{row}");
+        assert!(!row.contains(&summary.id), "不应展示 work id：{row}");
 
         summary.title = None;
         let row = row_text(&summary);
-        assert!(row.contains("（空 session）"), "无标题时应回退：{row}");
-        assert!(!row.contains(&summary.id), "不应展示 session id：{row}");
+        assert!(row.contains("（空 work）"), "无标题时应回退：{row}");
+        assert!(!row.contains(&summary.id), "不应展示 work id：{row}");
     }
 
     #[test]
@@ -427,21 +431,23 @@ mod tests {
         assert_eq!(selected.print.as_deref(), Some("hi"));
     }
 
-    /// 由 session 摘要构造内核 picker（与 pick_events 同一口径）。
-    fn picker_with(summary: &SessionSummary) -> Picker {
+    /// 由 work 摘要构造内核 picker（与 pick_events 同一口径）。
+    fn picker_with(summary: &WorkSummary) -> Picker {
         Picker::new(vec![PickerRow {
-            id: summary.id.clone(),
+            id: summary.main_session_id.clone(),
             text: row_text(summary),
             selectable: true,
         }])
     }
 
-    fn picker_summary(title: &str) -> SessionSummary {
-        SessionSummary {
+    fn picker_summary(title: &str) -> WorkSummary {
+        WorkSummary {
             id: "01999999-aaaa-bbbb-cccc".to_string(),
+            main_session_id: "01999999-aaaa-bbbb-cccc".to_string(),
             title: Some(title.to_string()),
             project_id: "01999999-0000-0000-0000".to_string(),
             project: std::path::PathBuf::from("/tmp/project"),
+            session_count: 1,
             first_message_at: Some(1_785_000_000_000),
             last_message_at: Some(1_785_000_000_000),
             message_count: 1,

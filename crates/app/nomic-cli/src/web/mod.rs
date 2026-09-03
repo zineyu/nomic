@@ -121,10 +121,10 @@ pub enum ServerEvent {
         request_id: String,
         candidates: Vec<crate::model::ModelChoice>,
     },
-    /// 全部 session 摘要响应（`list_sessions` 查询的回复）
-    SessionsList {
+    /// 全部 work 摘要响应（`list_works` 查询的回复；work 是侧栏一等入口）
+    WorksList {
         request_id: String,
-        sessions: Vec<nomic_session::SessionSummary>,
+        works: Vec<nomic_session::WorkSummary>,
     },
     /// 全部 project 摘要响应（`list_projects` 查询的回复）
     ProjectsList {
@@ -154,12 +154,13 @@ pub enum ServerEvent {
         session_id: String,
         choice: crate::model::ModelChoice,
     },
-    /// 新建 session 确认（响应 `create_session`，携带 request_id；同时经
-    /// 总线广播，其他客户端据此刷新会话与 project 列表）
-    SessionCreated {
+    /// 新建 work 确认（响应 `create_work`，携带 request_id；同时经
+    /// 总线广播，其他客户端据此刷新 work 与 project 列表）。
+    /// `id` 为 work id，`session_id` 为连带创建的主 session（前端打开它）
+    WorkCreated {
         request_id: String,
         id: String,
-        title: Option<String>,
+        session_id: String,
     },
     /// 新建（或复用）project 确认（响应 `create_project`，携带 request_id）
     ProjectCreated {
@@ -167,17 +168,24 @@ pub enum ServerEvent {
         id: String,
         path: String,
     },
-    /// 删除 session 确认（响应 `delete_session` 时携带 request_id；
-    /// project 级联删除名下已打开 session 时的广播不带 request_id）。
-    /// 其他客户端据此刷新列表并跳出被删会话的视图
+    /// 删除 session 确认（work / project 级联删除名下已打开 session 时的
+    /// 广播不带 request_id）。其他客户端据此跳出被删会话的视图
     SessionDeleted {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
         id: String,
     },
-    /// 重命名 session 确认（响应 `rename_session`；`title` 为生效的自定义
+    /// 删除 work 确认（响应 `delete_work` 时携带 request_id；名下 session
+    /// 已级联删除，被摘除的运行时另有 `session_deleted` 广播；同时经总线
+    /// 广播，其他客户端据此刷新列表）
+    WorkDeleted {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        id: String,
+    },
+    /// 重命名 work 确认（响应 `rename_work`；`title` 为生效的自定义
     /// 标题，`None` 表示已清除自定义、回退派生标题；同时经总线广播）
-    SessionRenamed {
+    WorkRenamed {
         request_id: String,
         id: String,
         title: Option<String>,
@@ -417,14 +425,12 @@ impl Runtime {
         Ok(session)
     }
 
-    /// 列出全部 session 摘要（store 不可用时报错）。
-    pub(crate) async fn list_sessions(
-        &self,
-    ) -> Result<Vec<nomic_session::SessionSummary>, ApiError> {
+    /// 列出全部 work 摘要（store 不可用时报错）。
+    pub(crate) async fn list_works(&self) -> Result<Vec<nomic_session::WorkSummary>, ApiError> {
         let Some(store) = &self.store else {
             return Err(ApiError::StoreUnavailable);
         };
-        Ok(store.list_sessions().await?)
+        Ok(store.list_works().await?)
     }
 }
 

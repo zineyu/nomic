@@ -383,18 +383,19 @@ async fn init_session_in(
     }
 }
 
-/// 当前规范化 cwd 下最近活跃的 session id。
+/// 当前规范化 cwd 下最近活跃的 work 的主 session id（work 是一等入口，
+/// `--continue` 恢复其主 session）。
 async fn latest_session_in(store: &SessionStore, cwd: &Path) -> Result<String> {
     let target = normalize_path(cwd);
-    let sessions = store.list_sessions().await.context("列出 session 失败")?;
-    sessions
+    let works = store.list_works().await.context("列出 work 失败")?;
+    works
         .into_iter()
         .find(|summary| normalize_path(&summary.project) == target)
-        .map(|summary| summary.id)
+        .map(|summary| summary.main_session_id)
         .with_context(|| {
             format!(
-                "当前目录 {} 没有可恢复的 session\
-                 （用 `nomic resume` 交互选择任意目录的 session）",
+                "当前目录 {} 没有可恢复的 work\
+                 （用 `nomic resume` 交互选择任意目录的 work）",
                 cwd.display()
             )
         })
@@ -494,7 +495,7 @@ mod tests {
             .await
             .expect_err("当前目录无 session 时必须报错");
         let message = format!("{error:#}");
-        assert!(message.contains("没有可恢复的 session"), "{message}");
+        assert!(message.contains("没有可恢复的 work"), "{message}");
         assert!(message.contains("nomic resume"), "{message}");
     }
 

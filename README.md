@@ -24,7 +24,10 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 - **九件工具**：`read` / `write` / `edit` / `bash` / `grep` / `find` / `todo_read` /
   `todo_write` / `ask_user_question`（单选/多选/填空，自动追加自定义填写选项，
   TUI 弹出模态提问框），schemars + serde 即校验，parallel 执行
-- **持久会话**：SQLite 树形存储，session 归属 project（文件系统路径的一等实体），工具与 mention 的相对路径以 session 的 project 为基准；支持 resume（按 project 隔离）、会话分支浏览与创建、`sessions list`
+- **持久会话**：SQLite 树形存储，归属链 project 1—N work 1—N session（ADR-0044：
+  project 对应一个 git repo；work 为一次任务的完整协作过程，是用户可见的一等入口），
+  工具与 mention 的相对路径以 session 所属 project 为基准；支持 resume（按 project
+  隔离）、会话分支浏览与创建、`sessions list`
 - **上下文工程**：AGENTS.md 向上发现注入、skills 系统、prompt templates、自动/手动上下文压缩
 - **图片输入**：`--image` 附件、`image` 命令暂存、`Ctrl+V` 剪贴板图片粘贴
 - **外部编辑器**：INSERT 下 `Ctrl+G` 挂起 TUI，用 `$VISUAL`/`$EDITOR`
@@ -165,7 +168,7 @@ nomic --cwd /path/to/project
 | ---- | ---- |
 | `help` | 显示可用命令 |
 | `new` | 清空上下文，开启新对话（新 session） |
-| `resume` | 交互选择并恢复历史 session（切换上下文与落库目标） |
+| `resume` | 交互选择并恢复历史 work 的主 session（切换上下文与落库目标） |
 | `tree` | 浏览会话树，选择非工具调用条目作为新分支起点（原分支保留） |
 | `models` | 跨 provider 切换模型（`models:<provider>/<模型id>` 亦可）；推理模型联动选择思考级别 |
 | `skill` `skill:<name>[ args]` | 列出可用 skill / 手动载入指定 skill（可附加上下文） |
@@ -189,8 +192,9 @@ nomic --cwd /path/to/project
 - **流式聊天**：markdown 渲染、thinking 折叠、工具执行卡片（点击展开参数与结果）；
   运行中发送的消息进入统一消息队列，当前步骤完成后注入本轮运行（与 TUI 同一语义），
   输入框上方的队列区展示排队消息并支持就地编辑 / 删除 / 上移下移
-- **会话管理**：启动页选择 project 后开始新会话（无默认 project，session 严格归属
-  选定目录）；侧栏按 project 分组列出历史 session，支持新建 / 恢复（复用 SQLite 存储，
+- **会话管理**：启动页选择 project 后开始新 work（无默认 project，work 严格归属
+  选定目录，连带创建主 session）；侧栏按 project 分组列出历史 work，支持新建 /
+  恢复 / 重命名 / 删除（删除 work 级联名下全部 session；复用 SQLite 存储，
   与 TUI/print 共用）
 - **模型选择**：跨 provider 候选列表 + 思考级别；切换结果落库，与 TUI `/models` 同一口径
 - **设置**：左侧 Rail 的「设置」页管理 providers / 模型覆盖 / 标量设置
@@ -219,15 +223,16 @@ nomic --web [--port N] [--host H]
 ### 会话恢复与分支
 
 ```bash
-nomic --continue        # 当前目录对应 project 下最近的 session（按 project 隔离）
+nomic --continue        # 当前目录对应 project 下最近的 work（按 project 隔离），恢复其主 session
 nomic --session <ID>    # 指定 session（可跨目录，会有提示）
-nomic resume            # 交互选择器（↑/↓ 或 j/k 移动，Enter 确认，Esc/q 取消）
+nomic resume            # 交互选择 work（↑/↓ 或 j/k 移动，Enter 确认，Esc/q 取消）
 
-# 查看历史 session（标题、最后更新时间、消息数、所属 project）
+# 查看历史 work（标题、最后更新时间、消息数、所属 project）
 nomic sessions list
 ```
 
-- TUI 内随时可用 `resume` 命令打开同一选择器：选中后替换当前上下文并切换落库目标。
+- TUI 内随时可用 `resume` 命令打开同一选择器：选中 work 后恢复其主 session，
+  替换当前上下文并切换落库目标。
 - 会话分支：`tree` 命令浏览当前 session 的消息树，选择非工具调用条目作为新分支起点——
   上下文回到该条目，后续对话写入新分支，原分支保留可回访。
 

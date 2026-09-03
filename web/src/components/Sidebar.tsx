@@ -1,20 +1,21 @@
 // 侧栏：模仿 DeepSeek Harness 布局。
 // 宽度由 App 容器统一控制（桌面 320px，移动端抽屉 max-w-[85vw]）。
-// 按 project 分组（可折叠）的会话列表，项目组标题采用卡片样式。
-// 组标题右侧带「新建会话」按钮（在该 project 下创建）；「项目」标题行带
-// 「添加项目」按钮，展开内联输入框登记新 project（可无任何会话）。
-// 会话行悬停显露「重命名」（内联编辑，空白提交 = 清除自定义标题回退派生）
-// 与「删除」（物理删除不可恢复，弹确认对话框）操作。
-// 展开的会话列表缩进在组标题下方，并带竖向引导线，体现 session 对 project 的从属；
+// 按 project 分组（可折叠）的 work 列表（ADR-0044：work 为一等入口，
+// 点击打开其主 session），项目组标题采用卡片样式。
+// 组标题右侧带「新建会话」按钮（在该 project 下创建 work）；「项目」标题行带
+// 「添加项目」按钮，展开内联输入框登记新 project（可无任何 work）。
+// work 行悬停显露「重命名」（内联编辑，空白提交 = 清除自定义标题回退派生）
+// 与「删除」（级联删除名下全部 session 不可恢复，弹确认对话框）操作。
+// 展开的 work 列表缩进在组标题下方，并带竖向引导线，体现 work 对 project 的从属；
 // 折叠组之间保持紧凑间距，展开的组以额外下边距分隔。
 // 上下文用量由输入区环形指示器（ContextRing）展示，侧栏不再重复显示。
-// 无默认 project：新会话必须归属明确的 project（组标题按钮或启动页选择栏）。
+// 无默认 project：新建必须归属明确的 project（组标题按钮或启动页选择栏）。
 
 import { ChevronRight, FolderOpen, FolderPlus, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import { useId, useState } from 'react'
 
-import { groupSessionsWithProjects } from '@/lib/sessions'
-import type { SessionSummary, ProjectSummary } from '@/lib/types'
+import { groupWorksWithProjects } from '@/lib/works'
+import type { WorkSummary, ProjectSummary } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 import { Button } from '@/components/ui/button'
@@ -28,27 +29,27 @@ import {
 } from '@/components/ui/dialog'
 
 interface SidebarProps {
-  sessions: SessionSummary[]
-  /** 已登记的全部 project（含无会话的；为空时分组退化为纯会话视图） */
+  works: WorkSummary[]
+  /** 已登记的全部 project（含无 work 的；为空时分组退化为纯 work 视图） */
   projects: ProjectSummary[]
   currentSessionId: string | null
   running: boolean
-  /** 新建会话（归属指定 project 目录；无默认 project，必须显式指定） */
+  /** 新建 work（归属指定 project 目录；无默认 project，必须显式指定） */
   onNewSession: (project: string) => void
   /** 登记新 project；失败时抛出错误消息（就地展示在输入框下方） */
   onAddProject: (path: string) => Promise<void>
-  /** 重命名会话（空白标题 = 清除自定义，回退派生标题）；失败时抛出错误消息 */
-  onRenameSession: (id: string, title: string) => Promise<void>
-  /** 删除会话（物理删除不可恢复）；失败时抛出错误消息 */
-  onDeleteSession: (id: string) => Promise<void>
-  /** 删除 project；`force` 级联删除名下全部会话；失败时抛出错误消息 */
+  /** 重命名 work（空白标题 = 清除自定义，回退派生标题）；失败时抛出错误消息 */
+  onRenameWork: (id: string, title: string) => Promise<void>
+  /** 删除 work（级联删除名下全部 session，不可恢复）；失败时抛出错误消息 */
+  onDeleteWork: (id: string) => Promise<void>
+  /** 删除 project；`force` 级联删除名下全部 work 与 session；失败时抛出错误消息 */
   onDeleteProject: (id: string, force: boolean) => Promise<void>
   onResume: (id: string) => void
 }
 
 /** 删除确认目标（会话 / 项目共用一个确认对话框）。 */
 type ConfirmTarget =
-  | { kind: 'session'; id: string; title: string }
+  | { kind: 'work'; id: string; title: string }
   | { kind: 'project'; id: string; name: string; path: string; sessionCount: number }
 
 /** 行内操作按钮样式（悬停行时由父级 group/item 控制显现）。 */
@@ -56,18 +57,18 @@ const rowActionClass =
   'flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 transition-all outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-90'
 
 export function Sidebar({
-  sessions,
+  works,
   projects,
   currentSessionId,
   running,
   onNewSession,
   onAddProject,
-  onRenameSession,
-  onDeleteSession,
+  onRenameWork,
+  onDeleteWork,
   onDeleteProject,
   onResume,
 }: SidebarProps) {
-  const groups = groupSessionsWithProjects(projects, sessions)
+  const groups = groupWorksWithProjects(projects, works)
   const listIdPrefix = useId()
   // 折叠态为本地 UI 状态：记录被折叠的 project，新出现的组默认展开
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
@@ -117,7 +118,7 @@ export function Sidebar({
     setRenamingSubmitting(true)
     setRenameError(null)
     try {
-      await onRenameSession(renaming.id, renaming.value)
+      await onRenameWork(renaming.id, renaming.value)
       closeRename()
     } catch (error) {
       setRenameError(error instanceof Error ? error.message : String(error))
@@ -140,8 +141,8 @@ export function Sidebar({
     setConfirming(true)
     setConfirmError(null)
     try {
-      if (confirm.kind === 'session') {
-        await onDeleteSession(confirm.id)
+      if (confirm.kind === 'work') {
+        await onDeleteWork(confirm.id)
       } else {
         await onDeleteProject(confirm.id, confirm.sessionCount > 0)
       }
@@ -214,7 +215,7 @@ export function Sidebar({
         <div className="space-y-1 pb-3">
           {groups.map((group, index) => {
             const isCollapsed = collapsed.has(group.project)
-            const hasActive = group.sessions.some((s) => s.id === currentSessionId)
+            const hasActive = group.works.some((w) => w.main_session_id === currentSessionId)
             const listId = `${listIdPrefix}-group-${index}`
             return (
               <section
@@ -248,7 +249,7 @@ export function Sidebar({
                       <span className="size-1.5 shrink-0 rounded-full bg-foreground" aria-hidden="true" />
                     )}
                     <span className="shrink-0 tabular-nums text-muted-foreground/70">
-                      {group.sessions.length}
+                      {group.works.length}
                     </span>
                   </button>
                   {/* 在该 project 下新建会话（悬停组标题时显现） */}
@@ -272,7 +273,7 @@ export function Sidebar({
                         id: group.projectId,
                         name: group.name,
                         path: group.project,
-                        sessionCount: group.sessions.length,
+                        sessionCount: group.works.length,
                       })
                     }
                     className="ml-0.5 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 opacity-0 transition-all outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-90 group-hover:opacity-100"
@@ -285,12 +286,12 @@ export function Sidebar({
                     id={listId}
                     className="mt-1 ml-4 space-y-0.5 border-l border-sidebar-border/70 pl-2"
                   >
-                    {group.sessions.map((session) => {
-                      const active = session.id === currentSessionId
-                      const title = session.title ?? '新会话'
-                      const renamingThis = renaming?.id === session.id
+                    {group.works.map((work) => {
+                      const active = work.main_session_id === currentSessionId
+                      const title = work.title ?? '新会话'
+                      const renamingThis = renaming?.id === work.id
                       return (
-                        <div key={session.id} className="group/item">
+                        <div key={work.id} className="group/item">
                           <div className="flex items-center gap-0.5">
                             {renamingThis ? (
                               <input
@@ -303,7 +304,7 @@ export function Sidebar({
                                 onFocus={(e) => e.target.select()}
                                 className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-60"
                                 onChange={(e) =>
-                                  setRenaming({ id: session.id, value: e.target.value })
+                                  setRenaming({ id: work.id, value: e.target.value })
                                 }
                                 onKeyDown={(e) => {
                                   if (e.key === 'Enter') void submitRename()
@@ -316,7 +317,7 @@ export function Sidebar({
                             ) : (
                               <button
                                 type="button"
-                                onClick={() => onResume(session.id)}
+                                onClick={() => onResume(work.main_session_id)}
                                 aria-current={active ? 'page' : undefined}
                                 title={title}
                                 className={cn(
@@ -349,7 +350,7 @@ export function Sidebar({
                                   title="重命名会话"
                                   className={rowActionClass}
                                   onClick={() =>
-                                    setRenaming({ id: session.id, value: session.title ?? '' })
+                                    setRenaming({ id: work.id, value: work.title ?? '' })
                                   }
                                 >
                                   <Pencil className="size-3" aria-hidden="true" />
@@ -359,7 +360,7 @@ export function Sidebar({
                                   aria-label="删除会话"
                                   title="删除会话"
                                   className={rowActionClass}
-                                  onClick={() => setConfirm({ kind: 'session', id: session.id, title })}
+                                  onClick={() => setConfirm({ kind: 'work', id: work.id, title })}
                                 >
                                   <Trash2 className="size-3" aria-hidden="true" />
                                 </button>
@@ -374,7 +375,7 @@ export function Sidebar({
                         </div>
                       )
                     })}
-                    {group.sessions.length === 0 && (
+                    {group.works.length === 0 && (
                       <div className="px-2.5 py-1 text-xs text-muted-foreground/60">
                         暂无会话
                       </div>
@@ -417,7 +418,7 @@ export function Sidebar({
                   </>
                 )
               ) : (
-                <>会话「{confirm?.title}」将被永久删除（含全部消息记录），不可恢复。</>
+                <>会话「{confirm?.title}」将被永久删除（含名下全部 session 与消息记录），不可恢复。</>
               )}
             </DialogDescription>
           </DialogHeader>

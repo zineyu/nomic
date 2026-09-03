@@ -196,7 +196,7 @@ export type ServerEvent =
   // ── 查询响应事件（携带 request_id）
   | { type: 'state_snapshot'; session_id: string; request_id: string; snapshot: SnapshotView }
   | { type: 'models_list'; request_id: string; candidates: ModelChoice[] }
-  | { type: 'sessions_list'; request_id: string; sessions: SessionSummary[] }
+  | { type: 'works_list'; request_id: string; works: WorkSummary[] }
   | { type: 'projects_list'; request_id: string; projects: ProjectSummary[] }
   | { type: 'skills_list'; request_id: string; skills: SkillSummary[] }
   | { type: 'files_list'; request_id: string; files: string[] }
@@ -205,10 +205,11 @@ export type ServerEvent =
   | { type: 'cancel_ack'; session_id: string }
   | { type: 'answer_ack'; session_id: string }
   | { type: 'switch_model_ack'; session_id: string; choice: ModelChoice }
-  | { type: 'session_created'; request_id: string; id: string; title: string | null }
+  | { type: 'work_created'; request_id: string; id: string; session_id: string }
   | { type: 'project_created'; request_id: string; id: string; path: string }
   | { type: 'session_deleted'; request_id?: string; id: string }
-  | { type: 'session_renamed'; request_id: string; id: string; title: string | null }
+  | { type: 'work_deleted'; request_id?: string; id: string }
+  | { type: 'work_renamed'; request_id: string; id: string; title: string | null }
   | { type: 'project_deleted'; request_id: string; id: string }
   // ── 设置（ADR-0039）
   | { type: 'settings_snapshot'; request_id: string; snapshot: SettingsSnapshot }
@@ -221,7 +222,7 @@ export type ClientEvent =
   // ── 查询类（携带 request_id，响应也带同一 request_id）
   | { type: 'get_state'; session_id: string; request_id: string }
   | { type: 'list_models'; request_id: string }
-  | { type: 'list_sessions'; request_id: string }
+  | { type: 'list_works'; request_id: string }
   | { type: 'list_projects'; request_id: string }
   | { type: 'list_skills'; request_id: string }
   | { type: 'list_files'; session_id: string; prefix: string; request_id: string }
@@ -236,10 +237,10 @@ export type ClientEvent =
   | { type: 'remove_queue_entry'; session_id: string; id: string }
   | { type: 'move_queue_entry'; session_id: string; id: string; direction: 'up' | 'down' }
   // ── 查询式命令（携带 request_id，响应/错误事件带同一 request_id）
-  | { type: 'create_session'; request_id: string; project: string }
+  | { type: 'create_work'; request_id: string; project: string }
   | { type: 'create_project'; request_id: string; path: string }
-  | { type: 'delete_session'; request_id: string; session_id: string }
-  | { type: 'rename_session'; request_id: string; session_id: string; title: string }
+  | { type: 'delete_work'; request_id: string; id: string }
+  | { type: 'rename_work'; request_id: string; id: string; title: string }
   | { type: 'delete_project'; request_id: string; id: string; force: boolean }
   // ── 设置（ADR-0039；upsert 为逐字段补丁三态：字段缺失 = 不更新，null = 清除）
   | { type: 'get_settings'; request_id: string }
@@ -296,11 +297,15 @@ export interface ModelChoice {
   reasoning: boolean
 }
 
-export interface SessionSummary {
+/** work 摘要（nomic-session WorkSummary）：侧栏列表的一等入口
+ * （ADR-0044）；点击打开 `main_session_id` 主 session */
+export interface WorkSummary {
   id: string
+  main_session_id: string
   title: string | null
   project_id: string
   project: string
+  session_count: number
   first_message_at: number | null
   last_message_at: number | null
   message_count: number

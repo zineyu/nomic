@@ -15,6 +15,9 @@ pub enum SessionError {
     /// session id 不存在
     #[error("session not found: {0}")]
     SessionNotFound(String),
+    /// work id 不存在
+    #[error("work not found: {0}")]
+    WorkNotFound(String),
     /// project 不存在（`get_or_create_project` 登记后读取仍缺失，
     /// 仅在库被并发破坏时可能出现）
     #[error("project not found: {0}")]

@@ -22,8 +22,8 @@ mod settings;
 use commands::{SlashCommand, goal_command, parse_slash_command};
 
 pub use crud::{
-    handle_create_project, handle_create_session, handle_delete_project, handle_delete_session,
-    handle_rename_session,
+    handle_create_project, handle_create_work, handle_delete_project, handle_delete_work,
+    handle_rename_work,
 };
 pub use settings::{SettingsSnapshotView, dispatch_settings};
 
@@ -61,12 +61,12 @@ pub fn handle_list_models(state: &AppState, request_id: &str) -> ServerEvent {
     }
 }
 
-/// 列出全部 session 摘要。
-pub async fn handle_list_sessions(state: &AppState, request_id: &str) -> ServerEvent {
-    match state.inner.list_sessions().await {
-        Ok(sessions) => ServerEvent::SessionsList {
+/// 列出全部 work 摘要。
+pub async fn handle_list_works(state: &AppState, request_id: &str) -> ServerEvent {
+    match state.inner.list_works().await {
+        Ok(works) => ServerEvent::WorksList {
             request_id: request_id.to_string(),
-            sessions,
+            works,
         },
         Err(error) => error.to_ws_response(Some(request_id)),
     }

@@ -54,8 +54,8 @@ pub enum ClientEvent {
     },
     /// 查询候选模型列表。
     ListModels { request_id: String },
-    /// 列出全部 session 摘要。
-    ListSessions { request_id: String },
+    /// 列出全部 work 摘要（侧栏列表的一等入口，ADR-0044）。
+    ListWorks { request_id: String },
     /// 列出全部 project 摘要。
     ListProjects { request_id: String },
     /// 查询 skill 清单（`@skill://` 补全用；进程级 skill 解析器快照）。
@@ -107,25 +107,24 @@ pub enum ClientEvent {
         #[serde(default)]
         reasoning: Option<String>,
     },
-    /// 新建 session（查询式命令：携带 `request_id`，响应 `session_created`
+    /// 新建 work（查询式命令：携带 `request_id`，响应 `work_created`
     /// 或 error 事件带同一 `request_id`，ack 同时经总线广播供其他客户端
     /// 刷新列表）。新对话语义，默认模型；必须指定归属目录 `project`
     /// （无默认 project；不存在则报错，不会静默归属进程 cwd）。
-    CreateSession { request_id: String, project: String },
+    /// 连带创建主 session，`work_created.session_id` 即打开目标。
+    CreateWork { request_id: String, project: String },
     /// 登记新 project（查询式命令：携带 `request_id`，响应 `project_created`
     /// 或 error 事件带同一 `request_id`；按路径查或插，幂等）。
     CreateProject { request_id: String, path: String },
-    /// 删除 session（查询式命令：响应 `session_deleted` 或 error 事件带同一
-    /// `request_id`；物理删除，entries 与会话级 config 级联清除）。
-    DeleteSession {
-        request_id: String,
-        session_id: String,
-    },
-    /// 重命名 session（查询式命令：响应 `session_renamed` 或 error 事件；
+    /// 删除 work（查询式命令：响应 `work_deleted` 或 error 事件带同一
+    /// `request_id`；级联物理删除名下全部 session，entries 与会话级
+    /// config 经外键级联清除）。
+    DeleteWork { request_id: String, id: String },
+    /// 重命名 work（查询式命令：响应 `work_renamed` 或 error 事件；
     /// `title` 裁剪后为空 = 清除自定义标题，回退派生标题）。
-    RenameSession {
+    RenameWork {
         request_id: String,
-        session_id: String,
+        id: String,
         title: String,
     },
     /// 删除 project（查询式命令：响应 `project_deleted` 或 error 事件；
@@ -354,8 +353,8 @@ async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
             ClientEvent::ListModels { request_id } => {
                 Some(handlers::handle_list_models(state, &request_id))
             }
-            ClientEvent::ListSessions { request_id } => {
-                Some(handlers::handle_list_sessions(state, &request_id).await)
+            ClientEvent::ListWorks { request_id } => {
+                Some(handlers::handle_list_works(state, &request_id).await)
             }
             ClientEvent::ListProjects { request_id } => {
                 Some(handlers::handle_list_projects(state, &request_id).await)
@@ -404,24 +403,21 @@ async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
                 spec,
                 reasoning,
             } => Some(handlers::handle_switch_model(state, &session_id, spec, reasoning).await),
-            ClientEvent::CreateSession {
+            ClientEvent::CreateWork {
                 request_id,
                 project,
-            } => Some(handlers::handle_create_session(state, &request_id, project).await),
+            } => Some(handlers::handle_create_work(state, &request_id, project).await),
             ClientEvent::CreateProject { request_id, path } => {
                 Some(handlers::handle_create_project(state, &request_id, path).await)
             }
-            ClientEvent::DeleteSession {
-                request_id,
-                session_id,
-            } => Some(handlers::handle_delete_session(state, &request_id, &session_id).await),
-            ClientEvent::RenameSession {
-                request_id,
-                session_id,
-                title,
-            } => {
-                Some(handlers::handle_rename_session(state, &request_id, &session_id, &title).await)
+            ClientEvent::DeleteWork { request_id, id } => {
+                Some(handlers::handle_delete_work(state, &request_id, &id).await)
             }
+            ClientEvent::RenameWork {
+                request_id,
+                id,
+                title,
+            } => Some(handlers::handle_rename_work(state, &request_id, &id, &title).await),
             ClientEvent::DeleteProject {
                 request_id,
                 id,
@@ -454,27 +450,20 @@ fn client_event_span(event: &ClientEvent) -> tracing::Span {
             session_id,
             request_id,
             ..
-        }
-        | ClientEvent::DeleteSession {
-            session_id,
-            request_id,
-        }
-        | ClientEvent::RenameSession {
-            session_id,
-            request_id,
-            ..
         } => tracing::info_span!(
             "client_event",
             session_id = %session_id,
             request_id = %request_id
         ),
         ClientEvent::ListModels { request_id }
-        | ClientEvent::ListSessions { request_id }
+        | ClientEvent::ListWorks { request_id }
         | ClientEvent::ListProjects { request_id }
         | ClientEvent::ListSkills { request_id }
-        | ClientEvent::CreateSession { request_id, .. }
+        | ClientEvent::CreateWork { request_id, .. }
         | ClientEvent::CreateProject { request_id, .. }
         | ClientEvent::DeleteProject { request_id, .. }
+        | ClientEvent::DeleteWork { request_id, .. }
+        | ClientEvent::RenameWork { request_id, .. }
         | ClientEvent::GetSettings { request_id }
         | ClientEvent::UpsertProvider { request_id, .. }
         | ClientEvent::DeleteProvider { request_id, .. }

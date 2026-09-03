@@ -1,8 +1,9 @@
 //! nomic-session：SQLite session 持久化（M2，替代 pi 的 JSONL session 文件）。
 //!
-//! - 每个 session 一个唯一 id（UUID v7，时间有序）；session 创建时绑定
-//!   project（文件系统路径的一等实体，见 [`Project`]），其所有操作以
-//!   project 路径为基准
+//! - 归属链 project 1—N work 1—N session（ADR-0044）：project 对应一个
+//!   git repo（文件系统路径的一等实体，见 [`Project`]）；work 是一次任务
+//!   的完整协作过程（见 [`Work`]）；session 必须归属 work，其所有操作以
+//!   所属 project 的路径为基准
 //! - 消息存 `entries` 表，按 `parent_id` 组织为**树**（顺序会话是树的特例）；
 //!   分支能力：[`SessionStore::list_tree`] 浏览树、[`SessionStore::load_branch`]
 //!   加载指定 entry 所在分支、追加时显式 `parent_id` 即创建分支
@@ -20,8 +21,9 @@
 //!   session 结束点经 [`SessionStore::delete_if_no_user_message`] 物理清除
 //! - 管理操作：[`SessionStore::delete_session`] 物理删除（entries 与会话级
 //!   config 级联清除）、[`SessionStore::rename_session`] 自定义标题（优先于
-//!   派生标题）、[`SessionStore::delete_project`] 删除 project（默认拒绝
-//!   非空，`force` 级联删除名下全部 session）
+//!   派生标题）、[`SessionStore::delete_work`] 删除 work（级联删除名下全部
+//!   session）、[`SessionStore::delete_project`] 删除 project（默认拒绝
+//!   非空，`force` 级联删除名下全部 work 与 session）
 //!
 //! 消息 payload 原样存 [`Message`] 的 serde JSON；`role`/`timestamp` 为提取列，
 //! 供查询与维护 session 时间字段。
@@ -46,10 +48,12 @@ mod project;
 mod recorder;
 mod session;
 mod settings;
+mod work;
 pub use error::SessionError;
 pub use project::{Project, ProjectSummary};
 pub use recorder::SessionRecorder;
 pub use settings::{ModelSpecPatch, ModelSpecRow, ProviderPatch, ProviderRow};
+pub use work::{Work, WorkCreated, WorkSummary};
 
 /// 内嵌迁移（`crates/runtime/nomic-session/migrations/`）。
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
@@ -69,30 +73,6 @@ pub struct CompactionRecord {
     pub kept_count: u64,
     /// 压缩前的上下文 token 估算
     pub tokens_before: u64,
-}
-
-/// session 摘要（`list_sessions` / `list_sessions_in` 返回）。
-///
-/// `id` 为内部标识（UUID v7），不对用户展示；用户可见的名称是
-/// [`Self::title`]（自定义标题优先，缺省为首条 user 消息的首行摘要）。
-/// 派生 serde（web 模式经 REST 列表给前端会话侧栏）。
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct SessionSummary {
-    /// session id（UUID v7；内部标识，不展示给用户）
-    pub id: String,
-    /// 会话标题：自定义标题（`rename_session`）优先，缺省为首条 user
-    /// 消息的首行摘要（无消息时为 `None`，展示侧自行回退）
-    pub title: Option<String>,
-    /// 所属 project id
-    pub project_id: String,
-    /// 所属 project 路径（session 操作的基准目录）
-    pub project: PathBuf,
-    /// 首条消息时间（Unix 毫秒；无消息时为 `None`）
-    pub first_message_at: Option<u64>,
-    /// 末条消息时间（Unix 毫秒；无消息时为 `None`）
-    pub last_message_at: Option<u64>,
-    /// 消息总数
-    pub message_count: u64,
 }
 
 /// 从消息序列计算会话标题：第一条含正文的 user 消息的首行摘要
@@ -207,14 +187,12 @@ impl SessionStore {
         Ok(Self { pool })
     }
 
-    /// 创建 session：登记（或复用）路径对应的 project 并绑定，返回
-    /// session id（UUID v7 字符串）。显式持有 project id 的调用方用
-    /// [`Self::create_session_in`]。
+    /// 创建 session：登记（或复用）路径对应的 project，并在其下创建
+    /// 一个 1:1 的 work 与主 session，返回 session id（UUID v7 字符串）。
+    /// 需要 work id 的调用方用 [`Self::create_work`]。
     pub async fn create_session(&self, project: impl AsRef<Path>) -> Result<String, SessionError> {
-        let project = self.get_or_create_project(project).await?;
-        let session_id = self.create_session_in(&project.id).await?;
-        tracing::info!(session_id = %session_id, project_id = %project.id, "session created");
-        Ok(session_id)
+        let created = self.create_work(project).await?;
+        Ok(created.session_id)
     }
 
     /// 追加一条消息，返回新 entry id。
@@ -333,6 +311,7 @@ impl SessionStore {
         .await?;
 
         Self::touch_project(&mut tx, session_id, to_u64(timestamp)).await?;
+        Self::touch_work(&mut tx, session_id, to_u64(timestamp)).await?;
 
         tx.commit().await?;
         Ok(id)
@@ -426,70 +405,6 @@ impl SessionStore {
         Ok(entries)
     }
 
-    /// 列出全部 session 摘要（按末条消息时间降序）。
-    ///
-    /// 无 user 消息的 session 不出现（打开即退出、新建后未使用等空壳
-    /// 不进入历史与统计口径；物理清理见 [`Self::delete_if_no_user_message`]）。
-    pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>, SessionError> {
-        let summaries = self.summarize(None).await?;
-        tracing::debug!(count = summaries.len(), "listed sessions");
-        Ok(summaries)
-    }
-
-    /// 列出指定 project 下的 session 摘要（排序同 [`Self::list_sessions`]）。
-    pub async fn list_sessions_in(
-        &self,
-        project_id: &str,
-    ) -> Result<Vec<SessionSummary>, SessionError> {
-        self.summarize(Some(project_id)).await
-    }
-
-    /// session 摘要查询内核：可选按 project 过滤；标题取自定义标题
-    /// （`sessions.title`），缺失时经分组查询批量补齐派生标题。
-    /// 只列出有 user 消息的 session（空壳 session 不是历史，见
-    /// [`Self::list_sessions`]）。
-    async fn summarize(
-        &self,
-        project_id: Option<&str>,
-    ) -> Result<Vec<SessionSummary>, SessionError> {
-        let rows = sqlx::query(
-            "SELECT s.id, s.project_id, w.path AS project_path, s.title,
-                    s.first_message_at, s.last_message_at,
-                    (SELECT COUNT(*) FROM entries e
-                     WHERE e.session_id = s.id AND e.kind = 'message') AS message_count
-             FROM sessions s JOIN projects w ON w.id = s.project_id
-             WHERE (?1 IS NULL OR s.project_id = ?1)
-               AND EXISTS(SELECT 1 FROM entries e
-                          WHERE e.session_id = s.id
-                            AND e.kind = 'message' AND e.role = 'user')
-             ORDER BY s.last_message_at IS NULL, s.last_message_at DESC",
-        )
-        .bind(project_id)
-        .fetch_all(&self.pool)
-        .await?;
-
-        let titles = self.fetch_titles().await?;
-        let mut summaries = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let id: String = row.get("id");
-            let project_path: String = row.get("project_path");
-            let custom: Option<String> = row.get("title");
-            let first: Option<i64> = row.get("first_message_at");
-            let last: Option<i64> = row.get("last_message_at");
-            let count: i64 = row.get("message_count");
-            summaries.push(SessionSummary {
-                title: custom.or_else(|| titles.get(&id).cloned()),
-                id,
-                project_id: row.get("project_id"),
-                project: PathBuf::from(project_path),
-                first_message_at: first.map(to_u64),
-                last_message_at: last.map(to_u64),
-                message_count: to_u64(count),
-            });
-        }
-        Ok(summaries)
-    }
-
     /// 删除一个没有任何 user 消息的 session（空壳：打开即退出、新建后
     /// 未使用等），返回是否实际删除。
     ///
@@ -497,6 +412,8 @@ impl SessionStore {
     /// 无需先查后删。entries 与会话级 config 经外键 `ON DELETE CASCADE`
     /// 一并清除。session 不存在时同样返回 `Ok(false)`。
     pub async fn delete_if_no_user_message(&self, session_id: &str) -> Result<bool, SessionError> {
+        // 先取 work 归属，删除后用于空壳 work 的连带清理
+        let work_id = self.work_of_session(session_id).await?.map(|w| w.id);
         let result = sqlx::query(
             "DELETE FROM sessions WHERE id = ?
                AND NOT EXISTS(SELECT 1 FROM entries e
@@ -509,34 +426,11 @@ impl SessionStore {
         let deleted = result.rows_affected() > 0;
         if deleted {
             tracing::info!(session_id = %session_id, "deleted session without user messages");
-        }
-        Ok(deleted)
-    }
-
-    /// 各 session 的派生标题（首条 user 消息摘要）：一次分组查询取每个
-    /// session 最早一条 user 消息的 payload，在内存计算摘要；payload 损坏或
-    /// 无 user 消息的 session 不出现在结果中（派生标题为 `None`）。
-    async fn fetch_titles(&self) -> Result<HashMap<String, String>, SessionError> {
-        let rows = sqlx::query(
-            "SELECT e.session_id, e.payload FROM entries e
-             JOIN (SELECT session_id, MIN(rowid) AS first_rowid FROM entries
-                   WHERE kind = 'message' AND role = 'user' GROUP BY session_id) f
-             ON e.rowid = f.first_rowid",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut titles = HashMap::with_capacity(rows.len());
-        for row in &rows {
-            let payload: String = row.get("payload");
-            let title = serde_json::from_str::<Message>(&payload)
-                .ok()
-                .and_then(|message| session_title(std::slice::from_ref(&message)));
-            if let Some(title) = title {
-                titles.insert(row.get::<String, _>("session_id"), title);
+            if let Some(work_id) = work_id {
+                self.delete_work_if_no_user_message(&work_id).await?;
             }
         }
-        Ok(titles)
+        Ok(deleted)
     }
 }
 

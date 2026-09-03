@@ -1,13 +1,17 @@
-//! session / project 生命周期命令 handler：创建（登记）、物理删除、
+//! work / project 生命周期命令 handler：创建（登记）、物理删除、
 //! 重命名，以及共享的 ack 广播与目录展开辅助。
+//!
+//! work 是一等入口（ADR-0044）：创建/删除/重命名均以 work 为单位，
+//! session 粒度的管理不暴露到 WS 协议（删除 work 级联名下全部 session）。
 
 use super::super::ApiError;
 use crate::web::{AppState, ServerEvent};
 
-/// 新建 session（新对话语义，默认模型）；必须指定归属目录 `project`
-/// （无默认 project；目录不存在或不是目录时拒绝，不静默登记无效路径）。
-/// ack 携带 `request_id` 且经总线广播（其他客户端据此刷新列表）。
-pub async fn handle_create_session(
+/// 新建 work（新对话语义，默认模型；连带创建主 session）；必须指定归属
+/// 目录 `project`（无默认 project；目录不存在或不是目录时拒绝，不静默
+/// 登记无效路径）。ack 携带 `request_id` 且经总线广播（其他客户端据此
+/// 刷新列表）；`session_id` 为主 session，前端据此打开对话。
+pub async fn handle_create_work(
     state: &AppState,
     request_id: &str,
     project: String,
@@ -16,13 +20,13 @@ pub async fn handle_create_session(
         Ok(project) => project,
         Err(error) => return error.to_ws_response(Some(request_id)),
     };
-    match state.inner.create_session(&project).await {
-        Ok(session) => broadcast_ack(
+    match state.inner.create_work(&project).await {
+        Ok((created, _session)) => broadcast_ack(
             state,
-            ServerEvent::SessionCreated {
+            ServerEvent::WorkCreated {
                 request_id: request_id.to_string(),
-                id: session.id.clone(),
-                title: None,
+                id: created.work_id,
+                session_id: created.session_id,
             },
         ),
         Err(error) => error.to_ws_response(Some(request_id)),
@@ -56,37 +60,42 @@ fn broadcast_ack(state: &AppState, event: ServerEvent) -> ServerEvent {
     event
 }
 
-/// 删除 session（物理删除；已打开的运行时一并摘除关停）。
-pub async fn handle_delete_session(
-    state: &AppState,
-    request_id: &str,
-    session_id: &str,
-) -> ServerEvent {
-    match state.inner.delete_session(session_id).await {
-        Ok(()) => broadcast_ack(
-            state,
-            ServerEvent::SessionDeleted {
-                request_id: Some(request_id.to_string()),
-                id: session_id.to_string(),
-            },
-        ),
+/// 删除 work（级联物理删除名下全部 session；已打开的运行时一并摘除
+/// 关停，并向正在查看这些 session 的客户端广播 `session_deleted`）。
+pub async fn handle_delete_work(state: &AppState, request_id: &str, id: &str) -> ServerEvent {
+    match state.inner.delete_work(id).await {
+        Ok(removed) => {
+            for session_id in removed {
+                let _ = state.inner.events.send(ServerEvent::SessionDeleted {
+                    request_id: None,
+                    id: session_id,
+                });
+            }
+            broadcast_ack(
+                state,
+                ServerEvent::WorkDeleted {
+                    request_id: Some(request_id.to_string()),
+                    id: id.to_string(),
+                },
+            )
+        }
         Err(error) => error.to_ws_response(Some(request_id)),
     }
 }
 
-/// 重命名 session；`title` 为生效的自定义标题（`None` = 已清除，回退派生）。
-pub async fn handle_rename_session(
+/// 重命名 work；`title` 为生效的自定义标题（`None` = 已清除，回退派生）。
+pub async fn handle_rename_work(
     state: &AppState,
     request_id: &str,
-    session_id: &str,
+    id: &str,
     title: &str,
 ) -> ServerEvent {
-    match state.inner.rename_session(session_id, title).await {
+    match state.inner.rename_work(id, title).await {
         Ok(title) => broadcast_ack(
             state,
-            ServerEvent::SessionRenamed {
+            ServerEvent::WorkRenamed {
                 request_id: request_id.to_string(),
-                id: session_id.to_string(),
+                id: id.to_string(),
                 title,
             },
         ),
@@ -146,55 +155,79 @@ mod tests {
     use super::*;
     use crate::web::ServerEvent;
 
-    /// 新建 session：ack 携带 request_id 且经总线广播；目录不存在回 error。
+    /// 新建 work：ack 携带 request_id 且经总线广播；主 session 注册进表；
+    /// 目录不存在回 error。
     #[tokio::test]
-    async fn create_session_ack_broadcasts_and_missing_dir_errors() {
+    async fn create_work_ack_broadcasts_and_missing_dir_errors() {
         let state = crate::web::tests::test_state().await;
         let dir = tempfile::tempdir().expect("tempdir");
         let mut events = state.inner.events.subscribe();
 
         let event =
-            handle_create_session(&state, "r-new", dir.path().to_string_lossy().into_owned()).await;
-        let ServerEvent::SessionCreated { request_id, id, .. } = event else {
-            panic!("应返回 SessionCreated");
+            handle_create_work(&state, "r-new", dir.path().to_string_lossy().into_owned()).await;
+        let ServerEvent::WorkCreated {
+            request_id,
+            session_id,
+            ..
+        } = event
+        else {
+            panic!("应返回 WorkCreated");
         };
         assert_eq!(request_id, "r-new");
         assert!(
-            state.inner.sessions.lock().await.contains_key(&id),
-            "新 session 应注册进表",
+            state.inner.sessions.lock().await.contains_key(&session_id),
+            "主 session 应注册进表",
         );
         assert!(
             matches!(
                 events.try_recv().expect("broadcast"),
-                ServerEvent::SessionCreated { .. }
+                ServerEvent::WorkCreated { .. }
             ),
             "创建 ack 应广播到事件总线（其他客户端刷新列表）",
         );
 
         let event =
-            handle_create_session(&state, "r-bad", "/nonexistent/nomic-test-dir".to_string()).await;
+            handle_create_work(&state, "r-bad", "/nonexistent/nomic-test-dir".to_string()).await;
         let ServerEvent::Error { request_id, .. } = event else {
             panic!("不存在的目录应返回 error 事件");
         };
         assert_eq!(request_id.as_deref(), Some("r-bad"));
     }
 
-    /// 删除 session：ack 携带 request_id 且经总线广播；未知 id 回 error。
+    /// 删除 work：ack 携带 request_id 且经总线广播；名下 session 摘除并
+    /// 广播 session_deleted；未知 id 回 error。
     #[tokio::test]
-    async fn delete_session_ack_broadcasts_and_unknown_errors() {
+    async fn delete_work_ack_broadcasts_and_unknown_errors() {
         let (state, session_id) = crate::web::tests::test_state_with_session().await;
+        let store = state.inner.store.as_ref().expect("store");
+        let work_id = store
+            .work_of_session(&session_id)
+            .await
+            .expect("work")
+            .expect("work row")
+            .id;
         let mut events = state.inner.events.subscribe();
 
-        let event = handle_delete_session(&state, "r-del", &session_id).await;
-        let ServerEvent::SessionDeleted { request_id, id } = event else {
-            panic!("应返回 SessionDeleted");
+        let event = handle_delete_work(&state, "r-del", &work_id).await;
+        let ServerEvent::WorkDeleted { request_id, id } = event else {
+            panic!("应返回 WorkDeleted");
         };
         assert_eq!(request_id.as_deref(), Some("r-del"));
-        assert_eq!(id, session_id);
+        assert_eq!(id, work_id);
+        assert!(
+            matches!(
+                events.try_recv().expect("cascaded session_deleted"),
+                ServerEvent::SessionDeleted {
+                    request_id: None,
+                    ..
+                }
+            ),
+            "名下 session 应广播 session_deleted",
+        );
         assert!(
             matches!(
                 events.try_recv().expect("broadcast"),
-                ServerEvent::SessionDeleted { .. }
+                ServerEvent::WorkDeleted { .. }
             ),
             "删除 ack 应广播到事件总线",
         );
@@ -203,35 +236,42 @@ mod tests {
             "注册表应摘除",
         );
 
-        let event = handle_delete_session(&state, "r-del2", &session_id).await;
+        let event = handle_delete_work(&state, "r-del2", &work_id).await;
         assert!(
             matches!(event, ServerEvent::Error { .. }),
             "重复删除应返回 error 事件",
         );
     }
 
-    /// 重命名 session：生效标题经 ack 返回；空白标题清除自定义（None）。
+    /// 重命名 work：生效标题经 ack 返回；空白标题清除自定义（None）。
     #[tokio::test]
-    async fn rename_session_ack_roundtrip() {
+    async fn rename_work_ack_roundtrip() {
         let (state, session_id) = crate::web::tests::test_state_with_session().await;
+        let store = state.inner.store.as_ref().expect("store");
+        let work_id = store
+            .work_of_session(&session_id)
+            .await
+            .expect("work")
+            .expect("work row")
+            .id;
 
-        let event = handle_rename_session(&state, "r-ren", &session_id, "新名字").await;
-        let ServerEvent::SessionRenamed {
+        let event = handle_rename_work(&state, "r-ren", &work_id, "新名字").await;
+        let ServerEvent::WorkRenamed {
             request_id, title, ..
         } = event
         else {
-            panic!("应返回 SessionRenamed");
+            panic!("应返回 WorkRenamed");
         };
         assert_eq!(request_id, "r-ren");
         assert_eq!(title.as_deref(), Some("新名字"));
 
-        let event = handle_rename_session(&state, "r-ren2", &session_id, "  ").await;
-        let ServerEvent::SessionRenamed { title, .. } = event else {
-            panic!("应返回 SessionRenamed");
+        let event = handle_rename_work(&state, "r-ren2", &work_id, "  ").await;
+        let ServerEvent::WorkRenamed { title, .. } = event else {
+            panic!("应返回 WorkRenamed");
         };
         assert_eq!(title, None, "空白标题应清除自定义");
 
-        let event = handle_rename_session(&state, "r-ren3", "no-such", "x").await;
+        let event = handle_rename_work(&state, "r-ren3", "no-such", "x").await;
         assert!(matches!(event, ServerEvent::Error { .. }));
     }
 

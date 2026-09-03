@@ -44,7 +44,7 @@ fn sessions_list_empty_database() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let output = run(&["sessions", "list"], tmp.path());
     assert!(output.status.success(), "stderr: {}", stderr(&output));
-    assert!(stdout(&output).contains("没有历史 session"));
+    assert!(stdout(&output).contains("没有历史 work"));
 }
 
 #[tokio::test]
@@ -148,7 +148,7 @@ fn resume_empty_database_reports_no_sessions() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let output = run(&["resume"], tmp.path());
     assert!(output.status.success(), "stderr: {}", stderr(&output));
-    assert!(stdout(&output).contains("没有历史 session"));
+    assert!(stdout(&output).contains("没有历史 work"));
 }
 
 #[tokio::test]
@@ -230,7 +230,7 @@ async fn continue_fails_in_directory_without_session() {
     assert!(!output.status.success());
     let err = stderr(&output);
     assert!(
-        err.contains("没有可恢复的 session"),
+        err.contains("没有可恢复的 work"),
         "无本目录 session 应明确报错：{err}"
     );
 }

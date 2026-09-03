@@ -8,6 +8,13 @@ Accepted
 
 2026-07-30
 
+## Amendments
+
+- 2026-09-03（ADR-0045）：压缩条目的存储形状由「`kind = 'compaction'` + 独立
+  `CompactionRecord` payload」改为「`role = 'compaction'` 的统一 `Entry`
+  （压缩记录为 `parts` 中的 `Compaction` 内容块）」；`kept_count` 相对计数
+  重建语义不变，本 ADR 的语义部分继续成立。
+
 ## Context
 
 LLM 上下文窗口有限。长对话（尤其是编码 agent 的大量工具输出）会逼近窗口上限，
@@ -58,8 +65,9 @@ compaction 锚定为 M2 待办，本 ADR 记录 nomic 的实现决策。
   供 `/compact` 调用，不受 `enabled` 开关限制。事件 `CompactionStart` /
   `CompactionEnd { summary, tokens_before, kept_count, usage }`。摘要失败返回
   `Err` 且历史不变（fail-safe）；自动路径仅告警继续。
-- `nomic-session`：`entries.kind = 'compaction'` 的条目（migration 0002），
-  payload 为 `CompactionRecord { summary, kept_count, tokens_before }`。
+- `nomic-session`：`role = 'compaction'` 的条目（ADR-0045 后压缩为一等角色），
+  payload 为统一 `Entry` 格式，压缩记录存于其 `parts` 的 `Compaction` 块
+  （`CompactionRecord { summary, kept_count, tokens_before }`）。
 - `nomic-cli`：`[compaction]` 配置表（`enabled` / `reserve_tokens` /
   `keep_recent_tokens`，不设 CLI flag）；TUI `/compact` 命令（自由文本聚焦指令），
   `CompactionEnd` 落库；print 模式同样处理压缩事件（stderr 提示 + 落库）。

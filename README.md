@@ -41,6 +41,7 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 - [安装](#安装)
 - [快速上手](#快速上手)
 - [使用](#使用)
+  - [术语](#术语)
   - [运行模式](#运行模式)
   - [TUI 键位](#tui-键位)
   - [TUI 命令](#tui-命令)
@@ -99,6 +100,19 @@ nomic --model anthropic/claude-sonnet-4-5
 ```
 
 ## 使用
+
+### 术语
+
+三层模型（[ADR-0044](docs/adr/0044-terminology-project-work-session.md)）：
+
+| 术语 | 定义 |
+| --- | --- |
+| **project** | 一个 git 仓库目录：AGENTS.md / skills 发现、工具相对路径与 session 隔离的基准 |
+| **work** | 一次任务协作过程：侧栏与 `sessions list` / `resume` 的一等入口，session 的分组容器 |
+| **session** | 一次 agent 交互上下文：消息流、compaction 与分支的最小持久化单元 |
+
+层级为 project 1—N work 1—N session；多 agent 协作（`create_agent`）的子
+agent 落库为同一 work 下的子 session，可在侧栏展开回溯（只读）。
 
 ### 运行模式
 

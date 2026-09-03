@@ -20,7 +20,9 @@ use nomic_core::{
     AgentBuilder, AgentSupervisor, DynTool, SharedModel, SupervisorConfig, TurnInjection,
     shared_model,
 };
+use nomic_session::SessionStore;
 use nomic_skills::SkillResolver;
+use nomic_tools::multi_agent::ChildSessionHook;
 use nomic_tools::{BaseDir, QuestionSink, TodoStore};
 
 /// 子 agent 池的 todo 清单策略。
@@ -35,6 +37,17 @@ pub enum TodoPolicy {
     /// 主/子 agent 各自新建独立清单（print / web：清单是各 agent 私有的
     /// 工作记忆，跨 agent 不可见）。
     Isolated,
+}
+
+/// 子 agent 落库配置（ADR-0044）：子 agent 的对话落库为父 session 所属
+/// work 下的子 session（`parent_session_id` 记血缘，只读回溯）。
+/// `None`（无持久化的运行）时子 agent 对话不落库。
+#[derive(Debug, Clone)]
+pub struct ChildSessionSpec {
+    /// session 库句柄
+    pub store: SessionStore,
+    /// 父 session（当前主 session）id：创建子 session 时记血缘
+    pub parent_session_id: String,
 }
 
 /// 组装选项：三入口的差异点全部在此显式表达。
@@ -67,6 +80,8 @@ pub struct RecipeOpts {
     /// 运行中注入源（ADR-0014，交互端自持统一消息队列，core 在 turn
     /// 边界经注入点弹出注入；非交互入口为 `None`）。
     pub turn_injection: Option<Arc<dyn TurnInjection>>,
+    /// 子 agent 落库（ADR-0044）；无持久化的入口为 `None`。
+    pub child_sessions: Option<ChildSessionSpec>,
 }
 
 /// 组装产物：主 agent 工具集 + 可选注入点。
@@ -114,6 +129,53 @@ pub fn assemble(opts: RecipeOpts) -> AgentRecipe {
         inherited_model.clone(),
         SupervisorConfig::default(),
     ));
+    // 子 agent 落库接缝（ADR-0044）：create_agent 成功后接管子 agent
+    // 事件流——在父 session 所属 work 下创建子 session（记血缘），spawn
+    // 落库任务消费事件至通道关闭（子 agent close / 进程退出）
+    let child_hook: Option<ChildSessionHook> =
+        opts.child_sessions.map(|spec| -> ChildSessionHook {
+            Arc::new(
+                move |agent_id: nomic_core::AgentId,
+                      events: tokio::sync::mpsc::UnboundedReceiver<nomic_core::AgentEvent>| {
+                    let store = spec.store.clone();
+                    let parent = spec.parent_session_id.clone();
+                    tokio::spawn(async move {
+                        let work = match store.work_of_session(&parent).await {
+                            Ok(Some(work)) => work,
+                            other => {
+                                tracing::warn!(
+                                    ?other,
+                                    parent,
+                                    "child session: work lookup failed"
+                                );
+                                return;
+                            }
+                        };
+                        match store.create_session_in_work(&work.id, Some(&parent)).await {
+                            Ok(child_session_id) => {
+                                tracing::info!(
+                                    agent_id = %agent_id.0,
+                                    child_session_id,
+                                    work_id = %work.id,
+                                    "child agent session created"
+                                );
+                                let mut recorder =
+                                    nomic_session::SessionRecorder::new(store, child_session_id);
+                                let mut events = events;
+                                while let Some(event) = events.recv().await {
+                                    if let Err(error) = recorder.record(&event).await {
+                                        tracing::warn!(?error, "child session record failed");
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(?error, "failed to create child agent session");
+                            }
+                        }
+                    });
+                },
+            )
+        });
     // 主 agent 工具 = 基础工具 + 多 agent 管理工具
     let mut tools = nomic_tools::default_tools_with_skills_in_shared(
         &opts.base,
@@ -124,6 +186,7 @@ pub fn assemble(opts: RecipeOpts) -> AgentRecipe {
     tools.extend(nomic_tools::multi_agent::multi_agent_tools(
         supervisor,
         child_tools,
+        child_hook,
     ));
     tracing::debug!(total_tools = tools.len(), "agent recipe assembled");
     AgentRecipe {
@@ -238,6 +301,7 @@ mod tests {
             },
             model_aliases: BTreeMap::new(),
             turn_injection: None,
+            child_sessions: None,
         }
     }
 

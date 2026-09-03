@@ -33,6 +33,26 @@ pub async fn handle_create_work(
     }
 }
 
+/// 列出一个 work 下的 session（含子 agent session）：侧栏展开与只读
+/// 回溯入口。store 不可用时报错。
+pub async fn handle_list_work_sessions(
+    state: &AppState,
+    request_id: &str,
+    work_id: &str,
+) -> ServerEvent {
+    let Some(store) = state.inner.store.as_ref() else {
+        return ApiError::StoreUnavailable.to_ws_response(Some(request_id));
+    };
+    match store.list_sessions_in_work(work_id).await {
+        Ok(sessions) => ServerEvent::WorkSessionsList {
+            request_id: request_id.to_string(),
+            work_id: work_id.to_string(),
+            sessions,
+        },
+        Err(error) => ApiError::Internal(error.to_string()).to_ws_response(Some(request_id)),
+    }
+}
+
 /// 登记新 project（按路径查或插，幂等）；响应携带 `request_id` 供客户端关联。
 pub async fn handle_create_project(
     state: &AppState,

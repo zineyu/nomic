@@ -124,12 +124,15 @@ impl SessionFactory {
         store: Option<SessionStore>,
         id: String,
         history: Vec<Message>,
-        tip: Option<String>,
         project: PathBuf,
         resolved: ResolvedSessionModel,
+        open: SessionOpen,
     ) -> Arc<SessionRuntime> {
+        let SessionOpen { tip, membership } = open;
         let events_tx = self.events.clone();
-        let recorder = store.map(|store| SessionRecorder::with_tip(store, id.clone(), tip));
+        let recorder = store
+            .clone()
+            .map(|store| SessionRecorder::with_tip(store, id.clone(), tip));
         // 在途提问注册表：sink（登记 / 取消丢弃）与 SessionRuntime（应答
         // 回填 / 断线重放快照）共享同一份，取消语义与 TUI 同一口径
         let questions = Arc::new(QuestionRegistry::new());
@@ -162,6 +165,10 @@ impl SessionFactory {
             default_model: resolved.model.clone(),
             model_aliases: self.model_aliases.clone(),
             turn_injection: Some(Arc::new(queue.clone())),
+            child_sessions: store.map(|store| crate::agent_recipe::ChildSessionSpec {
+                store,
+                parent_session_id: id.clone(),
+            }),
         });
         // 子 agent 的继承模型单元（ADR-0038）：switch_model 切换本 session
         // 主 agent 模型时写入，此后创建的未指定模型的子 agent 继承新模型
@@ -197,6 +204,7 @@ impl SessionFactory {
             questions,
             queue,
             project,
+            membership,
             normal_tools,
             inherited_model,
             goal: std::sync::Mutex::new(nomic_tools::GoalNudger::new()),
@@ -395,6 +403,16 @@ fn nudge_goal(session: &Arc<SessionRuntime>) {
     }
 }
 
+/// 打开 session 时从库一次性读出的事实：落库父指针（随运行推进）与
+/// 归属信息（ADR-0044，血缘不变——work id 与父 session id）。
+#[derive(Debug, Clone, Default)]
+pub struct SessionOpen {
+    /// 恢复的分支末端（落库父指针起点）
+    pub tip: Option<String>,
+    /// 归属信息：work id 与父 session id（子 agent session 血缘；只读判定）
+    pub membership: Option<(String, Option<String>)>,
+}
+
 /// 当前状态快照的各部分（api 层拼装成响应）。
 pub struct Snapshot {
     pub messages: Vec<Message>,
@@ -405,6 +423,11 @@ pub struct Snapshot {
     /// steering 队列内容（原文 + 附件数；前端队列区渲染与编辑寻址用）
     pub queue: Vec<QueueEntryView>,
     pub session: Option<(String, Option<String>)>,
+    /// 所属 work id（无持久化时为 `None`）
+    pub work_id: Option<String>,
+    /// 父 session id（子 agent session 血缘，ADR-0044；非 `None` 时本
+    /// session 为只读回溯视图）
+    pub parent_session_id: Option<String>,
     pub pending_question: Option<(String, AskUserQuestion)>,
     /// 本 session 的 project 路径（操作基准）
     pub project: PathBuf,
@@ -432,7 +455,7 @@ pub async fn snapshot(session: &SessionRuntime) -> Result<Snapshot> {
         .await
         .as_ref()
         .map(|recorder| recorder.store().clone());
-    let custom = match store {
+    let custom = match &store {
         Some(store) => store
             .session_title_override(&session.id)
             .await
@@ -440,6 +463,10 @@ pub async fn snapshot(session: &SessionRuntime) -> Result<Snapshot> {
         None => None,
     };
     let title = custom.or(title);
+    let (work_id, parent_session_id) = session
+        .membership
+        .clone()
+        .map_or((None, None), |(work_id, parent)| (Some(work_id), parent));
     let pending_question = session.questions.current();
     let goal = session.goal_objective();
     Ok(Snapshot {
@@ -450,6 +477,8 @@ pub async fn snapshot(session: &SessionRuntime) -> Result<Snapshot> {
         running,
         queue,
         session: Some((session.id.clone(), title)),
+        work_id,
+        parent_session_id,
         pending_question,
         project: session.project.clone(),
         goal,

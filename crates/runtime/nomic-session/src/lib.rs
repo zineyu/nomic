@@ -52,6 +52,7 @@ mod work;
 pub use error::SessionError;
 pub use project::{Project, ProjectSummary};
 pub use recorder::SessionRecorder;
+pub use session::SessionSummary;
 pub use settings::{ModelSpecPatch, ModelSpecRow, ProviderPatch, ProviderRow};
 pub use work::{Work, WorkCreated, WorkSummary};
 

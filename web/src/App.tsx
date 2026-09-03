@@ -72,6 +72,7 @@ export default function App() {
                 onDeleteWork={chat.deleteWork}
                 onDeleteProject={chat.deleteProject}
                 onResume={handleResume}
+                onListWorkSessions={chat.listWorkSessions}
               />
             </div>
           )}

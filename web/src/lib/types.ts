@@ -197,6 +197,7 @@ export type ServerEvent =
   | { type: 'state_snapshot'; session_id: string; request_id: string; snapshot: SnapshotView }
   | { type: 'models_list'; request_id: string; candidates: ModelChoice[] }
   | { type: 'works_list'; request_id: string; works: WorkSummary[] }
+  | { type: 'work_sessions_list'; request_id: string; work_id: string; sessions: WorkSession[] }
   | { type: 'projects_list'; request_id: string; projects: ProjectSummary[] }
   | { type: 'skills_list'; request_id: string; skills: SkillSummary[] }
   | { type: 'files_list'; request_id: string; files: string[] }
@@ -223,6 +224,7 @@ export type ClientEvent =
   | { type: 'get_state'; session_id: string; request_id: string }
   | { type: 'list_models'; request_id: string }
   | { type: 'list_works'; request_id: string }
+  | { type: 'list_work_sessions'; request_id: string; work_id: string }
   | { type: 'list_projects'; request_id: string }
   | { type: 'list_skills'; request_id: string }
   | { type: 'list_files'; session_id: string; prefix: string; request_id: string }
@@ -356,6 +358,11 @@ export interface StateResponse {
   /** steering 队列内容（运行中提交的消息，turn 边界注入本轮） */
   queue: QueueEntry[]
   session: { id: string; title: string | null } | null
+  /** 所属 work id（无持久化时为 null） */
+  work_id: string | null
+  /** 父 session id（子 agent session 血缘，ADR-0044；非 null 时本
+   *  session 以只读回溯模式展示，不可发送消息） */
+  parent_session_id: string | null
   pending_question: { id: string; question: AskUserQuestion } | null
   project: string
   /** 进行中的目标原文（/goal <目标> 启动；目标驱动运行徽标用） */
@@ -375,6 +382,20 @@ export interface StateResponse {
 
 /** WebSocket 会话快照响应（与 StateResponse 同构） */
 export type SnapshotView = StateResponse
+
+/** work 下的 session 摘要（`list_work_sessions` 响应；含子 agent session） */
+export interface WorkSession {
+  id: string
+  title: string | null
+  work_id: string
+  /** 父 session id（子 agent 血缘；null = 主 session） */
+  parent_session_id: string | null
+  project_id: string
+  project: string
+  first_message_at: number | null
+  last_message_at: number | null
+  message_count: number
+}
 
 export interface ModelsResponse {
   candidates: ModelChoice[]

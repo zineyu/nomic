@@ -56,9 +56,13 @@ impl Runtime {
             self.store.clone(),
             id.clone(),
             Vec::new(),
-            None,
             base,
             resolved,
+            // 新建的主 session：无历史父指针；归属刚创建的 work，无父
+            super::session::SessionOpen {
+                tip: None,
+                membership: Some((work_id.clone(), None)),
+            },
         );
         self.sessions
             .lock()

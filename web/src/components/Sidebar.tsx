@@ -11,11 +11,11 @@
 // 上下文用量由输入区环形指示器（ContextRing）展示，侧栏不再重复显示。
 // 无默认 project：新建必须归属明确的 project（组标题按钮或启动页选择栏）。
 
-import { ChevronRight, FolderOpen, FolderPlus, Pencil, Plus, Search, Trash2 } from 'lucide-react'
+import { Bot, ChevronRight, FolderOpen, FolderPlus, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import { useId, useState } from 'react'
 
 import { groupWorksWithProjects } from '@/lib/works'
-import type { WorkSummary, ProjectSummary } from '@/lib/types'
+import type { WorkSession, WorkSummary, ProjectSummary } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 import { Button } from '@/components/ui/button'
@@ -45,6 +45,8 @@ interface SidebarProps {
   /** 删除 project；`force` 级联删除名下全部 work 与 session；失败时抛出错误消息 */
   onDeleteProject: (id: string, force: boolean) => Promise<void>
   onResume: (id: string) => void
+  /** 列出一个 work 下的 session（展开子 agent session 用，ADR-0044） */
+  onListWorkSessions: (workId: string) => Promise<WorkSession[]>
 }
 
 /** 删除确认目标（会话 / 项目共用一个确认对话框）。 */
@@ -67,6 +69,7 @@ export function Sidebar({
   onDeleteWork,
   onDeleteProject,
   onResume,
+  onListWorkSessions,
 }: SidebarProps) {
   const groups = groupWorksWithProjects(projects, works)
   const listIdPrefix = useId()
@@ -103,6 +106,32 @@ export function Sidebar({
     } finally {
       setSubmitting(false)
     }
+  }
+
+  // work 行的子 session 展开态：key 存在 = 展开（值为 session 列表，
+  // null = 加载中）；折叠时 key 不存在
+  const [expandedWorks, setExpandedWorks] = useState<Record<string, WorkSession[] | null>>({})
+  const toggleWorkExpand = (work: WorkSummary) => {
+    if (work.id in expandedWorks) {
+      setExpandedWorks((prev) => {
+        const next = { ...prev }
+        delete next[work.id]
+        return next
+      })
+      return
+    }
+    setExpandedWorks((prev) => ({ ...prev, [work.id]: null }))
+    onListWorkSessions(work.id)
+      .then((sessions) =>
+        setExpandedWorks((prev) =>
+          work.id in prev ? { ...prev, [work.id]: sessions } : prev,
+        ),
+      )
+      .catch(() =>
+        setExpandedWorks((prev) =>
+          work.id in prev ? { ...prev, [work.id]: [] } : prev,
+        ),
+      )
   }
 
   // 会话重命名：内联编辑（Enter 提交 / Esc 或失焦取消），失败就地展示
@@ -293,6 +322,26 @@ export function Sidebar({
                       return (
                         <div key={work.id} className="group/item">
                           <div className="flex items-center gap-0.5">
+                            {/* 子 agent session 展开开关（仅多 session 的 work；
+                                展开列出子 session，只读回溯，ADR-0044） */}
+                            {!renamingThis && work.session_count > 1 && (
+                              <button
+                                type="button"
+                                aria-expanded={work.id in expandedWorks}
+                                aria-label={`展开会话「${title}」的子 agent session`}
+                                title="子 agent session"
+                                onClick={() => toggleWorkExpand(work)}
+                                className={rowActionClass}
+                              >
+                                <ChevronRight
+                                  className={cn(
+                                    'size-3 transition-transform',
+                                    work.id in expandedWorks && 'rotate-90',
+                                  )}
+                                  aria-hidden="true"
+                                />
+                              </button>
+                            )}
                             {renamingThis ? (
                               <input
                                 type="text"
@@ -367,6 +416,41 @@ export function Sidebar({
                               </div>
                             )}
                           </div>
+                          {/* 子 agent session 列表（只读回溯；点击进入只读视图） */}
+                          {work.id in expandedWorks && (
+                            <div className="mt-0.5 ml-4 space-y-0.5 border-l border-sidebar-border/70 pl-2">
+                              {expandedWorks[work.id] === null ? (
+                                <div className="px-2.5 py-1 text-xs text-muted-foreground/60">
+                                  加载中…
+                                </div>
+                              ) : (
+                                expandedWorks[work.id]
+                                  ?.filter((s) => s.parent_session_id !== null)
+                                  .map((child) => (
+                                    <button
+                                      key={child.id}
+                                      type="button"
+                                      onClick={() => onResume(child.id)}
+                                      aria-current={
+                                        child.id === currentSessionId ? 'page' : undefined
+                                      }
+                                      title={child.title ?? '子 agent'}
+                                      className={cn(
+                                        'flex w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-1 text-left text-xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+                                        child.id === currentSessionId
+                                          ? 'bg-sidebar-accent font-medium text-sidebar-foreground'
+                                          : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+                                      )}
+                                    >
+                                      <Bot className="size-3 shrink-0" aria-hidden="true" />
+                                      <span className="block min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
+                                        {child.title ?? '子 agent'}
+                                      </span>
+                                    </button>
+                                  ))
+                              )}
+                            </div>
+                          )}
                           {renamingThis && renameError && (
                             <p role="alert" className="mt-0.5 px-1 text-xs text-destructive">
                               {renameError}

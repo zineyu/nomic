@@ -174,6 +174,21 @@ impl SessionStore {
                 .flatten(),
         )
     }
+
+    /// 单个 session 的归属信息（快照与只读判定用）：所属 work id 与父
+    /// session id（子 agent session 血缘，ADR-0044）；session 不存在时
+    /// 为 `None`。
+    pub async fn session_membership(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(String, Option<String>)>, SessionError> {
+        Ok(sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT work_id, parent_session_id FROM sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
 }
 
 impl SessionStore {

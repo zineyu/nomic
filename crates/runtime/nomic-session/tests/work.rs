@@ -290,3 +290,43 @@ async fn migration_0010_backfills_one_work_per_session() {
     .expect("join path");
     assert_eq!(project_path, "/tmp/proj");
 }
+
+/// 子 session 血缘（ADR-0044）：`create_session_in_work` 记
+/// `parent_session_id`，`session_membership` 返回 work 归属与血缘；主
+/// session 血缘为 None。
+#[tokio::test]
+async fn child_session_lineage_and_membership() {
+    let store = store().await;
+    let created = store.create_work("/tmp/lineage").await.expect("work");
+    let child = store
+        .create_session_in_work(&created.work_id, Some(&created.session_id))
+        .await
+        .expect("child session");
+
+    let (work_id, parent) = store
+        .session_membership(&child)
+        .await
+        .expect("membership")
+        .expect("child exists");
+    assert_eq!(work_id, created.work_id);
+    assert_eq!(parent.as_deref(), Some(created.session_id.as_str()));
+
+    let (main_work, main_parent) = store
+        .session_membership(&created.session_id)
+        .await
+        .expect("membership")
+        .expect("main exists");
+    assert_eq!(main_work, created.work_id);
+    assert_eq!(main_parent, None);
+
+    assert!(
+        store
+            .session_membership("s-nonexistent")
+            .await
+            .expect("membership")
+            .is_none()
+    );
+
+    // 注：list_sessions_in_work 过滤无 user 消息的空壳 session，刚创建的
+    // 子 session 不在其中——血缘以 session_membership / 表数据为准
+}

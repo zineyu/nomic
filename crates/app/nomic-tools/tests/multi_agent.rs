@@ -56,7 +56,7 @@ fn supervisor() -> Arc<AgentSupervisor> {
 }
 
 fn create_tool(supervisor: Arc<AgentSupervisor>) -> DynTool {
-    DynTool::new(CreateAgentTool::new(supervisor, Vec::new()))
+    DynTool::new(CreateAgentTool::new(supervisor, Vec::new(), None))
 }
 
 async fn create_agent(tool: &DynTool, model: Option<&str>) -> Result<String, String> {
@@ -137,4 +137,53 @@ fn description_lists_aliases_with_capability_tags_and_inheritance_note() {
     assert!(desc.contains("[reasoning]"), "{desc}");
     assert!(desc.contains("[vision]"), "{desc}");
     assert!(desc.contains("- mini (mini, ctx 128k)"), "{desc}");
+}
+
+/// 落库接缝（ADR-0044）：带 hook 创建子 agent 时 hook 收到 agent id 与
+/// 事件流接收端；事件流被取走后 supervisor 不再持有（take_events 幂等
+/// 返回 None）。不发起 LLM 请求（MockProvider.stream unreachable）。
+#[tokio::test]
+async fn child_hook_receives_agent_id_and_takes_event_stream() {
+    use nomic_core::AgentId;
+    use nomic_tools::multi_agent::ChildSessionHook;
+
+    let sup = supervisor();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let hook: ChildSessionHook = Arc::new(move |id: AgentId, _events| {
+        let _ = tx.send(id.0);
+    });
+    let tool = DynTool::new(CreateAgentTool::new(sup.clone(), Vec::new(), Some(hook)));
+
+    let text = create_agent(&tool, None).await.expect("create");
+    let id = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("ID: "))
+        .expect("响应应携带 ID")
+        .to_string();
+
+    let hooked = rx.recv().await.expect("hook 应被调用");
+    assert_eq!(hooked, id, "hook 收到的应为新建子 agent 的 id");
+    assert!(
+        sup.take_events(&AgentId(id)).await.is_none(),
+        "事件流已被 hook 取走，再次 take 应为 None"
+    );
+}
+
+/// 无 hook：事件流留在 supervisor（可取走），行为与接线前一致。
+#[tokio::test]
+async fn without_hook_event_stream_stays_in_supervisor() {
+    use nomic_core::AgentId;
+
+    let sup = supervisor();
+    let tool = create_tool(sup.clone());
+    let text = create_agent(&tool, None).await.expect("create");
+    let id = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("ID: "))
+        .expect("响应应携带 ID")
+        .to_string();
+    assert!(
+        sup.take_events(&AgentId(id)).await.is_some(),
+        "无 hook 时事件流应留在 supervisor"
+    );
 }

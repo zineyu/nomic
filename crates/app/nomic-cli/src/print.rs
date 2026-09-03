@@ -53,6 +53,13 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
         default_model: boot.model.clone(),
         model_aliases: boot.model_aliases,
         turn_injection: None,
+        child_sessions: boot
+            .session
+            .clone()
+            .map(|(store, id)| agent_recipe::ChildSessionSpec {
+                store,
+                parent_session_id: id,
+            }),
     });
     let (agent, mut events) = recipe
         .apply(

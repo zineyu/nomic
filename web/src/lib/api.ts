@@ -19,6 +19,7 @@ import type {
   ImageContent,
   ModelChoice,
   ServerEvent,
+  WorkSession,
   WorkSummary,
   SkillSummary,
   SnapshotView,
@@ -34,6 +35,7 @@ type QueryEventInput =
   | { type: 'get_state'; session_id: string }
   | { type: 'list_models' }
   | { type: 'list_works' }
+  | { type: 'list_work_sessions'; work_id: string }
   | { type: 'list_projects' }
   | { type: 'list_skills' }
   | { type: 'list_files'; session_id: string; prefix: string }
@@ -234,6 +236,13 @@ export const api = {
     client.request<{ works: WorkSummary[] }>({ type: 'list_works' }).then(
       (r) => r.works,
     ),
+
+  /** 列出一个 work 下的 session（含子 agent session，ADR-0044）。 */
+  workSessions: (workId: string) =>
+    client.request<{ sessions: WorkSession[] }>({
+      type: 'list_work_sessions',
+      work_id: workId,
+    }).then((r) => r.sessions),
 
   /** 列出全部 project 摘要。 */
   projects: () =>

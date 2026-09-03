@@ -56,6 +56,9 @@ pub enum ClientEvent {
     ListModels { request_id: String },
     /// 列出全部 work 摘要（侧栏列表的一等入口，ADR-0044）。
     ListWorks { request_id: String },
+    /// 列出一个 work 下的 session（含子 agent session；侧栏展开与只读
+    /// 回溯入口，ADR-0044）。
+    ListWorkSessions { request_id: String, work_id: String },
     /// 列出全部 project 摘要。
     ListProjects { request_id: String },
     /// 查询 skill 清单（`@skill://` 补全用；进程级 skill 解析器快照）。
@@ -356,6 +359,10 @@ async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
             ClientEvent::ListWorks { request_id } => {
                 Some(handlers::handle_list_works(state, &request_id).await)
             }
+            ClientEvent::ListWorkSessions {
+                request_id,
+                work_id,
+            } => Some(handlers::handle_list_work_sessions(state, &request_id, &work_id).await),
             ClientEvent::ListProjects { request_id } => {
                 Some(handlers::handle_list_projects(state, &request_id).await)
             }
@@ -457,6 +464,7 @@ fn client_event_span(event: &ClientEvent) -> tracing::Span {
         ),
         ClientEvent::ListModels { request_id }
         | ClientEvent::ListWorks { request_id }
+        | ClientEvent::ListWorkSessions { request_id, .. }
         | ClientEvent::ListProjects { request_id }
         | ClientEvent::ListSkills { request_id }
         | ClientEvent::CreateWork { request_id, .. }

@@ -134,6 +134,13 @@ pub async fn run(cli: &Cli) -> Result<()> {
         default_model: boot.model.clone(),
         model_aliases: boot.model_aliases,
         turn_injection: Some(app.queue().handle()),
+        child_sessions: boot
+            .session
+            .clone()
+            .map(|(store, id)| agent_recipe::ChildSessionSpec {
+                store,
+                parent_session_id: id,
+            }),
     });
     // 子 agent 的继承模型单元（ADR-0038）：`/models` 切换主 agent 模型时
     // 经 ModelSwitcher 写入，此后创建的未指定模型的子 agent 继承新模型

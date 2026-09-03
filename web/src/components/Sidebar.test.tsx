@@ -43,6 +43,7 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
       onAddProject={vi.fn().mockResolvedValue(undefined)}
       onRenameWork={vi.fn().mockResolvedValue(undefined)}
       onDeleteWork={vi.fn().mockResolvedValue(undefined)}
+      onListWorkSessions={vi.fn().mockResolvedValue([])}
       onDeleteProject={vi.fn().mockResolvedValue(undefined)}
       onResume={vi.fn()}
       {...overrides}
@@ -385,3 +386,33 @@ describe('Sidebar', () => {
     expect(onDeleteProject).toHaveBeenCalledWith('wa', true)
   })
 })
+
+  it('多 session 的 work 可展开子 agent session，点击进入只读回溯', async () => {
+    const user = userEvent.setup()
+    const main = { id: 'm1', title: '多 agent 会话', work_id: 'm1', parent_session_id: null, project_id: 'wm', project: '/tmp', first_message_at: null, last_message_at: 400, message_count: 5 }
+    const child = { id: 'c1', title: '调研子任务', work_id: 'm1', parent_session_id: 'm1', project_id: 'wm', project: '/tmp', first_message_at: null, last_message_at: 400, message_count: 3 }
+    const onListWorkSessions = vi.fn().mockResolvedValue([main, child])
+    const onResume = vi.fn()
+    renderSidebar({
+      works: [
+        { id: 'm1', main_session_id: 'm1', title: '多 agent 会话', project_id: 'wm', project: '/tmp', session_count: 2, first_message_at: null, last_message_at: 400, message_count: 8 },
+      ],
+      currentSessionId: null,
+      onListWorkSessions,
+      onResume,
+    })
+
+    const toggle = screen.getByRole('button', { name: /展开会话「多 agent 会话」的子 agent session/ })
+    await user.click(toggle)
+    expect(onListWorkSessions).toHaveBeenCalledWith('m1')
+
+    // 展开后只列子 session（主 session 由 work 行自身承载），点击进入
+    const childRow = await screen.findByRole('button', { name: /调研子任务/ })
+    await user.click(childRow)
+    expect(onResume).toHaveBeenCalledWith('c1')
+  })
+
+  it('单 session 的 work 不渲染展开开关', () => {
+    renderSidebar()
+    expect(screen.queryByRole('button', { name: /子 agent session/ })).toBeNull()
+  })

@@ -46,6 +46,9 @@ export interface ChatState {
   reasoning: string | null
   contextTokens: number
   session: { id: string; title: string | null } | null
+  /** 当前 session 的父 session id（子 agent session 血缘；非 null 时
+      只读回溯：输入框禁用，服务端同样拒绝 prompt） */
+  parentSessionId: string | null
   /** 已登记的全部 project（含无会话的；store 不可用时为空，分组退化为纯会话） */
   projects: ProjectSummary[]
   question: QuestionState | null
@@ -78,6 +81,7 @@ const initialState: ChatState = {
   reasoning: null,
   contextTokens: 0,
   session: null,
+  parentSessionId: null,
   projects: [],
   question: null,
   error: null,
@@ -105,6 +109,7 @@ export function useChat() {
       running: snapshot.running,
       queue: snapshot.queue,
       session: snapshot.session,
+      parentSessionId: snapshot.parent_session_id ?? null,
       question: snapshot.pending_question ?? null,
       error: null,
       goal: snapshot.goal ?? null,
@@ -443,6 +448,9 @@ export function useChat() {
     setState((prev) => ({ ...prev, error: null }))
   }, [])
 
+  /** 列出一个 work 下的 session（含子 agent session；侧栏展开用）。 */
+  const listWorkSessions = useCallback((workId: string) => api.workSessions(workId), [])
+
   return {
     ...state,
     send,
@@ -454,6 +462,7 @@ export function useChat() {
     renameWork,
     deleteProject,
     resumeSession,
+    listWorkSessions,
     switchModel,
     answerQuestion,
     updateQueueEntry,

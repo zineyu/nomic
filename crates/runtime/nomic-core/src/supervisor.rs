@@ -111,8 +111,9 @@ struct ChildAgent {
     handle: AgentHandle,
     /// Actor 任务的 JoinHandle（关闭时 abort）。
     actor_join: tokio::task::JoinHandle<()>,
-    /// 事件接收端（可选：由 supervisor 转发到聚合通道）。
-    _events: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    /// 事件接收端（create 后可被 [`AgentSupervisor::take_events`] 取走
+    /// 一次——子 agent 落库等观察方接管；不取则随 close 丢弃）。
+    events: Option<tokio::sync::mpsc::UnboundedReceiver<AgentEvent>>,
     /// 当前正在执行的 prompt 任务（`send_message` 时 spawn）。
     /// `None` 表示空闲。
     prompt_task: Option<tokio::task::JoinHandle<Result<Vec<Message>, ActorError>>>,
@@ -334,7 +335,7 @@ impl AgentSupervisor {
         let child = ChildAgent {
             handle,
             actor_join,
-            _events: events,
+            events: Some(events),
             prompt_task: None,
             model_id,
             system_prompt,
@@ -343,6 +344,16 @@ impl AgentSupervisor {
         self.agents.write().await.insert(id.clone(), child);
         tracing::info!(agent_id = %id, "child agent created");
         Ok(id)
+    }
+
+    /// 取走子 agent 的事件接收端（仅一次；已被取走或 id 不存在时返回
+    /// `None`）。子 agent 落库（ADR-0044：子 agent 记为同 work 下的
+    /// session）等观察方在 create 后立即接管事件流。
+    pub async fn take_events(
+        &self,
+        id: &AgentId,
+    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<AgentEvent>> {
+        self.agents.write().await.get_mut(id)?.events.take()
     }
 
     /// 向指定 agent 发送消息（**非阻塞**）。

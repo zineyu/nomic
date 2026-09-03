@@ -83,6 +83,7 @@ export function ChatView({
     goal,
     session,
     sessionId,
+    parentSessionId,
     model,
     reasoning,
     contextTokens,
@@ -126,6 +127,8 @@ export function ChatView({
   }, [running, stop])
 
   const title = session?.title ?? 'nomic'
+  // 子 agent session（ADR-0044）：只读回溯——输入框禁用，服务端同样拒绝
+  const readOnly = parentSessionId !== null
   const modelSpec = model ? `${model.provider}/${model.id}` : null
   const isMinimized = question && minimizedId === question.id
 
@@ -190,6 +193,15 @@ export function ChatView({
         </div>
       )}
 
+      {/* 子 agent session 只读提示（输入框上方） */}
+      {readOnly && (
+        <div className="mx-auto w-full max-w-page px-4 pb-0.5 sm:px-7">
+          <span className="block text-xs text-muted-foreground">
+            子 agent session · 只读回溯，不可发送消息
+          </span>
+        </div>
+      )}
+
       {/* 运行状态提示（输入框上方；空闲时不渲染） */}
       <RunHint phase={runPhase(items, running)} />
 
@@ -208,9 +220,13 @@ export function ChatView({
         contextTokens={contextTokens}
         contextWindow={model?.context_window ?? null}
         sessionId={sessionId}
-        sendDisabled={startPage && !startProject}
+        sendDisabled={readOnly || (startPage && !startProject)}
         placeholder={
-          startPage && !startProject ? '先选择项目，再给智能体发消息' : undefined
+          readOnly
+            ? '子 agent session 为只读回溯'
+            : startPage && !startProject
+              ? '先选择项目，再给智能体发消息'
+              : undefined
         }
         onSend={startPage ? handleStartSend : send}
         onStop={stop}

@@ -23,7 +23,7 @@ use commands::{SlashCommand, goal_command, parse_slash_command};
 
 pub use crud::{
     handle_create_project, handle_create_work, handle_delete_project, handle_delete_work,
-    handle_rename_work,
+    handle_list_work_sessions, handle_rename_work,
 };
 pub use settings::{SettingsSnapshotView, dispatch_settings};
 
@@ -153,6 +153,16 @@ pub async fn handle_prompt(
         Ok(s) => s,
         Err(error) => return error.to_ws_response(None),
     };
+    // 子 agent session（ADR-0044）为只读回溯：拒绝一切 prompt（血缘在
+    // 打开运行时一次性查询，此处同步判定，不引入调度点）
+    if session
+        .membership
+        .as_ref()
+        .is_some_and(|(_, parent)| parent.is_some())
+    {
+        return ApiError::BadRequest("child agent session is read-only".to_string())
+            .to_ws_response(None);
+    }
     if let Some(rest) = trimmed.strip_prefix('/') {
         match parse_slash_command(rest) {
             Err(error) => return error.to_ws_response(None),
@@ -408,6 +418,11 @@ pub struct SnapshotView {
     /// steering 队列内容（原文 + 附件数；前端队列区渲染与编辑寻址用）
     pub queue: Vec<crate::web::QueueEntryView>,
     pub session: Option<(String, Option<String>)>,
+    /// 所属 work id（无持久化时为 `None`）
+    pub work_id: Option<String>,
+    /// 父 session id（子 agent session 血缘，ADR-0044；非 `None` 时前端
+    /// 以只读回溯模式展示）
+    pub parent_session_id: Option<String>,
     pub pending_question: Option<(String, AskUserQuestion)>,
     /// 本 session 的 project 路径（操作基准）
     pub project: String,
@@ -428,6 +443,8 @@ impl SnapshotView {
             running: snap.running,
             queue: snap.queue,
             session: snap.session,
+            work_id: snap.work_id,
+            parent_session_id: snap.parent_session_id,
             pending_question: snap.pending_question,
             project: snap.project.display().to_string(),
             goal: snap.goal,
@@ -688,5 +705,35 @@ mod tests {
             .expect("session")
             .clone();
         assert_eq!(session.runner.queued_len(), 0, "未知命令不应入队");
+    }
+
+    /// 子 agent session（ADR-0044）只读回溯：prompt 被拒绝（血缘经
+    /// `parent_session_id` 判定），不创建运行。
+    #[tokio::test]
+    async fn prompt_to_child_session_is_rejected_read_only() {
+        let (state, main_id) = crate::web::tests::test_state_with_session().await;
+        let store = state.inner.store.as_ref().expect("store");
+        let work = store
+            .work_of_session(&main_id)
+            .await
+            .expect("work query")
+            .expect("main session has work");
+        let child = store
+            .create_session_in_work(&work.id, Some(&main_id))
+            .await
+            .expect("child session");
+
+        let event = handle_prompt(&state, &child, "hi".to_string(), Vec::new()).await;
+        let ServerEvent::Error { message, .. } = event else {
+            panic!("子 session 的 prompt 应返回 error 事件");
+        };
+        assert!(message.contains("read-only"), "{message}");
+
+        // 主 session 不受影响（血缘为 None）
+        let ack = handle_prompt(&state, &main_id, "/continue".to_string(), Vec::new()).await;
+        assert!(
+            matches!(ack, ServerEvent::PromptAck { .. }),
+            "主 session 的 prompt 不应被拒绝"
+        );
     }
 }

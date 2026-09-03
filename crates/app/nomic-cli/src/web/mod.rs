@@ -126,6 +126,13 @@ pub enum ServerEvent {
         request_id: String,
         works: Vec<nomic_session::WorkSummary>,
     },
+    /// 一个 work 下的 session 列表响应（`list_work_sessions` 查询的回复；
+    /// 含子 agent session，`parent_session_id` 记血缘，ADR-0044）
+    WorkSessionsList {
+        request_id: String,
+        work_id: String,
+        sessions: Vec<nomic_session::SessionSummary>,
+    },
     /// 全部 project 摘要响应（`list_projects` 查询的回复）
     ProjectsList {
         request_id: String,
@@ -243,6 +250,9 @@ pub struct SessionRuntime {
     /// 本 session 的操作基准（project 严格归属）：工具相对路径以它解析，
     /// 快照展示给用户
     pub project: PathBuf,
+    /// 归属信息（ADR-0044，打开时一次性查询：血缘不变）：所属 work id 与
+    /// 父 session id（子 agent session；非 `None` 时本运行时只读）
+    pub membership: Option<(String, Option<String>)>,
     /// 正常态工具集（goal 模式换出/换回的基准；`DynTool` 是 `Arc` 共享
     /// 句柄，克隆廉价）
     pub normal_tools: Vec<nomic_core::DynTool>,
@@ -407,13 +417,19 @@ impl Runtime {
             Some(store) => store.session_project_path(id).await?,
             None => std::env::current_dir().context("get cwd")?,
         };
+        // 归属信息（ADR-0044）：血缘不变，打开时一次性查询（快照展示与
+        // 只读判定共用；查询失败等价无持久化）
+        let membership = match &self.store {
+            Some(store) => store.session_membership(id).await.ok().flatten(),
+            None => None,
+        };
         let session = self.factory.build(
             self.store.clone(),
             id.to_string(),
             history,
-            tip,
             project,
             resolved,
+            session::SessionOpen { tip, membership },
         );
         let mut sessions = self.sessions.lock().await;
         // 并发 open 同一 id 时只保留先插入者（避免孤儿 agent 任务）
@@ -625,164 +641,4 @@ fn enter_quit_key_mode() -> nix::Result<Termios> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use clap::Parser as _;
-    use nomic_ai::{Model, StreamOptions};
-    use nomic_skills::SkillResolver;
-
-    use super::session::ResolvedSessionModel;
-    use super::*;
-
-    /// 构建一个最小 AppState（内存 session 库 + 空 agent 构建）。
-    /// 注册表中预置一个 session（多数测试的操作对象）。
-    pub(super) async fn test_state() -> AppState {
-        let (state, _) = test_state_with_session().await;
-        state
-    }
-
-    /// [`test_state`] 的变体：同时返回预置 session 的 id。
-    pub(super) async fn test_state_with_session() -> (AppState, String) {
-        let store = SessionStore::in_memory().await.expect("store");
-        let id = store.create_session(".").await.expect("session");
-        let models = Arc::new(ModelResolver::new(
-            &Cli::parse_from(["nomic", "--model", "openai/gpt-4o"]),
-            crate::settings::Settings::default(),
-            None,
-            None,
-        ));
-        let model = Model {
-            id: "gpt-4o".into(),
-            name: "gpt-4o".into(),
-            api: nomic_ai::ApiKind::OpenAiCompletions,
-            provider: "openai".into(),
-            base_url: "https://api.openai.com/v1".into(),
-            reasoning: false,
-            vision: false,
-            context_window: 128_000,
-            max_tokens: 4_096,
-            cost_input: 0.0,
-            cost_output: 0.0,
-            cost_cache_read: 0.0,
-            cost_cache_write: 0.0,
-        };
-        let provider = crate::model::build_provider(model.api, Some("sk-test".into()));
-        let (events, _) = broadcast::channel::<ServerEvent>(64);
-        let factory = SessionFactory {
-            models: models.clone(),
-            prompt_recipe: bootstrap::SystemPromptRecipe::default(),
-            skill_resolver: SkillResolver::new(
-                Path::new("/repo"),
-                nomic_skills::ProjectDiscovery::Roots(Vec::new()),
-                Vec::new(),
-            )
-            .expect("skills"),
-            stream_options: StreamOptions::default(),
-            compaction: nomic_core::CompactionSettings::default(),
-            default_model: model.clone(),
-            default_reasoning: None,
-            available_models: vec![model.clone()],
-            model_aliases: std::collections::BTreeMap::new(),
-            events,
-        };
-        let initial = factory.build(
-            Some(store.clone()),
-            id.clone(),
-            Vec::new(),
-            None,
-            std::env::current_dir().expect("cwd"),
-            ResolvedSessionModel {
-                model,
-                provider,
-                options: StreamOptions::default(),
-            },
-        );
-        let runtime = Arc::new(Runtime {
-            store: Some(store),
-            models,
-            sessions: Mutex::new(HashMap::from([(id.clone(), initial)])),
-            events: factory.events.clone(),
-            shutdown: CancellationToken::new(),
-            factory,
-        });
-        (AppState { inner: runtime }, id)
-    }
-
-    #[tokio::test]
-    async fn cancel_run_returns_false_when_idle() {
-        let state = test_state().await;
-        let session = state
-            .inner
-            .sessions
-            .lock()
-            .await
-            .values()
-            .next()
-            .expect("session")
-            .clone();
-        assert!(!session.cancel_run(), "空闲时取消应返回 false");
-    }
-
-    #[tokio::test]
-    async fn answer_question_roundtrip() {
-        let state = test_state().await;
-        let session = state
-            .inner
-            .sessions
-            .lock()
-            .await
-            .values()
-            .next()
-            .expect("session")
-            .clone();
-        let (qid, rx) = session.questions.register(AskUserQuestion {
-            question: "继续？".to_string(),
-            kind: nomic_tools::QuestionKind::SingleChoice,
-            options: vec!["是".to_string(), "否".to_string()],
-        });
-        let answer = AskUserAnswer {
-            answers: vec!["是".to_string()],
-            custom: None,
-        };
-        assert!(session.answer_question(&qid, answer.clone()));
-        assert_eq!(rx.await.expect("answer"), answer);
-        assert!(
-            !session.answer_question(&qid, answer.clone()),
-            "重复回答应失败"
-        );
-        assert!(!session.answer_question("missing", answer));
-    }
-
-    #[test]
-    fn is_quit_key_matches_q_and_ctrl_c() {
-        let key = |code, modifiers| event::KeyEvent::new(code, modifiers);
-        assert!(is_quit_key(key(KeyCode::Char('q'), KeyModifiers::NONE)));
-        assert!(is_quit_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL)));
-        assert!(!is_quit_key(key(KeyCode::Char('c'), KeyModifiers::NONE)));
-        assert!(!is_quit_key(key(KeyCode::Char('Q'), KeyModifiers::NONE)));
-        assert!(!is_quit_key(key(KeyCode::Enter, KeyModifiers::NONE)));
-    }
-
-    #[tokio::test]
-    async fn snapshot_reports_state() {
-        let state = test_state().await;
-        let session = state
-            .inner
-            .sessions
-            .lock()
-            .await
-            .values()
-            .next()
-            .expect("session")
-            .clone();
-        let snap = snapshot(&session).await.expect("snapshot");
-        assert!(snap.messages.is_empty());
-        assert_eq!(snap.model.provider, "openai");
-        assert_eq!(snap.model.id, "gpt-4o");
-        assert!(!snap.running);
-        assert!(snap.queue.is_empty());
-        assert!(snap.session.is_some(), "内存库 session 应存在");
-        assert!(snap.pending_question.is_none());
-    }
-}
+pub mod tests;

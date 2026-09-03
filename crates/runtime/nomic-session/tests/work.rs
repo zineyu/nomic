@@ -101,6 +101,43 @@ async fn list_works_filters_empty_and_derives_title_from_main_session() {
 }
 
 #[tokio::test]
+async fn list_works_aggregates_across_sessions() {
+    let store = store().await;
+    // work a：主 session + 子 agent session 各一条消息，跨 session 聚合
+    let a = store.create_work("/tmp/w-agg").await.expect("work a");
+    store
+        .append_message(&a.session_id, None, &user_message("主会话消息", 1_000))
+        .await
+        .expect("append main");
+    let child = store
+        .create_session_in_work(&a.work_id, Some(&a.session_id))
+        .await
+        .expect("child session");
+    store
+        .append_message(&child, None, &user_message("子 agent 消息", 2_000))
+        .await
+        .expect("append child");
+
+    // work b：消息更早，排序应靠后
+    let b = store.create_work("/tmp/w-agg").await.expect("work b");
+    store
+        .append_message(&b.session_id, None, &user_message("更早的 work", 500))
+        .await
+        .expect("append b");
+
+    let works = store.list_works().await.expect("list");
+    assert_eq!(works.len(), 2);
+    let first = &works[0];
+    assert_eq!(first.id, a.work_id, "按末条消息时间降序");
+    assert_eq!(first.session_count, 2, "含子 agent session");
+    assert_eq!(first.message_count, 2, "跨 session 汇总消息数");
+    assert_eq!(first.first_message_at, Some(1_000));
+    assert_eq!(first.last_message_at, Some(2_000));
+    assert_eq!(first.main_session_id, a.session_id);
+    assert_eq!(works[1].id, b.work_id);
+}
+
+#[tokio::test]
 async fn delete_work_cascades_sessions_and_entries() {
     let store = store().await;
     let created = store.create_work("/tmp/w-proj").await.expect("work");

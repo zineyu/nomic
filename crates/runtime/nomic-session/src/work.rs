@@ -191,33 +191,57 @@ impl SessionStore {
 
     /// work 摘要查询内核：可选按 project 过滤；标题优先 work 自定义
     /// （`works.title`），缺失时回落主 session 标题（自定义或派生）。
+    ///
+    /// 集合式聚合：session 计数/时间窗、主 session、消息计数、空壳过滤
+    /// 各自单次扫描（GROUP BY / DISTINCT），再按 work_id 一次性 JOIN——
+    /// 避免逐行相关子查询在 entries 大表上的 O(works × sessions) 放大。
     async fn summarize_works(
         &self,
         project_id: Option<&str>,
     ) -> Result<Vec<WorkSummary>, SessionError> {
         let rows = sqlx::query(
-            "SELECT w.id, w.project_id, p.path AS project_path, w.title,
-                    (SELECT s.id FROM sessions s
-                     WHERE s.work_id = w.id AND s.parent_session_id IS NULL
-                     ORDER BY s.rowid LIMIT 1) AS main_session_id,
-                    (SELECT COUNT(*) FROM sessions s WHERE s.work_id = w.id) AS session_count,
-                    (SELECT MIN(s.first_message_at) FROM sessions s WHERE s.work_id = w.id)
-                        AS first_message_at,
-                    (SELECT MAX(s.last_message_at) FROM sessions s WHERE s.work_id = w.id)
-                        AS last_message_at,
-                    (SELECT COUNT(*) FROM entries e JOIN sessions s ON s.id = e.session_id
-                     WHERE s.work_id = w.id AND e.kind = 'message') AS message_count,
-                    (SELECT s.title FROM sessions s
-                     WHERE s.work_id = w.id AND s.parent_session_id IS NULL
-                     ORDER BY s.rowid LIMIT 1) AS main_title
-             FROM works w JOIN projects p ON p.id = w.project_id
+            "WITH per_work AS (
+                 SELECT work_id,
+                        COUNT(*) AS session_count,
+                        MIN(first_message_at) AS first_message_at,
+                        MAX(last_message_at) AS last_message_at
+                 FROM sessions
+                 GROUP BY work_id
+             ),
+             main_session AS (
+                 SELECT work_id, id, title
+                 FROM (SELECT work_id, id, title,
+                              ROW_NUMBER() OVER (PARTITION BY work_id ORDER BY rowid) AS rn
+                       FROM sessions
+                       WHERE parent_session_id IS NULL)
+                 WHERE rn = 1
+             ),
+             message_counts AS (
+                 SELECT s.work_id, COUNT(*) AS message_count
+                 FROM entries e JOIN sessions s ON s.id = e.session_id
+                 WHERE e.kind = 'message'
+                 GROUP BY s.work_id
+             ),
+             works_with_user AS (
+                 SELECT DISTINCT s.work_id
+                 FROM entries e JOIN sessions s ON s.id = e.session_id
+                 WHERE e.kind = 'message' AND e.role = 'user'
+             )
+             SELECT w.id, w.project_id, p.path AS project_path, w.title,
+                    m.id AS main_session_id,
+                    COALESCE(a.session_count, 0) AS session_count,
+                    a.first_message_at,
+                    a.last_message_at,
+                    COALESCE(mc.message_count, 0) AS message_count,
+                    m.title AS main_title
+             FROM works w
+             JOIN projects p ON p.id = w.project_id
+             JOIN works_with_user hu ON hu.work_id = w.id
+             LEFT JOIN per_work a ON a.work_id = w.id
+             LEFT JOIN main_session m ON m.work_id = w.id
+             LEFT JOIN message_counts mc ON mc.work_id = w.id
              WHERE (?1 IS NULL OR w.project_id = ?1)
-               AND EXISTS(SELECT 1 FROM sessions s
-                          WHERE s.work_id = w.id
-                            AND EXISTS(SELECT 1 FROM entries e
-                                       WHERE e.session_id = s.id
-                                         AND e.kind = 'message' AND e.role = 'user'))
-             ORDER BY last_message_at IS NULL, last_message_at DESC",
+             ORDER BY a.last_message_at IS NULL, a.last_message_at DESC",
         )
         .bind(project_id)
         .fetch_all(&self.pool)

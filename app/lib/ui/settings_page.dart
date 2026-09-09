@@ -47,13 +47,17 @@ class _SettingsPageState extends State<SettingsPage> {
     super.dispose();
   }
 
-  /// 执行设置写操作；失败消息经 SnackBar 展示。
+  /// 执行设置写操作；失败消息经 SnackBar 展示，成功给轻量确认。
   Future<void> _report(Future<String?> action) async {
     final message = await action;
-    if (message != null && mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(message)));
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    if (message != null) {
+      messenger.showSnackBar(SnackBar(content: Text(message)));
+    } else {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('已保存'), duration: Duration(seconds: 1)),
+      );
     }
   }
 

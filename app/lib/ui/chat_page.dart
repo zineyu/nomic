@@ -111,8 +111,12 @@ class _ChatPageState extends State<ChatPage> {
                       vertical: Spacing.lg,
                     ),
                     itemCount: controller.items.length,
-                    itemBuilder: (context, index) =>
-                        MessageItemView(item: controller.items[index]),
+                    // ValueKey 锚定 item.id：插入新项时折叠/展开状态
+                    //（_ThinkingFold / ToolCard）跟随数据而非位置
+                    itemBuilder: (context, index) => MessageItemView(
+                      key: ValueKey(controller.items[index].id),
+                      item: controller.items[index],
+                    ),
                   ),
                 ),
               ),

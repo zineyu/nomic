@@ -25,7 +25,7 @@ class InputBar extends StatefulWidget {
 
 class _InputBarState extends State<InputBar> {
   final _textController = TextEditingController();
-  final _focusNode = FocusNode();
+  late final _focusNode = FocusNode(onKeyEvent: _onKeyEvent);
   bool _focused = false;
 
   @override
@@ -53,6 +53,19 @@ class _InputBarState extends State<InputBar> {
     _focusNode.requestFocus();
   }
 
+  /// Enter 发送（桌面多行 TextField 默认对 Enter 插入换行，这里消费事件
+  /// 拦截）；Shift+Enter 换行。移动端软键盘发送走 onSubmitted。
+  KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is KeyDownEvent &&
+        (event.logicalKey == LogicalKeyboardKey.enter ||
+            event.logicalKey == LogicalKeyboardKey.numpadEnter) &&
+        !HardwareKeyboard.instance.isShiftPressed) {
+      _submit();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
@@ -72,38 +85,26 @@ class _InputBarState extends State<InputBar> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          KeyboardListener(
-            focusNode: FocusNode(),
-            child: TextField(
-              controller: _textController,
-              focusNode: _focusNode,
-              minLines: 1,
-              maxLines: 8,
-              textInputAction: TextInputAction.send,
-              onSubmitted: (_) => _submit(),
-              decoration: InputDecoration(
-                hintText: running ? '运行中，发送将进入队列…' : '给 Nomic 发送消息…',
-                filled: false,
-                border: InputBorder.none,
-                enabledBorder: InputBorder.none,
-                focusedBorder: InputBorder.none,
-                contentPadding: const EdgeInsets.fromLTRB(
-                  Spacing.md,
-                  Spacing.md,
-                  Spacing.md,
-                  Spacing.sm,
-                ),
+          TextField(
+            controller: _textController,
+            focusNode: _focusNode,
+            minLines: 1,
+            maxLines: 8,
+            textInputAction: TextInputAction.send,
+            onSubmitted: (_) => _submit(),
+            decoration: InputDecoration(
+              hintText: running ? '运行中，发送将进入队列…' : '给 Nomic 发送消息…',
+              filled: false,
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              contentPadding: const EdgeInsets.fromLTRB(
+                Spacing.md,
+                Spacing.md,
+                Spacing.md,
+                Spacing.sm,
               ),
             ),
-            onKeyEvent: (event) {
-              // Shift+Enter 换行；Enter 发送（TextInputAction.send 已覆盖
-              // 常规情况，这里兜底桌面键盘）
-              if (event is KeyDownEvent &&
-                  event.logicalKey == LogicalKeyboardKey.enter &&
-                  !HardwareKeyboard.instance.isShiftPressed) {
-                _submit();
-              }
-            },
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(

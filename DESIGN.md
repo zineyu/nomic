@@ -53,6 +53,11 @@ typography:
     fontSize: "0.875rem"
     fontWeight: "400"
     lineHeight: "1.5"
+  ui:
+    fontFamily: "Noto Sans, Noto Sans SC, system-ui, sans-serif"
+    fontSize: "0.8125rem"
+    fontWeight: "400"
+    lineHeight: "1.5"
   caption:
     fontFamily: "Noto Sans, Noto Sans SC, system-ui, sans-serif"
     fontSize: "0.75rem"
@@ -210,7 +215,8 @@ CJK is covered by **Noto Sans SC** (also `@fontsource`-bundled, unicode-range
 sliced so the browser only downloads needed glyph chunks) before system fallbacks
 in both stacks. Hierarchy comes from
 weight and the modular scale only: h1 = 2.25rem/700, h2 = 1.875rem/600,
-h3 = 1.5rem/600, body = 1rem/400, body-sm = 0.875rem/400, caption = 0.75rem/400.
+h3 = 1.5rem/600, body = 1rem/400, body-sm = 0.875rem/400, ui = 0.8125rem/400,
+caption = 0.75rem/400.
 Line heights: headings 1.2–1.4, body and UI text 1.5.
 
 ## Proportion and Rhythm

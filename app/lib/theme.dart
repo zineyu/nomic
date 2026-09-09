@@ -97,6 +97,62 @@ abstract final class Radii {
 /// 页面与消息流共享的列宽（920px；不引入新列宽）。
 const double maxPageWidth = 920;
 
+/// 文本样式 token（DESIGN.md typography 的 Dart 表达）。
+///
+/// 字号阶梯：h1 36 / h2 30 / h3 24 / body 16 / bodySm 14 / ui 13 / caption 12，
+/// 行高 heading 1.2–1.4、正文 1.5；颜色由调用方按语义给（foreground /
+/// mutedForeground / destructive…）。正文字族走平台默认（即 DESIGN 字体栈
+/// 中的 system-ui 档位；未打包 Noto Sans，中文由系统 CJK 回退覆盖）。
+abstract final class AppText {
+  static TextStyle h1(Color color) => TextStyle(
+    fontSize: 36,
+    height: 1.2,
+    fontWeight: FontWeight.w700,
+    color: color,
+  );
+
+  static TextStyle h2(Color color) => TextStyle(
+    fontSize: 30,
+    height: 1.3,
+    fontWeight: FontWeight.w600,
+    color: color,
+  );
+
+  static TextStyle h3(Color color) => TextStyle(
+    fontSize: 24,
+    height: 1.4,
+    fontWeight: FontWeight.w600,
+    color: color,
+  );
+
+  static TextStyle body(Color color) =>
+      TextStyle(fontSize: 16, height: 1.5, color: color);
+
+  static TextStyle bodySm(Color color) =>
+      TextStyle(fontSize: 14, height: 1.5, color: color);
+
+  static TextStyle ui(Color color) =>
+      TextStyle(fontSize: 13, height: 1.5, color: color);
+
+  static TextStyle caption(Color color) =>
+      TextStyle(fontSize: 12, height: 1.5, color: color);
+}
+
+/// 等宽字体（代码块 / 工具参数 / token 计数）：跨平台按序回退，
+/// 不再使用不可靠的裸 `'monospace'` 族名。
+abstract final class AppFonts {
+  static const monoFallback = ['Menlo', 'Monaco', 'Consolas', 'Courier New'];
+
+  static TextStyle mono({required double fontSize, required Color color}) =>
+      TextStyle(
+        fontSize: fontSize,
+        height: 1.5,
+        fontFamily: 'Menlo',
+        fontFamilyFallback: monoFallback,
+        color: color,
+      );
+}
+
 /// 从 token 构建 Material 主题。
 ThemeData buildTheme(NomicTokens tokens, {required bool dark}) {
   final scheme = ColorScheme(

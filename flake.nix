@@ -51,41 +51,6 @@
               (builtins.match ".*\\.sql$" path != null) || (craneLib.filterCargoSources path type);
           };
 
-          # web/dist 被 gitignore，flake 源码拷贝（仅含 git 跟踪文件）不含它，
-          # 而 rust-embed 编译期需要内嵌，因此在沙箱内自行构建前端产物。
-          # 过滤掉本地 node_modules/dist/storybook-static，避免污染求值。
-          webSrc = nixpkgs.lib.cleanSourceWith {
-            src = ./web;
-            filter =
-              path: type:
-              let
-                rel = nixpkgs.lib.removePrefix (toString ./web + "/") (toString path);
-              in
-              !(nixpkgs.lib.hasPrefix "node_modules" rel)
-              && !(nixpkgs.lib.hasPrefix "dist" rel)
-              && !(nixpkgs.lib.hasPrefix "storybook-static" rel);
-          };
-          webDist = pkgs.stdenv.mkDerivation {
-            pname = "nomic-web";
-            version = (builtins.fromJSON (builtins.readFile ./web/package.json)).version;
-            src = webSrc;
-            nativeBuildInputs = [
-              pkgs.nodejs
-              pkgs.importNpmLock.npmConfigHook
-            ];
-            npmDeps = pkgs.importNpmLock { npmRoot = ./web; };
-            buildPhase = ''
-              runHook preBuild
-              npm run build
-              runHook postBuild
-            '';
-            installPhase = ''
-              runHook preInstall
-              cp -r dist $out
-              runHook postInstall
-            '';
-          };
-
           commonArgs = {
             inherit src;
             pname = "nomic";
@@ -101,11 +66,6 @@
             commonArgs
             // {
               inherit cargoArtifacts;
-              # rust-embed 编译期内嵌前端产物（沙箱内构建的 web/dist）
-              preBuild = ''
-                mkdir -p web
-                ln -s ${webDist} web/dist
-              '';
               # workspace 产物只需 nomic 二进制
               cargoExtraArgs = "--package nomic-cli";
               # nix 构建沙箱中 HOME（/homeless-shelter）不可写，而 nomic 缺省
@@ -131,8 +91,6 @@
         in
         {
           default = nomic;
-          # 单独暴露便于调试/缓存：`nix build .#web`
-          web = webDist;
         }
       );
 

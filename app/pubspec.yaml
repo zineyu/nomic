@@ -1,0 +1,22 @@
+name: nomic_app
+description: Nomic Flutter GUI — connects to `nomic --serve` event stream (ADR-0046).
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  web_socket_channel: ^3.0.0
+  flutter_markdown: ^0.7.4
+  lucide_icons: ^0.257.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

@@ -7,12 +7,11 @@ extend-exclude = [
   "Cargo.lock",
   "*.svg",
   "*.min.*",
-  # Web UI 构建产物与依赖（node_modules 体量巨大且拼写不受控）
-  "web/node_modules/**",
-  "web/dist/**",
-  "web/storybook-static/**",
-  "web/coverage/**",
-  "web/package-lock.json",
+  # Flutter GUI 构建产物
+  "app/.dart_tool/**",
+  "app/build/**",
+  # Xcode 脚手架由 flutter create 生成（hex ID / xib ID 大量误报），不手维护
+  "app/macos/**",
 ]
 
 # 项目专有词汇白名单（被误报时追加）

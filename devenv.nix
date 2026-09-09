@@ -24,7 +24,7 @@
     typos # 拼写检查
     ripgrep # 快速文本搜索（rg）
     fd # 快速文件查找
-    nodejs # Web UI（web/）：vite 构建 / vitest / storybook
+    flutter # Flutter GUI（app/）：flutter run / analyze / test
 
     # 常见原生依赖，按需取消注释：
     # pkg-config
@@ -36,8 +36,6 @@
   # ── 本地一键检查（与 CI 等价）─────────────────────────────────────────────
   scripts.check.exec = ''
     set -e
-    # 前端先构建：web/dist 经 rust-embed 编译期内嵌，cargo 各步骤需要产物已存在
-    echo "== web =="       && web-check
     echo "== fmt =="       && cargo fmt --all -- --check
     echo "== size =="      && scripts/check-file-size.sh
     echo "== clippy =="    && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -47,32 +45,24 @@
     echo "== deny =="      && cargo deny check
     echo "== audit =="     && cargo audit
     echo "== machete =="   && cargo-machete --with-metadata
-    echo "== taplo =="     && taplo fmt --check
+    echo "== taplo =="     && taplo fmt --check $(fd -e toml)
     echo "== typos =="     && typos
+    echo "== app =="       && app-check
   '';
 
-  # ── Web UI（web/）─────────────────────────────────────────────────────
-  scripts.web-dev.exec = ''
-    cd web && npm run dev
+  # ── Flutter GUI（app/）──────────────────────────────────────────────────
+  # 需先启动后端：nomic --serve（事件流服务，ADR-0046）
+  scripts.app-dev.exec = ''
+    cd app && flutter run -d macos
   '';
-  scripts.web-build.exec = ''
-    cd web && npm run build
-  '';
-  scripts.web-test.exec = ''
-    cd web && npm run test
-  '';
-  scripts.web-storybook.exec = ''
-    cd web && npm run storybook
-  '';
-  # Web 侧与 check 等价的完整检查：安装 → lint → 类型检查 → 构建 → 单测
-  scripts.web-check.exec = ''
+  # App 侧与 check 等价的完整检查：依赖 → 格式 → 静态分析 → 单测
+  scripts.app-check.exec = ''
     set -e
-    cd web
-    echo "== web:install =="  && npm ci
-    echo "== web:lint =="     && npm run lint
-    echo "== web:typecheck ==" && npm run typecheck
-    echo "== web:build =="    && npm run build
-    echo "== web:test =="     && npm run test
+    cd app
+    echo "== app:pub get ==" && flutter pub get
+    echo "== app:format =="  && dart format --output=none --set-exit-if-changed .
+    echo "== app:analyze ==" && flutter analyze
+    echo "== app:test =="    && flutter test
   '';
 
   # ── 版本发布 ─────────────────────────────────────────────────────────────
@@ -176,7 +166,7 @@
     echo "🦀 nomic dev shell"
     echo "  rustc: $(rustc --version)"
     echo "  cargo: $(cargo --version)"
-    echo "  node: $(node --version)"
-    echo "  运行 \`check\` 执行与 CI 等价的全部本地检查（含 web/ 前端）"
+    echo "  flutter: $(flutter --version | head -1)"
+    echo "  运行 \`check\` 执行与 CI 等价的全部本地检查（含 app/ Flutter GUI）"
   '';
 }

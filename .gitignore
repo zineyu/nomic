@@ -2,12 +2,15 @@
 /target
 **/*.rs.bk
 
-# Web UI（web/）
-web/node_modules/
-web/dist/
-web/storybook-static/
-web/coverage/
-web/*.tsbuildinfo
+# Flutter GUI（app/）
+app/.dart_tool/
+app/build/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/.packages
+app/.metadata
+app/macos/Flutter/ephemeral/
+app/coverage/
 
 # devenv
 .devenv/

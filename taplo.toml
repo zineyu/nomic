@@ -1,6 +1,15 @@
 # taplo：TOML 格式化与校验
 include = ["**/*.toml"]
-exclude = ["Cargo.lock", "target/**", ".devenv/**", ".direnv/**"]
+exclude = [
+  "Cargo.lock",
+  "target/**",
+  ".devenv/**",
+  ".direnv/**",
+  # Flutter 构建产物与缓存（量大且含符号链接，扫描会挂起）
+  "app/build/**",
+  "app/.dart_tool/**",
+  "app/macos/Flutter/ephemeral/**",
+]
 
 [formatting]
 align_entries = false

@@ -513,6 +513,7 @@ class _SettingsPageState extends State<SettingsPage> {
     required String body,
     required Future<String?> Function() onConfirm,
   }) {
+    final tokens = tokensOf(context);
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
@@ -524,6 +525,10 @@ class _SettingsPageState extends State<SettingsPage> {
             child: const Text('取消'),
           ),
           FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: tokens.destructive,
+              foregroundColor: tokens.primaryForeground,
+            ),
             onPressed: () {
               Navigator.of(context).pop();
               _report(onConfirm());

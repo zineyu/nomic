@@ -12,7 +12,7 @@ import '../state/chat_items.dart';
 import '../theme.dart';
 import 'input_bar.dart';
 import 'message_item.dart';
-import 'question_sheet.dart';
+import 'question_panel.dart';
 
 class ChatPage extends StatefulWidget {
   const ChatPage({super.key, required this.controller});
@@ -96,15 +96,6 @@ class _ChatPageState extends State<ChatPage> {
     final tokens = tokensOf(context);
     _maybeScrollToBottom();
 
-    // 提问弹层（单选/多选/填空 + 自定义填写）
-    final question = controller.question;
-    if (question != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!context.mounted) return;
-        QuestionSheet.maybeShow(context, controller, question);
-      });
-    }
-
     // 运行边沿记录开始时间（Working 状态行计时）
     if (controller.running && _runStartedAt == null) {
       _runStartedAt = DateTime.now();
@@ -163,6 +154,26 @@ class _ChatPageState extends State<ChatPage> {
             if (controller.queue.isNotEmpty) _QueueBar(controller: controller),
             if (controller.running && _runStartedAt != null)
               _WorkingLine(startedAt: _runStartedAt!),
+            // 提问面板（内嵌不阻塞；ValueKey 锚定 id，新提问重置表单态）
+            if (controller.question != null)
+              Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: maxPageWidth),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(
+                      Spacing.md,
+                      0,
+                      Spacing.md,
+                      Spacing.sm,
+                    ),
+                    child: QuestionPanel(
+                      key: ValueKey(controller.question!.id),
+                      controller: controller,
+                      question: controller.question!,
+                    ),
+                  ),
+                ),
+              ),
             Center(
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: maxPageWidth),

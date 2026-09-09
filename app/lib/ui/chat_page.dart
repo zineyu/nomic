@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
 import '../app_controller.dart';
+import '../state/chat_items.dart';
 import '../theme.dart';
 import 'input_bar.dart';
 import 'message_item.dart';
@@ -24,7 +25,10 @@ class ChatPage extends StatefulWidget {
 
 class _ChatPageState extends State<ChatPage> {
   final _scrollController = ScrollController();
-  int _lastItemCount = 0;
+
+  /// 上次滚动检查时的列表签名（条数 + 末条内容长度）；
+  /// 流式增长不改条数，靠末条长度变化识别。
+  int _lastSignature = 0;
 
   /// 本轮运行开始时间（Working 状态行计时用；空闲时为 null）。
   DateTime? _runStartedAt;
@@ -37,8 +41,10 @@ class _ChatPageState extends State<ChatPage> {
 
   /// 新消息到达或流式增长时贴底滚动（用户在底部时）。
   void _maybeScrollToBottom() {
-    if (widget.controller.items.length == _lastItemCount) return;
-    _lastItemCount = widget.controller.items.length;
+    final items = widget.controller.items;
+    final signature = Object.hash(items.length, _tailContentLength(items));
+    if (signature == _lastSignature) return;
+    _lastSignature = signature;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollController.hasClients) return;
       final position = _scrollController.position;
@@ -46,6 +52,17 @@ class _ChatPageState extends State<ChatPage> {
         _scrollController.jumpTo(position.maxScrollExtent);
       }
     });
+  }
+
+  /// 末条项的内容长度（流式 delta 只改内容不改条数，用于滚动签名）。
+  static int _tailContentLength(List<ChatItem> items) {
+    if (items.isEmpty) return 0;
+    return switch (items.last) {
+      UserItem i => i.text.length,
+      AssistantItem i => i.text.length + i.thinking.length,
+      ToolItem i => i.resultPreview.length,
+      SystemItem i => i.text.length,
+    };
   }
 
   @override

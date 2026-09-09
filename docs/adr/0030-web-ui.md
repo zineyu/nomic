@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Superseded（前端与静态伺服部分由 ADR-0046 取代：React 前端移除，由 Flutter
+GUI 替代；服务端 WebSocket 事件协议与运行时模型继续有效，`--web` 重命名为
+`--serve`）
 
 ## Date
 

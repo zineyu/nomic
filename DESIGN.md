@@ -196,7 +196,7 @@ structure is identical; only values change:
 | `sidebar-primary-foreground` | `oklch(0.19 0 0)` |
 | `sidebar-accent` | `oklch(0.25 0 0)` |
 
-These values are kept in sync with the `.dark` block in `web/src/index.css`.
+These values are kept in sync with the dark theme in `app/lib/theme.dart`.
 
 ## Typography
 
@@ -216,7 +216,7 @@ Line heights: headings 1.2–1.4, body and UI text 1.5.
 ## Proportion and Rhythm
 
 - **Column width**: page and message flow share `max-w-page` (920px, defined in
-  `index.css` `@theme`); no other column widths.
+  `app/lib/theme.dart`); no other column widths.
 - **Spacing**: only the spacing tokens (8 / 16 / 24 / 32). Card padding 24, section
   gaps 16–24, control gaps 8. Every `p-*` / `gap-*` value maps to a token step.
 - **Radius**: sm 4 / md 6 / lg 8 / xl 12 / full. Cards and bubbles lg–xl, controls md,

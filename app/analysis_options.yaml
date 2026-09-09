@@ -1,6 +1,9 @@
 include: package:flutter_lints/flutter.yaml
 
 analyzer:
+  exclude:
+    # vendored 第三方包（不参与本仓库 lint；见 packages/lucide_icons/README）
+    - packages/**
   language:
     strict-casts: true
     strict-inference: true

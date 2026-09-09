@@ -1,6 +1,7 @@
 # ADR-0034: web steering 队列与队列区编辑（QUEUE 模式的 web 版）
 
-- 状态：已接受
+- 状态：已接受（前端载体由 ADR-0046 改为 Flutter GUI；本 ADR 的队列协议与
+  服务端语义不受影响）
 - 日期：2026-08-20
 - 承接：ADR-0013/0014（steering 与统一消息队列语义）、ADR-0027（队列落点：
   core 只保留 `TurnInjection` 注入点）、ADR-0030（web UI；其非目标列出

@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# 在 devenv(Nix) 环境中调用 Flutter 的包装器。用法与 flutter 完全一致：
+#
+#   scripts/flutter run -d macos
+#   scripts/flutter build macos --debug
+#   scripts/flutter dart format .   # 子命令 dart 转发到 SDK 自带的 dart
+#
+# 解决两类 Nix 环境与 Xcode 工具链冲突的问题：
+#
+# 1. 环境污染：Nix apple-sdk 的 setup hook 会把 DEVELOPER_DIR/SDKROOT 指向
+#    store 中的 SDK 桩目录（不含 xcodebuild，附带一个 xcbuild 的假 xcrun），
+#    stdenv 还会导出 LD/CC/AR/... 等变量被 xcodebuild 当作构建设置覆盖，
+#    表现为 "Xcode failed to resolve Swift Package Manager dependencies"、
+#    "ld: unknown options" 等错误。这里全部 unset，并把 Nix 的
+#    clang/cctools/binutils/xcbuild 从 PATH 中移除（它们会遮蔽 Xcode 自带工具）。
+#
+# 2. 只读 artifact 缓存：nixpkgs 的 flutter 把引擎 artifact 放在只读 store
+#    中，Flutter 构建时原样拷贝（保留只读权限），导致 lipo 无法写临时文件、
+#    codesign 无法重签。这里用 APFS clonefile 把 bin/cache 同步成可写镜像
+#    （$HOME/.local/share/flutter-sdk），并修复被 cp -L 拍平的 framework
+#    内部符号链接（否则 codesign 报 "bundle format is ambiguous"）。
+#
+# 镜像按源 store 路径失效重建（nixpkgs 升级 flutter 后自动重建）。
+set -euo pipefail
+
+SRC="$(cd "$(dirname "$(command -v flutter)")/.." && pwd)" # nix store 中的 *-sdk-links 目录
+DST="$HOME/.local/share/flutter-sdk"
+
+sync_mirror() {
+  echo "flutter: 同步可写 SDK 镜像 → ${DST}（源: ${SRC}）" >&2
+  rm -rf "$DST"
+  mkdir -p "$DST/bin"
+  # 顶层与 bin/：符号链接即可（flutter 只读这些）
+  local e
+  for e in "$SRC"/* "$SRC"/.[!.]*; do
+    [ -e "$e" ] || continue
+    [ "$(basename "$e")" = bin ] && continue
+    ln -sfn "$e" "$DST/$(basename "$e")"
+  done
+  for e in "$SRC/bin"/* "$SRC/bin"/.[!.]*; do
+    [ -e "$e" ] || continue
+    case "$(basename "$e")" in cache | flutter) continue ;; esac
+    ln -sfn "$e" "$DST/bin/$(basename "$e")"
+  done
+  # bin/cache：可写 clonefile 拷贝（接触符号链接，chmod 可写）
+  cp -RLc "$SRC/bin/cache" "$DST/bin/cache" 2>/dev/null || cp -RL "$SRC/bin/cache" "$DST/bin/cache"
+  chmod -R u+w "$DST/bin/cache"
+  # 修复被拍平的 framework 内部符号链接（codesign 依赖该结构）
+  find "$DST" -type d -name "*.framework" | while read -r f; do
+    [ -d "$f/Versions/A" ] || continue
+    local name; name=$(basename "$f" .framework)
+    if [ -d "$f/Versions/Current" ] && [ ! -L "$f/Versions/Current" ]; then
+      rm -rf "$f/Versions/Current"; ln -s A "$f/Versions/Current"
+    fi
+    for e in "$name" Headers Modules Resources; do
+      if [ -e "$f/$e" ] && [ ! -L "$f/$e" ]; then
+        rm -rf "$f/$e"; ln -s "Versions/Current/$e" "$f/$e"
+      fi
+    done
+  done
+  # 入口脚本：固定 FLUTTER_ROOT 为镜像路径
+  cat > "$DST/bin/flutter" <<EOF
+#! /bin/bash -e
+export FLUTTER_ROOT=\${FLUTTER_ROOT-'$DST'}
+exec -a "\$0" "$DST/bin/.flutter-wrapped" "\$@"
+EOF
+  chmod +x "$DST/bin/flutter"
+  ln -sfn "$SRC" "$DST/.source"
+}
+
+if [ ! -x "$DST/bin/flutter" ] || [ "$(readlink "$DST/.source" 2>/dev/null || true)" != "$SRC" ]; then
+  sync_mirror
+fi
+
+# ── 环境净化 ────────────────────────────────────────────────────────────────
+while IFS='=' read -r name _; do
+  case "$name" in
+    # apple-sdk setup hook / xcselect 重定向
+    DEVELOPER_DIR | DEVELOPER_DIR_* | SDKROOT | SDKROOT_* | MACOSX_DEPLOYMENT_TARGET) unset "$name" ;;
+    # stdenv 工具链变量（会被 xcodebuild 当作构建设置覆盖）
+    CC | CXX | LD | AR | AS | NM | RANLIB | STRIP | OBJCOPY | OBJDUMP | SIZE | STRINGS) unset "$name" ;;
+    *_FOR_BUILD | LD_DYLD_PATH | CONFIG_SHELL | SOURCE_DATE_EPOCH) unset "$name" ;;
+    PKG_CONFIG | PKG_CONFIG_PATH) unset "$name" ;;
+    # cc/bintools wrapper 注入的编译/链接参数
+    NIX_CC* | NIX_BINTOOLS* | NIX_CFLAGS_COMPILE* | NIX_LDFLAGS* | NIX_APPLE_SDK_VERSION) unset "$name" ;;
+    NIX_DONT_SET_RPATH* | NIX_ENFORCE_NO_NATIVE | NIX_HARDENING_ENABLE) unset "$name" ;;
+    NIX_IGNORE_LD_THROUGH_GCC | NIX_NO_SELF_RPATH | NIX_PKG_CONFIG_WRAPPER*) unset "$name" ;;
+  esac
+done < <(env)
+
+# 移除会遮蔽 Xcode 自带工具的 Nix 工具链路径（假 xcrun、cctools lipo 等）
+CLEAN_PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -vE 'xcbuild|cctools|binutils|clang-wrapper|clang-[0-9]' | paste -sd: -)"
+export PATH="$CLEAN_PATH"
+
+if [ "${1:-}" = dart ]; then
+  shift
+  exec "$DST/bin/dart" "$@"
+fi
+exec "$DST/bin/flutter" "$@"

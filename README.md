@@ -14,7 +14,7 @@ Rust 编码 agent —— [pi-coding-agent](https://github.com/badlogic/pi-mono) 
 - **多 provider**：Anthropic Messages 与 OpenAI Completions 兼容端点（DeepSeek、各类网关代理等），
   模型分层解析（配置 > [models.dev](https://models.dev) > 中性兜底）
 - **双运行模式**：ratatui 全屏交互 TUI（单字母动作层，[ADR-0021](docs/adr/0021-single-letter-action-layer.md)）+ 非交互 print 模式（管道可用）
-- **Web UI**：`--web` 内置 HTTP 服务（REST + SSE 流式 + 前端静态伺服，[ADR-0030](docs/adr/0030-web-ui.md)）；前端为 React + Vite + TailwindCSS + shadcn/ui（Vitest 单测 + Storybook 组件开发）
+- **Flutter GUI**：`--serve` 启动 headless 事件流服务（纯 WebSocket 协议），Flutter 桌面应用（`app/`）连接使用（[ADR-0046](docs/adr/0046-flutter-gui.md)）
 - **排队输入**：运行中 `Enter` 把消息排入统一消息队列（当前步骤完成后注入本轮运行，
   未清空则持续续行；运行被取消或失败时队列保留，恢复后按序作为下一轮发送）；
   oil.nvim 式 QUEUE 模式编辑队列（就地编辑/删除/换位），设计见
@@ -123,10 +123,11 @@ nomic --model anthropic/claude-sonnet-4-5
 # print 模式（非交互，流式输出到 stdout，管道可用）
 nomic -p "列出当前目录的文件"
 
-# Web UI（内置服务器：REST + SSE + 前端静态伺服，缺省绑定 127.0.0.1:3333）
-nomic --web
+# Flutter GUI（先启动 headless 事件流服务，缺省绑定 127.0.0.1:3333）
+nomic --serve
+# 再启动 GUI（devenv 内：`app-dev`，等价于 cd app && flutter run -d macos）
 # 指定端口 / 监听地址（跨机访问自担风险）
-nomic --web --port 8080 --host 127.0.0.1
+nomic --serve --port 8080 --host 127.0.0.1
 
 # OpenAI 兼容端点（DeepSeek、代理网关等）
 nomic -p "..." --provider openai --base-url https://your.gateway/v1 --model deepseek-chat
@@ -199,40 +200,28 @@ nomic --cwd /path/to/project
 运行中输入的普通消息按 `Enter` 排入统一消息队列（见上「排队输入」）；
 命令栏提交的模板调用同样入队；会话命令（`compact`、`continue`、`models` 等）仍须等本轮结束。
 
-### Web UI（`--web`）
+### Flutter GUI（`--serve` + `app/`）
 
-`nomic --web` 启动内置 HTTP 服务（缺省 `127.0.0.1:3333`），浏览器访问即用：
-
-- **流式聊天**：markdown 渲染、thinking 折叠、工具执行卡片（点击展开参数与结果）；
-  运行中发送的消息进入统一消息队列，当前步骤完成后注入本轮运行（与 TUI 同一语义），
-  输入框上方的队列区展示排队消息并支持就地编辑 / 删除 / 上移下移
-- **会话管理**：启动页选择 project 后开始新 work（无默认 project，work 严格归属
-  选定目录，连带创建主 session）；侧栏按 project 分组列出历史 work，支持新建 /
-  恢复 / 重命名 / 删除（删除 work 级联名下全部 session；复用 SQLite 存储，
-  与 TUI/print 共用）
-- **模型选择**：跨 provider 候选列表 + 思考级别；切换结果落库，与 TUI `/models` 同一口径
-- **设置**：左侧 Rail 的「设置」页管理 providers / 模型覆盖 / 标量设置
-  （走 WS 设置事件，与 CLI / TUI `config` 命令同一存储与校验；api_key 脱敏回显）
-- **提问**：`ask_user_question` 以弹层呈现（单选/多选/填空 + 自定义填写）
-- **mention 与命令**：输入 `@` 弹出行内补全（`@skill://` 引用 skill、`@file:` 引用
-  当前 session project 内的文件，发送时由服务端展开有效标记，与 TUI 同一口径）；
-  输入 `/` 弹出命令补全——`/compact [聚焦指令]` 压缩上下文、`/continue` 续跑上次
-  运行（命令走 runner 串行队列，运行中提交则等本轮结束）、`/goal <目标>` 启动
-  目标驱动运行（与 TUI 同一语义：`goal_done` 汇报完成前持续追问；运行期间输入框
-  上方显示目标徽标；`/goal` 无参取消）
+`nomic --serve` 启动 headless 事件流服务（缺省 `127.0.0.1:3333`），GUI 为
+`app/` 下的 Flutter 桌面应用（macOS 优先），经 `ws://{host}/ws` 连接：
 
 ```bash
-nomic --web [--port N] [--host H]
+nomic --serve [--port N] [--host H]   # 终端 1：事件流服务
+app-dev                               # 终端 2（devenv）：cd app && flutter run -d macos
 ```
 
+- **流式聊天**：markdown 渲染、工具调用卡片；运行中发送的消息进入统一消息
+  队列，当前步骤完成后注入本轮运行（与 TUI 同一语义）
+- **会话管理**：启动页选择 project 后开始新 work（无默认 project，work 严格
+  归属选定目录，连带创建主 session）；work/session 列表恢复历史会话
+  （复用 SQLite 存储，与 TUI/print 共用）
+- **模型选择**：跨 provider 候选列表；切换结果落库，与 TUI `/models` 同一口径
+- **提问**：`ask_user_question` 以弹层呈现（单选/多选/填空 + 自定义填写）
 - `--host` 缺省 `127.0.0.1`（本服务能执行 bash，跨机访问自担风险）；
-  POST 请求校验 `Origin`（CSRF 防护），不开放 CORS
-- 前端产物（`web/dist`）编译期内嵌进二进制（rust-embed）：构建 nomic 前需先
-  在 `web/` 下 `npm run build`（`check`/`web-build` 已保证顺序），发行包无需
-  单独携带前端；开发期用 `npm run dev`（Vite dev server 代理 `/api` 到
-  `nomic --web`）
+  WebSocket 校验 `Origin`（浏览器场景防护），不开放 CORS
 
-设计见 [docs/adr/0030](docs/adr/0030-web-ui.md)。
+设计见 [docs/adr/0046](docs/adr/0046-flutter-gui.md)（协议部分见
+[docs/adr/0030](docs/adr/0030-web-ui.md)）。
 
 ### 会话恢复与分支
 
@@ -303,7 +292,7 @@ X11 / Wayland。从文件管理器粘贴或拖入的图片文件路径（含 `fi
 
 - **CLI**：`nomic config ...`（`config-path` 查看数据库位置）；
 - **TUI**：命令栏 `config ...`（无 `/` 前缀，`help` 可查）；
-- **Web UI**：左侧 Rail 的「设置」页（providers / 模型覆盖 / 标量可视化编辑）。
+- **Flutter GUI**：设置页（providers / 模型覆盖 / 标量可视化编辑；走 WS 设置事件）。
 
 优先级统一为 **CLI 参数 > 环境变量 > sqlite > 协议/内置默认**；
 写路径对未知键与非法取值硬报错。
@@ -367,7 +356,7 @@ TUI 内 `models` 命令跨 provider 选择（`<provider>/<模型id>` 格式）�
 选择结果追加保存；启动时按
 **CLI 参数 > sqlite 配置（从最新选择向最老逐条回退）** 解析，
 失效的选择（provider 已删除、模型已不存在）告警后自动回退到更早的选择；
-两层都没有可用选择时不再启动失败——TUI / web 以占位模型照常启动，
+两层都没有可用选择时不再启动失败——TUI / serve 以占位模型照常启动，
 发消息时提示先经 `models:<provider>/<模型id>` 或设置页完成选择
 （无内置默认 provider / 模型）；print 模式非交互，仍在启动时报错。
 启动时也可用 `--provider` / `--model` 临时指定（`--model` 支持
@@ -383,7 +372,7 @@ TUI 内 `models` 命令跨 provider 选择（`<provider>/<模型id>` 格式）�
 project 的指令越靠后，可细化上层（如项目级）约定。
 缺失或空白文件跳过；文件不可读时告警后继续，不阻断启动。
 
-启动、`--session` 跨目录恢复、TUI `/resume` 切换与 web 按 project 创建
+启动、`--session` 跨目录恢复、TUI `/resume` 切换与 GUI 按 project 创建
 session 时，提示词（含末尾的 cwd 脚注）都以该 session 的 project 为基准
 构建——与工具相对路径同一口径（project 严格归属）。
 
@@ -453,7 +442,7 @@ read({"path": "skill://x/a.md:conflicts?theirs=b.md"})       # 与 b.md 的三�
 
 选择器畸形即报错（如 `:0`、`:-3`），不会静默放宽为全量读取。
 
-在 TUI / Web 的输入框里，`@skill://<name>` 可作为 mention 引用 skill，发送时展开为
+在 TUI 的输入框里，`@skill://<name>` 可作为 mention 引用 skill，发送时展开为
 内容块。
 
 启动时 nomic 将 skill 的名称、描述与 triggers 注入系统提示词；模型可通过
@@ -547,16 +536,16 @@ direnv allow        # 或使用 direnv 自动进入
 ### 本地检查
 
 ```bash
-check               # 与 CI 等价的全部检查：web/ 前端（npm ci → lint → typecheck →
-                    # build → vitest）先构建（产物编译期内嵌，cargo 步骤依赖它）;
-                    # 其余：fmt / clippy / nextest / doc / deny / machete / taplo / typos
+check               # 与 CI 等价的全部检查：fmt / clippy / nextest / doc / deny /
+                    # machete / taplo / typos，末尾含 app/ Flutter 检查
+                    #（pub get → dart format → analyze → test）
 ```
 
 每个 commit 必须通过 `check`（见 [AGENTS.md](AGENTS.md)）；CI 与本地共用
 同一份 devenv 环境与检查脚本。
 
-Web 侧也可单独执行：`web-check`（完整）、`web-dev`（vite dev server，
-`/api` 代理到 `nomic --web`）、`web-build`、`web-test`、`web-storybook`。
+App 侧也可单独执行：`app-check`（完整）、`app-dev`（flutter run，需先
+`nomic --serve`）。
 
 ### 项目结构
 
@@ -569,8 +558,8 @@ Web 侧也可单独执行：`web-check`（完整）、`web-dev`（vite dev serve
 - `crates/app/nomic-skills`：skill 发现、frontmatter 元数据、覆盖规则与显式激活
 - `crates/app/nomic-prompts`：prompt template 发现、frontmatter 元数据、覆盖规则与参数展开
 - `crates/app/nomic-tools`：内建工具——`read` / `write` / `edit` / `bash`（截断、模糊匹配、BOM/CRLF 保留、文件变更队列、超时强杀进程组）、`grep` / `find`（基于 fff 常驻索引，纯库实现）、`todo_read` / `todo_write`（父子嵌套任务列表）
-- `crates/app/nomic-cli`：`nomic` 二进制（print 模式 + ratatui 交互 TUI + `--web` 内置服务 + resume/sessions 子命令 + tracing 日志）
-- `web/`：Web UI 前端（React + Vite + TypeScript + TailwindCSS + shadcn/ui；Vitest 单测、Storybook 组件开发；`npm run build` 产物由 `nomic --web` 伺服）
+- `crates/app/nomic-cli`：`nomic` 二进制（print 模式 + ratatui 交互 TUI + `--serve` headless 事件流服务 + resume/sessions 子命令 + tracing 日志）
+- `app/`：Flutter GUI（桌面应用；经 `ws://{host}/ws` 连接 `nomic --serve`，协议见 ADR-0030/0046）
 - `docs/adr/`：架构决策记录（0001–0030）
 
 ### 新增 crate

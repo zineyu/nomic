@@ -60,34 +60,21 @@ The project uses [DESIGN.md](https://github.com/google-labs-code/design.md) to d
 # Validate DESIGN.md
 npx @google/design.md lint DESIGN.md
 
-# Export to Tailwind v4 CSS theme
-npx @google/design.md export --format css-tailwind DESIGN.md > web/src/theme.css
-
-# Export to Tailwind v3 JSON config
-npx @google/design.md export --format json-tailwind DESIGN.md > tailwind.theme.json
-
 # Export to W3C Design Token Format
 npx @google/design.md export --format dtcg DESIGN.md > tokens.json
 ```
 
-### NPM Scripts (in `web/`)
-
-```bash
-npm run design:lint
-npm run design:export-tailwind
-npm run design:export-css
-```
-
 ### Guidelines
 
-- Keep `DESIGN.md` tokens in sync with `web/src/index.css` CSS variables
+- Keep `DESIGN.md` tokens in sync with the Flutter theme (`app/lib/theme.dart`)
 - Run `design:lint` before committing design changes
 - Use token references (`{colors.primary}`) in component definitions
 - See [spec](https://github.com/google-labs-code/design.md/blob/main/docs/spec.md) for full format reference
 
 ## UI Rules
 
-Visual tokens have a single source of truth: `DESIGN.md` + the `@theme` block in `web/src/index.css`.
+Visual tokens have a single source of truth: `DESIGN.md` + the theme definitions in
+`app/lib/theme.dart` (Flutter GUI, ADR-0046).
 New visual properties must be added as tokens first, then consumed by components.
 
 ### 0. Design style: Minimalism
@@ -117,27 +104,26 @@ New visual properties must be added as tokens first, then consumed by components
 
 ### 2. Proportion and rhythm
 
-- **Column width**: page and message flow share `max-w-page` (920px, defined in `index.css`
-  `@theme`); do not introduce new column widths
+- **Column width**: page and message flow share `maxPageWidth` (920px, defined in
+  `app/lib/theme.dart`); do not introduce new column widths
 - **Line height**: headings 1.2–1.4 (`h1` / `h2` / `h3` tokens), body and UI text 1.5 (`body` /
-  `body-sm` / `caption`)
+  `bodySm` / `caption`)
 - **Spacing**: only spacing tokens (8/16/24/32): card padding 24, card/section gaps 16–24, control
-  gaps 8; every `p-*` / `gap-*` / `px-*` value must map to a token step, no magic numbers
+  gaps 8; every `padding` / `SizedBox` / `gap` value must map to a token step, no magic numbers
 
 ### 3. One unified set of base tokens
 
 - **Radius**: only the rounded tokens (4/6/8/12/full); cards and bubbles lg(8)/xl(12), controls
   md(6), badges full
-- **Shadow**: shadows are reserved for overlays (`shadow-md`/`shadow-lg` on dropdowns/dialogs);
-  in-flow surfaces (cards, bubbles, inputs) are flat and use hairline borders instead; no custom
-  `box-shadow` values
-- **Border**: uniform 1px `border` token; use `separator` for dividers; focus state is always `ring`
-  + `ring-ring/50`, never ad-hoc outline colors
+- **Shadow**: shadows are reserved for overlays (dropdowns/dialogs); in-flow surfaces (cards,
+  bubbles, inputs) are flat and use hairline borders instead; no custom shadow values
+- **Border**: uniform 1px `border` token; use `separator` for dividers; focus state is always a
+  ring at 50% opacity, never ad-hoc outline colors
 - **Button height**: only the button size steps xs 24 / sm 32 / default 36 / lg 40 (icon buttons
   24/32/36/40); no custom heights
-- **Icons**: lucide-react only; sizes limited to 12 (`size-3`, auxiliary) / 14 (`size-3.5`, inline
-  default) / 16 (`size-4`, standard); icons are achromatic — categories are expressed by a foreground
-  opacity ladder (e.g. ToolCard tints its icon via `text-foreground/<opacity>`) and only errors use
+- **Icons**: lucide (`lucide_icons` package) only; sizes limited to 12 (auxiliary) / 14 (inline
+  default) / 16 (standard); icons are achromatic — categories are expressed by a foreground
+  opacity ladder (e.g. ToolCard tints its icon via foreground opacity) and only errors use
   `destructive`; no other icon libraries or inline SVGs
 
 ## After Coding

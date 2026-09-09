@@ -33,10 +33,35 @@ class _ChatPageState extends State<ChatPage> {
   /// 本轮运行开始时间（Working 状态行计时用；空闲时为 null）。
   DateTime? _runStartedAt;
 
+  /// 用户是否停留在底部附近（决定「回到底部」浮钮是否显示）。
+  bool _atBottom = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController.addListener(_onScroll);
+  }
+
   @override
   void dispose() {
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    final atBottom = position.maxScrollExtent - position.pixels < 200;
+    if (atBottom != _atBottom) setState(() => _atBottom = atBottom);
+  }
+
+  void _scrollToBottom() {
+    if (!_scrollController.hasClients) return;
+    _scrollController.animateTo(
+      _scrollController.position.maxScrollExtent,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+    );
   }
 
   /// 新消息到达或流式增长时贴底滚动（用户在底部时）。
@@ -101,24 +126,37 @@ class _ChatPageState extends State<ChatPage> {
             if (controller.error != null) _ErrorBanner(controller: controller),
             if (controller.goal != null) _GoalBanner(goal: controller.goal!),
             Expanded(
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: maxPageWidth),
-                  child: ListView.builder(
-                    controller: _scrollController,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: Spacing.lg,
-                      vertical: Spacing.lg,
-                    ),
-                    itemCount: controller.items.length,
-                    // ValueKey 锚定 item.id：插入新项时折叠/展开状态
-                    //（_ThinkingFold / ToolCard）跟随数据而非位置
-                    itemBuilder: (context, index) => MessageItemView(
-                      key: ValueKey(controller.items[index].id),
-                      item: controller.items[index],
+              child: Stack(
+                children: [
+                  Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: maxPageWidth),
+                      child: ListView.builder(
+                        controller: _scrollController,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: Spacing.lg,
+                          vertical: Spacing.lg,
+                        ),
+                        itemCount: controller.items.length,
+                        // ValueKey 锚定 item.id：插入新项时折叠/展开状态
+                        //（_ThinkingFold / ToolCard）跟随数据而非位置
+                        itemBuilder: (context, index) => MessageItemView(
+                          key: ValueKey(controller.items[index].id),
+                          item: controller.items[index],
+                        ),
+                      ),
                     ),
                   ),
-                ),
+                  if (!_atBottom)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: Spacing.sm,
+                      child: Center(
+                        child: _ScrollToBottomButton(onTap: _scrollToBottom),
+                      ),
+                    ),
+                ],
               ),
             ),
             // steering 队列区（服务端权威：queue_changed / 快照驱动）
@@ -241,6 +279,39 @@ class _QueueBar extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// 「回到底部」浮钮：用户上翻时出现在消息流底部中央（overlay 定位用，
+/// 扁平 card + hairline border，不用阴影）。
+class _ScrollToBottomButton extends StatelessWidget {
+  const _ScrollToBottomButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = tokensOf(context);
+    return Tooltip(
+      message: '回到底部',
+      child: Material(
+        color: tokens.card,
+        shape: CircleBorder(side: BorderSide(color: tokens.border)),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: SizedBox(
+            width: 32,
+            height: 32,
+            child: Icon(
+              LucideIcons.arrowDown,
+              size: 16,
+              color: tokens.foreground,
+            ),
+          ),
+        ),
       ),
     );
   }

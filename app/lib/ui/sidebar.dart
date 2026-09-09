@@ -76,6 +76,7 @@ class Sidebar extends StatelessWidget {
                   for (final work in entry.value)
                     _WorkTile(
                       work: work,
+                      controller: controller,
                       selected: controller.sessionId == work.mainSessionId,
                       onTap: () => controller.openSession(work.mainSessionId),
                     ),
@@ -124,14 +125,16 @@ class Sidebar extends StatelessWidget {
   }
 }
 
-class _WorkTile extends StatelessWidget {
+class _WorkTile extends StatefulWidget {
   const _WorkTile({
     required this.work,
+    required this.controller,
     required this.selected,
     required this.onTap,
   });
 
   final WorkSummary work;
+  final AppController controller;
 
   /// 当前打开的 work（Codex 侧栏同款：neutral accent 填充 + 字重标记
   /// 当前项，不用彩色 pill）。
@@ -139,42 +142,108 @@ class _WorkTile extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
+  State<_WorkTile> createState() => _WorkTileState();
+}
+
+class _WorkTileState extends State<_WorkTile> {
+  bool _hovered = false;
+
+  @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
+    final selected = widget.selected;
+    final work = widget.work;
     return Padding(
       padding: const EdgeInsets.only(bottom: 2),
-      child: Material(
-        color: selected ? tokens.sidebarAccent : Colors.transparent,
-        borderRadius: BorderRadius.circular(Radii.md),
-        child: InkWell(
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: Material(
+          color: selected ? tokens.sidebarAccent : Colors.transparent,
           borderRadius: BorderRadius.circular(Radii.md),
-          hoverColor: tokens.sidebarAccent,
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: Spacing.sm,
-              vertical: Spacing.sm,
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  work.displayTitle,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: selected ? FontWeight.w500 : FontWeight.w400,
-                    color: tokens.foreground,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(Radii.md),
+            hoverColor: tokens.sidebarAccent,
+            onTap: widget.onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: Spacing.sm,
+                vertical: Spacing.sm,
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          work.displayTitle,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: selected
+                                ? FontWeight.w500
+                                : FontWeight.w400,
+                            color: tokens.foreground,
+                          ),
+                        ),
+                        Text(
+                          _workSubtitle(work),
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: tokens.mutedForeground,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                Text(
-                  _workSubtitle(work),
-                  style: TextStyle(fontSize: 12, color: tokens.mutedForeground),
-                ),
-              ],
+                  // hover 时露出删除入口（Codex 侧栏同款）
+                  if (_hovered)
+                    GestureDetector(
+                      onTap: () => _confirmDelete(context),
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: Spacing.sm),
+                        child: Icon(
+                          LucideIcons.trash2,
+                          size: 14,
+                          color: tokens.mutedForeground,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  void _confirmDelete(BuildContext context) {
+    final tokens = tokensOf(context);
+    final controller = widget.controller;
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除这个 work？', style: TextStyle(fontSize: 16)),
+        content: Text('「${widget.work.displayTitle}」及其全部会话将被删除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: tokens.destructive,
+              foregroundColor: tokens.primaryForeground,
+            ),
+            onPressed: () {
+              Navigator.of(context).pop();
+              controller.deleteWork(widget.work.id);
+            },
+            child: const Text('删除'),
+          ),
+        ],
       ),
     );
   }

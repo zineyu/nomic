@@ -14,6 +14,7 @@ int asInt(Object? v, [int fallback = 0]) =>
     v is int ? v : (v is num ? v.toInt() : fallback);
 int? asIntOrNull(Object? v) => v is int ? v : (v is num ? v.toInt() : null);
 bool asBool(Object? v, [bool fallback = false]) => v is bool ? v : fallback;
+num? asNumOrNull(Object? v) => v is num ? v : null;
 Json asJson(Object? v) => v is Map<String, dynamic> ? v : const {};
 List<Json> asJsonList(Object? v) =>
     v is List ? v.whereType<Map<String, dynamic>>().toList() : const [];
@@ -320,4 +321,152 @@ class SessionStats {
   final int totalSteps;
   final int inputTokens;
   final int outputTokens;
+}
+
+// ── 设置（ADR-0039；settings.rs 三表）────────────────────────────────────
+
+/// 标量设置键（`settings` 表；与 crates/app/nomic-cli/src/settings.rs `keys` 对应）。
+abstract final class SettingKeys {
+  /// 追加到系统提示词末尾的文本
+  static const appendSystem = 'append_system';
+
+  /// 额外的 prompt template 文件或目录
+  static const prompts = 'prompts';
+
+  /// 自动压缩开关
+  static const compactionEnabled = 'compaction.enabled';
+
+  /// 模型别名表（别名 → `<provider>/<模型id>`）
+  static const modelAliases = 'model_aliases';
+}
+
+/// provider 定义（`get_settings` 快照携带；api_key 已脱敏为 hasApiKey）。
+class ProviderView {
+  const ProviderView({
+    required this.name,
+    this.api,
+    this.baseUrl,
+    required this.hasApiKey,
+    required this.updatedAt,
+  });
+
+  factory ProviderView.fromJson(Json json) => ProviderView(
+    name: asStr(json['name']),
+    api: asStrOrNull(json['api']),
+    baseUrl: asStrOrNull(json['base_url']),
+    hasApiKey: asBool(json['has_api_key']),
+    updatedAt: asInt(json['updated_at']),
+  );
+
+  final String name;
+
+  /// API 种类（serde snake_case；null = 按名推断）。
+  final String? api;
+  final String? baseUrl;
+  final bool hasApiKey;
+  final int updatedAt;
+}
+
+/// 模型覆盖行（`model_specs` 表；spec 字段经 serde flatten 进同一 JSON 对象，
+/// null 字段不下发——缺失即「未覆盖」）。
+class ModelSpecRow {
+  const ModelSpecRow({
+    required this.provider,
+    required this.modelId,
+    required this.raw,
+    required this.updatedAt,
+  });
+
+  factory ModelSpecRow.fromJson(Json json) => ModelSpecRow(
+    provider: asStr(json['provider']),
+    modelId: asStr(json['model_id']),
+    raw: json,
+    updatedAt: asInt(json['updated_at']),
+  );
+
+  final String provider;
+  final String modelId;
+
+  /// 原始 JSON（flatten 的 spec 字段经 getter 读取）。
+  final Json raw;
+  final int updatedAt;
+
+  String get spec => '$provider/$modelId';
+  String? get displayName => asStrOrNull(raw['name']);
+  bool? get reasoning => raw['reasoning'] as bool?;
+  bool? get vision => raw['vision'] as bool?;
+  int? get contextWindow => asIntOrNull(raw['context_window']);
+  int? get maxTokens => asIntOrNull(raw['max_tokens']);
+  num? get costInput => asNumOrNull(raw['cost_input']);
+  num? get costOutput => asNumOrNull(raw['cost_output']);
+  num? get costCacheRead => asNumOrNull(raw['cost_cache_read']);
+  num? get costCacheWrite => asNumOrNull(raw['cost_cache_write']);
+
+  /// 覆盖字段摘要（列表副标题用；无覆盖字段时为空串）。
+  String get summary => [
+    ?displayName,
+    if (reasoning != null) reasoning! ? 'reasoning' : '无 reasoning',
+    if (vision != null) vision! ? 'vision' : '无 vision',
+    if (contextWindow != null) 'ctx $contextWindow',
+    if (maxTokens != null) 'max $maxTokens',
+    if (costInput != null) 'in \$$costInput/M',
+    if (costOutput != null) 'out \$$costOutput/M',
+    if (costCacheRead != null) 'cache读 \$$costCacheRead/M',
+    if (costCacheWrite != null) 'cache写 \$$costCacheWrite/M',
+  ].join(' · ');
+}
+
+/// 设置快照（`get_settings` 响应负载）。
+class SettingsSnapshot {
+  const SettingsSnapshot({
+    required this.providers,
+    required this.modelSpecs,
+    required this.settings,
+    required this.scalarKeys,
+  });
+
+  factory SettingsSnapshot.fromJson(Json json) => SettingsSnapshot(
+    providers: asJsonList(
+      json['providers'],
+    ).map(ProviderView.fromJson).toList(),
+    modelSpecs: asJsonList(
+      json['model_specs'],
+    ).map(ModelSpecRow.fromJson).toList(),
+    settings: asJson(json['settings']),
+    scalarKeys: json['scalar_keys'] is List
+        ? (json['scalar_keys']! as List).whereType<String>().toList()
+        : const [],
+  );
+
+  final List<ProviderView> providers;
+  final List<ModelSpecRow> modelSpecs;
+
+  /// 标量设置全量（键 → JSON 值；未设置的键缺失）。
+  final Json settings;
+  final List<String> scalarKeys;
+
+  bool isSet(String key) => settings.containsKey(key);
+  Object? operator [](String key) => settings[key];
+
+  /// 自动压缩开关（未设置时回退内置默认：开启）。
+  bool get compactionEnabled => settings[SettingKeys.compactionEnabled] is bool
+      ? settings[SettingKeys.compactionEnabled]! as bool
+      : true;
+
+  /// 追加系统提示词（未设置为空串）。
+  String get appendSystem => asStr(settings[SettingKeys.appendSystem]);
+
+  /// 额外 prompt template 路径列表。
+  List<String> get promptPaths {
+    final raw = settings[SettingKeys.prompts];
+    if (raw is! List) return const [];
+    return raw.map((e) => e.toString()).toList();
+  }
+
+  /// 模型别名表（别名 → `<provider>/<模型id>`）。
+  Map<String, String> get modelAliases {
+    final raw = settings[SettingKeys.modelAliases];
+    if (raw is! Map) return const {};
+    return raw.map((k, v) => MapEntry(k.toString(), v.toString()));
+  }
 }

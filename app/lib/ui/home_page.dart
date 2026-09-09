@@ -10,6 +10,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import '../app_controller.dart';
 import '../theme.dart';
 import 'chat_page.dart';
+import 'settings_page.dart';
 import 'sidebar.dart';
 
 class HomePage extends StatelessWidget {
@@ -29,7 +30,9 @@ class HomePage extends StatelessWidget {
               Sidebar(controller: controller),
               Container(width: 1, color: tokens.sidebarBorder),
               Expanded(
-                child: controller.hasSession
+                child: controller.showingSettings
+                    ? SettingsPage(controller: controller)
+                    : controller.hasSession
                     ? ChatPage(controller: controller)
                     : _StartPage(controller: controller),
               ),

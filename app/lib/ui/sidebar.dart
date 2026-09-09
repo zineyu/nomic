@@ -83,6 +83,41 @@ class Sidebar extends StatelessWidget {
               ],
             ),
           ),
+          // 底部：设置页入口
+          Container(
+            decoration: BoxDecoration(
+              border: Border(top: BorderSide(color: tokens.sidebarBorder)),
+            ),
+            child: Material(
+              color: controller.showingSettings
+                  ? tokens.sidebarAccent
+                  : Colors.transparent,
+              child: InkWell(
+                hoverColor: tokens.sidebarAccent,
+                onTap: controller.openSettings,
+                child: Padding(
+                  padding: const EdgeInsets.all(Spacing.md),
+                  child: Row(
+                    children: [
+                      Icon(
+                        LucideIcons.settings,
+                        size: 14,
+                        color: tokens.mutedForeground,
+                      ),
+                      const SizedBox(width: Spacing.sm),
+                      Text(
+                        '设置',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: tokens.foreground,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );

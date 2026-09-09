@@ -93,6 +93,7 @@ class AppController extends ChangeNotifier {
     items = [];
     question = null;
     goal = null;
+    showingSettings = false;
     notifyListeners();
   }
 
@@ -104,6 +105,7 @@ class AppController extends ChangeNotifier {
     queue = [];
     question = null;
     goal = null;
+    showingSettings = false;
     notifyListeners();
     await _refreshSnapshot();
   }
@@ -147,6 +149,66 @@ class AppController extends ChangeNotifier {
       notifyListeners();
     }
   }
+
+  // ── 设置（ADR-0039）────────────────────────────────────────────────────
+
+  /// 设置页是否打开（右侧面板在 设置页 / 聊天页 / 启动页 间切换）。
+  bool showingSettings = false;
+
+  /// 设置快照（打开设置页时拉取；settings_changed 广播驱动刷新）。
+  SettingsSnapshot? settings;
+
+  void openSettings() {
+    showingSettings = true;
+    notifyListeners();
+    unawaited(loadSettings());
+  }
+
+  void closeSettings() {
+    showingSettings = false;
+    notifyListeners();
+  }
+
+  Future<void> loadSettings() async {
+    try {
+      final result = await _client.request(ClientEvent.getSettings);
+      settings = SettingsSnapshot.fromJson(asJson(result['snapshot']));
+      error = null;
+    } on ServerException catch (e) {
+      error = e.message;
+    }
+    notifyListeners();
+  }
+
+  /// 设置类写操作：成功返回 null，失败返回服务端错误消息（表单内联展示）。
+  Future<String?> _mutateSettings(Json Function(String requestId) build) async {
+    try {
+      await _client.request(build);
+      return null;
+    } on ServerException catch (e) {
+      return e.message;
+    }
+  }
+
+  Future<String?> setScalar(String key, Object? value) =>
+      _mutateSettings((id) => ClientEvent.setSetting(id, key, value));
+  Future<String?> unsetScalar(String key) =>
+      _mutateSettings((id) => ClientEvent.unsetSetting(id, key));
+  Future<String?> upsertProvider(String name, Json patch) =>
+      _mutateSettings((id) => ClientEvent.upsertProvider(id, name, patch));
+  Future<String?> deleteProvider(String name) =>
+      _mutateSettings((id) => ClientEvent.deleteProvider(id, name));
+  Future<String?> upsertModelSpec(
+    String provider,
+    String modelId,
+    Json patch,
+  ) => _mutateSettings(
+    (id) => ClientEvent.upsertModelSpec(id, provider, modelId, patch),
+  );
+  Future<String?> deleteModelSpec(String provider, String modelId) =>
+      _mutateSettings(
+        (id) => ClientEvent.deleteModelSpec(id, provider, modelId),
+      );
 
   /// 发送 prompt（空闲即跑；运行中入 steering 队列，与服务端同一语义）。
   void send(String text) {
@@ -208,6 +270,12 @@ class AppController extends ChangeNotifier {
     // 重连后补齐：重新拉取当前 session 快照
     if (event.isRefresh) {
       unawaited(_refreshSnapshot());
+      if (settings != null) unawaited(loadSettings());
+      return;
+    }
+    // 设置变化广播（无 session 维度）：设置页打开时重新拉取快照
+    if (event.isSettingsChanged) {
+      if (settings != null) unawaited(loadSettings());
       return;
     }
     // 仅当前查看 session 的事件驱动 UI（后台 session 事件忽略；

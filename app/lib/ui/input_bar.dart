@@ -122,7 +122,8 @@ class _InputBarState extends State<InputBar> {
                   style: TextStyle(fontSize: 12, color: tokens.mutedForeground),
                 ),
                 const Spacer(),
-                if (running)
+                // 停止与发送并存：运行中发送即排队（与 Enter 提交同语义）
+                if (running) ...[
                   _CircleButton(
                     icon: LucideIcons.square,
                     iconSize: 12,
@@ -130,18 +131,19 @@ class _InputBarState extends State<InputBar> {
                     background: tokens.secondary,
                     foreground: tokens.foreground,
                     onPressed: controller.cancel,
-                  )
-                else
-                  _CircleButton(
-                    icon: LucideIcons.arrowUp,
-                    iconSize: 16,
-                    tooltip: '发送',
-                    background: canSend ? tokens.primary : tokens.muted,
-                    foreground: canSend
-                        ? tokens.primaryForeground
-                        : tokens.mutedForeground,
-                    onPressed: canSend ? _submit : null,
                   ),
+                  const SizedBox(width: Spacing.sm),
+                ],
+                _CircleButton(
+                  icon: LucideIcons.arrowUp,
+                  iconSize: 16,
+                  tooltip: running ? '发送（进入队列）' : '发送',
+                  background: canSend ? tokens.primary : tokens.muted,
+                  foreground: canSend
+                      ? tokens.primaryForeground
+                      : tokens.mutedForeground,
+                  onPressed: canSend ? _submit : null,
+                ),
               ],
             ),
           ),

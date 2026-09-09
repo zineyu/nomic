@@ -16,6 +16,7 @@ import 'state/chat_items.dart';
 
 class AppController extends ChangeNotifier {
   AppController({required String url}) : _client = WsClient(url: url) {
+    _client.onConnectionChanged = notifyListeners;
     _subscription = _client.events.listen(_onEvent);
   }
 
@@ -26,6 +27,9 @@ class AppController extends ChangeNotifier {
 
   /// 是否已连接（未连接时 UI 展示连接中状态）。
   bool get connected => _client.connected;
+
+  /// 是否成功连接过（区分「首次连接中」与「断线重连中」两种横幅文案）。
+  bool get hasConnectedOnce => _client.hasConnectedOnce;
 
   List<WorkSummary> works = [];
   List<ProjectSummary> projects = [];

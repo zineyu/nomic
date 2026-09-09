@@ -36,13 +36,20 @@ class WsClient {
 
   Timer? _retryTimer;
   int _retry = 0;
+  bool _ready = false;
   bool _hasConnected = false;
   bool _disposed = false;
 
   /// 服务端事件流（重连后自动恢复；重连成功时补发本地 `refresh` 事件）。
   Stream<ServerEvent> get events => _events.stream;
 
-  bool get connected => _channel != null;
+  /// 连接状态变化回调（握手成功 / 断开；控制层挂 notifyListeners 驱动横幅）。
+  void Function()? onConnectionChanged;
+
+  bool get connected => _ready;
+
+  /// 是否成功连接过（区分「首次连接中」与「断线重连中」两种横幅文案）。
+  bool get hasConnectedOnce => _hasConnected;
 
   /// 确保已连接（幂等）；连接就绪后返回。
   Future<void> connect() {
@@ -90,6 +97,8 @@ class WsClient {
         .then((_) {
           if (_channel != channel) return;
           _retry = 0;
+          _ready = true;
+          onConnectionChanged?.call();
           for (final waiter in _connectWaiters) {
             if (!waiter.isCompleted) waiter.complete();
           }
@@ -142,6 +151,8 @@ class WsClient {
     _subscription?.cancel();
     _subscription = null;
     _channel = null;
+    _ready = false;
+    onConnectionChanged?.call();
     _rejectAllPending('连接已断开');
     if (_disposed) return;
     _retry += 1;

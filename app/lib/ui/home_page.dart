@@ -25,21 +25,67 @@ class HomePage extends StatelessWidget {
       listenable: controller,
       builder: (context, _) {
         return Scaffold(
-          body: Row(
+          body: Column(
             children: [
-              Sidebar(controller: controller),
-              Container(width: 1, color: tokens.sidebarBorder),
+              if (!controller.connected)
+                _ConnectionBanner(controller: controller),
               Expanded(
-                child: controller.showingSettings
-                    ? SettingsPage(controller: controller)
-                    : controller.hasSession
-                    ? ChatPage(controller: controller)
-                    : _StartPage(controller: controller),
+                child: Row(
+                  children: [
+                    Sidebar(controller: controller),
+                    Container(width: 1, color: tokens.sidebarBorder),
+                    Expanded(
+                      child: controller.showingSettings
+                          ? SettingsPage(controller: controller)
+                          : controller.hasSession
+                          ? ChatPage(controller: controller)
+                          : _StartPage(controller: controller),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
         );
       },
+    );
+  }
+}
+
+/// 连接状态横幅：未连接时置顶展示（首次连接中 / 断线重连中）。
+class _ConnectionBanner extends StatelessWidget {
+  const _ConnectionBanner({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = tokensOf(context);
+    return Material(
+      color: tokens.muted,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: Spacing.md,
+          vertical: Spacing.sm,
+        ),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: tokens.mutedForeground,
+              ),
+            ),
+            const SizedBox(width: Spacing.sm),
+            Text(
+              controller.hasConnectedOnce ? '连接中断，重连中…' : '连接中…',
+              style: TextStyle(fontSize: 13, color: tokens.mutedForeground),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

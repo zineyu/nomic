@@ -119,7 +119,7 @@ class _InputBarState extends State<InputBar> {
                 const SizedBox(width: Spacing.sm),
                 Text(
                   _formatTokens(controller.contextTokens),
-                  style: TextStyle(fontSize: 12, color: tokens.mutedForeground),
+                  style: AppText.caption(tokens.mutedForeground),
                 ),
                 const Spacer(),
                 // 停止与发送并存：运行中发送即排队（与 Enter 提交同语义）
@@ -183,7 +183,7 @@ class _ModelChip extends StatelessWidget {
               const SizedBox(width: 4),
               Text(
                 name.isEmpty ? '选择模型' : name,
-                style: TextStyle(fontSize: 12, color: tokens.mutedForeground),
+                style: AppText.caption(tokens.mutedForeground),
               ),
             ],
           ),

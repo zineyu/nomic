@@ -104,37 +104,37 @@ const double maxPageWidth = 920;
 /// mutedForeground / destructive…）。正文字族走平台默认（即 DESIGN 字体栈
 /// 中的 system-ui 档位；未打包 Noto Sans，中文由系统 CJK 回退覆盖）。
 abstract final class AppText {
-  static TextStyle h1(Color color) => TextStyle(
+  static TextStyle h1(Color? color) => TextStyle(
     fontSize: 36,
     height: 1.2,
     fontWeight: FontWeight.w700,
     color: color,
   );
 
-  static TextStyle h2(Color color) => TextStyle(
+  static TextStyle h2(Color? color) => TextStyle(
     fontSize: 30,
     height: 1.3,
     fontWeight: FontWeight.w600,
     color: color,
   );
 
-  static TextStyle h3(Color color) => TextStyle(
+  static TextStyle h3(Color? color) => TextStyle(
     fontSize: 24,
     height: 1.4,
     fontWeight: FontWeight.w600,
     color: color,
   );
 
-  static TextStyle body(Color color) =>
+  static TextStyle body(Color? color) =>
       TextStyle(fontSize: 16, height: 1.5, color: color);
 
-  static TextStyle bodySm(Color color) =>
+  static TextStyle bodySm(Color? color) =>
       TextStyle(fontSize: 14, height: 1.5, color: color);
 
-  static TextStyle ui(Color color) =>
+  static TextStyle ui(Color? color) =>
       TextStyle(fontSize: 13, height: 1.5, color: color);
 
-  static TextStyle caption(Color color) =>
+  static TextStyle caption(Color? color) =>
       TextStyle(fontSize: 12, height: 1.5, color: color);
 }
 

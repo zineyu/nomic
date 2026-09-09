@@ -37,7 +37,7 @@ class _ModelPickerState extends State<ModelPicker> {
         final candidates = widget.controller.modelCandidates;
         final current = widget.controller.model;
         return AlertDialog(
-          title: const Text('选择模型', style: TextStyle(fontSize: 16)),
+          title: Text('选择模型', style: AppText.body(null)),
           content: SizedBox(
             width: 420,
             height: 480,
@@ -45,7 +45,7 @@ class _ModelPickerState extends State<ModelPicker> {
                 ? Center(
                     child: Text(
                       '无候选模型（在 nomic config 中配置 provider）',
-                      style: TextStyle(color: tokens.mutedForeground),
+                      style: AppText.bodySm(tokens.mutedForeground),
                     ),
                   )
                 : ListView(
@@ -61,17 +61,11 @@ class _ModelPickerState extends State<ModelPicker> {
                             size: 14,
                             color: tokens.mutedForeground,
                           ),
-                          title: Text(
-                            choice.name,
-                            style: const TextStyle(fontSize: 13),
-                          ),
+                          title: Text(choice.name, style: AppText.ui(null)),
                           subtitle: Text(
                             '${choice.spec} · ${choice.contextWindow} ctx'
                             '${choice.reasoning ? ' · reasoning' : ''}',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: tokens.mutedForeground,
-                            ),
+                            style: AppText.caption(tokens.mutedForeground),
                           ),
                           onTap: () {
                             widget.controller.switchModel(choice.spec);

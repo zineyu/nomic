@@ -182,7 +182,7 @@ class _ChatPageState extends State<ChatPage> {
                   child: controller.readOnly
                       ? Text(
                           '子 agent 会话（只读回溯）',
-                          style: TextStyle(color: tokens.mutedForeground),
+                          style: AppText.bodySm(tokens.mutedForeground),
                         )
                       : InputBar(controller: controller),
                 ),
@@ -217,7 +217,7 @@ class _ErrorBanner extends StatelessWidget {
             Expanded(
               child: Text(
                 controller.error!,
-                style: TextStyle(fontSize: 13, color: tokens.destructive),
+                style: AppText.ui(tokens.destructive),
               ),
             ),
             IconButton(
@@ -250,7 +250,7 @@ class _GoalBanner extends StatelessWidget {
       child: Text(
         '目标：$goal',
         overflow: TextOverflow.ellipsis,
-        style: TextStyle(fontSize: 12, color: tokens.foreground),
+        style: AppText.caption(tokens.foreground),
       ),
     );
   }
@@ -278,7 +278,7 @@ class _QueueBar extends StatelessWidget {
         children: [
           Text(
             '队列（${controller.queue.length}）',
-            style: TextStyle(fontSize: 12, color: tokens.mutedForeground),
+            style: AppText.caption(tokens.mutedForeground),
           ),
           for (final entry in controller.queue)
             Padding(
@@ -286,7 +286,7 @@ class _QueueBar extends StatelessWidget {
               child: Text(
                 entry.text,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 13, color: tokens.foreground),
+                style: AppText.ui(tokens.foreground),
               ),
             ),
         ],
@@ -379,7 +379,7 @@ class _WorkingLineState extends State<_WorkingLine> {
               const SizedBox(width: Spacing.sm),
               Text(
                 'Working（${elapsed}s · esc 中断）',
-                style: TextStyle(fontSize: 12, color: tokens.mutedForeground),
+                style: AppText.caption(tokens.mutedForeground),
               ),
             ],
           ),

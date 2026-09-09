@@ -81,7 +81,7 @@ class _ConnectionBanner extends StatelessWidget {
             const SizedBox(width: Spacing.sm),
             Text(
               controller.hasConnectedOnce ? '连接中断，重连中…' : '连接中…',
-              style: TextStyle(fontSize: 13, color: tokens.mutedForeground),
+              style: AppText.ui(tokens.mutedForeground),
             ),
           ],
         ),
@@ -122,14 +122,7 @@ class _StartPageState extends State<_StartPage> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
-                '选择一个 project 开始',
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w600,
-                  color: tokens.foreground,
-                ),
-              ),
+              Text('选择一个 project 开始', style: AppText.h3(tokens.foreground)),
               const SizedBox(height: Spacing.lg),
               if (projects.isNotEmpty) ...[
                 for (final project in projects)
@@ -219,10 +212,7 @@ class _ProjectTile extends StatelessWidget {
                       Text(title, overflow: TextOverflow.ellipsis),
                       Text(
                         subtitle,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: tokens.mutedForeground,
-                        ),
+                        style: AppText.caption(tokens.mutedForeground),
                       ),
                     ],
                   ),

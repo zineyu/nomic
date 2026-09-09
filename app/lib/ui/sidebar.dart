@@ -36,11 +36,9 @@ class Sidebar extends StatelessWidget {
               children: [
                 Text(
                   'Nomic',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: tokens.foreground,
-                  ),
+                  style: AppText.bodySm(
+                    tokens.foreground,
+                  ).copyWith(fontWeight: FontWeight.w600),
                 ),
                 const Spacer(),
                 IconButton(
@@ -67,10 +65,7 @@ class Sidebar extends StatelessWidget {
                     child: Text(
                       entry.key,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: tokens.mutedForeground,
-                      ),
+                      style: AppText.caption(tokens.mutedForeground),
                     ),
                   ),
                   for (final work in entry.value)
@@ -106,13 +101,7 @@ class Sidebar extends StatelessWidget {
                         color: tokens.mutedForeground,
                       ),
                       const SizedBox(width: Spacing.sm),
-                      Text(
-                        '设置',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: tokens.foreground,
-                        ),
-                      ),
+                      Text('设置', style: AppText.ui(tokens.foreground)),
                     ],
                   ),
                 ),
@@ -179,20 +168,15 @@ class _WorkTileState extends State<_WorkTile> {
                         Text(
                           work.displayTitle,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 13,
+                          style: AppText.ui(tokens.foreground).copyWith(
                             fontWeight: selected
                                 ? FontWeight.w500
                                 : FontWeight.w400,
-                            color: tokens.foreground,
                           ),
                         ),
                         Text(
                           _workSubtitle(work),
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: tokens.mutedForeground,
-                          ),
+                          style: AppText.caption(tokens.mutedForeground),
                         ),
                       ],
                     ),
@@ -225,7 +209,7 @@ class _WorkTileState extends State<_WorkTile> {
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('删除这个 work？', style: TextStyle(fontSize: 16)),
+        title: Text('删除这个 work？', style: AppText.body(null)),
         content: Text('「${widget.work.displayTitle}」及其全部会话将被删除。'),
         actions: [
           TextButton(

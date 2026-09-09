@@ -54,7 +54,7 @@ class _UserBubble extends StatelessWidget {
             ),
             child: Text(
               item.text,
-              style: TextStyle(color: tokens.primaryForeground, height: 1.5),
+              style: AppText.bodySm(tokens.primaryForeground),
             ),
           ),
         ),
@@ -88,23 +88,15 @@ class _AssistantBlock extends StatelessWidget {
                 if (uri != null) unawaited(launchUrl(uri));
               },
               styleSheet: MarkdownStyleSheet(
-                p: TextStyle(
-                  fontSize: 14,
-                  height: 1.5,
-                  color: tokens.foreground,
-                ),
+                p: AppText.bodySm(tokens.foreground),
                 // 链接不走彩色：ink + 下划线（DESIGN.md ≤10% accent 规则）
-                a: TextStyle(
-                  fontSize: 14,
-                  height: 1.5,
-                  color: tokens.foreground,
-                  decoration: TextDecoration.underline,
-                ),
-                code: TextStyle(
+                a: AppText.bodySm(
+                  tokens.foreground,
+                ).copyWith(decoration: TextDecoration.underline),
+                code: AppFonts.mono(
                   fontSize: 13,
-                  backgroundColor: tokens.muted,
                   color: tokens.foreground,
-                ),
+                ).copyWith(backgroundColor: tokens.muted),
                 codeblockDecoration: BoxDecoration(
                   color: tokens.muted,
                   borderRadius: BorderRadius.circular(Radii.md),
@@ -123,7 +115,7 @@ class _AssistantBlock extends StatelessWidget {
               padding: const EdgeInsets.only(top: 4),
               child: Text(
                 item.errorMessage!,
-                style: TextStyle(fontSize: 13, color: tokens.destructive),
+                style: AppText.ui(tokens.destructive),
               ),
             ),
         ],
@@ -165,10 +157,7 @@ class _ThinkingFoldState extends State<_ThinkingFold> {
                   color: tokens.mutedForeground,
                 ),
                 const SizedBox(width: 4),
-                Text(
-                  '思考过程',
-                  style: TextStyle(fontSize: 12, color: tokens.mutedForeground),
-                ),
+                Text('思考过程', style: AppText.caption(tokens.mutedForeground)),
               ],
             ),
           ),
@@ -177,11 +166,7 @@ class _ThinkingFoldState extends State<_ThinkingFold> {
               padding: const EdgeInsets.only(top: 4),
               child: Text(
                 widget.text,
-                style: TextStyle(
-                  fontSize: 13,
-                  height: 1.5,
-                  color: tokens.mutedForeground,
-                ),
+                style: AppText.ui(tokens.mutedForeground),
               ),
             ),
         ],
@@ -240,11 +225,9 @@ class _ToolCardState extends State<ToolCard> {
                   const SizedBox(width: Spacing.sm),
                   Text(
                     item.name,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                      color: tokens.foreground,
-                    ),
+                    style: AppText.ui(
+                      tokens.foreground,
+                    ).copyWith(fontWeight: FontWeight.w500),
                   ),
                   if (summary.isNotEmpty) ...[
                     const SizedBox(width: Spacing.sm),
@@ -252,9 +235,8 @@ class _ToolCardState extends State<ToolCard> {
                       child: Text(
                         summary,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
+                        style: AppFonts.mono(
                           fontSize: 12,
-                          fontFamily: 'monospace',
                           color: tokens.mutedForeground,
                         ),
                       ),
@@ -284,9 +266,8 @@ class _ToolCardState extends State<ToolCard> {
                       if (item.args.isNotEmpty)
                         SelectableText(
                           item.args.toString(),
-                          style: TextStyle(
+                          style: AppFonts.mono(
                             fontSize: 12,
-                            fontFamily: 'monospace',
                             color: tokens.mutedForeground,
                           ),
                         ),
@@ -297,9 +278,8 @@ class _ToolCardState extends State<ToolCard> {
                             item.resultPreview.length > 2000
                                 ? '${item.resultPreview.substring(0, 2000)}…'
                                 : item.resultPreview,
-                            style: TextStyle(
+                            style: AppFonts.mono(
                               fontSize: 12,
-                              fontFamily: 'monospace',
                               color: item.isError
                                   ? tokens.destructive
                                   : tokens.foreground,
@@ -346,7 +326,7 @@ class _ToolStatus extends StatelessWidget {
         children: [
           Icon(LucideIcons.x, size: 12, color: tokens.destructive),
           const SizedBox(width: 4),
-          Text('失败', style: TextStyle(fontSize: 12, color: tokens.destructive)),
+          Text('失败', style: AppText.caption(tokens.destructive)),
         ],
       ),
     };
@@ -438,10 +418,7 @@ class _ShimmerTextState extends State<_ShimmerText>
           child: child,
         );
       },
-      child: Text(
-        widget.text,
-        style: const TextStyle(fontSize: 12, color: Colors.white),
-      ),
+      child: Text(widget.text, style: AppText.caption(Colors.white)),
     );
   }
 }
@@ -457,10 +434,7 @@ class _SystemLine extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: Spacing.md),
       child: Center(
-        child: Text(
-          item.text,
-          style: TextStyle(fontSize: 12, color: tokens.mutedForeground),
-        ),
+        child: Text(item.text, style: AppText.caption(tokens.mutedForeground)),
       ),
     );
   }

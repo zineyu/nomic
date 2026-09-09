@@ -81,11 +81,9 @@ class _QuestionPanelState extends State<QuestionPanel> {
               Expanded(
                 child: Text(
                   q.question,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                    color: tokens.foreground,
-                  ),
+                  style: AppText.ui(
+                    tokens.foreground,
+                  ).copyWith(fontWeight: FontWeight.w500),
                 ),
               ),
             ],
@@ -175,12 +173,7 @@ class _OptionRow extends StatelessWidget {
               color: selected ? tokens.foreground : tokens.mutedForeground,
             ),
             const SizedBox(width: Spacing.sm),
-            Expanded(
-              child: Text(
-                label,
-                style: TextStyle(fontSize: 13, color: tokens.foreground),
-              ),
-            ),
+            Expanded(child: Text(label, style: AppText.ui(tokens.foreground))),
           ],
         ),
       ),

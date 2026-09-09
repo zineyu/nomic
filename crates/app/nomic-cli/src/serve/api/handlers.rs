@@ -1,0 +1,739 @@
+//! WebSocket 事件 handler：查询类（`get_state` / `list_models` / `list_sessions` /
+//! `list_projects`）与命令类（`prompt` / `cancel` / `answer_question` /
+//! `switch_model`）的具体实现，以及共享类型与辅助函数。
+//! session / project 生命周期命令收在 [`crud`] 子模块（查询式命令携带
+//! `request_id` 关联响应）、斜杠命令解析与 goal 命令处置收在 [`commands`]
+//! 子模块（800 行封顶拆分）。
+
+use std::sync::Arc;
+
+use nomic_ai::{Message, Model, ThinkingLevel};
+use nomic_tools::{AskUserAnswer, AskUserQuestion};
+use serde::Serialize;
+
+use super::ApiError;
+use crate::model::ModelChoice;
+use crate::serve::{AppState, ServerEvent, Snapshot};
+
+mod commands;
+mod crud;
+mod settings;
+
+use commands::{SlashCommand, goal_command, parse_slash_command};
+
+pub use crud::{
+    handle_create_project, handle_create_work, handle_delete_project, handle_delete_work,
+    handle_list_work_sessions, handle_rename_work,
+};
+pub use settings::{SettingsSnapshotView, dispatch_settings};
+
+// ── 查询类 handler（返回带 request_id 的 ServerEvent）─────────────────────
+
+/// 获取会话快照：消息历史、模型、思考级别、运行状态等。
+pub async fn handle_get_state(state: &AppState, session_id: &str, request_id: &str) -> ServerEvent {
+    let result = async {
+        let session = open_session(state, session_id).await?;
+        let snapshot = crate::serve::snapshot(&session).await?;
+        Ok::<_, ApiError>(snapshot)
+    }
+    .await;
+    match result {
+        Ok(snapshot) => ServerEvent::StateSnapshot {
+            session_id: session_id.to_string(),
+            request_id: request_id.to_string(),
+            snapshot: Box::new(SnapshotView::from_snapshot(snapshot)),
+        },
+        Err(error) => error.to_ws_response(Some(request_id)),
+    }
+}
+
+/// 候选模型列表（跨 provider；当前选择由会话快照携带）。
+pub fn handle_list_models(state: &AppState, request_id: &str) -> ServerEvent {
+    let default_model = state.inner.factory.default_model.clone();
+    let current = crate::model::ModelSelection {
+        provider: default_model.provider,
+        model: default_model.id,
+    };
+    let candidates = state.inner.models.candidates(&current);
+    ServerEvent::ModelsList {
+        request_id: request_id.to_string(),
+        candidates,
+    }
+}
+
+/// 列出全部 work 摘要。
+pub async fn handle_list_works(state: &AppState, request_id: &str) -> ServerEvent {
+    match state.inner.list_works().await {
+        Ok(works) => ServerEvent::WorksList {
+            request_id: request_id.to_string(),
+            works,
+        },
+        Err(error) => error.to_ws_response(Some(request_id)),
+    }
+}
+
+/// 列出全部 project 摘要。
+pub async fn handle_list_projects(state: &AppState, request_id: &str) -> ServerEvent {
+    match state.inner.list_projects().await {
+        Ok(projects) => ServerEvent::ProjectsList {
+            request_id: request_id.to_string(),
+            projects,
+        },
+        Err(error) => error.to_ws_response(Some(request_id)),
+    }
+}
+
+/// skill 清单（`@skill://` 补全用；进程级 skill 解析器快照，与 TUI 补全同一来源）。
+pub fn handle_list_skills(state: &AppState, request_id: &str) -> ServerEvent {
+    let skills = state
+        .inner
+        .factory
+        .skill_resolver
+        .catalog()
+        .into_iter()
+        .map(|skill| SkillItem {
+            name: skill.name,
+            description: skill.document.description,
+        })
+        .collect();
+    ServerEvent::SkillsList {
+        request_id: request_id.to_string(),
+        skills,
+    }
+}
+
+/// 文件候选（`@file:` 补全用；相对目标 session 的 project 前缀匹配）。
+/// 最多返回 [`MAX_FILE_CANDIDATES`] 条，避免大目录撑爆事件负载。
+pub async fn handle_list_files(
+    state: &AppState,
+    session_id: &str,
+    prefix: &str,
+    request_id: &str,
+) -> ServerEvent {
+    let session = match open_session(state, session_id).await {
+        Ok(session) => session,
+        Err(error) => return error.to_ws_response(Some(request_id)),
+    };
+    let mut files = crate::mention::file_mention_candidates(prefix, &session.project);
+    files.truncate(MAX_FILE_CANDIDATES);
+    ServerEvent::FilesList {
+        request_id: request_id.to_string(),
+        files,
+    }
+}
+
+/// `@file:` 补全候选的返回上限（大目录如 `target/` 单层也有数百文件）。
+const MAX_FILE_CANDIDATES: usize = 100;
+
+// ── 命令类 handler（返回 ack ServerEvent）─────────────────────────────────
+
+/// 提交 prompt；返回 ack 携带排队状态。
+///
+/// `/` 开头的输入按斜杠命令解析（`/compact [聚焦指令]`、`/continue`、
+/// `/goal <目标>`）：runner job 类命令走 runner 串行 job 队列（运行中
+/// 排队等待本轮结束，ADR-0033）；`/goal <目标>` 启动目标驱动运行（须空闲，
+/// 与 TUI「启动属会话命令」同一口径），`/goal` 无参取消进行中的目标。
+///
+/// 普通文本：运行中入 steering 统一消息队列（ADR-0014），core 在 turn
+/// 边界弹出注入本轮运行（队列存原文，`@skill://` / `@file:` mention 在
+/// 投递时展开；异常结束队列保留，正常结束的滞后入队由 runner 事件侧
+/// drain 续跑）；空闲时直接提交运行（提交前展开 mention，无效标记原样
+/// 保留——与 TUI 同一口径）。
+pub async fn handle_prompt(
+    state: &AppState,
+    session_id: &str,
+    text: String,
+    images: Vec<nomic_ai::ImageContent>,
+) -> ServerEvent {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return ApiError::BadRequest("prompt is empty".to_string()).to_ws_response(None);
+    }
+    let session = match open_session(state, session_id).await {
+        Ok(s) => s,
+        Err(error) => return error.to_ws_response(None),
+    };
+    // 子 agent session（ADR-0044）为只读回溯：拒绝一切 prompt（血缘在
+    // 打开运行时一次性查询，此处同步判定，不引入调度点）
+    if session
+        .membership
+        .as_ref()
+        .is_some_and(|(_, parent)| parent.is_some())
+    {
+        return ApiError::BadRequest("child agent session is read-only".to_string())
+            .to_ws_response(None);
+    }
+    if let Some(rest) = trimmed.strip_prefix('/') {
+        match parse_slash_command(rest) {
+            Err(error) => return error.to_ws_response(None),
+            Ok(SlashCommand::Job(job)) => {
+                // runner 串行消费（提交时已在运行则排队）；提交前读运行态作 ack
+                let queued = session.runner.is_running();
+                if let Err(error) = session.runner.submit(job) {
+                    return ApiError::Internal(error.to_string()).to_ws_response(None);
+                }
+                return ServerEvent::PromptAck {
+                    session_id: session_id.to_string(),
+                    queued,
+                };
+            }
+            Ok(SlashCommand::Goal(objective)) => {
+                return match goal_command(state, &session, objective) {
+                    Ok(()) => ServerEvent::PromptAck {
+                        session_id: session_id.to_string(),
+                        queued: false,
+                    },
+                    Err(error) => error.to_ws_response(None),
+                };
+            }
+        }
+    }
+    // 运行中：入 steering 队列（含 runner 尚有排队 job 的窗口），turn 边界
+    // 注入本轮；入队即广播 queue_changed 驱动前端队列区
+    if session.runner.is_running() {
+        session.queue.push(trimmed.to_string(), images);
+        return ServerEvent::PromptAck {
+            session_id: session_id.to_string(),
+            queued: true,
+        };
+    }
+    // 空闲：展开 mention 后直接提交运行
+    let expanded = crate::mention::expand_mentions(
+        trimmed,
+        &state.inner.factory.skill_resolver,
+        &session.project,
+    );
+    if let Err(error) = session.runner.submit(nomic_core::SessionJob::Prompt {
+        text: expanded,
+        images,
+    }) {
+        return ApiError::Internal(error.to_string()).to_ws_response(None);
+    }
+    ServerEvent::PromptAck {
+        session_id: session_id.to_string(),
+        queued: false,
+    }
+}
+
+/// 编辑 steering 队列条目原文：空文本删除该条目（oil.nvim 空行忽略语义，
+/// 与 TUI QUEUE 模式保存口径一致）；附件保留在槽位上。成功时无响应事件，
+/// 变更经队列的 `queue_changed` 广播驱动前端。
+pub async fn handle_update_queue_entry(
+    state: &AppState,
+    session_id: &str,
+    id: &str,
+    text: String,
+) -> Option<ServerEvent> {
+    let session = match open_session(state, session_id).await {
+        Ok(s) => s,
+        Err(error) => return Some(error.to_ws_response(None)),
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        session.queue.remove(id);
+    } else {
+        session.queue.update_text(id, trimmed.to_string());
+    }
+    None
+}
+
+/// 删除 steering 队列条目（幂等：id 不存在静默无操作）。
+pub async fn handle_remove_queue_entry(
+    state: &AppState,
+    session_id: &str,
+    id: &str,
+) -> Option<ServerEvent> {
+    let session = match open_session(state, session_id).await {
+        Ok(s) => s,
+        Err(error) => return Some(error.to_ws_response(None)),
+    };
+    session.queue.remove(id);
+    None
+}
+
+/// 移动 steering 队列条目（上移/下移一位；到底/顶不动）。
+pub async fn handle_move_queue_entry(
+    state: &AppState,
+    session_id: &str,
+    id: &str,
+    direction: super::MoveDirection,
+) -> Option<ServerEvent> {
+    let session = match open_session(state, session_id).await {
+        Ok(s) => s,
+        Err(error) => return Some(error.to_ws_response(None)),
+    };
+    let delta = match direction {
+        super::MoveDirection::Up => -1,
+        super::MoveDirection::Down => 1,
+    };
+    session.queue.move_by(id, delta);
+    None
+}
+
+/// 取消当前轮运行。
+pub async fn handle_cancel(state: &AppState, session_id: &str) -> ServerEvent {
+    let session = match open_session(state, session_id).await {
+        Ok(s) => s,
+        Err(error) => return error.to_ws_response(None),
+    };
+    session.cancel_run();
+    ServerEvent::CancelAck {
+        session_id: session_id.to_string(),
+    }
+}
+
+/// 回答提问：经注册表回填给等待中的工具。
+pub async fn handle_answer_question(
+    state: &AppState,
+    session_id: &str,
+    qid: String,
+    answers: Vec<String>,
+    custom: Option<String>,
+) -> ServerEvent {
+    let session = match open_session(state, session_id).await {
+        Ok(s) => s,
+        Err(error) => return error.to_ws_response(None),
+    };
+    let answer = AskUserAnswer { answers, custom };
+    if session.answer_question(&qid, answer) {
+        ServerEvent::AnswerAck {
+            session_id: session_id.to_string(),
+        }
+    } else {
+        ApiError::NotFound(format!("question {qid} 不存在或已被回答")).to_ws_response(None)
+    }
+}
+
+/// 切换会话模型；结果落库到会话级 config。
+pub async fn handle_switch_model(
+    state: &AppState,
+    session_id: &str,
+    spec: String,
+    reasoning: Option<String>,
+) -> ServerEvent {
+    let session = match open_session(state, session_id).await {
+        Ok(s) => s,
+        Err(error) => return error.to_ws_response(None),
+    };
+    let current = match session.handle.model() {
+        Ok(m) => m,
+        Err(error) => {
+            return ApiError::from(error).to_ws_response(None);
+        }
+    };
+    let selection = match crate::model::ModelSelection::parse(&spec, Some(&current.provider)) {
+        Ok(s) => s,
+        Err(error) => {
+            return ApiError::BadRequest(format!("{error:#}")).to_ws_response(None);
+        }
+    };
+    let model = match state
+        .inner
+        .models
+        .resolve(&selection.provider, &selection.model)
+    {
+        Ok(m) => m,
+        Err(error) => {
+            return ApiError::BadRequest(format!("{error:#}")).to_ws_response(None);
+        }
+    };
+
+    if model.provider != current.provider {
+        let api_key = crate::model::resolve_api_key(
+            None,
+            std::env::var(crate::model::api_key_env(model.api))
+                .ok()
+                .as_deref(),
+            state
+                .inner
+                .models
+                .provider_row(&model.provider)
+                .and_then(|p| p.api_key)
+                .as_deref(),
+        );
+        if session
+            .handle
+            .set_provider(
+                crate::model::build_provider(model.api, api_key.clone()),
+                api_key,
+            )
+            .is_err()
+        {
+            return ApiError::Internal("agent actor 已退出".to_string()).to_ws_response(None);
+        }
+    }
+    if session.handle.set_model(model.clone()).is_err() {
+        return ApiError::Internal("agent actor 已退出".to_string()).to_ws_response(None);
+    }
+    // 子 agent 的继承模型跟随主 agent（ADR-0038）
+    *session
+        .inherited_model
+        .write()
+        .expect("inherited model lock") = model.clone();
+
+    if let Some(level) = reasoning.as_deref() {
+        match parse_thinking_level(level) {
+            Ok(level) => {
+                let _ = session.handle.set_reasoning(level);
+                persist_session_reasoning(state, session_id, level).await;
+            }
+            Err(error) => return error.to_ws_response(None),
+        }
+    }
+
+    // 选择落库（会话级 config，与 TUI 同 append-only 口径）；失败仅告警
+    persist_session_model(state, session_id, &selection.spec()).await;
+
+    ServerEvent::SwitchModelAck {
+        session_id: session_id.to_string(),
+        choice: ModelChoice {
+            provider: model.provider,
+            id: model.id,
+            name: model.name,
+            context_window: model.context_window,
+            reasoning: model.reasoning,
+        },
+    }
+}
+
+// 新建 session、登记 project、删除 / 重命名等生命周期 handler 见 [`crud`]。
+
+// ── 共享类型 ──────────────────────────────────────────────────────────────
+
+/// skill 清单条目（`list_skills` 响应；`@skill://` 补全弹层展示用）。
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillItem {
+    pub name: String,
+    pub description: String,
+}
+
+/// 会话快照视图（WebSocket 响应携带，前端用于初始化/刷新状态）。
+#[derive(Debug, Clone, Serialize)]
+pub struct SnapshotView {
+    pub messages: Vec<Message>,
+    pub model: Model,
+    pub reasoning: Option<ThinkingLevel>,
+    pub context_tokens: u64,
+    pub running: bool,
+    /// steering 队列内容（原文 + 附件数；前端队列区渲染与编辑寻址用）
+    pub queue: Vec<crate::serve::QueueEntryView>,
+    pub session: Option<(String, Option<String>)>,
+    /// 所属 work id（无持久化时为 `None`）
+    pub work_id: Option<String>,
+    /// 父 session id（子 agent session 血缘，ADR-0044；非 `None` 时前端
+    /// 以只读回溯模式展示）
+    pub parent_session_id: Option<String>,
+    pub pending_question: Option<(String, AskUserQuestion)>,
+    /// 本 session 的 project 路径（操作基准）
+    pub project: String,
+    /// 进行中的目标原文（`/goal <目标>` 启动；前端徽标用）
+    pub goal: Option<String>,
+    /// 会话统计信息（前端状态栏展示用）
+    #[serde(flatten)]
+    pub stats: nomic_core::SessionStats,
+}
+
+impl SnapshotView {
+    fn from_snapshot(snap: Snapshot) -> Self {
+        Self {
+            messages: snap.messages,
+            model: snap.model,
+            reasoning: snap.reasoning,
+            context_tokens: snap.context_tokens,
+            running: snap.running,
+            queue: snap.queue,
+            session: snap.session,
+            work_id: snap.work_id,
+            parent_session_id: snap.parent_session_id,
+            pending_question: snap.pending_question,
+            project: snap.project.display().to_string(),
+            goal: snap.goal,
+            stats: snap.stats,
+        }
+    }
+}
+
+// ── 辅助函数 ──────────────────────────────────────────────────────────────
+
+/// 从运行时打开（或惰性构建）指定 session。
+async fn open_session(
+    state: &AppState,
+    id: &str,
+) -> Result<Arc<crate::serve::SessionRuntime>, ApiError> {
+    state.inner.open_session(id).await
+}
+
+/// 会话级模型选择落库；库不可用或写失败仅告警不阻断切换。
+async fn persist_session_model(state: &AppState, session_id: &str, spec: &str) {
+    let Some(store) = &state.inner.store else {
+        return;
+    };
+    if let Err(error) = store
+        .set_session_config(
+            session_id,
+            crate::model::CONFIG_KEY_MODEL,
+            &serde_json::Value::String(spec.to_string()),
+        )
+        .await
+    {
+        tracing::warn!(?error, "failed to persist session-level model selection");
+    }
+}
+
+/// 会话级思考级别落库；库不可用或写失败仅告警不阻断切换。
+async fn persist_session_reasoning(
+    state: &AppState,
+    session_id: &str,
+    level: Option<ThinkingLevel>,
+) {
+    let Some(store) = &state.inner.store else {
+        return;
+    };
+    let value = level.map_or("off", ThinkingLevel::as_str);
+    if let Err(error) = store
+        .set_session_config(
+            session_id,
+            crate::model::CONFIG_KEY_REASONING,
+            &serde_json::Value::String(value.to_string()),
+        )
+        .await
+    {
+        tracing::warn!(?error, "failed to persist session-level reasoning level");
+    }
+}
+
+/// 解析思考级别请求值；`off` → `None`（关闭）。
+fn parse_thinking_level(level: &str) -> Result<Option<ThinkingLevel>, ApiError> {
+    ThinkingLevel::parse_setting(level).map_err(|error| ApiError::BadRequest(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `list_files` 以目标 session 的 project 为基准做前缀匹配（测试
+    /// session 的 project 是 crate 根目录）。
+    #[tokio::test]
+    async fn list_files_matches_prefix_under_session_project() {
+        let (state, session_id) = crate::serve::tests::test_state_with_session().await;
+
+        let event = handle_list_files(&state, &session_id, "src/mai", "r1").await;
+        let ServerEvent::FilesList { request_id, files } = event else {
+            panic!("应返回 FilesList");
+        };
+        assert_eq!(request_id, "r1");
+        assert!(files.contains(&"src/main.rs".to_string()), "{files:?}");
+
+        // 未命中前缀返回空列表
+        let event = handle_list_files(&state, &session_id, "src/no-such-file", "r2").await;
+        let ServerEvent::FilesList { files, .. } = event else {
+            panic!("应返回 FilesList");
+        };
+        assert!(files.is_empty(), "{files:?}");
+    }
+
+    /// `list_skills` 返回进程级 skill 清单（测试环境无 skill，为空列表）。
+    #[tokio::test]
+    async fn list_skills_roundtrip() {
+        let state = crate::serve::tests::test_state().await;
+        let event = handle_list_skills(&state, "r3");
+        let ServerEvent::SkillsList { request_id, skills } = event else {
+            panic!("应返回 SkillsList");
+        };
+        assert_eq!(request_id, "r3");
+        assert!(skills.is_empty());
+    }
+
+    /// `/` 命令与 prompt 的串行队列语义收在 core runner（集成测试覆盖）；
+    /// web 侧只验证提交路径：空闲时提交的 ack 不标记排队。
+    #[tokio::test]
+    async fn prompt_ack_not_queued_when_idle() {
+        let (state, session_id) = crate::serve::tests::test_state_with_session().await;
+        let session = state
+            .inner
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        assert!(!session.runner.is_running(), "预置 session 应空闲");
+
+        // 斜杠命令同样走 runner 队列（/continue 空历史立即结束，不发起请求）
+        let ack = handle_prompt(&state, &session_id, "/continue".to_string(), Vec::new()).await;
+        let ServerEvent::PromptAck { queued, .. } = ack else {
+            panic!("应返回 PromptAck");
+        };
+        assert!(!queued, "空闲时提交不应标记排队");
+    }
+
+    /// 运行中提交普通文本：入 steering 队列（ack 标记排队），不占用
+    /// runner job 队列；入队即向总线广播 queue_changed。
+    #[tokio::test]
+    async fn prompt_while_running_enqueues_steering() {
+        let (state, session_id) = crate::serve::tests::test_state_with_session().await;
+        let session = state
+            .inner
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        let mut events = state.inner.events.subscribe();
+
+        // 用一个 runner job 占住运行态（/continue 空历史立即结束；单线程
+        // 测试运行时中 submit 与下方 is_running 判定之间无调度点，job 尚
+        // 未出队，运行态判定为真）
+        session
+            .runner
+            .submit(nomic_core::SessionJob::Continue)
+            .expect("submit continue");
+
+        let ack = handle_prompt(&state, &session_id, "转向一下".to_string(), Vec::new()).await;
+        let ServerEvent::PromptAck { queued, .. } = ack else {
+            panic!("应返回 PromptAck");
+        };
+        assert!(queued, "运行中提交应标记排队");
+
+        let queue = session.queue.snapshot();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].text, "转向一下");
+        assert!(
+            matches!(
+                events.try_recv().expect("queue_changed"),
+                ServerEvent::QueueChanged { .. }
+            ),
+            "入队应广播 queue_changed"
+        );
+        // runner job 队列不因 steering 入队增长（steering 不占 job 队列）
+        assert!(
+            session.runner.queued_len() <= 1,
+            "steering 不入 runner 队列"
+        );
+    }
+
+    /// 队列编辑命令：更新原文 / 空文本删除 / 删除 / 上下移，均按 id 寻址。
+    #[tokio::test]
+    async fn queue_edit_handlers() {
+        let (state, session_id) = crate::serve::tests::test_state_with_session().await;
+        let session = state
+            .inner
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        let a = session.queue.push("a".to_string(), Vec::new());
+        let b = session.queue.push("b".to_string(), Vec::new());
+
+        // 更新原文（首尾空白裁剪，与 prompt 提交口径一致）
+        assert!(
+            handle_update_queue_entry(&state, &session_id, &a, "  A  ".to_string())
+                .await
+                .is_none()
+        );
+        let texts: Vec<String> = session
+            .queue
+            .snapshot()
+            .into_iter()
+            .map(|entry| entry.text)
+            .collect();
+        assert_eq!(texts, ["A", "b"]);
+
+        // 下移队首条目
+        assert!(
+            handle_move_queue_entry(
+                &state,
+                &session_id,
+                &a,
+                crate::serve::api::MoveDirection::Down
+            )
+            .await
+            .is_none()
+        );
+        let texts: Vec<String> = session
+            .queue
+            .snapshot()
+            .into_iter()
+            .map(|entry| entry.text)
+            .collect();
+        assert_eq!(texts, ["b", "A"]);
+
+        // 空文本保存 = 删除（oil.nvim 空行忽略语义）
+        assert!(
+            handle_update_queue_entry(&state, &session_id, &b, "   ".to_string())
+                .await
+                .is_none()
+        );
+        let queue = session.queue.snapshot();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].id, a);
+
+        // 显式删除
+        assert!(
+            handle_remove_queue_entry(&state, &session_id, &a)
+                .await
+                .is_none()
+        );
+        assert!(session.queue.snapshot().is_empty());
+
+        // 未知 session 返回 error 事件
+        let event = handle_remove_queue_entry(&state, "missing", "1").await;
+        assert!(
+            matches!(event, Some(ServerEvent::Error { .. })),
+            "未知 session 应返回 error 事件"
+        );
+    }
+
+    /// 未知斜杠命令不应进入队列，直接回错误事件。
+    #[tokio::test]
+    async fn unknown_slash_command_is_rejected() {
+        let (state, session_id) = crate::serve::tests::test_state_with_session().await;
+        let event = handle_prompt(&state, &session_id, "/quit".to_string(), Vec::new()).await;
+        let ServerEvent::Error { message, .. } = event else {
+            panic!("未知命令应返回 error 事件");
+        };
+        assert!(message.contains("未知命令"), "{message}");
+        let session = state
+            .inner
+            .sessions
+            .lock()
+            .await
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        assert_eq!(session.runner.queued_len(), 0, "未知命令不应入队");
+    }
+
+    /// 子 agent session（ADR-0044）只读回溯：prompt 被拒绝（血缘经
+    /// `parent_session_id` 判定），不创建运行。
+    #[tokio::test]
+    async fn prompt_to_child_session_is_rejected_read_only() {
+        let (state, main_id) = crate::serve::tests::test_state_with_session().await;
+        let store = state.inner.store.as_ref().expect("store");
+        let work = store
+            .work_of_session(&main_id)
+            .await
+            .expect("work query")
+            .expect("main session has work");
+        let child = store
+            .create_session_in_work(&work.id, Some(&main_id))
+            .await
+            .expect("child session");
+
+        let event = handle_prompt(&state, &child, "hi".to_string(), Vec::new()).await;
+        let ServerEvent::Error { message, .. } = event else {
+            panic!("子 session 的 prompt 应返回 error 事件");
+        };
+        assert!(message.contains("read-only"), "{message}");
+
+        // 主 session 不受影响（血缘为 None）
+        let ack = handle_prompt(&state, &main_id, "/continue".to_string(), Vec::new()).await;
+        assert!(
+            matches!(ack, ServerEvent::PromptAck { .. }),
+            "主 session 的 prompt 不应被拒绝"
+        );
+    }
+}

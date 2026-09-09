@@ -34,7 +34,6 @@ nomic-vfs.workspace = true
 png.workspace = true
 pulldown-cmark.workspace = true
 ratatui.workspace = true
-rust-embed.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

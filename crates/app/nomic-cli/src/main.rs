@@ -1,12 +1,15 @@
 //! nomic：Rust 编码 agent CLI（pi-coding-agent 的 Rust 复刻，见 docs/adr/0001）。
 //!
-//! 两种运行模式：
+//! 三种运行模式：
 //! - print 模式（`-p/--print`）：非交互，流式输出到 stdout，管道可用
 //! - 交互 TUI（缺省）：ratatui 全屏界面（见 docs/adr/0002）
+//! - serve 模式（`--serve`）：headless WebSocket 事件流服务，供 Flutter GUI
+//!   连接（见 docs/adr/0046）
 //!
 //! 本文件只做 CLI 解析与模式分发；共享的 provider/model/session 初始化在
 //! `bootstrap`，主/子 agent 工具配方组装在 `agent_recipe`，print 模式在
-//! `print`，交互模式在 `tui`，session 管理子命令在 `sessions`。
+//! `print`，交互模式在 `tui`，serve 模式在 `serve`，session 管理子命令在
+//! `sessions`。
 
 mod agent_recipe;
 mod bootstrap;
@@ -19,11 +22,11 @@ mod mention;
 mod model;
 mod picker;
 mod print;
+mod serve;
 mod sessions;
 mod settings;
 mod system_prompt;
 mod tui;
-mod web;
 
 use std::path::{Path, PathBuf};
 
@@ -37,18 +40,19 @@ use crate::logging::LogTarget;
 #[command(name = "nomic", version, about)]
 pub(crate) struct Cli {
     /// 要发送的 prompt（print 模式，非交互；缺省进入交互 TUI）
-    #[arg(short, long, value_name = "TEXT", conflicts_with = "web")]
+    #[arg(short, long, value_name = "TEXT", conflicts_with = "serve")]
     pub(crate) print: Option<String>,
 
-    /// 启动内置 Web UI 服务（REST + WebSocket + 前端静态伺服；缺省绑定 127.0.0.1:3333）
+    /// 启动 headless 事件流服务（WebSocket 协议，供 Flutter GUI 连接；
+    /// 缺省绑定 127.0.0.1:3333，见 docs/adr/0046）
     #[arg(long)]
-    pub(crate) web: bool,
+    pub(crate) serve: bool,
 
-    /// Web 服务监听端口（`--web` 时生效，缺省 3333）
+    /// 事件流服务监听端口（`--serve` 时生效，缺省 3333）
     #[arg(long, default_value_t = 3333)]
     pub(crate) port: u16,
 
-    /// Web 服务监听地址（`--web` 时生效，缺省 127.0.0.1；跨机访问自担风险）
+    /// 事件流服务监听地址（`--serve` 时生效，缺省 127.0.0.1；跨机访问自担风险）
     #[arg(long)]
     pub(crate) host: Option<String>,
 
@@ -68,7 +72,7 @@ pub(crate) struct Cli {
     pub(crate) provider: Option<String>,
 
     /// 模型 id，支持 `<provider>/<模型id>` 全形式跨 provider 指定
-    /// （缺省用数据库中保存的选择；都没有时 TUI / web 以占位模型继续启动，
+    /// （缺省用数据库中保存的选择；都没有时 TUI / serve 以占位模型继续启动，
     /// 发消息时提示先选择模型，print 模式启动报错——无内置默认模型）
     #[arg(long)]
     pub(crate) model: Option<String>,
@@ -164,7 +168,7 @@ async fn main() -> Result<()> {
     // 与工具相对路径解析都基于该目录（进程级 cwd，见 enter_workdir）
     enter_workdir(cli.cwd.as_deref())?;
     // guard 必须活到进程退出，否则非阻塞 writer 尾部缓冲丢失
-    let mirror_warnings_to_stderr = cli.print.is_some() || cli.web || cli.command.is_some();
+    let mirror_warnings_to_stderr = cli.print.is_some() || cli.serve || cli.command.is_some();
     let _log_guard = logging::init(cli.log, cli.log_level.as_deref(), mirror_warnings_to_stderr)?;
     tracing::debug!(
         version = env!("CARGO_PKG_VERSION"),
@@ -181,12 +185,12 @@ async fn main() -> Result<()> {
     }
 }
 
-/// 无子命令时的常规对话分发：print 模式、Web UI 或交互 TUI。
+/// 无子命令时的常规对话分发：print 模式、serve 服务或交互 TUI。
 // future 非 Send 的原因与安全性见 tui/mod.rs 的模块级说明（同上）
 #[allow(clippy::future_not_send)]
 pub(crate) async fn dispatch(cli: &Cli) -> Result<()> {
-    if cli.web {
-        web::run(cli).await
+    if cli.serve {
+        serve::run(cli).await
     } else if let Some(prompt) = &cli.print {
         print::run(cli, prompt).await
     } else {

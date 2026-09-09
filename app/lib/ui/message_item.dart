@@ -2,9 +2,12 @@
 /// 系统提示。
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:lucide_icons/lucide_icons.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../state/chat_items.dart';
 import '../theme.dart';
@@ -80,11 +83,22 @@ class _AssistantBlock extends StatelessWidget {
             MarkdownBody(
               data: item.text,
               selectable: true,
+              onTapLink: (text, href, title) {
+                final uri = href == null ? null : Uri.tryParse(href);
+                if (uri != null) unawaited(launchUrl(uri));
+              },
               styleSheet: MarkdownStyleSheet(
                 p: TextStyle(
                   fontSize: 14,
                   height: 1.5,
                   color: tokens.foreground,
+                ),
+                // 链接不走彩色：ink + 下划线（DESIGN.md ≤10% accent 规则）
+                a: TextStyle(
+                  fontSize: 14,
+                  height: 1.5,
+                  color: tokens.foreground,
+                  decoration: TextDecoration.underline,
                 ),
                 code: TextStyle(
                   fontSize: 13,

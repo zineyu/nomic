@@ -11,6 +11,7 @@ dependencies:
     sdk: flutter
   web_socket_channel: ^3.0.0
   flutter_markdown: ^0.7.4
+  url_launcher: ^6.3.0
   # vendored 修复版（Flutter 3.44 起 IconData 为 final class，官方 0.257.0
   # 通过 extends IconData 实现，已无法编译；见 packages/lucide_icons）
   lucide_icons:

@@ -21,10 +21,12 @@ class Sidebar extends StatefulWidget {
 
 class _SidebarState extends State<Sidebar> {
   final _searchController = TextEditingController();
+  final _listController = ScrollController();
 
   @override
   void dispose() {
     _searchController.dispose();
+    _listController.dispose();
     super.dispose();
   }
 
@@ -108,37 +110,44 @@ class _SidebarState extends State<Sidebar> {
                       style: AppText.ui(tokens.mutedForeground),
                     ),
                   )
-                : ListView(
-                    padding: const EdgeInsets.symmetric(horizontal: Spacing.sm),
-                    children: [
-                      for (final entry in byProject.entries) ...[
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(
-                            Spacing.sm,
-                            Spacing.md,
-                            Spacing.sm,
-                            Spacing.sm,
-                          ),
-                          child: Tooltip(
-                            message: entry.key,
-                            child: Text(
-                              _basename(entry.key),
-                              overflow: TextOverflow.ellipsis,
-                              style: AppText.caption(tokens.mutedForeground),
+                : Scrollbar(
+                    controller: _listController,
+                    thumbVisibility: true,
+                    child: ListView(
+                      controller: _listController,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: Spacing.sm,
+                      ),
+                      children: [
+                        for (final entry in byProject.entries) ...[
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(
+                              Spacing.sm,
+                              Spacing.md,
+                              Spacing.sm,
+                              Spacing.sm,
+                            ),
+                            child: Tooltip(
+                              message: entry.key,
+                              child: Text(
+                                _basename(entry.key),
+                                overflow: TextOverflow.ellipsis,
+                                style: AppText.caption(tokens.mutedForeground),
+                              ),
                             ),
                           ),
-                        ),
-                        for (final work in entry.value)
-                          _WorkTile(
-                            work: work,
-                            controller: controller,
-                            selected:
-                                controller.sessionId == work.mainSessionId,
-                            onTap: () =>
-                                controller.openSession(work.mainSessionId),
-                          ),
+                          for (final work in entry.value)
+                            _WorkTile(
+                              work: work,
+                              controller: controller,
+                              selected:
+                                  controller.sessionId == work.mainSessionId,
+                              onTap: () =>
+                                  controller.openSession(work.mainSessionId),
+                            ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
           ),
           // 底部：设置页入口

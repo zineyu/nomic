@@ -126,18 +126,24 @@ class _ChatPageState extends State<ChatPage> {
                             constraints: const BoxConstraints(
                               maxWidth: maxPageWidth,
                             ),
-                            child: ListView.builder(
+                            // 桌面端常显滚动条（长会话定位用）
+                            child: Scrollbar(
                               controller: _scrollController,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: Spacing.lg,
-                                vertical: Spacing.lg,
-                              ),
-                              itemCount: controller.items.length,
-                              // ValueKey 锚定 item.id：插入新项时折叠/展开状态
-                              //（_ThinkingFold / ToolCard）跟随数据而非位置
-                              itemBuilder: (context, index) => MessageItemView(
-                                key: ValueKey(controller.items[index].id),
-                                item: controller.items[index],
+                              thumbVisibility: true,
+                              child: ListView.builder(
+                                controller: _scrollController,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: Spacing.lg,
+                                  vertical: Spacing.lg,
+                                ),
+                                itemCount: controller.items.length,
+                                // ValueKey 锚定 item.id：插入新项时折叠/展开状态
+                                //（_ThinkingFold / ToolCard）跟随数据而非位置
+                                itemBuilder: (context, index) =>
+                                    MessageItemView(
+                                      key: ValueKey(controller.items[index].id),
+                                      item: controller.items[index],
+                                    ),
                               ),
                             ),
                           ),

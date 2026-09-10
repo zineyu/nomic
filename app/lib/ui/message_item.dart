@@ -154,12 +154,17 @@ class _AssistantBlock extends StatelessWidget {
                 blockquotePadding: const EdgeInsets.symmetric(
                   horizontal: Spacing.sm,
                 ),
-                // 表格：14px 正文、细边框（strong 档保证在填充底色上可读）
+                // 表格：14px 正文、strong 细边框、斑马纹底（表头用字重
+                // 区分）；Intrinsic 列宽 + 窄窗口横向滚动，代码文本不被
+                // 压缩截断
                 tableHead: AppText.bodySm(
                   tokens.foreground,
                 ).copyWith(fontWeight: FontWeight.w600),
                 tableBody: AppText.bodySm(tokens.foreground),
                 tableBorder: TableBorder.all(color: tokens.borderStrong),
+                tableColumnWidth: const IntrinsicColumnWidth(),
+                tableScrollbarThumbVisibility: true,
+                tableCellsDecoration: BoxDecoration(color: tokens.secondary),
                 tableCellsPadding: const EdgeInsets.symmetric(
                   horizontal: Spacing.sm,
                   vertical: 6,

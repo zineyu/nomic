@@ -62,10 +62,13 @@ class Sidebar extends StatelessWidget {
                       Spacing.sm,
                       Spacing.sm,
                     ),
-                    child: Text(
-                      entry.key,
-                      overflow: TextOverflow.ellipsis,
-                      style: AppText.caption(tokens.mutedForeground),
+                    child: Tooltip(
+                      message: entry.key,
+                      child: Text(
+                        _basename(entry.key),
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.caption(tokens.mutedForeground),
+                      ),
                     ),
                   ),
                   for (final work in entry.value)
@@ -231,6 +234,12 @@ class _WorkTileState extends State<_WorkTile> {
       ),
     );
   }
+}
+
+/// project 路径末段（分组头显示用；完整路径走 tooltip）。
+String _basename(String path) {
+  final segments = path.split(RegExp(r'[/\\]')).where((s) => s.isNotEmpty);
+  return segments.isEmpty ? path : segments.last;
 }
 
 /// 侧栏副标题：相对时间（Codex 同款）+ 消息数。

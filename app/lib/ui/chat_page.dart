@@ -117,38 +117,44 @@ class _ChatPageState extends State<ChatPage> {
             if (controller.error != null) _ErrorBanner(controller: controller),
             if (controller.goal != null) _GoalBanner(goal: controller.goal!),
             Expanded(
-              child: Stack(
-                children: [
-                  Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: maxPageWidth),
-                      child: ListView.builder(
-                        controller: _scrollController,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: Spacing.lg,
-                          vertical: Spacing.lg,
+              child: controller.items.isEmpty && !controller.running
+                  ? const _EmptySessionHint()
+                  : Stack(
+                      children: [
+                        Center(
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(
+                              maxWidth: maxPageWidth,
+                            ),
+                            child: ListView.builder(
+                              controller: _scrollController,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: Spacing.lg,
+                                vertical: Spacing.lg,
+                              ),
+                              itemCount: controller.items.length,
+                              // ValueKey 锚定 item.id：插入新项时折叠/展开状态
+                              //（_ThinkingFold / ToolCard）跟随数据而非位置
+                              itemBuilder: (context, index) => MessageItemView(
+                                key: ValueKey(controller.items[index].id),
+                                item: controller.items[index],
+                              ),
+                            ),
+                          ),
                         ),
-                        itemCount: controller.items.length,
-                        // ValueKey 锚定 item.id：插入新项时折叠/展开状态
-                        //（_ThinkingFold / ToolCard）跟随数据而非位置
-                        itemBuilder: (context, index) => MessageItemView(
-                          key: ValueKey(controller.items[index].id),
-                          item: controller.items[index],
-                        ),
-                      ),
+                        if (!_atBottom)
+                          Positioned(
+                            left: 0,
+                            right: 0,
+                            bottom: Spacing.sm,
+                            child: Center(
+                              child: _ScrollToBottomButton(
+                                onTap: _scrollToBottom,
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
-                  ),
-                  if (!_atBottom)
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: Spacing.sm,
-                      child: Center(
-                        child: _ScrollToBottomButton(onTap: _scrollToBottom),
-                      ),
-                    ),
-                ],
-              ),
             ),
             // steering 队列区（服务端权威：queue_changed / 快照驱动）
             if (controller.queue.isNotEmpty) _QueueBar(controller: controller),
@@ -421,6 +427,29 @@ class _QueueAction extends StatelessWidget {
           padding: const EdgeInsets.all(4),
           child: Icon(icon, size: 12, color: tokens.mutedForeground),
         ),
+      ),
+    );
+  }
+}
+
+/// 空会话引导（消息流为零且未运行时展示）。
+class _EmptySessionHint extends StatelessWidget {
+  const _EmptySessionHint();
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = tokensOf(context);
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('输入消息开始对话', style: AppText.ui(tokens.mutedForeground)),
+          const SizedBox(height: Spacing.sm),
+          Text(
+            'Enter 发送 · Shift+Enter 换行 · Esc 中断',
+            style: AppText.caption(tokens.mutedForeground),
+          ),
+        ],
       ),
     );
   }

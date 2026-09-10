@@ -116,6 +116,48 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('删除这个 project？'), findsNothing);
     });
+
+    testWidgets('hover 不改变 project 组头行高（$tag）', (tester) async {
+      final controller = AppController(url: 'ws://127.0.0.1:1/ws');
+      addTearDown(controller.dispose);
+      controller.works = [_work('w1', 's1', '会话甲')];
+      controller.projects = [
+        const ProjectSummary(id: 'p1', path: '/tmp/project', sessionCount: 1),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildTheme(tokens, dark: dark),
+          home: Scaffold(
+            body: ListenableBuilder(
+              listenable: controller,
+              builder: (context, _) => Sidebar(controller: controller),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // hover 浮现的 24px MiniIconButton 不得撑高行（行内容固定 24px）
+      Size headerSize() => tester.getSize(
+        find
+            .ancestor(of: find.text('project'), matching: find.byType(InkWell))
+            .first,
+      );
+      final headerBefore = headerSize();
+
+      final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await gesture.addPointer(location: Offset.zero);
+      addTearDown(gesture.removePointer);
+
+      await gesture.moveTo(tester.getCenter(find.text('project')));
+      await tester.pumpAndSettle();
+      expect(headerSize(), headerBefore);
+
+      await gesture.moveTo(Offset.zero);
+      await tester.pumpAndSettle();
+      expect(headerSize(), headerBefore);
+    });
   }
 }
 

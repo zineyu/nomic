@@ -377,50 +377,55 @@ class _ProjectHeaderState extends State<_ProjectHeader> {
               Spacing.sm,
               Spacing.sm,
             ),
-            child: Row(
-              children: [
-                Icon(
-                  widget.collapsed
-                      ? LucideIcons.chevronRight
-                      : LucideIcons.chevronDown,
-                  size: 12,
-                  color: tokens.tertiary,
-                ),
-                const SizedBox(width: 4),
-                Icon(
-                  LucideIcons.folder,
-                  size: 14,
-                  color: tokens.mutedForeground,
-                ),
-                const SizedBox(width: Spacing.sm),
-                Expanded(
-                  child: Text(
-                    _basename(widget.path),
-                    overflow: TextOverflow.ellipsis,
-                    style: AppText.ui(
-                      tokens.foreground,
-                    ).copyWith(fontWeight: FontWeight.w500),
+            // 行内容固定 24px：hover 浮现的 MiniIconButton 与文本同槽，
+            // 行高不随 hover 抖动
+            child: SizedBox(
+              height: 24,
+              child: Row(
+                children: [
+                  Icon(
+                    widget.collapsed
+                        ? LucideIcons.chevronRight
+                        : LucideIcons.chevronDown,
+                    size: 12,
+                    color: tokens.tertiary,
                   ),
-                ),
-                if (_hovered) ...[
-                  MiniIconButton(
-                    icon: LucideIcons.plus,
-                    tooltip: '新建任务',
-                    onTap: () =>
-                        unawaited(widget.controller.createWork(widget.path)),
+                  const SizedBox(width: 4),
+                  Icon(
+                    LucideIcons.folder,
+                    size: 14,
+                    color: tokens.mutedForeground,
                   ),
-                  if (project != null)
-                    MiniIconButton(
-                      icon: LucideIcons.trash2,
-                      tooltip: '删除项目',
-                      onTap: () => showDeleteProjectDialog(
-                        context,
-                        widget.controller,
-                        project,
-                      ),
+                  const SizedBox(width: Spacing.sm),
+                  Expanded(
+                    child: Text(
+                      _basename(widget.path),
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.ui(
+                        tokens.foreground,
+                      ).copyWith(fontWeight: FontWeight.w500),
                     ),
+                  ),
+                  if (_hovered) ...[
+                    MiniIconButton(
+                      icon: LucideIcons.plus,
+                      tooltip: '新建任务',
+                      onTap: () =>
+                          unawaited(widget.controller.createWork(widget.path)),
+                    ),
+                    if (project != null)
+                      MiniIconButton(
+                        icon: LucideIcons.trash2,
+                        tooltip: '删除项目',
+                        onTap: () => showDeleteProjectDialog(
+                          context,
+                          widget.controller,
+                          project,
+                        ),
+                      ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         ),

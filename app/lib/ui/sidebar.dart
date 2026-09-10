@@ -10,17 +10,41 @@ import '../app_controller.dart';
 import '../protocol/models.dart';
 import '../theme.dart';
 
-class Sidebar extends StatelessWidget {
+class Sidebar extends StatefulWidget {
   const Sidebar({super.key, required this.controller});
 
   final AppController controller;
 
   @override
+  State<Sidebar> createState() => _SidebarState();
+}
+
+class _SidebarState extends State<Sidebar> {
+  final _searchController = TextEditingController();
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
+    final controller = widget.controller;
+    final query = _searchController.text.trim().toLowerCase();
+    final works = query.isEmpty
+        ? controller.works
+        : controller.works
+              .where(
+                (w) =>
+                    w.displayTitle.toLowerCase().contains(query) ||
+                    w.project.toLowerCase().contains(query),
+              )
+              .toList();
     // 按 project 分组（保持 works 原有顺序：服务端按末条消息时间降序）
     final byProject = <String, List<WorkSummary>>{};
-    for (final work in controller.works) {
+    for (final work in works) {
       byProject.putIfAbsent(work.project, () => []).add(work);
     }
 
@@ -50,37 +74,72 @@ class Sidebar extends StatelessWidget {
               ],
             ),
           ),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.symmetric(horizontal: Spacing.sm),
-              children: [
-                for (final entry in byProject.entries) ...[
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(
-                      Spacing.sm,
-                      Spacing.md,
-                      Spacing.sm,
-                      Spacing.sm,
-                    ),
-                    child: Tooltip(
-                      message: entry.key,
-                      child: Text(
-                        _basename(entry.key),
-                        overflow: TextOverflow.ellipsis,
-                        style: AppText.caption(tokens.mutedForeground),
-                      ),
-                    ),
-                  ),
-                  for (final work in entry.value)
-                    _WorkTile(
-                      work: work,
-                      controller: controller,
-                      selected: controller.sessionId == work.mainSessionId,
-                      onTap: () => controller.openSession(work.mainSessionId),
-                    ),
-                ],
-              ],
+          // 搜索（标题 / project 路径过滤）
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              Spacing.md,
+              0,
+              Spacing.md,
+              Spacing.sm,
             ),
+            child: TextField(
+              controller: _searchController,
+              style: AppText.ui(tokens.foreground),
+              decoration: InputDecoration(
+                hintText: '搜索会话…',
+                isDense: true,
+                prefixIcon: const Icon(LucideIcons.search, size: 14),
+                prefixIconConstraints: const BoxConstraints(
+                  minWidth: 32,
+                  minHeight: 24,
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  vertical: Spacing.sm,
+                ),
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+          ),
+          Expanded(
+            child: works.isEmpty
+                ? Center(
+                    child: Text(
+                      controller.works.isEmpty ? '暂无 work' : '无匹配会话',
+                      style: AppText.ui(tokens.mutedForeground),
+                    ),
+                  )
+                : ListView(
+                    padding: const EdgeInsets.symmetric(horizontal: Spacing.sm),
+                    children: [
+                      for (final entry in byProject.entries) ...[
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(
+                            Spacing.sm,
+                            Spacing.md,
+                            Spacing.sm,
+                            Spacing.sm,
+                          ),
+                          child: Tooltip(
+                            message: entry.key,
+                            child: Text(
+                              _basename(entry.key),
+                              overflow: TextOverflow.ellipsis,
+                              style: AppText.caption(tokens.mutedForeground),
+                            ),
+                          ),
+                        ),
+                        for (final work in entry.value)
+                          _WorkTile(
+                            work: work,
+                            controller: controller,
+                            selected:
+                                controller.sessionId == work.mainSessionId,
+                            onTap: () =>
+                                controller.openSession(work.mainSessionId),
+                          ),
+                      ],
+                    ],
+                  ),
           ),
           // 底部：设置页入口
           Container(

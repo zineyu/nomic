@@ -57,8 +57,8 @@ class _InputBarState extends State<InputBar> {
     _focusNode.requestFocus();
   }
 
-  /// Enter 发送（桌面多行 TextField 默认对 Enter 插入换行，这里消费事件
-  /// 拦截）；Shift+Enter 换行；空输入时 ↑ 召回上次发送的文本。
+  /// Enter / ⌘Enter 发送（桌面多行 TextField 默认对 Enter 插入换行，这里
+  /// 消费事件拦截）；Shift+Enter 换行；空输入时 ↑ 召回上次发送的文本。
   /// 移动端软键盘发送走 onSubmitted。
   KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
@@ -94,10 +94,10 @@ class _InputBarState extends State<InputBar> {
         // 悬浮 composer：全界面唯一带阴影的在流元素（DESIGN.md
         // 「Shadow」例外），radius 走 2xl 胶囊档
         borderRadius: BorderRadius.circular(Radii.xxl),
+        // focus ring：清晰的 accent 描边（不只依赖阴影变化）
         border: Border.all(
-          color: _focused
-              ? tokens.primary.withValues(alpha: 0.4)
-              : tokens.border,
+          color: _focused ? tokens.accent : tokens.border,
+          width: _focused ? 1.5 : 1,
         ),
         boxShadow: [
           BoxShadow(
@@ -142,33 +142,28 @@ class _InputBarState extends State<InputBar> {
               children: [
                 _ModelChip(controller: controller),
                 const SizedBox(width: Spacing.sm),
-                Text(
-                  _formatTokens(controller.contextTokens),
-                  style: AppText.caption(tokens.mutedForeground),
-                ),
+                _ContextUsage(controller: controller),
                 const Spacer(),
-                // 停止与发送并存：运行中发送即排队（与 Enter 提交同语义）
-                if (running) ...[
+                // 发送三态：空输入禁用（灰）/ 有效启用（品牌蓝）/
+                // 运行中切换为停止按钮（Enter 仍可提交进队列）
+                if (running)
                   _CircleButton(
                     icon: LucideIcons.square,
                     iconSize: 12,
                     tooltip: '停止当前运行（Esc）',
-                    background: tokens.secondary,
-                    foreground: tokens.foreground,
+                    background: tokens.primary,
+                    foreground: tokens.primaryForeground,
                     onPressed: controller.cancel,
+                  )
+                else
+                  _CircleButton(
+                    icon: LucideIcons.arrowUp,
+                    iconSize: 18,
+                    tooltip: '发送（Enter / ⌘Enter）',
+                    background: canSend ? tokens.accent : tokens.secondary,
+                    foreground: canSend ? Colors.white : tokens.tertiary,
+                    onPressed: canSend ? _submit : null,
                   ),
-                  const SizedBox(width: Spacing.sm),
-                ],
-                _CircleButton(
-                  icon: LucideIcons.arrowUp,
-                  iconSize: 18,
-                  tooltip: running ? '发送（进入队列）' : '发送',
-                  background: canSend ? tokens.primary : tokens.muted,
-                  foreground: canSend
-                      ? tokens.primaryForeground
-                      : tokens.mutedForeground,
-                  onPressed: canSend ? _submit : null,
-                ),
               ],
             ),
           ),
@@ -261,10 +256,45 @@ class _CircleButton extends StatelessWidget {
   }
 }
 
-/// 上下文 token 紧凑显示（`12.3k tokens`）。
-String _formatTokens(int tokens) {
-  if (tokens >= 1000) {
-    return '${(tokens / 1000).toStringAsFixed(1)}k tokens';
+/// 上下文用量：「9.7k / 256k tokens」；上限从候选模型的 contextWindow
+/// 推导（未加载候选列表时只显示已用量）。接近上限走警告色阶：
+/// <75% muted、75–90% ink、≥90% warning。
+class _ContextUsage extends StatelessWidget {
+  const _ContextUsage({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = tokensOf(context);
+    final used = controller.contextTokens;
+    int? window;
+    for (final c in controller.modelCandidates) {
+      if (c.id == controller.model.id &&
+          c.provider == controller.model.provider) {
+        window = c.contextWindow;
+        break;
+      }
+    }
+    final ratio = window == null || window == 0 ? 0.0 : used / window;
+    final color = ratio >= 0.9
+        ? tokens.warning
+        : ratio >= 0.75
+        ? tokens.foreground
+        : tokens.mutedForeground;
+    return Text(
+      window == null
+          ? '${_compactTokens(used)} tokens'
+          : '${_compactTokens(used)} / ${_compactTokens(window)} tokens',
+      style: AppText.caption(color),
+    );
   }
-  return '$tokens tokens';
+}
+
+/// token 数紧凑显示（`9.7k` / `256k` / `970`）。
+String _compactTokens(int tokens) {
+  if (tokens >= 1000) {
+    return '${(tokens / 1000).toStringAsFixed(1)}k';
+  }
+  return '$tokens';
 }

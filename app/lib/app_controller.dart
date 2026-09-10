@@ -123,6 +123,8 @@ class AppController extends ChangeNotifier {
     showingSettings = false;
     notifyListeners();
     await _refreshSnapshot();
+    // 候选列表未加载时顺带拉取（composer 的上下文窗口上限推导用）
+    if (modelCandidates.isEmpty) unawaited(loadModels());
   }
 
   /// 新建 work（启动页选定 project 后）：服务端连带创建主 session，

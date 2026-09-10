@@ -5,6 +5,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
 import '../app_controller.dart';
@@ -24,27 +25,41 @@ class HomePage extends StatelessWidget {
     return ListenableBuilder(
       listenable: controller,
       builder: (context, _) {
-        return Scaffold(
-          body: Column(
-            children: [
-              if (!controller.connected)
-                _ConnectionBanner(controller: controller),
-              Expanded(
-                child: Row(
-                  children: [
-                    Sidebar(controller: controller),
-                    Container(width: 1, color: tokens.sidebarBorder),
-                    Expanded(
-                      child: controller.showingSettings
-                          ? SettingsPage(controller: controller)
-                          : controller.hasSession
-                          ? ChatPage(controller: controller)
-                          : _StartPage(controller: controller),
-                    ),
-                  ],
+        // 应用级快捷键：Cmd+N 新 work；Cmd+, 设置开关
+        return CallbackShortcuts(
+          bindings: {
+            const SingleActivator(LogicalKeyboardKey.keyN, meta: true):
+                controller.closeSession,
+            const SingleActivator(LogicalKeyboardKey.comma, meta: true): () {
+              if (controller.showingSettings) {
+                controller.closeSettings();
+              } else {
+                controller.openSettings();
+              }
+            },
+          },
+          child: Scaffold(
+            body: Column(
+              children: [
+                if (!controller.connected)
+                  _ConnectionBanner(controller: controller),
+                Expanded(
+                  child: Row(
+                    children: [
+                      Sidebar(controller: controller),
+                      Container(width: 1, color: tokens.sidebarBorder),
+                      Expanded(
+                        child: controller.showingSettings
+                            ? SettingsPage(controller: controller)
+                            : controller.hasSession
+                            ? ChatPage(controller: controller)
+                            : _StartPage(controller: controller),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         );
       },

@@ -3,8 +3,10 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -264,26 +266,21 @@ class _ToolCardState extends State<ToolCard> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       if (item.args.isNotEmpty)
-                        SelectableText(
-                          item.args.toString(),
-                          style: AppFonts.mono(
-                            fontSize: 12,
-                            color: tokens.mutedForeground,
-                          ),
+                        _CopyableCodeBlock(
+                          // pretty-print JSON（原 Map.toString 单行不可读）
+                          text: _prettyJson(item.args),
+                          color: tokens.mutedForeground,
                         ),
                       if (item.resultPreview.isNotEmpty)
                         Padding(
                           padding: const EdgeInsets.only(top: 4),
-                          child: SelectableText(
-                            item.resultPreview.length > 2000
+                          child: _CopyableCodeBlock(
+                            text: item.resultPreview.length > 2000
                                 ? '${item.resultPreview.substring(0, 2000)}…'
                                 : item.resultPreview,
-                            style: AppFonts.mono(
-                              fontSize: 12,
-                              color: item.isError
-                                  ? tokens.destructive
-                                  : tokens.foreground,
-                            ),
+                            color: item.isError
+                                ? tokens.destructive
+                                : tokens.foreground,
                           ),
                         ),
                     ],
@@ -296,6 +293,43 @@ class _ToolCardState extends State<ToolCard> {
     );
   }
 }
+
+/// 展开区的等宽文本块：可选中 + 右侧复制按钮。
+class _CopyableCodeBlock extends StatelessWidget {
+  const _CopyableCodeBlock({required this.text, required this.color});
+
+  final String text;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: SelectableText(
+            text,
+            style: AppFonts.mono(fontSize: 12, color: color),
+          ),
+        ),
+        IconButton(
+          icon: Icon(
+            LucideIcons.copy,
+            size: 12,
+            color: tokensOf(context).mutedForeground,
+          ),
+          tooltip: '复制',
+          visualDensity: VisualDensity.compact,
+          onPressed: () => Clipboard.setData(ClipboardData(text: text)),
+        ),
+      ],
+    );
+  }
+}
+
+/// pretty-print JSON（工具参数展示用）。
+String _prettyJson(Object? value) =>
+    const JsonEncoder.withIndent('  ').convert(value);
 
 /// 工具行状态：运行中 spinner；完成中性 check（muted ink）；失败红 x + 文案
 ///（状态不由颜色单独承载）。

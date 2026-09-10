@@ -1,10 +1,12 @@
 /// 输入区：Codex 式统一 composer——圆角容器内嵌多行输入与底部控制行
-/// （模型选择 chip + 上下文 token 计数 + 圆形发送/停止），聚焦时边框
+/// （模型选择 chip + 上下文用量环 + 圆形发送/停止），聚焦时边框
 /// 变为 ring/50。
 ///
 /// 运行中提交的消息进 steering 队列（与服务端同一语义：当前步骤完成后
 /// 注入本轮）；Esc 取消当前运行的快捷键绑定在 chat_page。
 library;
+
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -256,9 +258,10 @@ class _CircleButton extends StatelessWidget {
   }
 }
 
-/// 上下文用量：「9.7k / 256k tokens」；上限从候选模型的 contextWindow
-/// 推导（未加载候选列表时只显示已用量）。接近上限走警告色阶：
-/// <75% muted、75–90% ink、≥90% warning。
+/// 上下文用量：常态为环形进度条（14px，轨道 border、进度按占比走
+/// 色阶）；光标悬停时经 Tooltip 展开具体数值。窗口未知（候选列表未
+/// 加载）时降级为纯文本。接近上限走警告色阶：<75% muted、
+/// 75–90% ink、≥90% warning。
 class _ContextUsage extends StatelessWidget {
   const _ContextUsage({required this.controller});
 
@@ -276,19 +279,74 @@ class _ContextUsage extends StatelessWidget {
         break;
       }
     }
-    final ratio = window == null || window == 0 ? 0.0 : used / window;
+    if (window == null || window == 0) {
+      return Text(
+        '${_compactTokens(used)} tokens',
+        style: AppText.caption(tokens.mutedForeground),
+      );
+    }
+    final ratio = (used / window).clamp(0.0, 1.0);
     final color = ratio >= 0.9
         ? tokens.warning
         : ratio >= 0.75
         ? tokens.foreground
         : tokens.mutedForeground;
-    return Text(
-      window == null
-          ? '${_compactTokens(used)} tokens'
-          : '${_compactTokens(used)} / ${_compactTokens(window)} tokens',
-      style: AppText.caption(color),
+    final percent = (ratio * 100).round();
+    return Tooltip(
+      message:
+          '上下文 ${_compactTokens(used)} / ${_compactTokens(window)} '
+          'tokens · $percent%',
+      child: Semantics(
+        label: '上下文用量 $percent%',
+        child: CustomPaint(
+          size: const Size.square(_ContextRing.size),
+          painter: _ContextRingPainter(
+            ratio: ratio,
+            color: color,
+            track: tokens.border,
+          ),
+        ),
+      ),
     );
   }
+}
+
+/// 环形进度条的尺寸与绘制（细描边圆环，起点 12 点方向顺时针）。
+abstract final class _ContextRing {
+  static const double size = 14;
+  static const double strokeWidth = 2;
+}
+
+class _ContextRingPainter extends CustomPainter {
+  _ContextRingPainter({
+    required this.ratio,
+    required this.color,
+    required this.track,
+  });
+
+  final double ratio;
+  final Color color;
+  final Color track;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final radius = (size.shortestSide - _ContextRing.strokeWidth) / 2;
+    final rect = Rect.fromCircle(center: center, radius: radius);
+    const start = -math.pi / 2;
+    const sweep = 2 * math.pi;
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = _ContextRing.strokeWidth;
+    canvas.drawArc(rect, start, sweep, false, stroke..color = track);
+    if (ratio > 0) {
+      canvas.drawArc(rect, start, sweep * ratio, false, stroke..color = color);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_ContextRingPainter old) =>
+      old.ratio != ratio || old.color != color || old.track != track;
 }
 
 /// token 数紧凑显示（`9.7k` / `256k` / `970`）。

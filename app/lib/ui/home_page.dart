@@ -193,11 +193,7 @@ class _AddProjectTile extends StatelessWidget {
           padding: const EdgeInsets.all(Spacing.md),
           child: Row(
             children: [
-              Icon(
-                LucideIcons.folderPlus,
-                size: 16,
-                color: tokens.mutedForeground,
-              ),
+              Icon(LucideIcons.plus, size: 16, color: tokens.mutedForeground),
               const SizedBox(width: Spacing.sm),
               Text('添加项目目录…', style: AppText.bodySm(tokens.mutedForeground)),
             ],

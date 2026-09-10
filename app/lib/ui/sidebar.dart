@@ -165,7 +165,7 @@ class _SidebarState extends State<Sidebar> {
                                 ),
                                 const Spacer(),
                                 MiniIconButton(
-                                  icon: LucideIcons.folderPlus,
+                                  icon: LucideIcons.plus,
                                   tooltip: '添加项目目录…',
                                   onTap: _addProject,
                                 ),

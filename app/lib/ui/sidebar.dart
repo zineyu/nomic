@@ -5,13 +5,17 @@
 /// 运行中 = spinner（运行/未读由 controller 从全局事件流推导）。
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
 import '../app_controller.dart';
+import '../platform/file_picker.dart';
 import '../protocol/models.dart';
 import '../theme.dart';
+import 'mini_icon_button.dart';
 
 class Sidebar extends StatefulWidget {
   const Sidebar({super.key, required this.controller, this.searchFocusNode});
@@ -151,15 +155,28 @@ class _SidebarState extends State<Sidebar> {
                               Spacing.sm,
                               4,
                             ),
-                            child: Text(
-                              '项目',
-                              style: AppText.caption(tokens.mutedForeground),
+                            child: Row(
+                              children: [
+                                Text(
+                                  '项目',
+                                  style: AppText.caption(
+                                    tokens.mutedForeground,
+                                  ),
+                                ),
+                                const Spacer(),
+                                MiniIconButton(
+                                  icon: LucideIcons.folderPlus,
+                                  tooltip: '添加项目目录…',
+                                  onTap: _addProject,
+                                ),
+                              ],
                             ),
                           ),
                           for (final entry in byProject.entries) ...[
                             _ProjectHeader(
                               path: entry.key,
                               collapsed: _collapsed.contains(entry.key),
+                              controller: controller,
                               onToggle: () => setState(() {
                                 if (!_collapsed.remove(entry.key)) {
                                   _collapsed.add(entry.key);
@@ -258,6 +275,14 @@ class _SidebarState extends State<Sidebar> {
     }
     return KeyEventResult.ignored;
   }
+
+  /// 经系统文件选择器登记新 project 并开始新 work（取消选择则无操作）。
+  Future<void> _addProject() async {
+    final path = await FilePicker.pickDirectory();
+    if (path == null) return;
+    final created = await widget.controller.createProject(path);
+    if (created != null) await widget.controller.createWork(created);
+  }
 }
 
 /// 新建任务按钮：浅色填充（surface），hover 加深，加号图标 + 32px 点击高度。
@@ -308,54 +333,95 @@ class _NewTaskButtonState extends State<_NewTaskButton> {
   }
 }
 
-/// project 组头：chevron + 文件夹图标 + 名称，整行可点折叠/展开。
-class _ProjectHeader extends StatelessWidget {
+/// project 组头：chevron + 文件夹图标 + 名称，整行可点折叠/展开；
+/// hover 浮现行内 icon 操作（在该 project 下新建任务 / 删除项目）。
+class _ProjectHeader extends StatefulWidget {
   const _ProjectHeader({
     required this.path,
     required this.collapsed,
+    required this.controller,
     required this.onToggle,
   });
 
   final String path;
   final bool collapsed;
+  final AppController controller;
   final VoidCallback onToggle;
+
+  @override
+  State<_ProjectHeader> createState() => _ProjectHeaderState();
+}
+
+class _ProjectHeaderState extends State<_ProjectHeader> {
+  bool _hovered = false;
 
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
+    // 组头由 work 反推路径，删除操作需要注册表中的 project 摘要
+    // （id 与会话数，级联确认用；有 work 必有登记，理论不为 null）。
+    final project = _projectByPath(widget.controller, widget.path);
     return Tooltip(
-      message: path,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(Radii.md),
-        hoverColor: tokens.sidebarAccent,
-        onTap: onToggle,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(
-            Spacing.sm,
-            Spacing.sm,
-            Spacing.sm,
-            Spacing.sm,
-          ),
-          child: Row(
-            children: [
-              Icon(
-                collapsed ? LucideIcons.chevronRight : LucideIcons.chevronDown,
-                size: 12,
-                color: tokens.tertiary,
-              ),
-              const SizedBox(width: 4),
-              Icon(LucideIcons.folder, size: 14, color: tokens.mutedForeground),
-              const SizedBox(width: Spacing.sm),
-              Expanded(
-                child: Text(
-                  _basename(path),
-                  overflow: TextOverflow.ellipsis,
-                  style: AppText.ui(
-                    tokens.foreground,
-                  ).copyWith(fontWeight: FontWeight.w500),
+      message: widget.path,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(Radii.md),
+          hoverColor: tokens.sidebarAccent,
+          onTap: widget.onToggle,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              Spacing.sm,
+              Spacing.sm,
+              Spacing.sm,
+              Spacing.sm,
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  widget.collapsed
+                      ? LucideIcons.chevronRight
+                      : LucideIcons.chevronDown,
+                  size: 12,
+                  color: tokens.tertiary,
                 ),
-              ),
-            ],
+                const SizedBox(width: 4),
+                Icon(
+                  LucideIcons.folder,
+                  size: 14,
+                  color: tokens.mutedForeground,
+                ),
+                const SizedBox(width: Spacing.sm),
+                Expanded(
+                  child: Text(
+                    _basename(widget.path),
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.ui(
+                      tokens.foreground,
+                    ).copyWith(fontWeight: FontWeight.w500),
+                  ),
+                ),
+                if (_hovered) ...[
+                  MiniIconButton(
+                    icon: LucideIcons.plus,
+                    tooltip: '新建任务',
+                    onTap: () =>
+                        unawaited(widget.controller.createWork(widget.path)),
+                  ),
+                  if (project != null)
+                    MiniIconButton(
+                      icon: LucideIcons.trash2,
+                      tooltip: '删除项目',
+                      onTap: () => showDeleteProjectDialog(
+                        context,
+                        widget.controller,
+                        project,
+                      ),
+                    ),
+                ],
+              ],
+            ),
           ),
         ),
       ),
@@ -461,18 +527,15 @@ class _WorkTileState extends State<_WorkTile> {
                     // 右侧状态位：hover 时让位给删除入口；运行中 spinner >
                     // 未读圆点 > 无
                     if (_hovered)
-                      GestureDetector(
-                        onTap: () => showDeleteWorkDialog(
-                          context,
-                          widget.controller,
-                          widget.work,
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.only(left: Spacing.sm),
-                          child: Icon(
-                            LucideIcons.trash2,
-                            size: 14,
-                            color: tokens.mutedForeground,
+                      Padding(
+                        padding: const EdgeInsets.only(left: Spacing.sm),
+                        child: MiniIconButton(
+                          icon: LucideIcons.trash2,
+                          tooltip: '删除',
+                          onTap: () => showDeleteWorkDialog(
+                            context,
+                            widget.controller,
+                            widget.work,
                           ),
                         ),
                       )
@@ -585,6 +648,56 @@ void showRenameWorkDialog(
       ],
     ),
   );
+}
+
+/// 删除 project 确认对话框（侧栏组头与启动页共用）。
+///
+/// 仅移除服务端登记记录，磁盘目录不受影响；名下有会话时提示级联删除
+/// （`force` 与服务端 `delete_project` 的非空拒绝口径一致：只统计有
+/// user 消息的会话，`ProjectSummary.sessionCount` 同口径）。
+void showDeleteProjectDialog(
+  BuildContext context,
+  AppController app,
+  ProjectSummary project,
+) {
+  final tokens = tokensOf(context);
+  final cascade = project.sessionCount > 0;
+  showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text('删除这个 project？', style: AppText.body(null)),
+      content: Text(
+        cascade
+            ? '「${_basename(project.path)}」名下的 ${project.sessionCount} 个会话将一并删除；磁盘目录不受影响。'
+            : '「${_basename(project.path)}」将从项目列表移除；磁盘目录不受影响。',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: tokens.destructive,
+            foregroundColor: tokens.primaryForeground,
+          ),
+          onPressed: () {
+            Navigator.of(context).pop();
+            app.deleteProject(project.id, force: cascade);
+          },
+          child: const Text('删除'),
+        ),
+      ],
+    ),
+  );
+}
+
+/// 按路径查 project 摘要（侧栏组头只有路径；有 work 必有登记）。
+ProjectSummary? _projectByPath(AppController app, String path) {
+  for (final project in app.projects) {
+    if (project.path == path) return project;
+  }
+  return null;
 }
 
 /// 删除 work 确认对话框（侧栏与聊天页上下文栏共用）。

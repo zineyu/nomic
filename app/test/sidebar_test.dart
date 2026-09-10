@@ -70,6 +70,52 @@ void main() {
       expect(tileMaterial(unselectedText).color, Colors.transparent);
       expect(tileMaterial(selectedText).color, tokens.sidebarAccent);
     });
+
+    testWidgets('project 组头 hover 浮现新建/删除 icon（$tag）', (tester) async {
+      final controller = AppController(url: 'ws://127.0.0.1:1/ws');
+      addTearDown(controller.dispose);
+      controller.works = [_work('w1', 's1', '会话甲')];
+      controller.projects = [
+        const ProjectSummary(id: 'p1', path: '/tmp/project', sessionCount: 2),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildTheme(tokens, dark: dark),
+          home: Scaffold(
+            body: ListenableBuilder(
+              listenable: controller,
+              builder: (context, _) => Sidebar(controller: controller),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // 「项目」区块标题常驻添加入口（系统文件选择器）
+      expect(find.byTooltip('添加项目目录…'), findsOneWidget);
+      // 未 hover 组头：无行内操作 icon（「新建任务」主按钮本身无 tooltip）
+      expect(find.byTooltip('新建任务'), findsNothing);
+      expect(find.byTooltip('删除项目'), findsNothing);
+
+      final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await gesture.addPointer(location: Offset.zero);
+      addTearDown(gesture.removePointer);
+      await gesture.moveTo(tester.getCenter(find.text('project')));
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('新建任务'), findsOneWidget);
+      expect(find.byTooltip('删除项目'), findsOneWidget);
+
+      // 删除打开确认对话框（级联提示含会话数），取消后关闭
+      await tester.tap(find.byTooltip('删除项目'));
+      await tester.pumpAndSettle();
+      expect(find.text('删除这个 project？'), findsOneWidget);
+      expect(find.textContaining('2 个会话'), findsOneWidget);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(find.text('删除这个 project？'), findsNothing);
+    });
   }
 }
 

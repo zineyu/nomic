@@ -4,13 +4,18 @@
 /// （project 选择 + 新 work）。
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
 import '../app_controller.dart';
+import '../platform/file_picker.dart';
+import '../protocol/models.dart';
 import '../theme.dart';
 import 'chat_page.dart';
+import 'mini_icon_button.dart';
 import 'settings_page.dart';
 import 'sidebar.dart';
 
@@ -126,29 +131,17 @@ class _ConnectionBanner extends StatelessWidget {
   }
 }
 
-/// 启动页：选择 project 后开始新 work（首条消息在聊天页发送）。
-class _StartPage extends StatefulWidget {
+/// 启动页：选择 project 后开始新 work（首条消息在聊天页发送）；
+/// 「添加项目目录…」经系统文件选择器登记新 project。
+class _StartPage extends StatelessWidget {
   const _StartPage({required this.controller});
 
   final AppController controller;
 
   @override
-  State<_StartPage> createState() => _StartPageState();
-}
-
-class _StartPageState extends State<_StartPage> {
-  final _pathController = TextEditingController();
-
-  @override
-  void dispose() {
-    _pathController.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
-    final projects = widget.controller.projects;
+    final projects = controller.projects;
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: maxPageWidth),
@@ -160,28 +153,10 @@ class _StartPageState extends State<_StartPage> {
             children: [
               Text('选择一个 project 开始', style: AppText.h2(tokens.foreground)),
               const SizedBox(height: Spacing.lg),
-              if (projects.isNotEmpty) ...[
-                for (final project in projects)
-                  _ProjectTile(
-                    title: _basename(project.path),
-                    subtitle: project.path,
-                    trailing: '${project.sessionCount} 个会话',
-                    onTap: () => widget.controller.createWork(project.path),
-                  ),
-                const SizedBox(height: Spacing.lg),
-              ],
-              TextField(
-                controller: _pathController,
-                decoration: InputDecoration(
-                  hintText: '输入目录路径，登记为新 project…',
-                  suffixIcon: IconButton(
-                    icon: const Icon(LucideIcons.arrowRight, size: 16),
-                    tooltip: '登记并开始',
-                    onPressed: () => _submit(_pathController.text),
-                  ),
-                ),
-                onSubmitted: _submit,
-              ),
+              for (final project in projects)
+                _ProjectTile(project: project, controller: controller),
+              if (projects.isNotEmpty) const SizedBox(height: Spacing.sm),
+              _AddProjectTile(onTap: _addProject),
             ],
           ),
         ),
@@ -189,34 +164,24 @@ class _StartPageState extends State<_StartPage> {
     );
   }
 
-  Future<void> _submit(String path) async {
-    final trimmed = path.trim();
-    if (trimmed.isEmpty) return;
-    final created = await widget.controller.createProject(trimmed);
-    if (created != null) {
-      _pathController.clear();
-      await widget.controller.createWork(created);
-    }
+  /// 系统文件选择器选目录 → 登记 project → 开始新 work。
+  Future<void> _addProject() async {
+    final path = await FilePicker.pickDirectory();
+    if (path == null) return;
+    final created = await controller.createProject(path);
+    if (created != null) await controller.createWork(created);
   }
 }
 
-class _ProjectTile extends StatelessWidget {
-  const _ProjectTile({
-    required this.title,
-    required this.subtitle,
-    required this.trailing,
-    required this.onTap,
-  });
+/// 「添加项目目录…」幽灵行：与 project 列表同构，hover 出底色。
+class _AddProjectTile extends StatelessWidget {
+  const _AddProjectTile({required this.onTap});
 
-  final String title;
-  final String subtitle;
-  final String trailing;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
-    // 扁平行：hover 才出现底色（whitespace over separators）
     return Material(
       color: Colors.transparent,
       borderRadius: BorderRadius.circular(Radii.lg),
@@ -228,30 +193,98 @@ class _ProjectTile extends StatelessWidget {
           padding: const EdgeInsets.all(Spacing.md),
           child: Row(
             children: [
-              Icon(LucideIcons.folder, size: 16, color: tokens.mutedForeground),
-              const SizedBox(width: Spacing.sm),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      overflow: TextOverflow.ellipsis,
-                      style: AppText.bodySm(
-                        tokens.foreground,
-                      ).copyWith(fontWeight: FontWeight.w500),
-                    ),
-                    Text(
-                      subtitle,
-                      overflow: TextOverflow.ellipsis,
-                      style: AppText.caption(tokens.mutedForeground),
-                    ),
-                  ],
-                ),
+              Icon(
+                LucideIcons.folderPlus,
+                size: 16,
+                color: tokens.mutedForeground,
               ),
               const SizedBox(width: Spacing.sm),
-              Text(trailing, style: AppText.caption(tokens.mutedForeground)),
+              Text('添加项目目录…', style: AppText.bodySm(tokens.mutedForeground)),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// project 行：点击开始新 work；hover 浮现删除入口（icon 按钮）。
+class _ProjectTile extends StatefulWidget {
+  const _ProjectTile({required this.project, required this.controller});
+
+  final ProjectSummary project;
+  final AppController controller;
+
+  @override
+  State<_ProjectTile> createState() => _ProjectTileState();
+}
+
+class _ProjectTileState extends State<_ProjectTile> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = tokensOf(context);
+    final project = widget.project;
+    // 扁平行：hover 才出现底色（whitespace over separators）
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(Radii.lg),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(Radii.lg),
+          hoverColor: tokens.secondary,
+          onTap: () => unawaited(widget.controller.createWork(project.path)),
+          child: Padding(
+            padding: const EdgeInsets.all(Spacing.md),
+            child: Row(
+              children: [
+                Icon(
+                  LucideIcons.folder,
+                  size: 16,
+                  color: tokens.mutedForeground,
+                ),
+                const SizedBox(width: Spacing.sm),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _basename(project.path),
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.bodySm(
+                          tokens.foreground,
+                        ).copyWith(fontWeight: FontWeight.w500),
+                      ),
+                      Text(
+                        project.path,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.caption(tokens.mutedForeground),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: Spacing.sm),
+                // 右侧：hover 时让位给删除入口（与侧栏 work 行同一模式）
+                if (_hovered)
+                  MiniIconButton(
+                    icon: LucideIcons.trash2,
+                    tooltip: '删除项目',
+                    onTap: () => showDeleteProjectDialog(
+                      context,
+                      widget.controller,
+                      project,
+                    ),
+                  )
+                else
+                  Text(
+                    '${project.sessionCount} 个会话',
+                    style: AppText.caption(tokens.mutedForeground),
+                  ),
+              ],
+            ),
           ),
         ),
       ),

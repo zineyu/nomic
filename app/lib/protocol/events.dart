@@ -146,6 +146,19 @@ class ClientEvent {
     'title': title,
   };
 
+  /// 删除 project（默认拒绝非空 project；`force` 级联删除名下全部会话。
+  /// 仅清除服务端登记记录，磁盘目录不受影响）。
+  static Json deleteProject(
+    String requestId,
+    String id, {
+    bool force = false,
+  }) => {
+    'type': 'delete_project',
+    'request_id': requestId,
+    'id': id,
+    'force': force,
+  };
+
   /// 提交 prompt（空闲即跑；运行中入 steering 队列）。
   static Json prompt(String sessionId, String text) => {
     'type': 'prompt',

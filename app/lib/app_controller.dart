@@ -157,6 +157,20 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  /// 删除 project（`force` 级联删除名下全部会话；仅清除服务端登记
+  /// 记录，磁盘目录不受影响）。
+  Future<void> deleteProject(String projectId, {bool force = false}) async {
+    try {
+      await _client.request(
+        (id) => ClientEvent.deleteProject(id, projectId, force: force),
+      );
+      await refreshLists();
+    } on ServerException catch (e) {
+      error = e.message;
+      notifyListeners();
+    }
+  }
+
   Future<void> deleteWork(String workId) async {
     try {
       await _client.request((id) => ClientEvent.deleteWork(id, workId));

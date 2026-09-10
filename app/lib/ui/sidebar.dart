@@ -158,7 +158,9 @@ class _SidebarState extends State<Sidebar> {
                                     child: Text(
                                       _basename(entry.key),
                                       overflow: TextOverflow.ellipsis,
-                                      style: AppText.ui(tokens.foreground),
+                                      style: AppText.ui(
+                                        tokens.foreground,
+                                      ).copyWith(fontWeight: FontWeight.w500),
                                     ),
                                   ),
                                 ),
@@ -166,13 +168,17 @@ class _SidebarState extends State<Sidebar> {
                             ),
                           ),
                           for (final work in entry.value)
-                            _WorkTile(
-                              work: work,
-                              controller: controller,
-                              selected:
-                                  controller.sessionId == work.mainSessionId,
-                              onTap: () =>
-                                  controller.openSession(work.mainSessionId),
+                            // 条目缩进与组头文本对齐（组头 = 图标 14 + 间距 8）
+                            Padding(
+                              padding: const EdgeInsets.only(left: 14),
+                              child: _WorkTile(
+                                work: work,
+                                controller: controller,
+                                selected:
+                                    controller.sessionId == work.mainSessionId,
+                                onTap: () =>
+                                    controller.openSession(work.mainSessionId),
+                              ),
                             ),
                         ],
                       ],
@@ -401,6 +407,7 @@ String _workSubtitle(WorkSummary work) {
 }
 
 /// Unix 毫秒 → 相对时间（刚刚 / n 分钟前 / n 小时前 / 昨天 / n 天前）。
+/// 天数按日历日差计算（不是 24h 窗口），避免跨午夜的「0 天前」。
 String? _relativeTime(int? millis) {
   if (millis == null) return null;
   final then = DateTime.fromMillisecondsSinceEpoch(millis);
@@ -408,8 +415,12 @@ String? _relativeTime(int? millis) {
   final diff = now.difference(then);
   if (diff.inMinutes < 1) return '刚刚';
   if (diff.inHours < 1) return '${diff.inMinutes} 分钟前';
-  if (diff.inHours < 24 && then.day == now.day) return '${diff.inHours} 小时前';
-  final days = diff.inDays;
+  final days = DateTime(
+    now.year,
+    now.month,
+    now.day,
+  ).difference(DateTime(then.year, then.month, then.day)).inDays;
+  if (days == 0) return '${diff.inHours} 小时前';
   if (days == 1) return '昨天';
   if (days < 30) return '$days 天前';
   return '${then.month}/${then.day}';

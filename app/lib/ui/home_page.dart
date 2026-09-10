@@ -137,35 +137,29 @@ class _StartPageState extends State<_StartPage> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('选择一个 project 开始', style: AppText.h3(tokens.foreground)),
+              Text('选择一个 project 开始', style: AppText.h2(tokens.foreground)),
               const SizedBox(height: Spacing.lg),
               if (projects.isNotEmpty) ...[
                 for (final project in projects)
                   _ProjectTile(
-                    title: project.path,
-                    subtitle: '${project.sessionCount} 个会话',
+                    title: _basename(project.path),
+                    subtitle: project.path,
+                    trailing: '${project.sessionCount} 个会话',
                     onTap: () => widget.controller.createWork(project.path),
                   ),
                 const SizedBox(height: Spacing.lg),
               ],
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _pathController,
-                      decoration: const InputDecoration(
-                        hintText: '输入目录路径，登记为新 project…',
-                      ),
-                      onSubmitted: _submit,
-                    ),
-                  ),
-                  const SizedBox(width: Spacing.sm),
-                  IconButton(
+              TextField(
+                controller: _pathController,
+                decoration: InputDecoration(
+                  hintText: '输入目录路径，登记为新 project…',
+                  suffixIcon: IconButton(
                     icon: const Icon(LucideIcons.arrowRight, size: 16),
                     tooltip: '登记并开始',
                     onPressed: () => _submit(_pathController.text),
                   ),
-                ],
+                ),
+                onSubmitted: _submit,
               ),
             ],
           ),
@@ -189,54 +183,63 @@ class _ProjectTile extends StatelessWidget {
   const _ProjectTile({
     required this.title,
     required this.subtitle,
+    required this.trailing,
     required this.onTap,
   });
 
   final String title;
   final String subtitle;
+  final String trailing;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: Spacing.sm),
-      child: Material(
-        color: tokens.card,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(Radii.lg),
-          side: BorderSide(color: tokens.border),
-        ),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(Radii.lg),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.all(Spacing.md),
-            child: Row(
-              children: [
-                Icon(
-                  LucideIcons.folder,
-                  size: 16,
-                  color: tokens.mutedForeground,
+    // 扁平行：hover 才出现底色（whitespace over separators）
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(Radii.lg),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(Radii.lg),
+        hoverColor: tokens.secondary,
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(Spacing.md),
+          child: Row(
+            children: [
+              Icon(LucideIcons.folder, size: 16, color: tokens.mutedForeground),
+              const SizedBox(width: Spacing.sm),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.bodySm(
+                        tokens.foreground,
+                      ).copyWith(fontWeight: FontWeight.w500),
+                    ),
+                    Text(
+                      subtitle,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.caption(tokens.mutedForeground),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: Spacing.sm),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(title, overflow: TextOverflow.ellipsis),
-                      Text(
-                        subtitle,
-                        style: AppText.caption(tokens.mutedForeground),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
+              ),
+              const SizedBox(width: Spacing.sm),
+              Text(trailing, style: AppText.caption(tokens.mutedForeground)),
+            ],
           ),
         ),
       ),
     );
   }
+}
+
+/// project 路径末段（标题用；完整路径作副标题）。
+String _basename(String path) {
+  final segments = path.split(RegExp(r'[/\\]')).where((s) => s.isNotEmpty);
+  return segments.isEmpty ? path : segments.last;
 }

@@ -84,18 +84,28 @@ class _InputBarState extends State<InputBar> {
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
+    final dark = Theme.of(context).brightness == Brightness.dark;
     final controller = widget.controller;
     final running = controller.running;
     final canSend = _textController.text.trim().isNotEmpty;
     return Container(
       decoration: BoxDecoration(
         color: tokens.card,
-        borderRadius: BorderRadius.circular(Radii.xl),
+        // 悬浮 composer：全界面唯一带阴影的在流元素（DESIGN.md
+        // 「Shadow」例外），radius 走 2xl 胶囊档
+        borderRadius: BorderRadius.circular(Radii.xxl),
         border: Border.all(
           color: _focused
-              ? tokens.primary.withValues(alpha: 0.5)
+              ? tokens.primary.withValues(alpha: 0.4)
               : tokens.border,
         ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: dark ? 0.24 : 0.06),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -108,7 +118,7 @@ class _InputBarState extends State<InputBar> {
             textInputAction: TextInputAction.send,
             onSubmitted: (_) => _submit(),
             decoration: InputDecoration(
-              hintText: running ? '运行中，发送将进入队列…' : '给 Nomic 发送消息…',
+              hintText: running ? '运行中，发送将进入队列…' : '描述任务，输入 / 调用技能',
               filled: false,
               border: InputBorder.none,
               enabledBorder: InputBorder.none,
@@ -151,7 +161,7 @@ class _InputBarState extends State<InputBar> {
                 ],
                 _CircleButton(
                   icon: LucideIcons.arrowUp,
-                  iconSize: 16,
+                  iconSize: 18,
                   tooltip: running ? '发送（进入队列）' : '发送',
                   background: canSend ? tokens.primary : tokens.muted,
                   foreground: canSend
@@ -194,11 +204,15 @@ class _ModelChip extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(LucideIcons.cpu, size: 14, color: tokens.mutedForeground),
-              const SizedBox(width: 4),
               Text(
                 name.isEmpty ? '选择模型' : name,
                 style: AppText.caption(tokens.mutedForeground),
+              ),
+              const SizedBox(width: 4),
+              Icon(
+                LucideIcons.chevronDown,
+                size: 12,
+                color: tokens.mutedForeground,
               ),
             ],
           ),
@@ -208,7 +222,7 @@ class _ModelChip extends StatelessWidget {
   }
 }
 
-/// 圆形发送/停止按钮（32px；icon button 尺寸阶梯内的 sm 档）。
+/// 圆形发送/停止按钮（36px；composer 主操作位）。
 class _CircleButton extends StatelessWidget {
   const _CircleButton({
     required this.icon,
@@ -237,8 +251,8 @@ class _CircleButton extends StatelessWidget {
           customBorder: const CircleBorder(),
           onTap: onPressed,
           child: SizedBox(
-            width: 32,
-            height: 32,
+            width: 36,
+            height: 36,
             child: Icon(icon, size: iconSize, color: foreground),
           ),
         ),

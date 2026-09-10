@@ -29,6 +29,14 @@ fn noop_update() -> ToolUpdateCallback {
     Box::new(|_| {})
 }
 
+/// 新建临时目录并返回规范化路径（macOS 上 tempfile 落在 /var/folders，
+/// /var 是指向 /private/var 的符号链接，nix 拒绝符号链接根路径）。
+fn canonical_tempdir() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().canonicalize().expect("canonicalize");
+    (dir, root)
+}
+
 fn text_of(result: &ToolResult) -> &str {
     let [nomic_ai::UserContent::Text(text)] = &result.content[..] else {
         panic!("expected text result");
@@ -40,12 +48,12 @@ fn text_of(result: &ToolResult) -> &str {
 #[tokio::test]
 async fn default_template_resolves_pure_env() {
     skip_without_nix!();
-    let dir = tempfile::TempDir::new().expect("temp dir");
+    let (_dir, root) = canonical_tempdir();
     assert!(
-        nix_env::ensure_default_flake(dir.path()).expect("ensure"),
+        nix_env::ensure_default_flake(&root).expect("ensure"),
         "nix available => default flake should be created"
     );
-    let (flake, _) = nix_env::flake_paths(dir.path());
+    let (flake, _) = nix_env::flake_paths(&root);
     assert_eq!(
         std::fs::read_to_string(&flake).expect("read"),
         nix_env::DEFAULT_FLAKE
@@ -53,7 +61,7 @@ async fn default_template_resolves_pure_env() {
 
     let cache = NixEnvCache::new();
     let env = cache
-        .resolve_fully(dir.path())
+        .resolve_fully(&root)
         .await
         .expect("resolve")
         .expect("pure env");
@@ -70,17 +78,17 @@ async fn default_template_resolves_pure_env() {
 #[allow(clippy::literal_string_with_formatting_args)] // `${VAR:-default}` 是 shell 语法
 async fn bash_runs_inside_pure_env() {
     skip_without_nix!();
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    nix_env::ensure_default_flake(dir.path()).expect("ensure");
+    let (_dir, root) = canonical_tempdir();
+    nix_env::ensure_default_flake(&root).expect("ensure");
     // 冷构建可能耗时数分钟：先完整解析，再让 bash 调用命中缓存
     let cache = NixEnvCache::new();
     cache
-        .resolve_fully(dir.path())
+        .resolve_fully(&root)
         .await
         .expect("resolve")
         .expect("pure env");
     let tool = BashTool::new()
-        .with_base_dir(Some(dir.path().to_path_buf()))
+        .with_base_dir(Some(root.clone()))
         .with_nix_env(cache);
     let result = tool
         .execute(
@@ -109,17 +117,17 @@ async fn bash_runs_inside_pure_env() {
 #[tokio::test]
 async fn flake_change_triggers_re_resolve() {
     skip_without_nix!();
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    nix_env::ensure_default_flake(dir.path()).expect("ensure");
+    let (_dir, root) = canonical_tempdir();
+    nix_env::ensure_default_flake(&root).expect("ensure");
     let cache = NixEnvCache::new();
     let first = cache
-        .resolve_fully(dir.path())
+        .resolve_fully(&root)
         .await
         .expect("first resolve")
         .expect("env");
 
     // 追加一个环境变量到 shellHook，改 mtime 也改内容
-    let (flake, _) = nix_env::flake_paths(dir.path());
+    let (flake, _) = nix_env::flake_paths(&root);
     let mut content = std::fs::read_to_string(&flake).expect("read");
     content = content.replace(
         "packages = with pkgs;",
@@ -128,7 +136,7 @@ async fn flake_change_triggers_re_resolve() {
     std::fs::write(&flake, content).expect("rewrite");
 
     let second = cache
-        .resolve_fully(dir.path())
+        .resolve_fully(&root)
         .await
         .expect("re-resolve")
         .expect("env");

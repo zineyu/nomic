@@ -94,7 +94,6 @@ class _ChatPageState extends State<ChatPage> {
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
-    final tokens = tokensOf(context);
     _maybeScrollToBottom();
 
     // 运行边沿记录开始时间（Working 状态行计时）
@@ -181,10 +180,7 @@ class _ChatPageState extends State<ChatPage> {
                 child: Padding(
                   padding: const EdgeInsets.all(Spacing.md),
                   child: controller.readOnly
-                      ? Text(
-                          '子 agent 会话（只读回溯）',
-                          style: AppText.bodySm(tokens.mutedForeground),
-                        )
+                      ? _ReadOnlyBar(controller: controller)
                       : InputBar(controller: controller),
                 ),
               ),
@@ -192,6 +188,45 @@ class _ChatPageState extends State<ChatPage> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// 只读回溯栏（子 agent 会话）：说明文案 + 返回父会话入口。
+class _ReadOnlyBar extends StatelessWidget {
+  const _ReadOnlyBar({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = tokensOf(context);
+    final parentId = controller.parentSessionId;
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Text('子 agent 会话（只读回溯）', style: AppText.ui(tokens.mutedForeground)),
+        if (parentId != null) ...[
+          Text(' · ', style: AppText.ui(tokens.mutedForeground)),
+          InkWell(
+            borderRadius: BorderRadius.circular(Radii.sm),
+            onTap: () => controller.openSession(parentId),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(LucideIcons.arrowLeft, size: 12, color: tokens.foreground),
+                const SizedBox(width: 4),
+                Text(
+                  '返回父会话',
+                  style: AppText.ui(
+                    tokens.foreground,
+                  ).copyWith(decoration: TextDecoration.underline),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
     );
   }
 }

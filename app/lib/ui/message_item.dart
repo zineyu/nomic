@@ -54,7 +54,7 @@ class _UserBubble extends StatelessWidget {
               color: tokens.primary,
               borderRadius: BorderRadius.circular(Radii.xl),
             ),
-            child: Text(
+            child: SelectableText(
               item.text,
               style: AppText.bodySm(tokens.primaryForeground),
             ),
@@ -202,7 +202,7 @@ class _ThinkingFoldState extends State<_ThinkingFold> {
           if (_expanded)
             Padding(
               padding: const EdgeInsets.only(top: 4),
-              child: Text(
+              child: SelectableText(
                 widget.text,
                 style: AppText.ui(tokens.mutedForeground),
               ),

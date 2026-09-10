@@ -19,10 +19,14 @@ class NomicTokens {
     required this.secondary,
     required this.muted,
     required this.mutedForeground,
+    required this.tertiary,
     required this.border,
+    required this.borderStrong,
     required this.destructive,
     required this.success,
-    required this.signal,
+    required this.warning,
+    required this.accent,
+    required this.accentSoft,
     required this.bubble,
     required this.sidebar,
     required this.sidebarAccent,
@@ -34,16 +38,34 @@ class NomicTokens {
   final Color card;
   final Color primary;
   final Color primaryForeground;
+
+  /// 次级表面（hover 填充）。
   final Color secondary;
   final Color muted;
+
+  /// 次级文字（时间戳 / ledger / 副标题）。
   final Color mutedForeground;
+
+  /// 三级文字（占位符 / 极弱提示）。
+  final Color tertiary;
+
   final Color border;
+
+  /// 强调边线（输入框聚焦外框、表格边框等需要更清晰分界的场合）。
+  final Color borderStrong;
+
   final Color destructive;
   final Color success;
 
-  /// 信号蓝：唯一彩色状态色，仅标记「正在发生 / 活跃」（运行圆点、
-  /// 当前会话标记、活跃指示）。不用于装饰，不用于大面填充。
-  final Color signal;
+  /// 警告色：仅 token 用量接近上限等「需要注意」场景。
+  final Color warning;
+
+  /// 品牌蓝：选中强调条、未读圆点、focus ring、启用态主按钮。
+  /// 点状/线状使用，不作大面填充。
+  final Color accent;
+
+  /// 品牌蓝的 8% 底（选中填充、accent 元素 hover 底）。
+  final Color accentSoft;
 
   /// 用户消息纸块底色（浅灰，区别于画布白；无边框无阴影）。
   final Color bubble;
@@ -55,40 +77,48 @@ class NomicTokens {
   /// light：DESIGN.md front matter。
   static const light = NomicTokens(
     background: Color(0xFFFFFFFF),
-    foreground: Color(0xFF1A1A1A),
+    foreground: Color(0xFF1F1F1C),
     card: Color(0xFFFFFFFF),
-    primary: Color(0xFF1A1A1A),
+    primary: Color(0xFF1F1F1C),
     primaryForeground: Color(0xFFFFFFFF),
-    secondary: Color(0xFFF0F0EC),
-    muted: Color(0xFFF0F0EC),
-    mutedForeground: Color(0xFF8F959E),
-    border: Color(0xFFE9E9E4),
-    destructive: Color(0xFFB8433A),
-    success: Color(0xFF2F8F5B),
-    signal: Color(0xFF3B7FFF),
+    secondary: Color(0xFFF1F1EE),
+    muted: Color(0xFFF1F1EE),
+    mutedForeground: Color(0xFF6F6F6A),
+    tertiary: Color(0xFF9A9A94),
+    border: Color(0xFFE7E5DF),
+    borderStrong: Color(0xFFD8D6D0),
+    destructive: Color(0xFFDC2626),
+    success: Color(0xFF16A34A),
+    warning: Color(0xFFD97706),
+    accent: Color(0xFF3B82F6),
+    accentSoft: Color(0xFFEAF2FF),
     bubble: Color(0xFFF4F4F2),
     sidebar: Color(0xFFF7F7F5),
     sidebarAccent: Color(0xFFECECE8),
-    sidebarBorder: Color(0xFFE9E9E4),
+    sidebarBorder: Color(0xFFE7E5DF),
   );
 
-  /// dark：色阶反转（token 结构相同；signal 提亮保持暗底可辨识）。
+  /// dark：色阶反转（token 结构相同；accent 提亮保持暗底可辨识）。
   static const dark = NomicTokens(
     background: Color(0xFF161615),
     foreground: Color(0xFFECECE8),
     card: Color(0xFF1C1C1A),
     primary: Color(0xFFECECE8),
-    primaryForeground: Color(0xFF1A1A1A),
+    primaryForeground: Color(0xFF1F1F1C),
     secondary: Color(0xFF242422),
     muted: Color(0xFF242422),
-    mutedForeground: Color(0xFF9A9FA6),
+    mutedForeground: Color(0xFF9A9A94),
+    tertiary: Color(0xFF6F6F6A),
     border: Color(0xFF2C2C29),
-    destructive: Color(0xFFD95D54),
-    success: Color(0xFF4FC08D),
-    signal: Color(0xFF6B97FF),
+    borderStrong: Color(0xFF3A3A36),
+    destructive: Color(0xFFE85D52),
+    success: Color(0xFF3FB970),
+    warning: Color(0xFFE09543),
+    accent: Color(0xFF60A5FA),
+    accentSoft: Color(0xFF1C2B4A),
     bubble: Color(0xFF232321),
     sidebar: Color(0xFF1A1A18),
-    sidebarAccent: Color(0xFF242422),
+    sidebarAccent: Color(0xFF262624),
     sidebarBorder: Color(0xFF2C2C29),
   );
 }
@@ -115,21 +145,22 @@ const double maxPageWidth = 760;
 
 /// 文本样式 token（DESIGN.md typography 的 Dart 表达）。
 ///
-/// 字号阶梯：h1 28 / h2 22 / h3 18 / body 16 / bodySm 14 / ui 13 / caption 12，
-/// 行高 heading 1.2–1.4、正文 1.5；颜色由调用方按语义给（foreground /
-/// mutedForeground / destructive…）。正文字族走平台默认（macOS 上即
+/// 字号阶梯：h1 24 / h2 20 / h3 18 / body 16 / prose 15 / bodySm 14 /
+/// ui 13 / caption 12；正文阅读（prose）行高 1.7，heading 1.2–1.4、
+/// UI 文字 1.5；颜色由调用方按语义给（foreground / mutedForeground /
+/// tertiary / destructive…）。正文字族走平台默认（macOS 上即
 /// .AppleSystemUIFont，中文由系统 PingFang SC 回退覆盖）。
 abstract final class AppText {
   static TextStyle h1(Color? color) => TextStyle(
-    fontSize: 28,
-    height: 1.25,
+    fontSize: 24,
+    height: 1.3,
     fontWeight: FontWeight.w700,
     color: color,
   );
 
   static TextStyle h2(Color? color) => TextStyle(
-    fontSize: 22,
-    height: 1.3,
+    fontSize: 20,
+    height: 1.35,
     fontWeight: FontWeight.w600,
     color: color,
   );
@@ -143,6 +174,10 @@ abstract final class AppText {
 
   static TextStyle body(Color? color) =>
       TextStyle(fontSize: 16, height: 1.5, color: color);
+
+  /// 技术回答正文（markdown 段落）：15px / 1.7 行高，长时间阅读档。
+  static TextStyle prose(Color? color) =>
+      TextStyle(fontSize: 15, height: 1.7, color: color);
 
   static TextStyle bodySm(Color? color) =>
       TextStyle(fontSize: 14, height: 1.5, color: color);

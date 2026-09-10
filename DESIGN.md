@@ -1,34 +1,36 @@
 ---
 name: Nomic
 colors:
-  primary: "#1A1A1A"
+  primary: "#1F1F1C"
   primary-foreground: "#FFFFFF"
-  secondary: "#F0F0EC"
-  secondary-foreground: "#1A1A1A"
-  accent: "#ECECE8"
-  accent-foreground: "#1A1A1A"
-  destructive: "#B8433A"
+  secondary: "#F1F1EE"
+  secondary-foreground: "#1F1F1C"
+  accent: "#3B82F6"
+  accent-soft: "#EAF2FF"
+  destructive: "#DC2626"
   destructive-foreground: "#FFFFFF"
   background: "#FFFFFF"
-  foreground: "#1A1A1A"
+  foreground: "#1F1F1C"
   card: "#FFFFFF"
-  card-foreground: "#1A1A1A"
-  muted: "#F0F0EC"
-  muted-foreground: "#8F959E"
-  border: "#E9E9E4"
-  input: "#E9E9E4"
-  ring: "#1A1A1A"
-  success: "#2F8F5B"
-  signal: "#3B7FFF"
+  card-foreground: "#1F1F1C"
+  muted: "#F1F1EE"
+  muted-foreground: "#6F6F6A"
+  tertiary: "#9A9A94"
+  border: "#E7E5DF"
+  border-strong: "#D8D6D0"
+  input: "#E7E5DF"
+  ring: "#3B82F6"
+  success: "#16A34A"
+  warning: "#D97706"
   bubble: "#F4F4F2"
   sidebar: "#F7F7F5"
-  sidebar-foreground: "#1A1A1A"
-  sidebar-primary: "#1A1A1A"
+  sidebar-foreground: "#1F1F1C"
+  sidebar-primary: "#1F1F1C"
   sidebar-primary-foreground: "#FFFFFF"
   sidebar-accent: "#ECECE8"
-  sidebar-accent-foreground: "#1A1A1A"
-  sidebar-border: "#E9E9E4"
-  sidebar-ring: "#1A1A1A"
+  sidebar-accent-foreground: "#1F1F1C"
+  sidebar-border: "#E7E5DF"
+  sidebar-ring: "#3B82F6"
 typography:
   h1:
     fontFamily: "system-ui, PingFang SC, sans-serif"
@@ -144,8 +146,8 @@ components:
     textColor: "{colors.foreground}"
     rounded: "{rounded.2xl}"
     padding: "16px"
-  signal-dot:
-    backgroundColor: "{colors.signal}"
+  accent-dot:
+    backgroundColor: "{colors.accent}"
     rounded: "{rounded.full}"
 ---
 
@@ -176,21 +178,27 @@ Design principles, in order:
 The palette is a warm-leaning neutral ramp (paper whites, soft gray fills) plus
 exactly three functional colors.
 
-- **Primary = ink** (`#1A1A1A`): the high-contrast element — primary buttons and
+- **Primary = ink** (`#1F1F1C`): the high-contrast element — primary buttons and
   the circular send/stop button. On dark mode it inverts to near-white.
 - **Secondary / Muted / Accent**: light warm grays for hover states, sunken
   surfaces, and code backgrounds.
 - **Bubble** (`#F4F4F2`): the user's own messages render as borderless,
   shadowless gray paper blocks — visibly "mine" without shouting.
-- **Muted-foreground** (`#8F959E`): secondary text — timestamps, ledger rows,
-  placeholders. Tertiary text uses opacity steps of foreground instead of extra
-  tokens.
-- **Border / Input** (`#E9E9E4`): hairline only, 1px.
-- **Signal** (`#3B7FFF`): the single chromatic *state* color — it marks what is
-  happening right now: the running dot in the sidebar, the active-session
-  marker. Signal is a point, never a fill: dots and small indicators only.
-- **Destructive** (`#B8433A`): errors and destructive actions.
-- **Success** (`#2F8F5B`): transient confirmations only (e.g. the copy-button
+- **Muted-foreground** (`#6F6F6A`): secondary text — timestamps, ledger rows,
+  subtitles. **Tertiary** (`#9A9A94`) is reserved for placeholders and the
+  weakest hints; nothing weaker exists.
+- **Border** (`#E7E5DF`): hairline only, 1px. **Border-strong** (`#D8D6D0`) is
+  for boundaries that must stay legible against fills (table grids, focused
+  inputs).
+- **Accent** (`#3B82F6`): the single chromatic *state* color — the selected
+  session's 3px left bar, the unread dot, the focus ring, the enabled send
+  button. Accent is a point or a line, never a fill; `accent-soft` (`#EAF2FF`)
+  is its only fill-grade companion. Selected, unread, and running are three
+  *separate* indicators (bar / dot / spinner) — never one dot reused.
+- **Destructive** (`#DC2626`): errors and destructive actions.
+- **Warning** (`#D97706`): exactly one role — the token-usage readout
+  approaching the context limit.
+- **Success** (`#16A34A`): transient confirmations only (e.g. the copy-button
   checkmark flash). Never used for persistent decoration.
 
 Tool-call categories are expressed by an **opacity ladder of foreground**
@@ -199,29 +207,30 @@ Tool-call categories are expressed by an **opacity ladder of foreground**
 
 ### Dark Mode
 
-Dark mode inverts the ramp: near-black warm canvas, ink near-white, `signal`
+Dark mode inverts the ramp: near-black warm canvas, ink near-white, `accent`
 brightened to stay legible. Token structure is identical; only values change:
 
-| Token | Value |
+| Token | Dark value |
 | --- | --- |
 | `background` | `#161615` |
-| `foreground` / `popover-foreground` / `card-foreground` | `#ECECE8` |
+| `foreground` / `card-foreground` | `#ECECE8` |
 | `card` / `popover` | `#1C1C1A` |
-| `primary` / `ring` / `sidebar-ring` | `#ECECE8` |
-| `primary-foreground` | `#1A1A1A` |
+| `primary` / `sidebar-primary` | `#ECECE8` |
+| `primary-foreground` / `sidebar-primary-foreground` | `#1F1F1C` |
 | `secondary` / `muted` | `#242422` |
-| `accent` / `sidebar-accent` | `#242422` |
-| `secondary-foreground` / `accent-foreground` / `sidebar-accent-foreground` | `#ECECE8` |
-| `muted-foreground` | `#9A9FA6` |
-| `destructive` | `#D95D54` |
-| `success` | `#4FC08D` |
-| `signal` | `#6B97FF` |
+| `sidebar-accent` | `#262624` |
+| `muted-foreground` | `#9A9A94` |
+| `tertiary` | `#6F6F6A` |
+| `destructive` | `#E85D52` |
+| `success` | `#3FB970` |
+| `warning` | `#E09543` |
+| `accent` / `ring` / `sidebar-ring` | `#60A5FA` |
+| `accent-soft` | `#1C2B4A` |
 | `bubble` | `#232321` |
 | `border` / `input` / `sidebar-border` | `#2C2C29` |
+| `border-strong` | `#3A3A36` |
 | `sidebar` | `#1A1A18` |
 | `sidebar-foreground` | `#ECECE8` |
-| `sidebar-primary` | `#ECECE8` |
-| `sidebar-primary-foreground` | `#1A1A1A` |
 
 These values are kept in sync with the dark theme in `app/lib/theme.dart`.
 
@@ -262,8 +271,9 @@ caption = 0.75rem/400. Line heights: headings 1.25–1.4, body and UI text 1.5.
   Expanded, each call renders as a quiet text row; completion is a neutral
   check, only failures turn red. Tool icons differentiate category by the
   foreground opacity ladder — no chromatic category colors.
-- **Selected / active states**: neutral `accent` fill plus medium weight; the
-  current session additionally carries a `signal` dot.
+- **Selected / active states**: `surface-selected` fill plus a 3px `accent`
+  left bar; unread carries a separate `accent` dot; running carries a spinner.
+  The three indicators are never merged into one.
 - **Context-usage readout**: grayscale escalation — `muted-foreground` below
   75%, `foreground` from 75–90%, `destructive` above 90%.
 - **Links**: `foreground` with underline, instead of a colored link.
@@ -275,5 +285,4 @@ caption = 0.75rem/400. Line heights: headings 1.25–1.4, body and UI text 1.5.
 - All text/background combinations meet WCAG AA contrast
 - Focus states use the ink ring token for visibility
 - State is never carried by color alone: errors pair red with an icon + label,
-  running pairs the signal dot with a spinner or label, selection pairs the
-  neutral fill with a weight change
+  running uses a spinner, selection pairs the neutral fill with the accent bar

@@ -347,7 +347,7 @@ class _WorkTileState extends State<_WorkTile> {
                         width: 8,
                         height: 8,
                         decoration: BoxDecoration(
-                          color: tokens.signal,
+                          color: tokens.accent,
                           shape: BoxShape.circle,
                         ),
                       ),

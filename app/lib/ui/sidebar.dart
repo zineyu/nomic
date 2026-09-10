@@ -406,7 +406,12 @@ class _WorkTileState extends State<_WorkTile> {
         child: GestureDetector(
           onSecondaryTapUp: (details) => _showContextMenu(details, context),
           child: Material(
+            // hover 底色走 Material 的不透明颜色而非 InkWell 的半透明
+            // hoverColor：后者（主题默认 4% 黑）在 macOS Impeller 下会
+            // 渲染成实心黑块（_NewTaskButton 同款处理）
             color: selected
+                ? tokens.sidebarAccent
+                : _hovered
                 ? tokens.sidebarAccent
                 : widget.keyboardFocused
                 ? tokens.secondary
@@ -414,7 +419,7 @@ class _WorkTileState extends State<_WorkTile> {
             borderRadius: BorderRadius.circular(Radii.lg),
             child: InkWell(
               borderRadius: BorderRadius.circular(Radii.lg),
-              hoverColor: selected ? null : tokens.sidebarAccent,
+              hoverColor: Colors.transparent,
               onTap: widget.onTap,
               child: Padding(
                 padding: const EdgeInsets.symmetric(

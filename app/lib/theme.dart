@@ -242,6 +242,10 @@ ThemeData buildTheme(NomicTokens tokens, {required bool dark}) {
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: tokens.background,
+      // placeholder 语义：tertiary（DESIGN.md「三级文字：占位符」）+
+      // ui 字号，弱于输入正文；不显式给时 Flutter 默认回落到
+      // bodyLarge + onSurfaceVariant，即黑而大
+      hintStyle: AppText.ui(tokens.tertiary),
       contentPadding: const EdgeInsets.symmetric(
         horizontal: Spacing.md,
         vertical: Spacing.sm,

@@ -9,6 +9,8 @@
 /// `messagesToItems` / `applyAgentEvent` 为纯函数，可直接单测。
 library;
 
+import 'dart:math';
+
 import '../protocol/events.dart';
 import '../protocol/models.dart';
 
@@ -88,6 +90,18 @@ class ToolItem extends ChatItem {
   /// 结果文本预览（纯文本块拼接）
   String resultPreview;
   bool isError;
+
+  /// 客户端接收时间戳（Unix 毫秒；仅 live 事件有，历史快照为 null，
+  /// 执行过程卡片的步骤耗时据此计算）。
+  int? startedAt;
+  int? endedAt;
+
+  Duration? get duration {
+    final start = startedAt;
+    final end = endedAt;
+    if (start == null || end == null) return null;
+    return Duration(milliseconds: end - start);
+  }
 }
 
 class SystemItem extends ChatItem {
@@ -96,41 +110,60 @@ class SystemItem extends ChatItem {
   final String text;
 }
 
-/// 连续工具调用的折叠组（叙事日志：工具噪音收成一条 ledger 行，
-/// 展开才是逐条调用；DESIGN.md「Tool ledger」）。
-class ToolRunItem extends ChatItem {
-  ToolRunItem(List<ToolItem> tools) : tools = List.unmodifiable(tools) {
-    // 组 id 锚定首条工具调用：流式增长（组变长）时渲染 key 稳定，
+/// 执行过程分组（DESIGN.md「Tool ledger」）：连续的工具调用与纯思考段
+/// 折叠为一张卡片，默认只露一行摘要（执行过程 · N 步 · 搜索 X 次 ·
+/// 命令 Y 条 · 用时 Zs），展开才是逐步时间线。
+class ExecutionItem extends ChatItem {
+  ExecutionItem(List<ChatItem> steps) : steps = List.unmodifiable(steps) {
+    // 组 id 锚定首个工具调用：流式增长（组变长）时渲染 key 稳定，
     // 展开态不丢
-    id = 'run-${tools.first.toolCallId}';
+    id = 'exec-${tools.first.toolCallId}';
   }
 
-  final List<ToolItem> tools;
+  /// 步骤：ToolItem 或纯思考 AssistantItem（text 为空、thinking 非空）。
+  final List<ChatItem> steps;
+
+  List<ToolItem> get tools => steps.whereType<ToolItem>().toList();
 
   bool get hasRunning => tools.any((t) => t.status == ToolStatus.running);
 
   int get errorCount => tools.where((t) => t.status == ToolStatus.error).length;
+
+  /// 整组用时（首个已开始的步骤到最后结束的步骤；历史快照无时间戳
+  /// 时为 null，摘要不展示用时）。
+  Duration? get elapsed {
+    final starts = tools.map((t) => t.startedAt).nonNulls;
+    final ends = tools.map((t) => t.endedAt).nonNulls;
+    if (starts.isEmpty || ends.isEmpty) return null;
+    return Duration(milliseconds: ends.reduce(max) - starts.reduce(min));
+  }
 }
 
-/// 把连续 ToolItem 段（≥2 条）折叠为 ToolRunItem；其余项与顺序不变。
-List<ChatItem> groupToolRuns(List<ChatItem> items) {
+/// 把连续的工具调用段（含夹在其中的纯思考段，≥2 步）折叠为
+/// ExecutionItem；其余项与顺序不变。
+List<ChatItem> groupExecutionSteps(List<ChatItem> items) {
+  bool isStep(ChatItem item) =>
+      item is ToolItem ||
+      (item is AssistantItem && item.text.isEmpty && item.thinking.isNotEmpty);
+
   final out = <ChatItem>[];
   var i = 0;
   while (i < items.length) {
-    final item = items[i];
-    if (item is! ToolItem) {
-      out.add(item);
+    if (!isStep(items[i])) {
+      out.add(items[i]);
       i++;
       continue;
     }
     var j = i;
-    while (j < items.length && items[j] is ToolItem) {
+    while (j < items.length && isStep(items[j])) {
       j++;
     }
-    if (j - i >= 2) {
-      out.add(ToolRunItem(items.sublist(i, j).cast<ToolItem>()));
+    final segment = items.sublist(i, j);
+    final toolCount = segment.whereType<ToolItem>().length;
+    if (segment.length >= 2 && toolCount >= 1) {
+      out.add(ExecutionItem(segment));
     } else {
-      out.add(item);
+      out.addAll(segment);
     }
     i = j;
   }
@@ -293,13 +326,14 @@ int? applyAgentEvent(List<ChatItem> items, Object? event) {
         tool.name = asStr(payload['tool_name']);
         tool.args = asJson(payload['args']);
         tool.status = ToolStatus.running;
+        tool.startedAt = DateTime.now().millisecondsSinceEpoch;
       } else {
         items.add(
           ToolItem(
             toolCallId: toolCallId,
             name: asStr(payload['tool_name']),
             args: asJson(payload['args']),
-          ),
+          )..startedAt = DateTime.now().millisecondsSinceEpoch,
         );
       }
 
@@ -323,6 +357,7 @@ int? applyAgentEvent(List<ChatItem> items, Object? event) {
         tool.status = isError ? ToolStatus.error : ToolStatus.done;
         tool.resultPreview = _contentText(result['content']);
         tool.isError = isError;
+        tool.endedAt = DateTime.now().millisecondsSinceEpoch;
       } else {
         items.add(
           ToolItem(

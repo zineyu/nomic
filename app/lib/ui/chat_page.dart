@@ -14,6 +14,7 @@ import '../theme.dart';
 import 'input_bar.dart';
 import 'message_item.dart';
 import 'question_panel.dart';
+import 'sidebar.dart';
 
 class ChatPage extends StatefulWidget {
   const ChatPage({super.key, required this.controller});
@@ -87,21 +88,59 @@ class _ChatPageState extends State<ChatPage> {
       UserItem i => i.text.length,
       AssistantItem i => i.text.length + i.thinking.length,
       ToolItem i => i.resultPreview.length,
-      ToolRunItem i => i.tools.fold(
+      ExecutionItem i => i.steps.fold(
         0,
-        (sum, t) => sum + t.resultPreview.length,
+        (sum, s) =>
+            sum +
+            switch (s) {
+              ToolItem t => t.resultPreview.length,
+              AssistantItem a => a.thinking.length,
+              _ => 0,
+            },
       ),
       SystemItem i => i.text.length,
     };
+  }
+
+  /// 「回答」区块标注：每个用户请求段内，最后一段执行过程之后的首条
+  /// assistant 正文即最终回答（视觉主体）。无执行过程的段不标注。
+  static Set<String> _answerItemIds(List<ChatItem> entries) {
+    final answers = <String>{};
+    var seenExecution = false;
+    ChatItem? candidate;
+    void flush() {
+      if (candidate != null) answers.add(candidate!.id);
+      candidate = null;
+      seenExecution = false;
+    }
+
+    for (final entry in entries) {
+      switch (entry) {
+        case UserItem _:
+          flush();
+        case ExecutionItem _ || ToolItem _:
+          seenExecution = true;
+          candidate = null;
+        case AssistantItem a:
+          if (seenExecution && candidate == null && a.text.isNotEmpty) {
+            candidate = a;
+          }
+        default:
+          break;
+      }
+    }
+    flush();
+    return answers;
   }
 
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
     _maybeScrollToBottom();
-    // 连续工具调用折叠为 ledger 行（叙事日志；组 id 锚定首条调用，
+    // 连续工具调用与纯思考段折叠为执行过程卡片（组 id 锚定首个调用，
     // 流式增长时展开态不丢）
-    final entries = groupToolRuns(controller.items);
+    final entries = groupExecutionSteps(controller.items);
+    final answerIds = _answerItemIds(entries);
 
     // 运行边沿记录开始时间（Working 状态行计时）
     if (controller.running && _runStartedAt == null) {
@@ -112,7 +151,7 @@ class _ChatPageState extends State<ChatPage> {
 
     return CallbackShortcuts(
       bindings: {
-        // Codex 同款：Esc 中断当前运行（排队消息保留）
+        // Esc 中断当前运行（排队消息保留）
         const SingleActivator(LogicalKeyboardKey.escape): () {
           if (controller.running) controller.cancel();
         },
@@ -121,6 +160,7 @@ class _ChatPageState extends State<ChatPage> {
         autofocus: true,
         child: Column(
           children: [
+            _ContextBar(controller: controller),
             if (controller.error != null) _ErrorBanner(controller: controller),
             if (controller.goal != null) _GoalBanner(goal: controller.goal!),
             Expanded(
@@ -139,32 +179,37 @@ class _ChatPageState extends State<ChatPage> {
                               thumbVisibility: true,
                               child: ListView.builder(
                                 controller: _scrollController,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: Spacing.lg,
-                                  vertical: Spacing.lg,
+                                // 底部 140px 安全区：滚动到底时内容不被
+                                // composer / 浮动按钮遮挡
+                                padding: const EdgeInsets.fromLTRB(
+                                  Spacing.lg,
+                                  Spacing.lg,
+                                  Spacing.lg,
+                                  140,
                                 ),
                                 itemCount: entries.length,
                                 // ValueKey 锚定 item.id：插入新项时折叠/展开状态
-                                //（_ThinkingFold / ToolCard / ToolRunLedger）
+                                //（_ThinkingFold / ToolCard / ExecutionCard）
                                 // 跟随数据而非位置
                                 itemBuilder: (context, index) =>
                                     MessageItemView(
                                       key: ValueKey(entries[index].id),
                                       item: entries[index],
+                                      isAnswer: answerIds.contains(
+                                        entries[index].id,
+                                      ),
                                     ),
                               ),
                             ),
                           ),
                         ),
+                        // 「回到底部」浮钮：输入框上方右侧，不压正文
                         if (!_atBottom)
                           Positioned(
-                            left: 0,
-                            right: 0,
+                            right: Spacing.lg,
                             bottom: Spacing.sm,
-                            child: Center(
-                              child: _ScrollToBottomButton(
-                                onTap: _scrollToBottom,
-                              ),
+                            child: _ScrollToBottomButton(
+                              onTap: _scrollToBottom,
                             ),
                           ),
                       ],
@@ -197,8 +242,14 @@ class _ChatPageState extends State<ChatPage> {
             Center(
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: maxPageWidth),
+                // composer：距左右 24px、距底部 16px（规格 6.5/6.10）
                 child: Padding(
-                  padding: const EdgeInsets.all(Spacing.md),
+                  padding: const EdgeInsets.fromLTRB(
+                    Spacing.lg,
+                    Spacing.sm,
+                    Spacing.lg,
+                    Spacing.md,
+                  ),
                   child: controller.readOnly
                       ? _ReadOnlyBar(controller: controller)
                       : InputBar(controller: controller),
@@ -210,6 +261,137 @@ class _ChatPageState extends State<ChatPage> {
       ),
     );
   }
+}
+
+/// 顶部任务上下文栏：project / 任务标题 / 运行状态 + 更多操作
+///（重命名 / 删除）。状态同时由图标与文本承载，不只依赖颜色。
+class _ContextBar extends StatelessWidget {
+  const _ContextBar({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = tokensOf(context);
+    WorkSummary? work;
+    for (final w in controller.works) {
+      if (w.mainSessionId == controller.sessionId) {
+        work = w;
+        break;
+      }
+    }
+    final project = controller.project;
+    final running = controller.running;
+    final (statusIcon, statusColor, statusText) = controller.readOnly
+        ? (LucideIcons.eye, tokens.mutedForeground, '只读回溯')
+        : running
+        ? (null, tokens.accent, '运行中')
+        : controller.items.isEmpty
+        ? (LucideIcons.circle, tokens.tertiary, '空闲')
+        : (LucideIcons.check, tokens.success, '已完成');
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: tokens.border)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: Spacing.lg, vertical: 10),
+      child: Row(
+        children: [
+          if (project != null) ...[
+            Flexible(
+              flex: 0,
+              child: Text(
+                _basename(project),
+                overflow: TextOverflow.ellipsis,
+                style: AppText.ui(tokens.mutedForeground),
+              ),
+            ),
+            Text(' / ', style: AppText.ui(tokens.tertiary)),
+          ],
+          Flexible(
+            child: Text(
+              work?.displayTitle ?? '会话',
+              overflow: TextOverflow.ellipsis,
+              style: AppText.ui(
+                tokens.foreground,
+              ).copyWith(fontWeight: FontWeight.w500),
+            ),
+          ),
+          const SizedBox(width: Spacing.sm),
+          if (running)
+            SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: tokens.accent,
+              ),
+            )
+          else if (statusIcon != null)
+            Icon(statusIcon, size: 12, color: statusColor),
+          const SizedBox(width: 4),
+          Text(statusText, style: AppText.caption(statusColor)),
+          if (work != null) ...[
+            const SizedBox(width: Spacing.sm),
+            IconButton(
+              icon: Icon(
+                LucideIcons.moreHorizontal,
+                size: 16,
+                color: tokens.mutedForeground,
+              ),
+              tooltip: '更多操作',
+              visualDensity: VisualDensity.compact,
+              onPressed: () => _showWorkMenu(context, work!),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  void _showWorkMenu(BuildContext context, WorkSummary work) {
+    final tokens = tokensOf(context);
+    final button = context.findRenderObject()! as RenderBox;
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromPoints(
+          button.localToGlobal(
+            button.size.bottomRight(Offset.zero),
+            ancestor: overlay,
+          ),
+          button.localToGlobal(
+            button.size.bottomRight(Offset.zero),
+            ancestor: overlay,
+          ),
+        ),
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        PopupMenuItem(
+          value: 'rename',
+          height: 32,
+          child: Text('重命名', style: AppText.ui(tokens.foreground)),
+        ),
+        PopupMenuItem(
+          value: 'delete',
+          height: 32,
+          child: Text('删除', style: AppText.ui(tokens.destructive)),
+        ),
+      ],
+    ).then((value) {
+      if (!context.mounted) return;
+      if (value == 'rename') showRenameWorkDialog(context, controller, work);
+      if (value == 'delete') showDeleteWorkDialog(context, controller, work);
+    });
+  }
+}
+
+/// project 路径末段（上下文栏显示用）。
+String _basename(String path) {
+  final segments = path.split(RegExp(r'[/\\]')).where((s) => s.isNotEmpty);
+  return segments.isEmpty ? path : segments.last;
 }
 
 /// 只读回溯栏（子 agent 会话）：说明文案 + 返回父会话入口。

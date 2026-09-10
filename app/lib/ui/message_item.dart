@@ -15,17 +15,22 @@ import '../state/chat_items.dart';
 import '../theme.dart';
 
 class MessageItemView extends StatelessWidget {
-  const MessageItemView({super.key, required this.item});
+  const MessageItemView({super.key, required this.item, this.isAnswer = false});
 
   final ChatItem item;
+
+  /// 是否为「回答」区块（用户请求段内、最后一段执行过程之后的首条
+  /// assistant 正文；由 chat_page 标注）。回答块前出现分隔与标签，
+  /// 并使用 prose 排版档（15px / 1.7）。
+  final bool isAnswer;
 
   @override
   Widget build(BuildContext context) {
     return switch (item) {
       UserItem i => _UserBubble(item: i),
-      AssistantItem i => _AssistantBlock(item: i),
+      AssistantItem i => _AssistantBlock(item: i, isAnswer: isAnswer),
       ToolItem i => ToolCard(item: i),
-      ToolRunItem i => ToolRunLedger(item: i),
+      ExecutionItem i => ExecutionCard(item: i),
       SystemItem i => _SystemLine(item: i),
     };
   }
@@ -67,20 +72,42 @@ class _UserBubble extends StatelessWidget {
 }
 
 class _AssistantBlock extends StatelessWidget {
-  const _AssistantBlock({required this.item});
+  const _AssistantBlock({required this.item, this.isAnswer = false});
 
   final AssistantItem item;
+  final bool isAnswer;
 
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
     if (item.isEmpty) return const SizedBox.shrink();
     final failed = item.stopReason == 'error' || item.stopReason == 'aborted';
+    // 回答块用 prose（15px / 1.7）；中间过程叙述用 bodySm（弱化）
+    final textStyle = isAnswer
+        ? AppText.prose(tokens.foreground)
+        : AppText.bodySm(tokens.foreground);
     return Padding(
       padding: const EdgeInsets.only(bottom: Spacing.md),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // 「回答」区块标记：标签 + 分隔线，与执行过程明确分层
+          if (isAnswer)
+            Padding(
+              padding: const EdgeInsets.only(bottom: Spacing.sm),
+              child: Row(
+                children: [
+                  Text(
+                    '回答',
+                    style: AppText.caption(
+                      tokens.mutedForeground,
+                    ).copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(width: Spacing.sm),
+                  Expanded(child: Container(height: 1, color: tokens.border)),
+                ],
+              ),
+            ),
           if (item.thinking.isNotEmpty) _ThinkingFold(text: item.thinking),
           if (item.text.isNotEmpty)
             MarkdownBody(
@@ -91,51 +118,51 @@ class _AssistantBlock extends StatelessWidget {
                 if (uri != null) unawaited(launchUrl(uri));
               },
               styleSheet: MarkdownStyleSheet(
-                p: AppText.bodySm(tokens.foreground),
-                // 标题走 DESIGN.md 字号阶梯（h1 36 / h2 30 / h3 24）
+                p: textStyle,
+                // 标题走 DESIGN.md 字号阶梯（h1 24 / h2 20 / h3 18）
                 h1: AppText.h1(tokens.foreground),
                 h2: AppText.h2(tokens.foreground),
                 h3: AppText.h3(tokens.foreground),
-                h4: AppText.bodySm(
+                h4: AppText.body(
                   tokens.foreground,
                 ).copyWith(fontWeight: FontWeight.w600),
-                h5: AppText.bodySm(
+                h5: AppText.body(
                   tokens.foreground,
                 ).copyWith(fontWeight: FontWeight.w600),
-                h6: AppText.bodySm(
+                h6: AppText.body(
                   tokens.foreground,
                 ).copyWith(fontWeight: FontWeight.w600),
-                // 链接不走彩色：ink + 下划线（DESIGN.md ≤10% accent 规则）
-                a: AppText.bodySm(
-                  tokens.foreground,
-                ).copyWith(decoration: TextDecoration.underline),
+                // 链接不走彩色：ink + 下划线
+                a: textStyle.copyWith(decoration: TextDecoration.underline),
+                // 行内 code chip：等宽 + 浅灰底（crate 名 / 版本号 / 路径）
                 code: AppFonts.mono(
                   fontSize: 13,
                   color: tokens.foreground,
-                ).copyWith(backgroundColor: tokens.muted),
-                codeblockPadding: const EdgeInsets.all(Spacing.sm),
+                ).copyWith(backgroundColor: tokens.secondary),
+                codeblockPadding: const EdgeInsets.all(Spacing.md),
                 codeblockDecoration: BoxDecoration(
-                  color: tokens.muted,
-                  borderRadius: BorderRadius.circular(Radii.md),
+                  color: tokens.secondary,
+                  borderRadius: BorderRadius.circular(Radii.lg),
                 ),
-                listBullet: AppText.bodySm(tokens.foreground),
-                blockquote: AppText.bodySm(tokens.mutedForeground),
+                listBullet: textStyle,
+                blockquote: textStyle.copyWith(color: tokens.mutedForeground),
                 blockquoteDecoration: BoxDecoration(
                   border: Border(
-                    left: BorderSide(color: tokens.border, width: 2),
+                    left: BorderSide(color: tokens.borderStrong, width: 2),
                   ),
                 ),
                 blockquotePadding: const EdgeInsets.symmetric(
                   horizontal: Spacing.sm,
                 ),
-                tableHead: AppText.ui(
+                // 表格：14px 正文、细边框（strong 档保证在填充底色上可读）
+                tableHead: AppText.bodySm(
                   tokens.foreground,
                 ).copyWith(fontWeight: FontWeight.w600),
-                tableBody: AppText.ui(tokens.foreground),
-                tableBorder: TableBorder.all(color: tokens.border),
+                tableBody: AppText.bodySm(tokens.foreground),
+                tableBorder: TableBorder.all(color: tokens.borderStrong),
                 tableCellsPadding: const EdgeInsets.symmetric(
                   horizontal: Spacing.sm,
-                  vertical: 4,
+                  vertical: 6,
                 ),
                 horizontalRuleDecoration: BoxDecoration(
                   border: Border(top: BorderSide(color: tokens.border)),
@@ -196,7 +223,7 @@ class _ThinkingFoldState extends State<_ThinkingFold> {
                   color: tokens.mutedForeground,
                 ),
                 const SizedBox(width: 4),
-                Text('思考过程', style: AppText.caption(tokens.mutedForeground)),
+                Text('思考', style: AppText.caption(tokens.mutedForeground)),
               ],
             ),
           ),
@@ -214,53 +241,58 @@ class _ThinkingFoldState extends State<_ThinkingFold> {
   }
 }
 
-/// 工具流水 ledger 行（DESIGN.md「Tool ledger」）：连续工具调用折叠为
-/// 一行 muted 摘要（按类别计数：已读取 N 个文件 · 已运行 M 条命令），
-/// 组内有运行中调用时 chevron 换为 spinner，有失败时追加红色计数；
-/// 点击展开为逐条 ToolCard。
-class ToolRunLedger extends StatefulWidget {
-  const ToolRunLedger({super.key, required this.item});
+/// 执行过程卡片（DESIGN.md「Execution card」）：连续工具调用与纯思考段
+/// 折叠为一张卡片——默认一行摘要（执行过程 · N 步 · 搜索 X 次 ·
+/// 命令 Y 条 · 用时 Zs），展开为逐步时间线（图标 + 名称 + 输入摘要 +
+/// 状态 + 耗时 + 详情）。执行过程是弱化的次要信息，最终回答才是主体。
+class ExecutionCard extends StatefulWidget {
+  const ExecutionCard({super.key, required this.item});
 
-  final ToolRunItem item;
+  final ExecutionItem item;
 
   @override
-  State<ToolRunLedger> createState() => _ToolRunLedgerState();
+  State<ExecutionCard> createState() => _ExecutionCardState();
 }
 
-class _ToolRunLedgerState extends State<ToolRunLedger> {
+class _ExecutionCardState extends State<ExecutionCard> {
   bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
     final item = widget.item;
-    final (icon, opacity) = _toolStyle(item.tools.first.name);
     final errorCount = item.errorCount;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
+    return Container(
+      margin: const EdgeInsets.only(bottom: Spacing.md),
+      decoration: BoxDecoration(
+        color: tokens.card,
+        borderRadius: BorderRadius.circular(Radii.xl),
+        border: Border.all(color: tokens.border),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // 摘要头（整行可点，键盘可聚焦展开）
           InkWell(
-            borderRadius: BorderRadius.circular(Radii.md),
+            borderRadius: BorderRadius.circular(Radii.xl),
             hoverColor: tokens.secondary,
             onTap: () => setState(() => _expanded = !_expanded),
             child: Padding(
               padding: const EdgeInsets.symmetric(
-                horizontal: Spacing.sm,
-                vertical: 4,
+                horizontal: Spacing.md,
+                vertical: 10,
               ),
               child: Row(
                 children: [
                   Icon(
-                    icon,
+                    LucideIcons.layers,
                     size: 14,
-                    color: tokens.foreground.withValues(alpha: opacity),
+                    color: tokens.mutedForeground,
                   ),
                   const SizedBox(width: Spacing.sm),
                   Expanded(
                     child: Text(
-                      _ledgerSummary(item.tools),
+                      _executionSummary(item),
                       overflow: TextOverflow.ellipsis,
                       style: AppText.ui(tokens.mutedForeground),
                     ),
@@ -280,7 +312,7 @@ class _ToolRunLedgerState extends State<ToolRunLedger> {
                       height: 12,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        color: tokens.mutedForeground,
+                        color: tokens.accent,
                       ),
                     )
                   else
@@ -295,33 +327,43 @@ class _ToolRunLedgerState extends State<ToolRunLedger> {
               ),
             ),
           ),
-          if (_expanded)
+          if (_expanded) ...[
+            Divider(height: 1, color: tokens.border),
             Padding(
-              // 与摘要文本左对齐（图标 14 + 间距 8）
-              padding: const EdgeInsets.only(left: Spacing.sm + 14),
+              padding: const EdgeInsets.symmetric(vertical: 4),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  for (final tool in item.tools)
-                    ToolCard(key: ValueKey(tool.toolCallId), item: tool),
+                  for (final step in item.steps)
+                    switch (step) {
+                      ToolItem t => _ToolStepRow(
+                        key: ValueKey(t.toolCallId),
+                        item: t,
+                      ),
+                      AssistantItem a => _ThinkingStepRow(
+                        key: ValueKey(a.id),
+                        item: a,
+                      ),
+                      _ => const SizedBox.shrink(),
+                    },
                 ],
               ),
             ),
+          ],
         ],
       ),
     );
   }
 }
 
-/// ledger 摘要：按类别聚合计数，固定顺序拼接（读取 → 搜索 → 运行 →
-/// 修改 → 其他），与「叙事日志」的账本语感一致。
-String _ledgerSummary(List<ToolItem> tools) {
+/// 执行过程摘要：「执行过程 · N 步 · 读取 X 次 · 搜索 X 次 · 命令 X 条 ·
+/// 用时 Zs」，零计数类别不出现；历史快照无时间戳时省略用时。
+String _executionSummary(ExecutionItem item) {
   var read = 0;
   var search = 0;
   var command = 0;
   var modify = 0;
-  var other = 0;
-  for (final tool in tools) {
+  for (final tool in item.tools) {
     switch (tool.name) {
       case 'read':
         read++;
@@ -331,17 +373,230 @@ String _ledgerSummary(List<ToolItem> tools) {
         command++;
       case 'write' || 'edit':
         modify++;
-      default:
-        other++;
     }
   }
+  final elapsed = item.elapsed;
   return [
-    if (read > 0) '已读取 $read 个文件',
-    if (search > 0) '已搜索 $search 次',
-    if (command > 0) '已运行 $command 条命令',
-    if (modify > 0) '已修改 $modify 个文件',
-    if (other > 0) '已执行 $other 项其他操作',
+    '执行过程 · ${item.steps.length} 步',
+    if (read > 0) '读取 $read 次',
+    if (search > 0) '搜索 $search 次',
+    if (command > 0) '命令 $command 条',
+    if (modify > 0) '修改 $modify 次',
+    if (elapsed != null) '用时 ${_formatDuration(elapsed)}',
   ].join(' · ');
+}
+
+/// 工具名 → 中文步骤名（时间线展示用）。
+String _toolLabel(String name) => switch (name) {
+  'read' => '读取',
+  'grep' || 'find' => '搜索',
+  'bash' => '命令',
+  'write' || 'edit' => '修改',
+  'todo_read' || 'todo_write' => '任务清单',
+  'ask_user_question' => '提问',
+  'create_agent' || 'close_agent' => '子代理',
+  'wait_result' || 'wait_all' => '等待子代理',
+  'send_message' => '发送消息',
+  'goal_done' => '目标完成',
+  'list_agents' => '子代理列表',
+  _ => name,
+};
+
+/// 耗时紧凑格式：<1s 毫秒级、<10s 一位小数、更长取整秒。
+String _formatDuration(Duration d) {
+  final ms = d.inMilliseconds;
+  if (ms < 1000) return '${ms}ms';
+  if (ms < 10000) return '${(ms / 1000).toStringAsFixed(1)}s';
+  return '${d.inSeconds}s';
+}
+
+/// 时间线中的工具步骤行：图标 + 中文步骤名 + 输入摘要 + 耗时 + 状态，
+/// 可展开参数与结果预览。
+class _ToolStepRow extends StatefulWidget {
+  const _ToolStepRow({super.key, required this.item});
+
+  final ToolItem item;
+
+  @override
+  State<_ToolStepRow> createState() => _ToolStepRowState();
+}
+
+class _ToolStepRowState extends State<_ToolStepRow> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = tokensOf(context);
+    final item = widget.item;
+    final (icon, opacity) = _toolStyle(item.name);
+    final summary = _toolArgSummary(item.args);
+    final expandable = item.args.isNotEmpty || item.resultPreview.isNotEmpty;
+    final failed = item.status == ToolStatus.error;
+    final duration = item.duration;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          hoverColor: tokens.secondary,
+          onTap: expandable
+              ? () => setState(() => _expanded = !_expanded)
+              : null,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: Spacing.md,
+              vertical: 6,
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  icon,
+                  size: 14,
+                  color: failed
+                      ? tokens.destructive
+                      : tokens.foreground.withValues(alpha: opacity),
+                ),
+                const SizedBox(width: Spacing.sm),
+                Text(
+                  _toolLabel(item.name),
+                  style: AppText.ui(
+                    tokens.foreground,
+                  ).copyWith(fontWeight: FontWeight.w500),
+                ),
+                if (summary.isNotEmpty) ...[
+                  const SizedBox(width: Spacing.sm),
+                  Flexible(
+                    child: Text(
+                      summary,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppFonts.mono(
+                        fontSize: 12,
+                        color: tokens.mutedForeground,
+                      ),
+                    ),
+                  ),
+                ],
+                const Spacer(),
+                if (duration != null) ...[
+                  Text(
+                    _formatDuration(duration),
+                    style: AppFonts.mono(fontSize: 11, color: tokens.tertiary),
+                  ),
+                  const SizedBox(width: Spacing.sm),
+                ],
+                _ToolStatus(status: item.status),
+                if (expandable) ...[
+                  const SizedBox(width: 4),
+                  Icon(
+                    _expanded
+                        ? LucideIcons.chevronDown
+                        : LucideIcons.chevronRight,
+                    size: 12,
+                    color: tokens.mutedForeground,
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        if (_expanded && expandable)
+          Padding(
+            // 与步骤名左对齐（左右 padding 16 + 图标 14 + 间距 8）
+            padding: const EdgeInsets.only(
+              left: Spacing.md + 14 + Spacing.sm,
+              right: Spacing.md,
+              bottom: Spacing.sm,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (item.args.isNotEmpty)
+                  _CopyableCodeBlock(
+                    text: _prettyJson(item.args),
+                    color: tokens.mutedForeground,
+                  ),
+                if (item.resultPreview.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: _CopyableCodeBlock(
+                      text: item.resultPreview.length > 2000
+                          ? '${item.resultPreview.substring(0, 2000)}…'
+                          : item.resultPreview,
+                      color: item.isError
+                          ? tokens.destructive
+                          : tokens.foreground,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// 时间线中的思考步骤行（合并进执行过程，不再单独出现「思考过程」标签）。
+class _ThinkingStepRow extends StatefulWidget {
+  const _ThinkingStepRow({super.key, required this.item});
+
+  final AssistantItem item;
+
+  @override
+  State<_ThinkingStepRow> createState() => _ThinkingStepRowState();
+}
+
+class _ThinkingStepRowState extends State<_ThinkingStepRow> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = tokensOf(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          hoverColor: tokens.secondary,
+          onTap: () => setState(() => _expanded = !_expanded),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: Spacing.md,
+              vertical: 6,
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  LucideIcons.brain,
+                  size: 14,
+                  color: tokens.foreground.withValues(alpha: 0.45),
+                ),
+                const SizedBox(width: Spacing.sm),
+                Text('思考', style: AppText.ui(tokens.mutedForeground)),
+                const Spacer(),
+                Icon(
+                  _expanded
+                      ? LucideIcons.chevronDown
+                      : LucideIcons.chevronRight,
+                  size: 12,
+                  color: tokens.mutedForeground,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_expanded)
+          Padding(
+            padding: const EdgeInsets.only(
+              left: Spacing.md + 14 + Spacing.sm,
+              right: Spacing.md,
+              bottom: Spacing.sm,
+            ),
+            child: SelectableText(
+              widget.item.thinking,
+              style: AppText.ui(tokens.mutedForeground),
+            ),
+          ),
+      ],
+    );
+  }
 }
 
 /// 工具行（DESIGN.md「quiet text rows」）：图标按类别走前景不透明度阶梯

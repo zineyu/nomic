@@ -457,7 +457,11 @@ class _WorkTileState extends State<_WorkTile> {
                     // 未读圆点 > 无
                     if (_hovered)
                       GestureDetector(
-                        onTap: () => _confirmDelete(context),
+                        onTap: () => showDeleteWorkDialog(
+                          context,
+                          widget.controller,
+                          widget.work,
+                        ),
                         child: Padding(
                           padding: const EdgeInsets.only(left: Spacing.sm),
                           child: Icon(
@@ -526,78 +530,89 @@ class _WorkTileState extends State<_WorkTile> {
       ],
     ).then((value) {
       if (!context.mounted) return;
-      if (value == 'rename') _showRenameDialog(context);
-      if (value == 'delete') _confirmDelete(context);
+      if (value == 'rename') {
+        showRenameWorkDialog(context, widget.controller, widget.work);
+      }
+      if (value == 'delete') {
+        showDeleteWorkDialog(context, widget.controller, widget.work);
+      }
     });
   }
+}
 
-  void _showRenameDialog(BuildContext context) {
-    final tokens = tokensOf(context);
-    final controller = TextEditingController(text: widget.work.title ?? '');
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('重命名任务', style: AppText.body(null)),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: '任务标题'),
-          onSubmitted: (_) => _submitRename(context, controller),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: tokens.primary,
-              foregroundColor: tokens.primaryForeground,
-            ),
-            onPressed: () => _submitRename(context, controller),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _submitRename(BuildContext context, TextEditingController controller) {
+/// 重命名 work 对话框（侧栏右键菜单与聊天页上下文栏共用）。
+void showRenameWorkDialog(
+  BuildContext context,
+  AppController app,
+  WorkSummary work,
+) {
+  final tokens = tokensOf(context);
+  final controller = TextEditingController(text: work.title ?? '');
+  void submit(BuildContext context) {
     final title = controller.text.trim();
     Navigator.of(context).pop();
-    if (title.isNotEmpty) {
-      widget.controller.renameWork(widget.work.id, title);
-    }
+    if (title.isNotEmpty) app.renameWork(work.id, title);
   }
 
-  void _confirmDelete(BuildContext context) {
-    final tokens = tokensOf(context);
-    final controller = widget.controller;
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('删除这个 work？', style: AppText.body(null)),
-        content: Text('「${widget.work.displayTitle}」及其全部会话将被删除。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: tokens.destructive,
-              foregroundColor: tokens.primaryForeground,
-            ),
-            onPressed: () {
-              Navigator.of(context).pop();
-              controller.deleteWork(widget.work.id);
-            },
-            child: const Text('删除'),
-          ),
-        ],
+  showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text('重命名任务', style: AppText.body(null)),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        decoration: const InputDecoration(hintText: '任务标题'),
+        onSubmitted: (_) => submit(context),
       ),
-    );
-  }
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: tokens.primary,
+            foregroundColor: tokens.primaryForeground,
+          ),
+          onPressed: () => submit(context),
+          child: const Text('保存'),
+        ),
+      ],
+    ),
+  );
+}
+
+/// 删除 work 确认对话框（侧栏与聊天页上下文栏共用）。
+void showDeleteWorkDialog(
+  BuildContext context,
+  AppController app,
+  WorkSummary work,
+) {
+  final tokens = tokensOf(context);
+  showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text('删除这个 work？', style: AppText.body(null)),
+      content: Text('「${work.displayTitle}」及其全部会话将被删除。'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: tokens.destructive,
+            foregroundColor: tokens.primaryForeground,
+          ),
+          onPressed: () {
+            Navigator.of(context).pop();
+            app.deleteWork(work.id);
+          },
+          child: const Text('删除'),
+        ),
+      ],
+    ),
+  );
 }
 
 /// project 路径末段（分组头显示用；完整路径走 tooltip）。

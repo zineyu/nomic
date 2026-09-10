@@ -179,11 +179,11 @@ void main() {
     });
   });
 
-  group('groupToolRuns（ledger 折叠）', () {
+  group('groupExecutionSteps（执行过程折叠）', () {
     ToolItem tool(String id, {String name = 'bash'}) =>
         ToolItem(toolCallId: id, name: name);
 
-    test('连续 ≥2 条工具折叠为一组，组 id 锚定首条调用', () {
+    test('连续 ≥2 步折叠为一组，组 id 锚定首个工具调用', () {
       final items = <ChatItem>[
         UserItem(text: 'hi', imageCount: 0, timestamp: 1),
         tool('c1'),
@@ -191,11 +191,24 @@ void main() {
         tool('c3'),
         AssistantItem(text: 'done'),
       ];
-      final grouped = groupToolRuns(items);
+      final grouped = groupExecutionSteps(items);
       expect(grouped.length, 3);
-      final run = grouped[1] as ToolRunItem;
+      final run = grouped[1] as ExecutionItem;
       expect(run.tools.map((t) => t.toolCallId), ['c1', 'c2', 'c3']);
-      expect(run.id, 'run-c1');
+      expect(run.id, 'exec-c1');
+    });
+
+    test('夹在工具段中的纯思考段并入同组', () {
+      final items = <ChatItem>[
+        tool('c1'),
+        AssistantItem(thinking: '先想想'),
+        tool('c2'),
+      ];
+      final grouped = groupExecutionSteps(items);
+      expect(grouped, hasLength(1));
+      final run = grouped.single as ExecutionItem;
+      expect(run.steps.length, 3);
+      expect(run.steps[1], isA<AssistantItem>());
     });
 
     test('单条工具不折叠；被其他项隔开的工具各自成组', () {
@@ -206,18 +219,27 @@ void main() {
         tool('c3'),
         tool('c4'),
       ];
-      final grouped = groupToolRuns(items);
+      final grouped = groupExecutionSteps(items);
       expect(grouped[0], isA<ToolItem>());
       expect(grouped[1], isA<AssistantItem>());
-      expect((grouped[2] as ToolRunItem).tools.length, 3);
+      expect((grouped[2] as ExecutionItem).tools.length, 3);
     });
 
-    test('运行中 / 失败状态从成员聚合', () {
-      final running = tool('c1');
-      final error = tool('c2')..status = ToolStatus.error;
-      final run = ToolRunItem([running, error]);
+    test('运行中 / 失败 / 用时从成员聚合', () {
+      final running = tool('c1')..startedAt = 1000;
+      final error = tool('c2')
+        ..status = ToolStatus.error
+        ..startedAt = 1000
+        ..endedAt = 2500;
+      final done = tool('c3')
+        ..status = ToolStatus.done
+        ..startedAt = 2500
+        ..endedAt = 4000;
+      final run = ExecutionItem([running, error, done]);
       expect(run.hasRunning, isTrue);
       expect(run.errorCount, 1);
+      expect(run.elapsed, const Duration(milliseconds: 3000));
+      expect(done.duration, const Duration(milliseconds: 1500));
     });
   });
 }

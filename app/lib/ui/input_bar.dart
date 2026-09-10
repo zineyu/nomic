@@ -28,6 +28,9 @@ class _InputBarState extends State<InputBar> {
   late final _focusNode = FocusNode(onKeyEvent: _onKeyEvent);
   bool _focused = false;
 
+  /// 上次发送的文本（空输入时 ↑ 召回）。
+  String? _lastSent;
+
   @override
   void initState() {
     super.initState();
@@ -48,19 +51,31 @@ class _InputBarState extends State<InputBar> {
   void _submit() {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
+    _lastSent = text;
     widget.controller.send(text);
     _textController.clear();
     _focusNode.requestFocus();
   }
 
   /// Enter 发送（桌面多行 TextField 默认对 Enter 插入换行，这里消费事件
-  /// 拦截）；Shift+Enter 换行。移动端软键盘发送走 onSubmitted。
+  /// 拦截）；Shift+Enter 换行；空输入时 ↑ 召回上次发送的文本。
+  /// 移动端软键盘发送走 onSubmitted。
   KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
-    if (event is KeyDownEvent &&
-        (event.logicalKey == LogicalKeyboardKey.enter ||
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    if ((event.logicalKey == LogicalKeyboardKey.enter ||
             event.logicalKey == LogicalKeyboardKey.numpadEnter) &&
         !HardwareKeyboard.instance.isShiftPressed) {
       _submit();
+      return KeyEventResult.handled;
+    }
+    final lastSent = _lastSent;
+    if (event.logicalKey == LogicalKeyboardKey.arrowUp &&
+        _textController.text.isEmpty &&
+        lastSent != null) {
+      _textController.text = lastSent;
+      _textController.selection = TextSelection.collapsed(
+        offset: lastSent.length,
+      );
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;

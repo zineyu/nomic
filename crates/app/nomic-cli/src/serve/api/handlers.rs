@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use super::ApiError;
 use crate::model::ModelChoice;
-use crate::serve::{AppState, ServerEvent, Snapshot};
+use crate::serve::{ServerEvent, Snapshot, WebState};
 
 mod commands;
 mod crud;
@@ -30,7 +30,7 @@ pub use settings::{SettingsSnapshotView, dispatch_settings};
 // ── 查询类 handler（返回带 request_id 的 ServerEvent）─────────────────────
 
 /// 获取会话快照：消息历史、模型、思考级别、运行状态等。
-pub async fn handle_get_state(state: &AppState, session_id: &str, request_id: &str) -> ServerEvent {
+pub async fn handle_get_state(state: &WebState, session_id: &str, request_id: &str) -> ServerEvent {
     let result = async {
         let session = open_session(state, session_id).await?;
         let snapshot = crate::serve::snapshot(&session).await?;
@@ -48,13 +48,13 @@ pub async fn handle_get_state(state: &AppState, session_id: &str, request_id: &s
 }
 
 /// 候选模型列表（跨 provider；当前选择由会话快照携带）。
-pub fn handle_list_models(state: &AppState, request_id: &str) -> ServerEvent {
-    let default_model = state.inner.factory.default_model.clone();
+pub fn handle_list_models(state: &WebState, request_id: &str) -> ServerEvent {
+    let default_model = state.inner.services.model().clone();
     let current = crate::model::ModelSelection {
         provider: default_model.provider,
         model: default_model.id,
     };
-    let candidates = state.inner.models.candidates(&current);
+    let candidates = state.inner.services.models().candidates(&current);
     ServerEvent::ModelsList {
         request_id: request_id.to_string(),
         candidates,
@@ -62,7 +62,7 @@ pub fn handle_list_models(state: &AppState, request_id: &str) -> ServerEvent {
 }
 
 /// 列出全部 work 摘要。
-pub async fn handle_list_works(state: &AppState, request_id: &str) -> ServerEvent {
+pub async fn handle_list_works(state: &WebState, request_id: &str) -> ServerEvent {
     match state.inner.list_works().await {
         Ok(works) => ServerEvent::WorksList {
             request_id: request_id.to_string(),
@@ -73,7 +73,7 @@ pub async fn handle_list_works(state: &AppState, request_id: &str) -> ServerEven
 }
 
 /// 列出全部 project 摘要。
-pub async fn handle_list_projects(state: &AppState, request_id: &str) -> ServerEvent {
+pub async fn handle_list_projects(state: &WebState, request_id: &str) -> ServerEvent {
     match state.inner.list_projects().await {
         Ok(projects) => ServerEvent::ProjectsList {
             request_id: request_id.to_string(),
@@ -84,11 +84,11 @@ pub async fn handle_list_projects(state: &AppState, request_id: &str) -> ServerE
 }
 
 /// skill 清单（`@skill://` 补全用；进程级 skill 解析器快照，与 TUI 补全同一来源）。
-pub fn handle_list_skills(state: &AppState, request_id: &str) -> ServerEvent {
+pub fn handle_list_skills(state: &WebState, request_id: &str) -> ServerEvent {
     let skills = state
         .inner
-        .factory
-        .skill_resolver
+        .services
+        .skill_resolver()
         .catalog()
         .into_iter()
         .map(|skill| SkillItem {
@@ -105,7 +105,7 @@ pub fn handle_list_skills(state: &AppState, request_id: &str) -> ServerEvent {
 /// 文件候选（`@file:` 补全用；相对目标 session 的 project 前缀匹配）。
 /// 最多返回 [`MAX_FILE_CANDIDATES`] 条，避免大目录撑爆事件负载。
 pub async fn handle_list_files(
-    state: &AppState,
+    state: &WebState,
     session_id: &str,
     prefix: &str,
     request_id: &str,
@@ -140,7 +140,7 @@ const MAX_FILE_CANDIDATES: usize = 100;
 /// drain 续跑）；空闲时直接提交运行（提交前展开 mention，无效标记原样
 /// 保留——与 TUI 同一口径）。
 pub async fn handle_prompt(
-    state: &AppState,
+    state: &WebState,
     session_id: &str,
     text: String,
     images: Vec<nomic_ai::ImageContent>,
@@ -200,7 +200,7 @@ pub async fn handle_prompt(
     // 空闲：展开 mention 后直接提交运行
     let expanded = crate::mention::expand_mentions(
         trimmed,
-        &state.inner.factory.skill_resolver,
+        state.inner.services.skill_resolver(),
         &session.project,
     );
     if let Err(error) = session.runner.submit(nomic_core::SessionJob::Prompt {
@@ -219,7 +219,7 @@ pub async fn handle_prompt(
 /// 与 TUI QUEUE 模式保存口径一致）；附件保留在槽位上。成功时无响应事件，
 /// 变更经队列的 `queue_changed` 广播驱动前端。
 pub async fn handle_update_queue_entry(
-    state: &AppState,
+    state: &WebState,
     session_id: &str,
     id: &str,
     text: String,
@@ -239,7 +239,7 @@ pub async fn handle_update_queue_entry(
 
 /// 删除 steering 队列条目（幂等：id 不存在静默无操作）。
 pub async fn handle_remove_queue_entry(
-    state: &AppState,
+    state: &WebState,
     session_id: &str,
     id: &str,
 ) -> Option<ServerEvent> {
@@ -253,7 +253,7 @@ pub async fn handle_remove_queue_entry(
 
 /// 移动 steering 队列条目（上移/下移一位；到底/顶不动）。
 pub async fn handle_move_queue_entry(
-    state: &AppState,
+    state: &WebState,
     session_id: &str,
     id: &str,
     direction: super::MoveDirection,
@@ -271,7 +271,7 @@ pub async fn handle_move_queue_entry(
 }
 
 /// 取消当前轮运行。
-pub async fn handle_cancel(state: &AppState, session_id: &str) -> ServerEvent {
+pub async fn handle_cancel(state: &WebState, session_id: &str) -> ServerEvent {
     let session = match open_session(state, session_id).await {
         Ok(s) => s,
         Err(error) => return error.to_ws_response(None),
@@ -284,7 +284,7 @@ pub async fn handle_cancel(state: &AppState, session_id: &str) -> ServerEvent {
 
 /// 回答提问：经注册表回填给等待中的工具。
 pub async fn handle_answer_question(
-    state: &AppState,
+    state: &WebState,
     session_id: &str,
     qid: String,
     answers: Vec<String>,
@@ -306,7 +306,7 @@ pub async fn handle_answer_question(
 
 /// 切换会话模型；结果落库到会话级 config。
 pub async fn handle_switch_model(
-    state: &AppState,
+    state: &WebState,
     session_id: &str,
     spec: String,
     reasoning: Option<String>,
@@ -329,7 +329,8 @@ pub async fn handle_switch_model(
     };
     let model = match state
         .inner
-        .models
+        .services
+        .models()
         .resolve(&selection.provider, &selection.model)
     {
         Ok(m) => m,
@@ -346,7 +347,8 @@ pub async fn handle_switch_model(
                 .as_deref(),
             state
                 .inner
-                .models
+                .services
+                .models()
                 .provider_row(&model.provider)
                 .and_then(|p| p.api_key)
                 .as_deref(),
@@ -457,15 +459,15 @@ impl SnapshotView {
 
 /// 从运行时打开（或惰性构建）指定 session。
 async fn open_session(
-    state: &AppState,
+    state: &WebState,
     id: &str,
 ) -> Result<Arc<crate::serve::SessionRuntime>, ApiError> {
     state.inner.open_session(id).await
 }
 
 /// 会话级模型选择落库；库不可用或写失败仅告警不阻断切换。
-async fn persist_session_model(state: &AppState, session_id: &str, spec: &str) {
-    let Some(store) = &state.inner.store else {
+async fn persist_session_model(state: &WebState, session_id: &str, spec: &str) {
+    let Some(store) = state.inner.services.store() else {
         return;
     };
     if let Err(error) = store
@@ -482,11 +484,11 @@ async fn persist_session_model(state: &AppState, session_id: &str, spec: &str) {
 
 /// 会话级思考级别落库；库不可用或写失败仅告警不阻断切换。
 async fn persist_session_reasoning(
-    state: &AppState,
+    state: &WebState,
     session_id: &str,
     level: Option<ThinkingLevel>,
 ) {
-    let Some(store) = &state.inner.store else {
+    let Some(store) = state.inner.services.store() else {
         return;
     };
     let value = level.map_or("off", ThinkingLevel::as_str);
@@ -580,7 +582,7 @@ mod tests {
             .get(&session_id)
             .expect("session")
             .clone();
-        let mut events = state.inner.events.subscribe();
+        let mut events = state.inner.services.bus().subscribe();
 
         // 用一个 runner job 占住运行态（/continue 空历史立即结束；单线程
         // 测试运行时中 submit 与下方 is_running 判定之间无调度点，job 尚
@@ -712,7 +714,7 @@ mod tests {
     #[tokio::test]
     async fn prompt_to_child_session_is_rejected_read_only() {
         let (state, main_id) = crate::serve::tests::test_state_with_session().await;
-        let store = state.inner.store.as_ref().expect("store");
+        let store = state.inner.services.store().expect("store");
         let work = store
             .work_of_session(&main_id)
             .await

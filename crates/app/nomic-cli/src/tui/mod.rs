@@ -69,17 +69,18 @@ type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 /// 运行交互 TUI。
 #[allow(clippy::too_many_lines)]
 pub async fn run(cli: &Cli) -> Result<()> {
-    let boot = bootstrap::bootstrap(cli, bootstrap::SessionPolicy::Init).await?;
+    // 进程级应用状态（ADR-0047）：组件依赖统一从 state 提取
+    let state = bootstrap::bootstrap(cli, bootstrap::SessionPolicy::Init).await?;
 
     let mut app = App::new(
-        boot.model.name.clone(),
-        boot.session.as_ref().map(|(_, id)| id.clone()),
-        boot.model.context_window,
+        state.model().name.clone(),
+        state.session().map(|(_, id)| id.clone()),
+        state.model().context_window,
     );
-    app.load_history(&boot.history);
+    app.load_history(state.history());
     // 无可用模型配置（CLI 与 sqlite 都没有）：占位模型照常启动，
     // 聊天区给出运行时选择引导（发消息时占位 provider 也会报同一引导错误）
-    if !boot.model_configured {
+    if !state.model_configured() {
         app.chat_mut()
             .push_system(crate::model::UNCONFIGURED_GUIDANCE.to_string());
     }
@@ -88,8 +89,8 @@ pub async fn run(cli: &Cli) -> Result<()> {
     // 工具基准（project 严格归属）：工具、`@file:` 补全与 session 绑定
     // 共享同一句柄，resume/new 切换 session 时基准经句柄原地更新，
     // 下一次工具执行/补全即生效
-    let base_dir = nomic_tools::BaseDir::new(Some(boot.project.clone()));
-    let skill_resolver = boot.skill_resolver.clone();
+    let base_dir = nomic_tools::BaseDir::new(Some(state.project().to_path_buf()));
+    let skill_resolver = state.skill_resolver().clone();
     let skill_entries: Vec<SkillEntry> = skill_resolver
         .catalog()
         .into_iter()
@@ -106,10 +107,7 @@ pub async fn run(cli: &Cli) -> Result<()> {
     // `@file:` 补全与工具共享同一基准：resume 切换 project 时自动跟随
     app.input_mut().set_mention_base(&base_dir);
     app.command_mut()
-        .set_available_templates(boot.prompt_templates.clone());
-    // 启动解析的思考级别（CLI 参数 / 配置文件）在进入 builder 前取出，
-    // driver 据此维护 `models` 级别选择器的当前值
-    let initial_reasoning = boot.stream_options.reasoning;
+        .set_available_templates(state.prompt_templates().to_vec());
 
     let todo_store = TodoStore::new();
     // 提问通道（ADR-0029）：agent 任务内的 `ask_user_question` 工具经共享
@@ -125,21 +123,18 @@ pub async fn run(cli: &Cli) -> Result<()> {
     // session 时原地生效）、提问走弹层通道、turn 注入点接统一消息队列
     //（ADR-0014，运行中 Enter 直推入队）
     let recipe = agent_recipe::assemble(agent_recipe::RecipeOpts {
+        state: state.clone(),
         base: base_dir.clone(),
-        skill_resolver: boot.skill_resolver.clone(),
         question_sink,
         todo: agent_recipe::TodoPolicy::Shared(todo_store),
-        provider: boot.provider.clone(),
-        available_models: boot.available_models,
-        default_model: boot.model.clone(),
-        model_aliases: boot.model_aliases,
+        provider: state.provider().clone(),
+        default_model: state.model().clone(),
         turn_injection: Some(app.queue().handle()),
-        child_sessions: boot
-            .session
-            .clone()
+        child_sessions: state
+            .session()
             .map(|(store, id)| agent_recipe::ChildSessionSpec {
-                store,
-                parent_session_id: id,
+                store: store.clone(),
+                parent_session_id: id.clone(),
             }),
     });
     // 子 agent 的继承模型单元（ADR-0038）：`/models` 切换主 agent 模型时
@@ -151,23 +146,23 @@ pub async fn run(cli: &Cli) -> Result<()> {
     let (agent, mut events) = recipe
         .apply(
             Agent::builder()
-                .model(boot.model.clone())
-                .provider(boot.provider.clone())
-                .system_prompt(boot.system_prompt),
+                .model(state.model().clone())
+                .provider(state.provider().clone())
+                .system_prompt(state.system_prompt()),
         )
-        .messages(boot.history)
-        .stream_options(boot.stream_options)
-        .compaction(boot.compaction)
+        .messages(state.history().to_vec())
+        .stream_options(state.stream_options().clone())
+        .compaction(state.compaction())
         .build();
 
     // 落库器：恢复的 session 父指针从默认分支末端起算（分支场景下保证续写
     // 落在默认分支而非全局最新 entry）；读取失败退回自动链最新
-    let recorder = match boot.session {
-        Some((store, id)) => match store.latest_entry_id(&id).await {
-            Ok(tip) => Some(SessionRecorder::with_tip(store, id, tip)),
+    let recorder = match state.session() {
+        Some((store, id)) => match store.latest_entry_id(id).await {
+            Ok(tip) => Some(SessionRecorder::with_tip(store.clone(), id.clone(), tip)),
             Err(error) => {
                 app.warn(format!("读取分支末端失败，落库将链到最新 entry：{error}"));
-                Some(SessionRecorder::new(store, id))
+                Some(SessionRecorder::new(store.clone(), id.clone()))
             }
         },
         None => None,
@@ -181,15 +176,11 @@ pub async fn run(cli: &Cli) -> Result<()> {
 
     let (mut driver, mut done_rx) = spawn_driver(
         agent,
+        &state,
         session_id.as_deref(),
         recorder,
         base_dir,
-        boot.models,
-        boot.model,
         inherited_model,
-        skill_resolver,
-        boot.prompt_recipe,
-        initial_reasoning,
         normal_tools,
         question_registry,
     );

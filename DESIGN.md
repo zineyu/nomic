@@ -265,9 +265,11 @@ caption = 0.75rem/400. Line heights: headings 1.25–1.4, body and UI text 1.5.
   36px ink circle — the one high-contrast element on screen.
 - **User message**: a borderless `bubble` gray block, right-aligned and
   width-capped; no avatar, no border, no shadow.
-- **Tool ledger**: consecutive tool calls collapse into a single muted ledger
-  row (icon + counts per category + chevron). While any call in the group runs,
-  a spinner replaces the chevron; any failure turns the row's count red.
+- **Tool ledger**: a run of consecutive tool calls collapses into a single
+  muted ledger row (icon + counts per category + chevron) once narrative text
+  follows it; the run still ahead of the next text stays expanded as quiet
+  rows so live work remains visible. While any call in the group runs, a
+  spinner replaces the chevron; any failure turns the row's count red.
   Expanded, each call renders as a quiet text row; completion is a neutral
   check, only failures turn red. Tool icons differentiate category by the
   foreground opacity ladder — no chromatic category colors.

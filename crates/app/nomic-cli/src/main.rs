@@ -7,7 +7,8 @@
 //!   连接（见 docs/adr/0046）
 //!
 //! 本文件只做 CLI 解析与模式分发；共享的 provider/model/session 初始化在
-//! `bootstrap`，主/子 agent 工具配方组装在 `agent_recipe`，print 模式在
+//! `bootstrap`，装配产物注册为进程级应用状态（`state`，ADR-0047）供各
+//! 组件提取服务，主/子 agent 工具配方组装在 `agent_recipe`，print 模式在
 //! `print`，交互模式在 `tui`，serve 模式在 `serve`，session 管理子命令在
 //! `sessions`。
 
@@ -25,6 +26,7 @@ mod print;
 mod serve;
 mod sessions;
 mod settings;
+mod state;
 mod system_prompt;
 mod tui;
 

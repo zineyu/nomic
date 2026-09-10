@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use super::super::ApiError;
-use crate::serve::{AppState, SessionRuntime};
+use crate::serve::{SessionRuntime, WebState};
 
 /// 斜杠命令的解析结果：runner job 类直接提交串行队列；goal 命令需要
 /// 换工具集与登记目标会话，由 handler 单独处置。
@@ -47,7 +47,7 @@ pub fn parse_slash_command(rest: &str) -> Result<SlashCommand, ApiError> {
 /// 经 mention 展开后交给 [`SessionRuntime::start_goal`]）；`None` 取消
 /// 进行中的目标（运行中亦可，追问立即解除、工具集在本轮结束后换回）。
 pub fn goal_command(
-    state: &AppState,
+    state: &WebState,
     session: &Arc<SessionRuntime>,
     objective: Option<String>,
 ) -> Result<(), ApiError> {
@@ -60,7 +60,7 @@ pub fn goal_command(
             }
             let objective = crate::mention::expand_mentions(
                 &objective,
-                &state.inner.factory.skill_resolver,
+                state.inner.services.skill_resolver(),
                 &session.project,
             );
             session.start_goal(objective)
@@ -159,7 +159,7 @@ mod tests {
             .get(&session_id)
             .expect("session")
             .clone();
-        let mut events = state.inner.events.subscribe();
+        let mut events = state.inner.services.bus().subscribe();
 
         let ack = handle_prompt(
             &state,

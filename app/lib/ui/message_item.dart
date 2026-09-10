@@ -1,5 +1,5 @@
-/// 消息项渲染：用户气泡 / assistant（markdown + thinking 折叠）/ 工具行 /
-/// 系统提示。
+/// 消息项渲染：用户气泡 / assistant（markdown + thinking 步骤行）/
+/// 步骤行（工具调用与纯思考，与执行过程卡片内部同一组件）/ 系统提示。
 library;
 
 import 'dart:async';
@@ -28,8 +28,19 @@ class MessageItemView extends StatelessWidget {
   Widget build(BuildContext context) {
     return switch (item) {
       UserItem i => _UserBubble(item: i),
-      AssistantItem i => _AssistantBlock(item: i, isAnswer: isAnswer),
-      ToolItem i => ToolCard(item: i),
+      // 纯思考（组外未折叠的尾部段、流式中的思考阶段）与工具调用
+      // 都复用执行过程卡片内部的步骤行组件
+      AssistantItem i =>
+        i.text.isEmpty && i.thinking.isNotEmpty
+            ? Padding(
+                padding: const EdgeInsets.only(bottom: Spacing.sm),
+                child: _StepRow(step: i),
+              )
+            : _AssistantBlock(item: i, isAnswer: isAnswer),
+      ToolItem i => Padding(
+        padding: const EdgeInsets.only(bottom: 4),
+        child: _StepRow(step: i),
+      ),
       ExecutionItem i => ExecutionCard(item: i),
       SystemItem i => _SystemLine(item: i),
     };
@@ -108,7 +119,12 @@ class _AssistantBlock extends StatelessWidget {
                 ],
               ),
             ),
-          if (item.thinking.isNotEmpty) _ThinkingFold(text: item.thinking),
+          // thinking 与工具调用共用同一步骤行组件（组内外形态一致）
+          if (item.thinking.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: Spacing.sm),
+              child: _StepRow(step: item),
+            ),
           if (item.text.isNotEmpty)
             MarkdownBody(
               data: item.text,
@@ -195,61 +211,11 @@ class _AssistantBlock extends StatelessWidget {
   }
 }
 
-class _ThinkingFold extends StatefulWidget {
-  const _ThinkingFold({required this.text});
-
-  final String text;
-
-  @override
-  State<_ThinkingFold> createState() => _ThinkingFoldState();
-}
-
-class _ThinkingFoldState extends State<_ThinkingFold> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = tokensOf(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: Spacing.sm),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InkWell(
-            onTap: () => setState(() => _expanded = !_expanded),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  _expanded
-                      ? LucideIcons.chevronDown
-                      : LucideIcons.chevronRight,
-                  size: 12,
-                  color: tokens.mutedForeground,
-                ),
-                const SizedBox(width: 4),
-                Text('思考', style: AppText.caption(tokens.mutedForeground)),
-              ],
-            ),
-          ),
-          if (_expanded)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: SelectableText(
-                widget.text,
-                style: AppText.ui(tokens.mutedForeground),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-/// 执行过程卡片（DESIGN.md「Execution card」）：连续工具调用与纯思考段
-/// 折叠为一张卡片——默认一行摘要（执行过程 · N 步 · 搜索 X 次 ·
-/// 命令 Y 条 · 用时 Zs），展开为逐步时间线（图标 + 名称 + 输入摘要 +
-/// 状态 + 耗时 + 详情）。执行过程是弱化的次要信息，最终回答才是主体。
+/// 执行过程卡片（DESIGN.md「Execution card」）：text 收尾的一段连续工具
+/// 调用与纯思考段折叠为一张卡片——默认一行摘要（执行过程 · N 步 ·
+/// 搜索 X 次 · 命令 Y 条 · 用时 Zs），展开为逐步时间线（图标 + 名称 +
+/// 输入摘要 + 状态 + 耗时 + 详情）。执行过程是弱化的次要信息，
+/// 最终回答才是主体。
 class ExecutionCard extends StatefulWidget {
   const ExecutionCard({super.key, required this.item});
 
@@ -340,17 +306,12 @@ class _ExecutionCardState extends State<ExecutionCard> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   for (final step in item.steps)
-                    switch (step) {
-                      ToolItem t => _ToolStepRow(
-                        key: ValueKey(t.toolCallId),
-                        item: t,
+                    _StepRow(
+                      key: ValueKey(
+                        step is ToolItem ? step.toolCallId : step.id,
                       ),
-                      AssistantItem a => _ThinkingStepRow(
-                        key: ValueKey(a.id),
-                        item: a,
-                      ),
-                      _ => const SizedBox.shrink(),
-                    },
+                      step: step,
+                    ),
                 ],
               ),
             ),
@@ -415,29 +376,44 @@ String _formatDuration(Duration d) {
   return '${d.inSeconds}s';
 }
 
-/// 时间线中的工具步骤行：图标 + 中文步骤名 + 输入摘要 + 耗时 + 状态，
-/// 可展开参数与结果预览。
-class _ToolStepRow extends StatefulWidget {
-  const _ToolStepRow({super.key, required this.item});
+/// 时间线步骤行（工具调用与纯思考段共用同一组件）：图标 + 步骤名 +
+/// 摘要 + 耗时 + 状态，点击展开详情。摘要内容：工具取调用参数
+/// （`_toolArgSummary`），思考取首行；耗时与状态仅工具步骤有。
+class _StepRow extends StatefulWidget {
+  const _StepRow({super.key, required this.step});
 
-  final ToolItem item;
+  /// ToolItem 或纯思考 AssistantItem（text 为空、thinking 非空）。
+  final ChatItem step;
 
   @override
-  State<_ToolStepRow> createState() => _ToolStepRowState();
+  State<_StepRow> createState() => _StepRowState();
 }
 
-class _ToolStepRowState extends State<_ToolStepRow> {
+class _StepRowState extends State<_StepRow> {
   bool _expanded = false;
+
+  /// 思考摘要：trim 后的首行。
+  static String _thinkingSummary(String thinking) =>
+      thinking.trim().split('\n').first;
 
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
-    final item = widget.item;
-    final (icon, opacity) = _toolStyle(item.name);
-    final summary = _toolArgSummary(item.args);
-    final expandable = item.args.isNotEmpty || item.resultPreview.isNotEmpty;
-    final failed = item.status == ToolStatus.error;
-    final duration = item.duration;
+    final step = widget.step;
+    final tool = step is ToolItem ? step : null;
+    final thinking = step is AssistantItem ? step : null;
+    final failed = tool?.status == ToolStatus.error;
+    final (icon, opacity) = tool != null
+        ? _toolStyle(tool.name)
+        : (LucideIcons.brain, 0.45);
+    final label = tool != null ? _toolLabel(tool.name) : '思考';
+    final summary = tool != null
+        ? _toolArgSummary(tool.args)
+        : _thinkingSummary(thinking?.thinking ?? '');
+    final expandable = tool != null
+        ? tool.args.isNotEmpty || tool.resultPreview.isNotEmpty
+        : (thinking?.thinking.isNotEmpty ?? false);
+    final duration = tool?.duration;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -462,7 +438,7 @@ class _ToolStepRowState extends State<_ToolStepRow> {
                 ),
                 const SizedBox(width: Spacing.sm),
                 Text(
-                  _toolLabel(item.name),
+                  label,
                   style: AppText.ui(
                     tokens.foreground,
                   ).copyWith(fontWeight: FontWeight.w500),
@@ -488,7 +464,7 @@ class _ToolStepRowState extends State<_ToolStepRow> {
                   ),
                   const SizedBox(width: Spacing.sm),
                 ],
-                _ToolStatus(status: item.status),
+                if (tool != null) _ToolStatus(status: tool.status),
                 if (expandable) ...[
                   const SizedBox(width: 4),
                   Icon(
@@ -514,209 +490,32 @@ class _ToolStepRowState extends State<_ToolStepRow> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (item.args.isNotEmpty)
+                if (tool != null && tool.args.isNotEmpty)
                   _CopyableCodeBlock(
-                    text: _prettyJson(item.args),
+                    text: _prettyJson(tool.args),
                     color: tokens.mutedForeground,
                   ),
-                if (item.resultPreview.isNotEmpty)
+                if (tool != null && tool.resultPreview.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
                     child: _CopyableCodeBlock(
-                      text: item.resultPreview.length > 2000
-                          ? '${item.resultPreview.substring(0, 2000)}…'
-                          : item.resultPreview,
-                      color: item.isError
+                      text: tool.resultPreview.length > 2000
+                          ? '${tool.resultPreview.substring(0, 2000)}…'
+                          : tool.resultPreview,
+                      color: tool.isError
                           ? tokens.destructive
                           : tokens.foreground,
                     ),
                   ),
+                if (thinking != null)
+                  SelectableText(
+                    thinking.thinking,
+                    style: AppText.ui(tokens.mutedForeground),
+                  ),
               ],
             ),
           ),
       ],
-    );
-  }
-}
-
-/// 时间线中的思考步骤行（合并进执行过程，不再单独出现「思考过程」标签）。
-class _ThinkingStepRow extends StatefulWidget {
-  const _ThinkingStepRow({super.key, required this.item});
-
-  final AssistantItem item;
-
-  @override
-  State<_ThinkingStepRow> createState() => _ThinkingStepRowState();
-}
-
-class _ThinkingStepRowState extends State<_ThinkingStepRow> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = tokensOf(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        InkWell(
-          hoverColor: tokens.secondary,
-          onTap: () => setState(() => _expanded = !_expanded),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: Spacing.md,
-              vertical: 6,
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  LucideIcons.brain,
-                  size: 14,
-                  color: tokens.foreground.withValues(alpha: 0.45),
-                ),
-                const SizedBox(width: Spacing.sm),
-                Text('思考', style: AppText.ui(tokens.mutedForeground)),
-                const Spacer(),
-                Icon(
-                  _expanded
-                      ? LucideIcons.chevronDown
-                      : LucideIcons.chevronRight,
-                  size: 12,
-                  color: tokens.mutedForeground,
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (_expanded)
-          Padding(
-            padding: const EdgeInsets.only(
-              left: Spacing.md + 14 + Spacing.sm,
-              right: Spacing.md,
-              bottom: Spacing.sm,
-            ),
-            child: SelectableText(
-              widget.item.thinking,
-              style: AppText.ui(tokens.mutedForeground),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-/// 工具行（DESIGN.md「quiet text rows」）：图标按类别走前景不透明度阶梯
-/// （execute 100 > inspect 75 > modify 60 > interact 45 > agent 35，无彩色
-/// 类别色）+ 名称 + 参数摘要 + 状态；点击展开参数与结果预览。
-/// 完成态为中性 check，仅失败变红。
-class ToolCard extends StatefulWidget {
-  const ToolCard({super.key, required this.item});
-
-  final ToolItem item;
-
-  @override
-  State<ToolCard> createState() => _ToolCardState();
-}
-
-class _ToolCardState extends State<ToolCard> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = tokensOf(context);
-    final item = widget.item;
-    final (icon, opacity) = _toolStyle(item.name);
-    final summary = _toolArgSummary(item.args);
-    final expandable = item.args.isNotEmpty || item.resultPreview.isNotEmpty;
-    final failed = item.status == ToolStatus.error;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(Radii.md),
-        hoverColor: tokens.muted,
-        onTap: expandable ? () => setState(() => _expanded = !_expanded) : null,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(
-            horizontal: Spacing.sm,
-            vertical: 4,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    icon,
-                    size: 14,
-                    color: failed
-                        ? tokens.destructive
-                        : tokens.foreground.withValues(alpha: opacity),
-                  ),
-                  const SizedBox(width: Spacing.sm),
-                  Text(
-                    item.name,
-                    style: AppText.ui(
-                      tokens.foreground,
-                    ).copyWith(fontWeight: FontWeight.w500),
-                  ),
-                  if (summary.isNotEmpty) ...[
-                    const SizedBox(width: Spacing.sm),
-                    Flexible(
-                      child: Text(
-                        summary,
-                        overflow: TextOverflow.ellipsis,
-                        style: AppFonts.mono(
-                          fontSize: 12,
-                          color: tokens.mutedForeground,
-                        ),
-                      ),
-                    ),
-                  ],
-                  const Spacer(),
-                  _ToolStatus(status: item.status),
-                  if (expandable) ...[
-                    const SizedBox(width: 4),
-                    Icon(
-                      _expanded
-                          ? LucideIcons.chevronDown
-                          : LucideIcons.chevronRight,
-                      size: 12,
-                      color: tokens.mutedForeground,
-                    ),
-                  ],
-                ],
-              ),
-              if (_expanded && expandable)
-                Padding(
-                  // 与名称文本左对齐（图标 14 + 间距 8）
-                  padding: const EdgeInsets.only(left: Spacing.sm + 14, top: 4),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (item.args.isNotEmpty)
-                        _CopyableCodeBlock(
-                          // pretty-print JSON（原 Map.toString 单行不可读）
-                          text: _prettyJson(item.args),
-                          color: tokens.mutedForeground,
-                        ),
-                      if (item.resultPreview.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: _CopyableCodeBlock(
-                            text: item.resultPreview.length > 2000
-                                ? '${item.resultPreview.substring(0, 2000)}…'
-                                : item.resultPreview,
-                            color: item.isError
-                                ? tokens.destructive
-                                : tokens.foreground,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }

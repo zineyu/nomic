@@ -13,7 +13,6 @@ use crossterm::event::{
     Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
 };
 use futures::StreamExt as _;
-use nomic_ai::{Model, ThinkingLevel};
 use nomic_core::{
     Agent, AgentEvent, AgentHandle, CompactOutcome, ContinueOutcome, DynTool, JobOutcome,
     NOTHING_TO_COMPACT, NOTHING_TO_CONTINUE, PromptOutcome, RunnerEvent, SessionJob, SessionRunner,
@@ -29,24 +28,22 @@ use super::effects::{self, ModelSwitcher, SessionBinding};
 use super::terminal::edit_input_in_editor;
 use super::{TuiTerminal, panic_payload_text};
 use crate::mention;
-use crate::model::ModelResolver;
 
 /// 启动 agent driver：agent 经 [`Agent::spawn`] 移入 core actor 任务，run 类
 /// job 经 [`SessionRunner::spawn`] 移入 core runner 任务（串行消费、取消与
 /// 生命周期翻译收在其中）；driver 本体只是事件循环持有的接线端资源。
-// 参数均为 driver 的独立组成部分，打包为参数结构只会增加间接层
+///
+/// 进程级服务（模型解析器 / 启动模型与思考级别 / skills / 提示词配方）
+/// 从应用状态（[`crate::state::AppState`]，ADR-0047）提取；其余参数为
+/// driver 的 session 级独立组成部分。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_driver(
     agent: Agent,
+    state: &crate::state::AppState,
     session_id: Option<&str>,
     recorder: Option<SessionRecorder>,
     base: nomic_tools::BaseDir,
-    models: ModelResolver,
-    model: Model,
     inherited_model: nomic_core::SharedModel,
-    skill_resolver: SkillResolver,
-    prompt_recipe: crate::bootstrap::SystemPromptRecipe,
-    reasoning: Option<ThinkingLevel>,
     normal_tools: Vec<DynTool>,
     questions: std::sync::Arc<QuestionRegistry>,
 ) -> (Driver, mpsc::UnboundedReceiver<RunnerEvent>) {
@@ -68,9 +65,14 @@ pub(super) fn spawn_driver(
         runner_task: Some(runner_task),
         alive: true,
         session: SessionBinding::new(recorder, base),
-        model: ModelSwitcher::new(models, model, reasoning, inherited_model),
-        skill_resolver,
-        prompt_recipe,
+        model: ModelSwitcher::new(
+            state.models().clone(),
+            state.model().clone(),
+            state.stream_options().reasoning,
+            inherited_model,
+        ),
+        skill_resolver: state.skill_resolver().clone(),
+        prompt_recipe: state.prompt_recipe().clone(),
         normal_tools,
         goal: GoalNudger::new(),
     };
@@ -659,7 +661,7 @@ pub(in crate::tui) fn dummy_handle() -> AgentHandle {
     impl nomic_ai::Provider for NoopProvider {
         fn stream(
             &self,
-            _model: &Model,
+            _model: &nomic_ai::Model,
             _context: &nomic_ai::Context,
             _options: &nomic_ai::StreamOptions,
             _cancel: tokio_util::sync::CancellationToken,
@@ -669,7 +671,7 @@ pub(in crate::tui) fn dummy_handle() -> AgentHandle {
     }
 
     let (agent, _events) = Agent::builder()
-        .model(Model {
+        .model(nomic_ai::Model {
             id: "test-model".to_string(),
             name: "test-model".to_string(),
             api: nomic_ai::ApiKind::OpenAiCompletions,

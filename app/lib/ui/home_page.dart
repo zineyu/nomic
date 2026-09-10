@@ -142,25 +142,57 @@ class _StartPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
     final projects = controller.projects;
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: maxPageWidth),
-        child: Padding(
-          padding: const EdgeInsets.all(Spacing.xl),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text('选择一个 project 开始', style: AppText.h2(tokens.foreground)),
-              const SizedBox(height: Spacing.lg),
-              for (final project in projects)
-                _ProjectTile(project: project, controller: controller),
-              if (projects.isNotEmpty) const SizedBox(height: Spacing.sm),
-              _AddProjectTile(onTap: _addProject),
-            ],
+    // 垂直居中 + 内容超出时可滚动（LayoutBuilder 提供 minHeight 约束）
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: constraints.maxHeight),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: maxPageWidth),
+                child: Padding(
+                  padding: const EdgeInsets.all(Spacing.xl),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text('开始工作', style: AppText.h1(tokens.foreground)),
+                      const SizedBox(height: Spacing.sm),
+                      Text(
+                        '选择一个项目开始，或添加新的项目目录。',
+                        style: AppText.bodySm(tokens.mutedForeground),
+                      ),
+                      const SizedBox(height: Spacing.xl),
+                      if (projects.isNotEmpty) ...[
+                        Text(
+                          '项目',
+                          style: AppText.caption(tokens.mutedForeground),
+                        ),
+                        const SizedBox(height: Spacing.sm),
+                        for (final project in projects)
+                          _ProjectTile(
+                            project: project,
+                            controller: controller,
+                          ),
+                        const SizedBox(height: Spacing.sm),
+                        _AddProjectTile(onTap: _addProject),
+                      ] else ...[
+                        _AddProjectTile(onTap: _addProject),
+                        const SizedBox(height: Spacing.sm),
+                        Text(
+                          '还没有项目。添加的项目目录会显示在这里。',
+                          style: AppText.caption(tokens.tertiary),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -173,7 +205,7 @@ class _StartPage extends StatelessWidget {
   }
 }
 
-/// 「添加项目目录…」幽灵行：与 project 列表同构，hover 出底色。
+/// 「添加项目目录…」动作行：细线描边（控件，而非列表条目），hover 出底色。
 class _AddProjectTile extends StatelessWidget {
   const _AddProjectTile({required this.onTap});
 
@@ -182,6 +214,7 @@ class _AddProjectTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
+    // 细线描边动作行：与扁平的 project 列表项区分（控件，而非条目）
     return Material(
       color: Colors.transparent,
       borderRadius: BorderRadius.circular(Radii.lg),
@@ -189,7 +222,11 @@ class _AddProjectTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(Radii.lg),
         hoverColor: tokens.secondary,
         onTap: onTap,
-        child: Padding(
+        child: Container(
+          decoration: BoxDecoration(
+            border: Border.all(color: tokens.border),
+            borderRadius: BorderRadius.circular(Radii.lg),
+          ),
           padding: const EdgeInsets.all(Spacing.md),
           child: Row(
             children: [

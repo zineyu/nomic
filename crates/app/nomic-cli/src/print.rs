@@ -21,61 +21,61 @@ use crate::{Cli, agent_recipe, bootstrap};
 /// 运行 print 模式。
 pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
     tracing::info!(prompt_len = prompt.len(), "print mode: starting");
-    let boot = bootstrap::bootstrap(cli, bootstrap::SessionPolicy::Init).await?;
+    // 进程级应用状态（ADR-0047）：组件依赖统一从 state 提取
+    let state = bootstrap::bootstrap(cli, bootstrap::SessionPolicy::Init).await?;
     // print 非交互（无法在运行时选择模型）：无可用模型配置时快速失败，
     // 交互模式（TUI / web）则以占位模型继续启动
-    if !boot.model_configured {
+    if !state.model_configured() {
         bail!("{}", crate::model::NO_MODEL_ERROR);
     }
     // `/name args` 视为 prompt template 调用：展开后发送；未知名称硬报错
-    let prompt = match nomic_prompts::expand_invocation(&boot.prompt_templates, prompt) {
+    let prompt = match nomic_prompts::expand_invocation(state.prompt_templates(), prompt) {
         Ok(expanded) => expanded.unwrap_or_else(|| prompt.to_string()),
         Err(error) => return Err(error).context("展开 prompt template 失败"),
     };
     let images = load_images(&cli.image)?;
-    if boot.session.is_some() {
+    if state.session().is_some() {
         // session id 是内部标识，展示会话标题（首条用户消息摘要）
-        let label = nomic_session::session_title(&boot.history)
+        let label = nomic_session::session_title(state.history())
             .map_or_else(|| "新会话".to_string(), |title| format!("「{title}」"));
-        eprintln!("\x1b[2m{label}（{} 条历史消息）\x1b[0m", boot.history.len());
+        eprintln!(
+            "\x1b[2m{label}（{} 条历史消息）\x1b[0m",
+            state.history().len()
+        );
     }
 
     // 工具配方（组装收在 agent_recipe 模块）：print 的差异点——主/子
     // agent 各自独立的 todo 清单（非交互，无进度观察方）、提问走 stdin、
     // 无 turn 注入点；工具相对路径以 session 的 project 为基准（严格归属）
     let recipe = agent_recipe::assemble(agent_recipe::RecipeOpts {
-        base: nomic_tools::BaseDir::new(Some(boot.project.clone())),
-        skill_resolver: boot.skill_resolver.clone(),
+        state: state.clone(),
+        base: nomic_tools::BaseDir::new(Some(state.project().to_path_buf())),
         question_sink: std::sync::Arc::new(StdinQuestionSink),
         todo: agent_recipe::TodoPolicy::Isolated,
-        provider: boot.provider.clone(),
-        available_models: boot.available_models,
-        default_model: boot.model.clone(),
-        model_aliases: boot.model_aliases,
+        provider: state.provider().clone(),
+        default_model: state.model().clone(),
         turn_injection: None,
-        child_sessions: boot
-            .session
-            .clone()
+        child_sessions: state
+            .session()
             .map(|(store, id)| agent_recipe::ChildSessionSpec {
-                store,
-                parent_session_id: id,
+                store: store.clone(),
+                parent_session_id: id.clone(),
             }),
     });
     let (agent, mut events) = recipe
         .apply(
             Agent::builder()
-                .model(boot.model.clone())
-                .provider(boot.provider.clone())
-                .system_prompt(boot.system_prompt),
+                .model(state.model().clone())
+                .provider(state.provider().clone())
+                .system_prompt(state.system_prompt()),
         )
-        .messages(boot.history)
-        .stream_options(boot.stream_options)
-        .compaction(boot.compaction)
+        .messages(state.history().to_vec())
+        .stream_options(state.stream_options().clone())
+        .compaction(state.compaction())
         .build();
     // session span：让 agent / provider 日志自动携带 session_id。
-    let session_span = boot
-        .session
-        .as_ref()
+    let session_span = state
+        .session()
         .map(|(_, id)| tracing::info_span!("session", session_id = %id));
 
     // actor 模型（ADR-0022）：agent 本体移入专属任务，经 handle 驱动
@@ -103,9 +103,9 @@ pub async fn run(cli: &Cli, prompt: &str) -> Result<()> {
         .instrument(prompt_span),
     );
 
-    let mut recorder = boot
-        .session
-        .map(|(store, id)| SessionRecorder::new(store, id));
+    let mut recorder = state
+        .session()
+        .map(|(store, id)| SessionRecorder::new(store.clone(), id.clone()));
     let saw_error = drain_events(&mut events, recorder.as_mut()).await;
 
     // 空壳 session 不保留（正常路径必有 user 消息，这里兜住 prompt 未落库

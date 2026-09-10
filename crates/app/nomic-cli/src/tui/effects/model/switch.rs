@@ -21,8 +21,9 @@ use crate::tui::widgets;
 
 /// 两步模型切换状态机：持有当前模型/思考级别与待切换模型。
 pub(in crate::tui) struct ModelSwitcher {
-    /// 运行时模型解析器（`models` 候选与切换，与启动同一分层口径）
-    models: ModelResolver,
+    /// 运行时模型解析器（`models` 候选与切换，与启动同一分层口径）；
+    /// 进程级共享（注册在应用状态中，ADR-0047）
+    models: std::sync::Arc<ModelResolver>,
     /// 当前模型（应用切换后更新；选择器预选与切换幂等判断用）
     current: Model,
     /// 当前思考级别（级别选择器确认后更新；预选与级别幂等判断用）
@@ -71,7 +72,7 @@ pub(super) enum Confirm {
 
 impl ModelSwitcher {
     pub(in crate::tui) const fn new(
-        models: ModelResolver,
+        models: std::sync::Arc<ModelResolver>,
         current: Model,
         reasoning: Option<ThinkingLevel>,
         inherited: nomic_core::SharedModel,
@@ -321,7 +322,7 @@ mod tests {
         handle.flush().await.expect("屏障应成功");
         (
             ModelSwitcher::new(
-                models,
+                std::sync::Arc::new(models),
                 current.clone(),
                 Some(ThinkingLevel::Low),
                 nomic_core::shared_model(current),

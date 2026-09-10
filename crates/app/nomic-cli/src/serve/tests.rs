@@ -1,4 +1,4 @@
-//! 测试共享夹具与冒烟测试：最小 AppState（内存 session 库 + 空 agent
+//! 测试共享夹具与冒烟测试：最小 WebState（内存 session 库 + 空 agent
 //! 构建），供 web 各子模块的测试复用。
 
 use std::path::Path;
@@ -9,14 +9,16 @@ use nomic_skills::SkillResolver;
 
 use super::session::ResolvedSessionModel;
 use super::*;
+use crate::model::ModelResolver;
+use nomic_session::SessionStore;
 
-pub(super) async fn test_state() -> AppState {
+pub(super) async fn test_state() -> WebState {
     let (state, _) = test_state_with_session().await;
     state
 }
 
 /// [`test_state`] 的变体：同时返回预置 session 的 id。
-pub(super) async fn test_state_with_session() -> (AppState, String) {
+pub(super) async fn test_state_with_session() -> (WebState, String) {
     let store = SessionStore::in_memory().await.expect("store");
     let id = store.create_session(".").await.expect("session");
     let models = Arc::new(ModelResolver::new(
@@ -41,9 +43,19 @@ pub(super) async fn test_state_with_session() -> (AppState, String) {
         cost_cache_write: 0.0,
     };
     let provider = crate::model::build_provider(model.api, Some("sk-test".into()));
-    let (events, _) = broadcast::channel::<ServerEvent>(64);
-    let factory = SessionFactory {
-        models: models.clone(),
+    // 进程级服务状态（ADR-0047）：测试夹具逐字段注册最小服务集
+    let services = AppState::new(crate::state::Services {
+        model: model.clone(),
+        model_configured: true,
+        models,
+        provider: provider.clone(),
+        stream_options: StreamOptions::default(),
+        system_prompt: String::new(),
+        compaction: nomic_core::CompactionSettings::default(),
+        store: Some(store.clone()),
+        session: Some((store.clone(), id.clone())),
+        project: std::env::current_dir().expect("cwd"),
+        history: Vec::new(),
         prompt_recipe: bootstrap::SystemPromptRecipe::default(),
         skill_resolver: SkillResolver::new(
             Path::new("/repo"),
@@ -51,13 +63,14 @@ pub(super) async fn test_state_with_session() -> (AppState, String) {
             Vec::new(),
         )
         .expect("skills"),
-        stream_options: StreamOptions::default(),
-        compaction: nomic_core::CompactionSettings::default(),
-        default_model: model.clone(),
-        default_reasoning: None,
+        prompt_templates: Vec::new(),
         available_models: vec![model.clone()],
         model_aliases: std::collections::BTreeMap::new(),
-        events,
+        bus: crate::state::EventBus::new(),
+    });
+    let factory = SessionFactory {
+        state: services.clone(),
+        default_reasoning: None,
     };
     let initial = factory.build(
         Some(store.clone()),
@@ -75,14 +88,12 @@ pub(super) async fn test_state_with_session() -> (AppState, String) {
         },
     );
     let runtime = Arc::new(Runtime {
-        store: Some(store),
-        models,
+        services,
         sessions: Mutex::new(HashMap::from([(id.clone(), initial)])),
-        events: factory.events.clone(),
         shutdown: CancellationToken::new(),
         factory,
     });
-    (AppState { inner: runtime }, id)
+    (WebState { inner: runtime }, id)
 }
 
 #[tokio::test]

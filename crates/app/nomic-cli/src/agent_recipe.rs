@@ -12,7 +12,6 @@
 //! 共享基准句柄形式：入口只需给出 [`BaseDir`]（不需要原地更新的入口
 //! 新建后不再写它即可，行为等同按固定路径构建）。
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use nomic_ai::{Model, Provider};
@@ -21,9 +20,10 @@ use nomic_core::{
     shared_model,
 };
 use nomic_session::SessionStore;
-use nomic_skills::SkillResolver;
 use nomic_tools::multi_agent::ChildSessionHook;
 use nomic_tools::{BaseDir, QuestionSink, TodoStore};
+
+use crate::state::AppState;
 
 /// 子 agent 池的 todo 清单策略。
 ///
@@ -52,31 +52,32 @@ pub struct ChildSessionSpec {
 
 /// 组装选项：三入口的差异点全部在此显式表达。
 ///
-/// supervisor 配置（[`SupervisorConfig::default`]）刻意**不是**选项——
-/// 三入口当前一致，属于配方本身；某入口需要分化时再提升为选项。
+/// 进程级共享服务（skill 解析器 / 子 agent 候选模型与别名表）经
+/// [`AppState`] 提取（ADR-0047）；本 struct 只保留入口间与 session 间
+/// 真正分化的输入。supervisor 配置（[`SupervisorConfig::default`]）刻意
+/// **不是**选项——三入口当前一致，属于配方本身；某入口需要分化时再提升
+/// 为选项。
 pub struct RecipeOpts {
+    /// 进程级应用状态：skill 解析器、子 agent 候选模型列表与模型别名表
+    /// 的服务来源
+    pub state: AppState,
     /// 工具的相对路径基准句柄（project 严格归属）。交互端保留句柄
     /// 副本，session 切换时经 [`BaseDir::set`] 原地更新，已构建工具的
     /// 下一次执行即读到新基准；print / web 入口新建后不再更新。
     pub base: BaseDir,
-    /// `skill://` 解析器（注入 read 工具；主/子 agent 共用同一目录）。
-    pub skill_resolver: SkillResolver,
     /// `ask_user_question` 的提问通道适配器（入口各自实现：TUI 弹层 /
     /// stdin / web 事件总线）；主/子 agent 共享同一适配器。
     pub question_sink: Arc<dyn QuestionSink>,
     /// todo 清单策略（共享 vs 独立，见 [`TodoPolicy`]）。
     pub todo: TodoPolicy,
     /// 子 agent 的默认 provider（supervisor 持有，创建子 agent 时可逐个
-    /// 覆盖；主 agent 的 provider 由调用方直接交给 builder，二者通常相同）。
+    /// 覆盖；主 agent 的 provider 由调用方直接交给 builder，二者通常相同。
+    /// serve 按 session 解析后传入，可能与进程默认不同）。
     pub provider: Arc<dyn Provider>,
-    /// 可供子 agent 选择的模型列表（supervisor 校验与展示用）。
-    pub available_models: Vec<Model>,
     /// 主 agent 的当前模型：子 agent 未指定模型时继承（ADR-0038）；交互端
     /// 在主 agent 模型切换时经 [`AgentRecipe::inherited_model_cell`] 更新。
+    /// serve 按 session 解析后传入，可能与进程默认不同。
     pub default_model: Model,
-    /// 模型别名表（settings 表 `model_aliases` 键，bootstrap 已解析为完整
-    /// 模型；创建子 agent 时按别名选择）。
-    pub model_aliases: BTreeMap<String, Model>,
     /// 运行中注入源（ADR-0014，交互端自持统一消息队列，core 在 turn
     /// 边界经注入点弹出注入；非交互入口为 `None`）。
     pub turn_injection: Option<Arc<dyn TurnInjection>>,
@@ -112,10 +113,11 @@ pub fn assemble(opts: RecipeOpts) -> AgentRecipe {
         TodoPolicy::Shared(store) => (store.clone(), store),
         TodoPolicy::Isolated => (TodoStore::new(), TodoStore::new()),
     };
+    let state = &opts.state;
     // 子 agent 可用的工具池（基础工具，不含管理工具本身）
     let child_tools = nomic_tools::default_tools_with_skills_in_shared(
         &opts.base,
-        opts.skill_resolver.clone(),
+        state.skill_resolver().clone(),
         child_todo,
         opts.question_sink.clone(),
     );
@@ -124,8 +126,8 @@ pub fn assemble(opts: RecipeOpts) -> AgentRecipe {
     let inherited_model = shared_model(opts.default_model);
     let supervisor = Arc::new(AgentSupervisor::new(
         opts.provider,
-        opts.available_models,
-        opts.model_aliases,
+        state.available_models().to_vec(),
+        state.model_aliases().clone(),
         inherited_model.clone(),
         SupervisorConfig::default(),
     ));
@@ -179,7 +181,7 @@ pub fn assemble(opts: RecipeOpts) -> AgentRecipe {
     // 主 agent 工具 = 基础工具 + 多 agent 管理工具
     let mut tools = nomic_tools::default_tools_with_skills_in_shared(
         &opts.base,
-        opts.skill_resolver,
+        state.skill_resolver().clone(),
         main_todo,
         opts.question_sink,
     );
@@ -225,8 +227,6 @@ impl AgentRecipe {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use async_trait::async_trait;
     use nomic_ai::{Context, StreamOptions};
     use nomic_core::{Agent, ToolError, TurnMessage};
@@ -235,7 +235,6 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-
     struct MockProvider;
 
     impl Provider for MockProvider {
@@ -272,34 +271,29 @@ mod tests {
     }
 
     fn opts(todo: TodoPolicy) -> RecipeOpts {
+        let model = Model {
+            id: "mock".to_string(),
+            name: "mock".to_string(),
+            api: nomic_ai::ApiKind::OpenAiCompletions,
+            provider: "mock".to_string(),
+            base_url: "http://localhost".to_string(),
+            reasoning: false,
+            vision: false,
+            context_window: 128_000,
+            max_tokens: 4096,
+            cost_input: 0.0,
+            cost_output: 0.0,
+            cost_cache_read: 0.0,
+            cost_cache_write: 0.0,
+        };
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider);
         RecipeOpts {
+            state: AppState::stub(model.clone(), provider.clone()),
             base: BaseDir::new(None),
-            skill_resolver: SkillResolver::new(
-                Path::new("/repo"),
-                nomic_skills::ProjectDiscovery::Roots(Vec::new()),
-                Vec::new(),
-            )
-            .expect("empty skill resolver"),
             question_sink: Arc::new(NoopSink),
             todo,
-            provider: Arc::new(MockProvider),
-            available_models: Vec::new(),
-            default_model: Model {
-                id: "mock".to_string(),
-                name: "mock".to_string(),
-                api: nomic_ai::ApiKind::OpenAiCompletions,
-                provider: "mock".to_string(),
-                base_url: "http://localhost".to_string(),
-                reasoning: false,
-                vision: false,
-                context_window: 128_000,
-                max_tokens: 4096,
-                cost_input: 0.0,
-                cost_output: 0.0,
-                cost_cache_read: 0.0,
-                cost_cache_write: 0.0,
-            },
-            model_aliases: BTreeMap::new(),
+            provider,
+            default_model: model,
             turn_injection: None,
             child_sessions: None,
         }

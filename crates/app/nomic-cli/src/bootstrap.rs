@@ -2,13 +2,14 @@
 //! 新建/恢复；provider/model 的分层解析在 [`model`][crate::model]。
 //!
 //! 设置来自 sqlite（providers / model_specs / settings 三表快照，ADR-0039），
-//! 不再读取配置文件。
+//! 不再读取配置文件。装配产物注册为进程级应用状态（[`AppState`]，
+//! ADR-0047）：全部组件作为服务进入 state，由各入口与内部组件提取。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use nomic_ai::{Message, Model, Provider, StreamOptions, ThinkingLevel};
+use nomic_ai::{Message, Model, StreamOptions, ThinkingLevel};
 use nomic_prompts::{ProjectDiscovery, PromptResolver, PromptTemplate};
 use nomic_session::SessionStore;
 use nomic_skills::SkillResolver;
@@ -19,6 +20,7 @@ use crate::model::{
     load_catalog_unless_complete, resolve_api_key, select_startup_model,
 };
 use crate::settings::Settings;
+use crate::state::{AppState, EventBus, Services};
 
 pub use crate::system_prompt::SystemPromptRecipe;
 
@@ -32,46 +34,7 @@ pub enum SessionPolicy {
     OpenStoreOnly,
 }
 
-/// 初始化完成的运行时上下文：构建 agent 所需的全部零件 + 持久化句柄与恢复历史。
-pub struct Bootstrap {
-    pub model: Model,
-    /// 启动模型是否来自真实配置（CLI / sqlite）：`false` 时 `model` 是
-    /// 占位模型（[`crate::model::unconfigured_model`]），`provider` 是
-    /// 发消息即报引导错误的占位实现；print 模式据此快速失败
-    pub model_configured: bool,
-    /// 运行时模型解析器（TUI `/models` 切换用）：与启动同一分层口径
-    pub models: ModelResolver,
-    pub provider: Arc<dyn Provider>,
-    pub stream_options: StreamOptions,
-    pub system_prompt: String,
-    /// 上下文压缩配置（settings 表 `compaction.*` 合并内置默认）
-    pub compaction: nomic_core::CompactionSettings,
-    /// session 库句柄（模型选择与 project/session 列表共用）；不可用时为 `None`
-    pub store: Option<SessionStore>,
-    /// `Some((store, session_id))` 时开启落库；session 库不可用时降级为 `None`。
-    /// web 模式（[`SessionPolicy::OpenStoreOnly`]）恒为 `None`：不预建 session。
-    pub session: Option<(SessionStore, String)>,
-    /// 当前 session 的操作基准（project 严格归属）：持久化时为 session 的
-    /// project 路径，未持久化时为规范化进程 cwd。前端以此构建工具基准。
-    pub project: PathBuf,
-    /// resume 恢复的历史消息（新会话为空）
-    pub history: Vec<Message>,
-    /// 系统提示词配方（project 无关部分）：`system_prompt` 已按
-    /// `project` 构建；web 按 session project 构建、TUI `/resume` 跨
-    /// project 重建时经配方重新生成
-    pub prompt_recipe: SystemPromptRecipe,
-    /// skill 解析器（同时注入 read 工具）
-    pub skill_resolver: SkillResolver,
-    /// 可用的 prompt templates（`/name` 调用展开用，已按覆盖规则去重）
-    pub prompt_templates: Vec<PromptTemplate>,
-    /// 所有可用模型列表（子 agent 模型选择用）
-    pub available_models: Vec<Model>,
-    /// 模型别名表（settings 表 `model_aliases` 解析为完整模型；子 agent
-    /// 按别名选择模型用）
-    pub model_aliases: std::collections::BTreeMap<String, Model>,
-}
-
-/// 按 CLI 参数与环境初始化运行时上下文。
+/// 按 CLI 参数与环境初始化运行时状态（ADR-0047 的唯一真实装配点）。
 ///
 /// provider/model 的选择按 CLI 参数 > sqlite 配置（回退链）解析，两层都没有
 /// 可用选择时降级为占位模型（`model_configured == false`，不阻断启动，见
@@ -79,7 +42,7 @@ pub struct Bootstrap {
 /// sqlite 设置 > 协议默认 的优先级解析（ADR-0039）。
 /// `policy` 决定是否在启动时创建/恢复 session（web 模式只开库不建 session）。
 #[allow(clippy::too_many_lines)]
-pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
+pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<AppState> {
     tracing::info!(?policy, "bootstrap: starting initialization");
     let env_openai_base_url = std::env::var("OPENAI_BASE_URL").ok();
     // session 库提前打开：设置快照、模型选择（config 表）与消息持久化共用同一库
@@ -214,10 +177,12 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
         available_models = available_models.len(),
         "bootstrap: initialization complete"
     );
-    Ok(Bootstrap {
+    // 全部组件注册为 state 服务（ADR-0047）：各入口与内部组件经
+    // AppState 访问器提取依赖，消息总线随 state 传递到 serve 运行时
+    Ok(AppState::new(Services {
         model,
         model_configured,
-        models,
+        models: Arc::new(models),
         provider,
         stream_options,
         system_prompt,
@@ -233,7 +198,8 @@ pub async fn bootstrap(cli: &Cli, policy: SessionPolicy) -> Result<Bootstrap> {
         prompt_templates,
         available_models,
         model_aliases,
-    })
+        bus: EventBus::new(),
+    }))
 }
 
 /// 把 settings 表 `model_aliases` 的别名表解析为完整 [`Model`]：目标为

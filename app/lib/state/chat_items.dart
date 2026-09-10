@@ -110,9 +110,10 @@ class SystemItem extends ChatItem {
   final String text;
 }
 
-/// 执行过程分组（DESIGN.md「Tool ledger」）：连续的工具调用与纯思考段
-/// 折叠为一张卡片，默认只露一行摘要（执行过程 · N 步 · 搜索 X 次 ·
-/// 命令 Y 条 · 用时 Zs），展开才是逐步时间线。
+/// 执行过程分组（DESIGN.md「Tool ledger」）：一段连续的工具调用与纯思考
+/// 段在下一段 assistant 正文（text）出现时折叠为一张卡片，默认只露一行
+/// 摘要（执行过程 · N 步 · 搜索 X 次 · 命令 Y 条 · 用时 Zs），展开才是
+/// 逐步时间线。
 class ExecutionItem extends ChatItem {
   ExecutionItem(List<ChatItem> steps) : steps = List.unmodifiable(steps) {
     // 组 id 锚定首个工具调用：流式增长（组变长）时渲染 key 稳定，
@@ -139,12 +140,18 @@ class ExecutionItem extends ChatItem {
   }
 }
 
-/// 把连续的工具调用段（含夹在其中的纯思考段，≥2 步）折叠为
-/// ExecutionItem；其余项与顺序不变。
+/// 折叠规则：连续的执行步骤段（工具调用 + 夹在其中的纯思考段）在
+/// **其后出现 assistant 正文（text）时**折叠为 ExecutionItem——text 是
+/// 一段执行过程的收尾标记。尚无文本收尾的尾部段（运行中的当前段）保持
+/// 平铺、实时可见，直到下一次 text 出现才折叠。段内至少含一个工具调用
+/// 才折叠（纯思考段维持独立渲染）；其余项与顺序不变。
 List<ChatItem> groupExecutionSteps(List<ChatItem> items) {
   bool isStep(ChatItem item) =>
       item is ToolItem ||
       (item is AssistantItem && item.text.isEmpty && item.thinking.isNotEmpty);
+
+  bool isTextItem(ChatItem item) =>
+      item is AssistantItem && item.text.isNotEmpty;
 
   final out = <ChatItem>[];
   var i = 0;
@@ -159,8 +166,8 @@ List<ChatItem> groupExecutionSteps(List<ChatItem> items) {
       j++;
     }
     final segment = items.sublist(i, j);
-    final toolCount = segment.whereType<ToolItem>().length;
-    if (segment.length >= 2 && toolCount >= 1) {
+    final closedByText = j < items.length && isTextItem(items[j]);
+    if (closedByText && segment.any((step) => step is ToolItem)) {
       out.add(ExecutionItem(segment));
     } else {
       out.addAll(segment);

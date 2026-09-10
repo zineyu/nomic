@@ -5,14 +5,14 @@
 //! session 粒度的管理不暴露到 WS 协议（删除 work 级联名下全部 session）。
 
 use super::super::ApiError;
-use crate::serve::{AppState, ServerEvent};
+use crate::serve::{ServerEvent, WebState};
 
 /// 新建 work（新对话语义，默认模型；连带创建主 session）；必须指定归属
 /// 目录 `project`（无默认 project；目录不存在或不是目录时拒绝，不静默
 /// 登记无效路径）。ack 携带 `request_id` 且经总线广播（其他客户端据此
 /// 刷新列表）；`session_id` 为主 session，前端据此打开对话。
 pub async fn handle_create_work(
-    state: &AppState,
+    state: &WebState,
     request_id: &str,
     project: String,
 ) -> ServerEvent {
@@ -36,11 +36,11 @@ pub async fn handle_create_work(
 /// 列出一个 work 下的 session（含子 agent session）：侧栏展开与只读
 /// 回溯入口。store 不可用时报错。
 pub async fn handle_list_work_sessions(
-    state: &AppState,
+    state: &WebState,
     request_id: &str,
     work_id: &str,
 ) -> ServerEvent {
-    let Some(store) = state.inner.store.as_ref() else {
+    let Some(store) = state.inner.services.store() else {
         return ApiError::StoreUnavailable.to_ws_response(Some(request_id));
     };
     match store.list_sessions_in_work(work_id).await {
@@ -55,7 +55,7 @@ pub async fn handle_list_work_sessions(
 
 /// 登记新 project（按路径查或插，幂等）；响应携带 `request_id` 供客户端关联。
 pub async fn handle_create_project(
-    state: &AppState,
+    state: &WebState,
     request_id: &str,
     path: String,
 ) -> ServerEvent {
@@ -75,21 +75,25 @@ pub async fn handle_create_project(
 
 /// 广播并返回一个 ack 事件：请求方经 `request_id` 关联响应，其他客户端
 /// 经事件总线收到同一事件并刷新列表。
-fn broadcast_ack(state: &AppState, event: ServerEvent) -> ServerEvent {
-    let _ = state.inner.events.send(event.clone());
+fn broadcast_ack(state: &WebState, event: ServerEvent) -> ServerEvent {
+    state.inner.services.bus().publish(event.clone());
     event
 }
 
 /// 删除 work（级联物理删除名下全部 session；已打开的运行时一并摘除
 /// 关停，并向正在查看这些 session 的客户端广播 `session_deleted`）。
-pub async fn handle_delete_work(state: &AppState, request_id: &str, id: &str) -> ServerEvent {
+pub async fn handle_delete_work(state: &WebState, request_id: &str, id: &str) -> ServerEvent {
     match state.inner.delete_work(id).await {
         Ok(removed) => {
             for session_id in removed {
-                let _ = state.inner.events.send(ServerEvent::SessionDeleted {
-                    request_id: None,
-                    id: session_id,
-                });
+                state
+                    .inner
+                    .services
+                    .bus()
+                    .publish(ServerEvent::SessionDeleted {
+                        request_id: None,
+                        id: session_id,
+                    });
             }
             broadcast_ack(
                 state,
@@ -105,7 +109,7 @@ pub async fn handle_delete_work(state: &AppState, request_id: &str, id: &str) ->
 
 /// 重命名 work；`title` 为生效的自定义标题（`None` = 已清除，回退派生）。
 pub async fn handle_rename_work(
-    state: &AppState,
+    state: &WebState,
     request_id: &str,
     id: &str,
     title: &str,
@@ -128,7 +132,7 @@ pub async fn handle_rename_work(
 /// 并向正在查看这些 session 的客户端广播 `session_deleted`（不带
 /// request_id），使其跳出已失效的视图。
 pub async fn handle_delete_project(
-    state: &AppState,
+    state: &WebState,
     request_id: &str,
     id: &str,
     force: bool,
@@ -136,10 +140,14 @@ pub async fn handle_delete_project(
     match state.inner.delete_project(id, force).await {
         Ok(removed) => {
             for session_id in removed {
-                let _ = state.inner.events.send(ServerEvent::SessionDeleted {
-                    request_id: None,
-                    id: session_id,
-                });
+                state
+                    .inner
+                    .services
+                    .bus()
+                    .publish(ServerEvent::SessionDeleted {
+                        request_id: None,
+                        id: session_id,
+                    });
             }
             broadcast_ack(
                 state,
@@ -181,7 +189,7 @@ mod tests {
     async fn create_work_ack_broadcasts_and_missing_dir_errors() {
         let state = crate::serve::tests::test_state().await;
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut events = state.inner.events.subscribe();
+        let mut events = state.inner.services.bus().subscribe();
 
         let event =
             handle_create_work(&state, "r-new", dir.path().to_string_lossy().into_owned()).await;
@@ -219,14 +227,14 @@ mod tests {
     #[tokio::test]
     async fn delete_work_ack_broadcasts_and_unknown_errors() {
         let (state, session_id) = crate::serve::tests::test_state_with_session().await;
-        let store = state.inner.store.as_ref().expect("store");
+        let store = state.inner.services.store().expect("store");
         let work_id = store
             .work_of_session(&session_id)
             .await
             .expect("work")
             .expect("work row")
             .id;
-        let mut events = state.inner.events.subscribe();
+        let mut events = state.inner.services.bus().subscribe();
 
         let event = handle_delete_work(&state, "r-del", &work_id).await;
         let ServerEvent::WorkDeleted { request_id, id } = event else {
@@ -267,7 +275,7 @@ mod tests {
     #[tokio::test]
     async fn rename_work_ack_roundtrip() {
         let (state, session_id) = crate::serve::tests::test_state_with_session().await;
-        let store = state.inner.store.as_ref().expect("store");
+        let store = state.inner.services.store().expect("store");
         let work_id = store
             .work_of_session(&session_id)
             .await
@@ -299,7 +307,7 @@ mod tests {
     #[tokio::test]
     async fn delete_project_refuse_then_force() {
         let (state, session_id) = crate::serve::tests::test_state_with_session().await;
-        let store = state.inner.store.as_ref().expect("store");
+        let store = state.inner.services.store().expect("store");
         store
             .append_message(
                 &session_id,
@@ -323,7 +331,7 @@ mod tests {
         };
         assert!(message.contains("force"), "{message}");
 
-        let mut events = state.inner.events.subscribe();
+        let mut events = state.inner.services.bus().subscribe();
         let event = handle_delete_project(&state, "r-ws2", &project.id, true).await;
         // 级联删除名下已打开 session：先广播 session_deleted（不带 request_id）
         assert!(matches!(

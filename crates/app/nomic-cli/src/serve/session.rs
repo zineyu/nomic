@@ -1,6 +1,6 @@
-//! 会话构建与事件落库：SessionFactory 按 bootstrap 输入构建每个
-//! [`SessionRuntime`]（agent actor + session runner + 事件转发任务），
-//! 事件转发 / 快照收集收在本模块。run 类 job 的串行消费、取消与
+//! 会话构建与事件落库：SessionFactory 从进程级应用状态（[`AppState`]，
+//! ADR-0047）提取服务、按 session 构建 [`SessionRuntime`]（agent actor +
+//! session runner + 事件转发任务），事件转发 / 快照收集收在本模块。run 类 job 的串行消费、取消与
 //! 生命周期翻译收在 core 的 [`SessionRunner`]（ADR-0033）；本模块只做
 //! runner 事件 → [`ServerEvent`] 的 broadcast 翻译。
 
@@ -14,14 +14,13 @@ use nomic_core::{
     NOTHING_TO_CONTINUE, RunnerEvent, SessionJob, SessionRunner,
 };
 use nomic_session::{SessionRecorder, SessionStore};
-use nomic_skills::SkillResolver;
 use nomic_tools::{AskUserQuestion, QuestionRegistry};
-use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::sync::{Mutex, mpsc};
 use tracing::Instrument as _;
 
 use super::{MessageQueue, QueueEntryView, ServerEvent, SessionRuntime};
-use crate::model::ModelResolver;
 use crate::serve::question::WebQuestionSink;
+use crate::state::AppState;
 
 /// 解析完成的会话模型三元组：模型、provider 连接与流选项（api_key / 推理）。
 pub struct ResolvedSessionModel {
@@ -30,24 +29,14 @@ pub struct ResolvedSessionModel {
     pub options: StreamOptions,
 }
 
-/// 构建新 [`SessionRuntime`] 所需的 bootstrap 输入（进程级共享、不可变）。
+/// 构建新 [`SessionRuntime`] 的工厂：进程级共享服务经 [`AppState`] 提取
+///（模型解析 / 提示词配方 / skills / 流选项 / 压缩配置 / 候选模型与别名 /
+/// 消息总线，ADR-0047），本 struct 只保留 serve 侧补充配置。
 pub struct SessionFactory {
-    pub models: Arc<ModelResolver>,
-    /// 系统提示词配方：按各 session 的 project 构建（AGENTS.md 祖先链
-    /// 与 cwd 脚注跟随 project，严格归属；见 bootstrap 模块）
-    pub prompt_recipe: crate::bootstrap::SystemPromptRecipe,
-    pub skill_resolver: SkillResolver,
-    pub stream_options: StreamOptions,
-    pub compaction: nomic_core::CompactionSettings,
-    pub default_model: Model,
+    /// 进程级应用状态（服务与消息总线的来源）
+    pub state: AppState,
+    /// 默认思考级别（会话级 config 缺失时的回退）
     pub default_reasoning: Option<ThinkingLevel>,
-    /// 所有可用模型列表（子 agent 模型选择用）
-    pub available_models: Vec<Model>,
-    /// 模型别名表（settings 表 `model_aliases` 键，bootstrap 已解析为完整
-    /// 模型；创建子 agent 时按别名选择）
-    pub model_aliases: std::collections::BTreeMap<String, Model>,
-    /// 全局事件总线（所有 session 的事件统一发往此处）
-    pub events: broadcast::Sender<ServerEvent>,
 }
 
 impl SessionFactory {
@@ -65,13 +54,14 @@ impl SessionFactory {
             std::env::var(crate::model::api_key_env(model.api))
                 .ok()
                 .as_deref(),
-            self.models
+            self.state
+                .models()
                 .provider_row(&model.provider)
                 .and_then(|p| p.api_key)
                 .as_deref(),
         );
         let provider = crate::model::provider_for(&model, api_key.clone());
-        let mut options = self.stream_options.clone();
+        let mut options = self.state.stream_options().clone();
         options.api_key = api_key;
         options.reasoning = reasoning;
         ResolvedSessionModel {
@@ -90,11 +80,14 @@ impl SessionFactory {
                 .ok()
                 .flatten()
             && let Ok(selection) = crate::model::ModelSelection::parse(&spec, None)
-            && let Ok(model) = self.models.resolve(&selection.provider, &selection.model)
+            && let Ok(model) = self
+                .state
+                .models()
+                .resolve(&selection.provider, &selection.model)
         {
             return model;
         }
-        self.default_model.clone()
+        self.state.model().clone()
     }
 
     /// 会话级思考级别：优先读会话级 config，缺失回退进程默认。
@@ -129,7 +122,7 @@ impl SessionFactory {
         open: SessionOpen,
     ) -> Arc<SessionRuntime> {
         let SessionOpen { tip, membership } = open;
-        let events_tx = self.events.clone();
+        let events_tx = self.state.bus().sender();
         let recorder = store
             .clone()
             .map(|store| SessionRecorder::with_tip(store, id.clone(), tip));
@@ -145,7 +138,7 @@ impl SessionFactory {
         // 共享同一份并作为 core 的注入源（turn 边界弹出队首注入本轮）；
         // 运行中提交的 prompt 由 handler 入队，mention 在投递时展开
         let queue = MessageQueue::new(id.clone(), events_tx.clone(), {
-            let skills = self.skill_resolver.clone();
+            let skills = self.state.skill_resolver().clone();
             let base = project.clone();
             Some(Arc::new(move |text: &str| {
                 crate::mention::expand_mentions(text, &skills, &base)
@@ -156,14 +149,12 @@ impl SessionFactory {
         // 消息队列注入；主/子 agent 工具都以本 session 的 project 为
         // 基准（严格归属）
         let recipe = crate::agent_recipe::assemble(crate::agent_recipe::RecipeOpts {
+            state: self.state.clone(),
             base: nomic_tools::BaseDir::new(Some(project.clone())),
-            skill_resolver: self.skill_resolver.clone(),
             question_sink: sink,
             todo: crate::agent_recipe::TodoPolicy::Isolated,
             provider: resolved.provider.clone(),
-            available_models: self.available_models.clone(),
             default_model: resolved.model.clone(),
-            model_aliases: self.model_aliases.clone(),
             turn_injection: Some(Arc::new(queue.clone())),
             child_sessions: store.map(|store| crate::agent_recipe::ChildSessionSpec {
                 store,
@@ -185,11 +176,15 @@ impl SessionFactory {
                     .provider(resolved.provider)
                     // 系统提示词按本 session 的 project 构建：AGENTS.md
                     // 祖先链与 cwd 脚注与工具基准同口径（严格归属）
-                    .system_prompt(self.prompt_recipe.build(&project, &self.skill_resolver)),
+                    .system_prompt(
+                        self.state
+                            .prompt_recipe()
+                            .build(&project, self.state.skill_resolver()),
+                    ),
             )
             .messages(history)
             .stream_options(resolved.options)
-            .compaction(self.compaction)
+            .compaction(self.state.compaction())
             .build();
         let (handle, _actor_task) = agent.spawn_with_span(Some(&session_span));
         let (runner, runner_events, _runner_task) =
@@ -591,7 +586,7 @@ mod tests {
             .get(&session_id)
             .expect("session")
             .clone();
-        let mut events = state.inner.events.subscribe();
+        let mut events = state.inner.services.bus().subscribe();
 
         session
             .goal

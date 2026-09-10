@@ -38,14 +38,14 @@ use nix::sys::termios::{
     LocalFlags, SetArg, SpecialCharacterIndices, Termios, tcgetattr, tcsetattr,
 };
 use nomic_core::{AgentEvent, SessionRunner};
-use nomic_session::{SessionRecorder, SessionStore};
+use nomic_session::SessionRecorder;
 use nomic_tools::{AskUserAnswer, AskUserQuestion, QuestionRegistry};
 use serde::Serialize;
 use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::bootstrap::{self, Bootstrap};
-use crate::model::ModelResolver;
+use crate::bootstrap;
+use crate::state::AppState;
 use crate::{Cli, serve::api::ApiError};
 use session::SessionFactory;
 
@@ -354,29 +354,24 @@ impl SessionRuntime {
     }
 }
 
-/// 进程级运行时：session 注册表 + 共享 store / 模型解析器 / 停机令牌。
+/// 进程级运行时：应用状态（服务与消息总线）+ session 注册表 + 停机令牌。
 ///
-/// 手动实现 Debug（`ModelResolver` / `SessionFactory` 不实现 Debug，跳过）。
+/// 手动实现 Debug（`SessionFactory` 不实现 Debug，跳过）。
 pub struct Runtime {
-    /// session 库（不可用时为 `None`，降级为不持久化）
-    pub(crate) store: Option<SessionStore>,
-    /// 模型候选解析器（候选列表与 api_key 分层，进程级共享）
-    pub(crate) models: Arc<ModelResolver>,
+    /// 进程级应用状态（store / 模型解析器 / 消息总线等服务，ADR-0047）
+    pub(crate) services: AppState,
     /// session 注册表（id → 并行运行的 SessionRuntime）
     pub(crate) sessions: Mutex<HashMap<String, Arc<SessionRuntime>>>,
-    /// 全局事件总线：所有 session 的事件统一发往此处，WebSocket 连接订阅一次即可
-    pub(crate) events: broadcast::Sender<ServerEvent>,
     /// 服务停机令牌
     pub(crate) shutdown: CancellationToken,
-    /// 构建 SessionRuntime 的工厂（bootstrap 输入）
+    /// 构建 SessionRuntime 的工厂（依赖经 [`AppState`] 提取）
     pub(crate) factory: SessionFactory,
 }
 
 impl std::fmt::Debug for Runtime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Runtime")
-            .field("store", &self.store)
-            .field("models", &"<ModelResolver>")
+            .field("services", &self.services)
             .field("sessions", &self.sessions)
             .field("shutdown", &self.shutdown)
             .field("factory", &"<SessionFactory>")
@@ -393,7 +388,7 @@ impl Runtime {
         if let Some(session) = self.sessions.lock().await.get(id) {
             return Ok(session.clone());
         }
-        let (history, tip) = match &self.store {
+        let (history, tip) = match self.services.store() {
             Some(store) => {
                 let history = match store.load_messages(id).await {
                     Ok(history) => history,
@@ -409,22 +404,22 @@ impl Runtime {
         };
         let resolved = self
             .factory
-            .resolve_session_model(self.store.as_ref(), id)
+            .resolve_session_model(self.services.store(), id)
             .await;
         // project 严格归属：工具基准取 session 的 project 路径；
         // store 不可用时退回进程 cwd
-        let project = match &self.store {
+        let project = match self.services.store() {
             Some(store) => store.session_project_path(id).await?,
             None => std::env::current_dir().context("get cwd")?,
         };
         // 归属信息（ADR-0044）：血缘不变，打开时一次性查询（快照展示与
         // 只读判定共用；查询失败等价无持久化）
-        let membership = match &self.store {
+        let membership = match self.services.store() {
             Some(store) => store.session_membership(id).await.ok().flatten(),
             None => None,
         };
         let session = self.factory.build(
-            self.store.clone(),
+            self.services.store().cloned(),
             id.to_string(),
             history,
             project,
@@ -443,7 +438,7 @@ impl Runtime {
 
     /// 列出全部 work 摘要（store 不可用时报错）。
     pub(crate) async fn list_works(&self) -> Result<Vec<nomic_session::WorkSummary>, ApiError> {
-        let Some(store) = &self.store else {
+        let Some(store) = self.services.store() else {
             return Err(ApiError::StoreUnavailable);
         };
         Ok(store.list_works().await?)
@@ -451,16 +446,20 @@ impl Runtime {
 }
 
 /// axum 路由状态：进程级运行时（可克隆）。
+///
+/// 与 [`crate::state::AppState`] 的关系：后者是进程级服务状态（ADR-0047），
+/// 本类型是 axum `State<S>` 机制要求的 handler 状态，经 `inner` 持有运行时，
+/// 运行时再持有服务状态（`state.inner.services`）。
 #[derive(Clone)]
-pub struct AppState {
+pub struct WebState {
     pub inner: Arc<Runtime>,
 }
 
 /// 进入 serve 模式：bootstrap 装配运行时（只开 session 库，不预建 session——
 /// 无默认 project，session 由 GUI 在启动页选择 project 后显式创建）→ 起 HTTP 服务。
 pub async fn run(cli: &Cli) -> Result<()> {
-    let boot = bootstrap::bootstrap(cli, bootstrap::SessionPolicy::OpenStoreOnly).await?;
-    let state = build_app_state(boot);
+    let services = bootstrap::bootstrap(cli, bootstrap::SessionPolicy::OpenStoreOnly).await?;
+    let state = build_runtime(services);
 
     let app = api::router(state.clone());
     let host = cli.host.as_deref().unwrap_or(DEFAULT_HOST);
@@ -488,33 +487,23 @@ const DEFAULT_HOST: &str = "127.0.0.1";
 /// 构建进程级运行时：session 注册表（空）+ 工厂。不预建初始 session：
 /// serve 模式没有默认 project，session 全部由 `create_session` 按 GUI 选定
 /// 的 project 创建，历史 session 由 `open_session` 首访时惰性构建。
-fn build_app_state(boot: Bootstrap) -> AppState {
-    let models = Arc::new(boot.models);
-    let store = boot.store.clone();
-    let default_reasoning = boot.stream_options.reasoning;
-    let (events, _) = broadcast::channel::<ServerEvent>(1024);
+///
+/// 服务与消息总线已在 bootstrap 注册进 [`AppState`]（ADR-0047），此处
+/// 只做 serve 侧运行时的组装。
+fn build_runtime(services: AppState) -> WebState {
+    let default_reasoning = services.stream_options().reasoning;
     let factory = SessionFactory {
-        models: models.clone(),
-        prompt_recipe: boot.prompt_recipe,
-        skill_resolver: boot.skill_resolver,
-        stream_options: boot.stream_options,
-        compaction: boot.compaction,
-        default_model: boot.model.clone(),
+        state: services.clone(),
         default_reasoning,
-        available_models: boot.available_models,
-        model_aliases: boot.model_aliases,
-        events,
     };
 
     let runtime = Arc::new(Runtime {
-        store,
-        models,
+        services,
         sessions: Mutex::new(HashMap::new()),
-        events: factory.events.clone(),
         shutdown: CancellationToken::new(),
         factory,
     });
-    AppState { inner: runtime }
+    WebState { inner: runtime }
 }
 
 /// 优雅退出：q 或 Ctrl+C 取消当前运行后关闭 HTTP 服务。
@@ -525,7 +514,7 @@ fn build_app_state(boot: Bootstrap) -> AppState {
 /// 不是全屏 TUI，服务存活期间仍向终端打印，不能动输出处理；Ctrl+C 仍
 /// 产生 SIGINT，由 `tokio::signal::ctrl_c` 分支处理（stdin 非 tty 或外部
 /// 直接发 SIGINT 时也走该分支兜底）。轮询任务退出时恢复原始终端属性。
-async fn shutdown_signal(state: AppState) {
+async fn shutdown_signal(state: WebState) {
     let (quit_tx, mut quit_rx) = oneshot::channel::<()>();
 
     // 退出令牌：停机时停掉轮询任务并等它恢复终端；spawn_blocking 任务
@@ -568,7 +557,7 @@ async fn shutdown_signal(state: AppState) {
 }
 
 /// 停机时取消全部 session 的进行中运行（队列保留，进程即将退出）。
-async fn cancel_all(state: &AppState) {
+async fn cancel_all(state: &WebState) {
     let sessions = state.inner.sessions.lock().await;
     for session in sessions.values() {
         let _ = session.cancel_run();

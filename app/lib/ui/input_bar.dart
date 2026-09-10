@@ -62,8 +62,16 @@ class _InputBarState extends State<InputBar> {
   /// Enter / ⌘Enter 发送（桌面多行 TextField 默认对 Enter 插入换行，这里
   /// 消费事件拦截）；Shift+Enter 换行；空输入时 ↑ 召回上次发送的文本。
   /// 移动端软键盘发送走 onSubmitted。
+  ///
+  /// IME 组词期间（composing region 有效）按键属于输入法：Enter 是确认
+  /// 候选、方向键是移动候选，一律放行——否则中/日文输入法按 Enter 确认
+  /// 候选时会把半成品文本直接发送出去，IME 不可用。
   KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final composing = _textController.value.composing;
+    if (composing.isValid && !composing.isCollapsed) {
+      return KeyEventResult.ignored;
+    }
     if ((event.logicalKey == LogicalKeyboardKey.enter ||
             event.logicalKey == LogicalKeyboardKey.numpadEnter) &&
         !HardwareKeyboard.instance.isShiftPressed) {

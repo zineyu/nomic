@@ -37,7 +37,7 @@ impl Runtime {
         if let Err(error) = nomic_tools::nix_env::ensure_default_flake(&base) {
             tracing::warn!(%error, "创建默认 nix 环境定义失败");
         }
-        let (work_id, id) = match &self.store {
+        let (work_id, id) = match self.services.store() {
             Some(store) => {
                 let created = store.create_work(&base).await?;
                 (created.work_id, created.session_id)
@@ -49,11 +49,11 @@ impl Runtime {
         };
         let resolved = self
             .factory
-            .resolve_session_model(self.store.as_ref(), &id)
+            .resolve_session_model(self.services.store(), &id)
             .await;
         // 新 session 归属于 base 对应的 project：工具基准即 base
         let session = self.factory.build(
-            self.store.clone(),
+            self.services.store().cloned(),
             id.clone(),
             Vec::new(),
             base,
@@ -81,7 +81,7 @@ impl Runtime {
     pub(crate) async fn list_projects(
         &self,
     ) -> Result<Vec<nomic_session::ProjectSummary>, ApiError> {
-        let Some(store) = &self.store else {
+        let Some(store) = self.services.store() else {
             return Err(ApiError::StoreUnavailable);
         };
         Ok(store.list_projects().await?)
@@ -95,7 +95,7 @@ impl Runtime {
         &self,
         path: &Path,
     ) -> Result<nomic_session::Project, ApiError> {
-        let Some(store) = &self.store else {
+        let Some(store) = self.services.store() else {
             return Err(ApiError::StoreUnavailable);
         };
         let canonical = std::fs::canonicalize(path)
@@ -127,7 +127,7 @@ impl Runtime {
     /// （向正在查看这些 session 的客户端广播用）；库中不存在时返回
     /// `NotFound`。
     pub(crate) async fn delete_work(&self, work_id: &str) -> Result<Vec<String>, ApiError> {
-        let Some(store) = &self.store else {
+        let Some(store) = self.services.store() else {
             return Err(ApiError::StoreUnavailable);
         };
         let removed = match store.delete_work(work_id).await {
@@ -150,7 +150,7 @@ impl Runtime {
         work_id: &str,
         title: &str,
     ) -> Result<Option<String>, ApiError> {
-        let Some(store) = &self.store else {
+        let Some(store) = self.services.store() else {
             return Err(ApiError::StoreUnavailable);
         };
         match store.rename_work(work_id, title).await {
@@ -171,7 +171,7 @@ impl Runtime {
         id: &str,
         force: bool,
     ) -> Result<Vec<String>, ApiError> {
-        let Some(store) = &self.store else {
+        let Some(store) = self.services.store() else {
             return Err(ApiError::StoreUnavailable);
         };
         let Some(project) = store.project(id).await? else {
@@ -249,7 +249,7 @@ mod tests {
             session.project, canonical,
             "session 操作基准应取 project 的规范化路径"
         );
-        let store = state.inner.store.as_ref().expect("store");
+        let store = state.inner.services.store().expect("store");
         assert_eq!(
             store
                 .session_project_path(&created.session_id)
@@ -380,7 +380,7 @@ mod tests {
                 .contains_key(&created.session_id),
             "注册表应摘除已删除 work 的 session",
         );
-        let store = state.inner.store.as_ref().expect("store");
+        let store = state.inner.services.store().expect("store");
         assert!(
             matches!(
                 store.load_messages(&created.session_id).await,
@@ -433,7 +433,7 @@ mod tests {
             .create_work(dir.path())
             .await
             .expect("create work");
-        let store = state.inner.store.as_ref().expect("store");
+        let store = state.inner.services.store().expect("store");
         // 让 session 有一条 user 消息（非空 project）
         store
             .append_message(

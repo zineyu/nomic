@@ -4,7 +4,8 @@
 //! - **客户端→服务端**：`ClientEvent`（JSON text frame，`type` 字段区分事件种类）
 //! - **服务端→客户端**：`ServerEvent`（JSON text frame，`type` 字段区分事件种类）
 //!
-//! 事件架构：进程级全局事件总线（[`crate::serve::Runtime::events`]），所有 session 的生命周期
+//! 事件架构：进程级全局事件总线（[`crate::state::EventBus`]，注册在 [`crate::state::AppState`]
+//! 中，ADR-0047），所有 session 的生命周期
 //! 事件直接发往总线，每个事件携带 `session_id` 供前端路由。WebSocket 连接只需
 //! 订阅总线一次，即可接收全部 session 的事件——无需订阅管理。
 //!
@@ -30,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
 use tracing::Instrument as _;
 
-use crate::serve::{AppState, ServerEvent};
+use crate::serve::{ServerEvent, WebState};
 
 mod handlers;
 
@@ -189,7 +190,7 @@ pub enum MoveDirection {
 
 /// 组装路由：仅 WebSocket 事件流（`/ws`）。serve 模式不伺服任何静态
 /// 资源——GUI 为独立的 Flutter 应用（ADR-0046）。
-pub fn router(state: AppState) -> Router {
+pub fn router(state: WebState) -> Router {
     Router::new()
         .route("/ws", get(handle_ws))
         .route_layer(from_fn(reject_foreign_origin))
@@ -265,10 +266,10 @@ impl ApiError {
 /// `GET /ws`：双向 WebSocket 事件流。连接后自动接收全局事件总线上的全部事件
 /// （所有 session 的事件均携带 `session_id`，前端按此路由）。
 async fn handle_ws(
-    State(state): State<AppState>,
+    State(state): State<WebState>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    let rx = state.inner.events.subscribe();
+    let rx = state.inner.services.bus().subscribe();
     let shutdown = state.inner.shutdown.clone();
     Ok(ws.on_upgrade(move |socket| ws_session(socket, state, rx, shutdown)))
 }
@@ -276,7 +277,7 @@ async fn handle_ws(
 /// WebSocket 会话：订阅全局事件总线推送给客户端；客户端命令经 [`dispatch`] 分发。
 async fn ws_session(
     mut socket: WebSocket,
-    state: AppState,
+    state: WebState,
     mut rx: tokio::sync::broadcast::Receiver<ServerEvent>,
     shutdown: CancellationToken,
 ) {
@@ -343,7 +344,7 @@ async fn send_ws_response(socket: &mut WebSocket, event: &ServerEvent) {
 /// 分发客户端事件到对应 handler；返回 `None` 表示无需响应（fire-and-forget）。
 ///
 /// 命令/查询事件通过 `session_id` 路由到目标 session。
-async fn dispatch(state: &AppState, event: ClientEvent) -> Option<ServerEvent> {
+async fn dispatch(state: &WebState, event: ClientEvent) -> Option<ServerEvent> {
     let span = client_event_span(&event);
     async move {
         match event {
@@ -679,11 +680,11 @@ mod tests {
         let other_session_id = "some-other-session";
         state
             .inner
-            .events
-            .send(crate::serve::ServerEvent::RunStarted {
+            .services
+            .bus()
+            .publish(crate::serve::ServerEvent::RunStarted {
                 session_id: other_session_id.to_string(),
-            })
-            .expect("send to bus");
+            });
 
         // 客户端应收到该事件（无需任何订阅动作）
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {

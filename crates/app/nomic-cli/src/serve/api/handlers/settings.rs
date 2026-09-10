@@ -12,7 +12,7 @@ use nomic_session::{ModelSpecPatch, ModelSpecRow, ProviderPatch, ProviderRow};
 use serde::Serialize;
 
 use super::super::{ApiError, ClientEvent};
-use crate::serve::{AppState, ServerEvent};
+use crate::serve::{ServerEvent, WebState};
 use crate::settings::{keys, validate_provider_patch, validate_scalar};
 
 /// provider 快照视图（脱敏：api_key 不明文下发，只给是否已设置；
@@ -58,8 +58,8 @@ pub struct SettingsSnapshotView {
 }
 
 /// 取进程级 store（serve 模式 session 与设置共用同一库，正常启动必可用）。
-fn store_of(state: &AppState) -> Option<nomic_session::SessionStore> {
-    state.inner.store.clone()
+fn store_of(state: &WebState) -> Option<nomic_session::SessionStore> {
+    state.inner.services.store().cloned()
 }
 
 /// store 不可用时的统一错误响应。
@@ -68,16 +68,17 @@ fn store_unavailable(request_id: &str) -> ServerEvent {
 }
 
 /// 写后收尾：刷新设置快照 + 广播 `settings_changed` + 返回 ack。
-async fn finish_mutation(state: &AppState, request_id: &str) -> ServerEvent {
-    state.inner.models.reload(state.inner.store.as_ref()).await;
-    let _ = state.inner.events.send(ServerEvent::SettingsChanged);
+async fn finish_mutation(state: &WebState, request_id: &str) -> ServerEvent {
+    let services = &state.inner.services;
+    services.models().reload(services.store()).await;
+    services.bus().publish(ServerEvent::SettingsChanged);
     ServerEvent::SettingsUpdated {
         request_id: request_id.to_string(),
     }
 }
 
 /// 分发设置类客户端事件（主分发表的子表，见 `super::super::dispatch`）。
-pub async fn dispatch_settings(state: &AppState, event: ClientEvent) -> ServerEvent {
+pub async fn dispatch_settings(state: &WebState, event: ClientEvent) -> ServerEvent {
     match event {
         ClientEvent::GetSettings { request_id } => handle_get_settings(state, &request_id).await,
         ClientEvent::UpsertProvider {
@@ -112,7 +113,7 @@ pub async fn dispatch_settings(state: &AppState, event: ClientEvent) -> ServerEv
 }
 
 /// 查询设置快照（providers + model_specs + 标量全量）。
-pub async fn handle_get_settings(state: &AppState, request_id: &str) -> ServerEvent {
+pub async fn handle_get_settings(state: &WebState, request_id: &str) -> ServerEvent {
     let Some(store) = store_of(state) else {
         return store_unavailable(request_id);
     };
@@ -142,7 +143,7 @@ pub async fn handle_get_settings(state: &AppState, request_id: &str) -> ServerEv
 
 /// 新建或更新 provider（逐字段补丁三态：字段缺失 = 不更新，null = 清除）。
 pub async fn handle_upsert_provider(
-    state: &AppState,
+    state: &WebState,
     request_id: &str,
     name: &str,
     patch: ProviderPatch,
@@ -163,7 +164,7 @@ pub async fn handle_upsert_provider(
 }
 
 /// 删除 provider（其模型覆盖级联清除）。
-pub async fn handle_delete_provider(state: &AppState, request_id: &str, name: &str) -> ServerEvent {
+pub async fn handle_delete_provider(state: &WebState, request_id: &str, name: &str) -> ServerEvent {
     let Some(store) = store_of(state) else {
         return store_unavailable(request_id);
     };
@@ -176,7 +177,7 @@ pub async fn handle_delete_provider(state: &AppState, request_id: &str, name: &s
 /// 新建或更新模型覆盖（逐字段补丁三态同 provider）；所属 provider
 /// 必须已定义（预检给出可读错误，外键约束兜底）。
 pub async fn handle_upsert_model_spec(
-    state: &AppState,
+    state: &WebState,
     request_id: &str,
     provider: &str,
     model_id: &str,
@@ -208,7 +209,7 @@ pub async fn handle_upsert_model_spec(
 
 /// 删除模型覆盖。
 pub async fn handle_delete_model_spec(
-    state: &AppState,
+    state: &WebState,
     request_id: &str,
     provider: &str,
     model_id: &str,
@@ -224,7 +225,7 @@ pub async fn handle_delete_model_spec(
 
 /// 写入标量设置（键与取值类型经 [`validate_scalar`] 校验，未知键硬报错）。
 pub async fn handle_set_setting(
-    state: &AppState,
+    state: &WebState,
     request_id: &str,
     key: &str,
     value: serde_json::Value,
@@ -242,7 +243,7 @@ pub async fn handle_set_setting(
 }
 
 /// 删除标量设置（键须已知，未知键硬报错防拼写错误）。
-pub async fn handle_unset_setting(state: &AppState, request_id: &str, key: &str) -> ServerEvent {
+pub async fn handle_unset_setting(state: &WebState, request_id: &str, key: &str) -> ServerEvent {
     let Some(store) = store_of(state) else {
         return store_unavailable(request_id);
     };
@@ -279,7 +280,7 @@ mod tests {
         assert!(snapshot.scalar_keys.contains(&"append_system"));
 
         // 写入后经快照可读回
-        let store = state.inner.store.clone().expect("store");
+        let store = state.inner.services.store().cloned().expect("store");
         store
             .set_setting("append_system", &serde_json::json!("保持简洁"))
             .await
@@ -298,7 +299,7 @@ mod tests {
     #[tokio::test]
     async fn upsert_provider_validates_and_broadcasts() {
         let state = test_state().await;
-        let mut rx = state.inner.events.subscribe();
+        let mut rx = state.inner.services.bus().subscribe();
 
         // 自定义 provider 不给 api：BadRequest
         let event =
@@ -328,7 +329,14 @@ mod tests {
         assert!(saw_changed, "写后应广播 SettingsChanged");
 
         // 快照 reload 生效：模型解析器立即可见新 provider
-        assert!(state.inner.models.provider_row("deepseek").is_some());
+        assert!(
+            state
+                .inner
+                .services
+                .models()
+                .provider_row("deepseek")
+                .is_some()
+        );
     }
 
     #[tokio::test]

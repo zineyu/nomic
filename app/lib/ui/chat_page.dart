@@ -66,6 +66,16 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
+  /// 焦点处的可编辑文本是否处于 IME 组词中（composing region 有效）。
+  /// 组词期间 Enter / Esc 等按键属于输入法，页面级快捷键不得消费。
+  static bool _primaryFocusComposing() {
+    final focusContext = FocusManager.instance.primaryFocus?.context;
+    if (focusContext == null) return false;
+    final editable = focusContext.findAncestorStateOfType<EditableTextState>();
+    final composing = editable?.currentTextEditingValue.composing;
+    return composing != null && composing.isValid && !composing.isCollapsed;
+  }
+
   /// 新消息到达或流式增长时贴底滚动（用户在底部时）。
   void _maybeScrollToBottom() {
     final items = widget.controller.items;
@@ -137,8 +147,8 @@ class _ChatPageState extends State<ChatPage> {
   Widget build(BuildContext context) {
     final controller = widget.controller;
     _maybeScrollToBottom();
-    // 连续工具调用与纯思考段折叠为执行过程卡片（组 id 锚定首个调用，
-    // 流式增长时展开态不丢）
+    // 执行段在 assistant 正文（text）出现时折叠为执行过程卡片；尚无
+    // 文本收尾的尾部段保持平铺（组 id 锚定首个调用，展开态不丢）
     final entries = groupExecutionSteps(controller.items);
     final answerIds = _answerItemIds(entries);
 
@@ -151,9 +161,12 @@ class _ChatPageState extends State<ChatPage> {
 
     return CallbackShortcuts(
       bindings: {
-        // Esc 中断当前运行（排队消息保留）
+        // Esc 中断当前运行（排队消息保留）；IME 组词期间 Esc 属于输入法
+        // （取消组词），不得消费
         const SingleActivator(LogicalKeyboardKey.escape): () {
-          if (controller.running) controller.cancel();
+          if (controller.running && !_primaryFocusComposing()) {
+            controller.cancel();
+          }
         },
       },
       child: Focus(
@@ -189,8 +202,7 @@ class _ChatPageState extends State<ChatPage> {
                                 ),
                                 itemCount: entries.length,
                                 // ValueKey 锚定 item.id：插入新项时折叠/展开状态
-                                //（_ThinkingFold / ToolCard / ExecutionCard）
-                                // 跟随数据而非位置
+                                //（_StepRow / ExecutionCard）跟随数据而非位置
                                 itemBuilder: (context, index) =>
                                     MessageItemView(
                                       key: ValueKey(entries[index].id),

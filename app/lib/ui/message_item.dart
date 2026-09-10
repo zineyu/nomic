@@ -25,6 +25,7 @@ class MessageItemView extends StatelessWidget {
       UserItem i => _UserBubble(item: i),
       AssistantItem i => _AssistantBlock(item: i),
       ToolItem i => ToolCard(item: i),
+      ToolRunItem i => ToolRunLedger(item: i),
       SystemItem i => _SystemLine(item: i),
     };
   }
@@ -38,7 +39,7 @@ class _UserBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
-    // Codex 同款：用户气泡限宽右对齐，长消息不撑满整列
+    // 用户消息是浅灰纸块（bubble token）：无边框无阴影、限宽右对齐
     return LayoutBuilder(
       builder: (context, constraints) => Align(
         alignment: Alignment.centerRight,
@@ -51,12 +52,12 @@ class _UserBubble extends StatelessWidget {
               vertical: Spacing.sm,
             ),
             decoration: BoxDecoration(
-              color: tokens.primary,
+              color: tokens.bubble,
               borderRadius: BorderRadius.circular(Radii.xl),
             ),
             child: SelectableText(
               item.text,
-              style: AppText.bodySm(tokens.primaryForeground),
+              style: AppText.bodySm(tokens.foreground),
             ),
           ),
         ),
@@ -211,6 +212,136 @@ class _ThinkingFoldState extends State<_ThinkingFold> {
       ),
     );
   }
+}
+
+/// 工具流水 ledger 行（DESIGN.md「Tool ledger」）：连续工具调用折叠为
+/// 一行 muted 摘要（按类别计数：已读取 N 个文件 · 已运行 M 条命令），
+/// 组内有运行中调用时 chevron 换为 spinner，有失败时追加红色计数；
+/// 点击展开为逐条 ToolCard。
+class ToolRunLedger extends StatefulWidget {
+  const ToolRunLedger({super.key, required this.item});
+
+  final ToolRunItem item;
+
+  @override
+  State<ToolRunLedger> createState() => _ToolRunLedgerState();
+}
+
+class _ToolRunLedgerState extends State<ToolRunLedger> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = tokensOf(context);
+    final item = widget.item;
+    final (icon, opacity) = _toolStyle(item.tools.first.name);
+    final errorCount = item.errorCount;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(Radii.md),
+            hoverColor: tokens.secondary,
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: Spacing.sm,
+                vertical: 4,
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    icon,
+                    size: 14,
+                    color: tokens.foreground.withValues(alpha: opacity),
+                  ),
+                  const SizedBox(width: Spacing.sm),
+                  Expanded(
+                    child: Text(
+                      _ledgerSummary(item.tools),
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.ui(tokens.mutedForeground),
+                    ),
+                  ),
+                  if (errorCount > 0) ...[
+                    Icon(LucideIcons.x, size: 12, color: tokens.destructive),
+                    const SizedBox(width: 4),
+                    Text(
+                      '$errorCount 失败',
+                      style: AppText.caption(tokens.destructive),
+                    ),
+                    const SizedBox(width: Spacing.sm),
+                  ],
+                  if (item.hasRunning)
+                    SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: tokens.mutedForeground,
+                      ),
+                    )
+                  else
+                    Icon(
+                      _expanded
+                          ? LucideIcons.chevronDown
+                          : LucideIcons.chevronRight,
+                      size: 12,
+                      color: tokens.mutedForeground,
+                    ),
+                ],
+              ),
+            ),
+          ),
+          if (_expanded)
+            Padding(
+              // 与摘要文本左对齐（图标 14 + 间距 8）
+              padding: const EdgeInsets.only(left: Spacing.sm + 14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final tool in item.tools)
+                    ToolCard(key: ValueKey(tool.toolCallId), item: tool),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// ledger 摘要：按类别聚合计数，固定顺序拼接（读取 → 搜索 → 运行 →
+/// 修改 → 其他），与「叙事日志」的账本语感一致。
+String _ledgerSummary(List<ToolItem> tools) {
+  var read = 0;
+  var search = 0;
+  var command = 0;
+  var modify = 0;
+  var other = 0;
+  for (final tool in tools) {
+    switch (tool.name) {
+      case 'read':
+        read++;
+      case 'grep' || 'find':
+        search++;
+      case 'bash':
+        command++;
+      case 'write' || 'edit':
+        modify++;
+      default:
+        other++;
+    }
+  }
+  return [
+    if (read > 0) '已读取 $read 个文件',
+    if (search > 0) '已搜索 $search 次',
+    if (command > 0) '已运行 $command 条命令',
+    if (modify > 0) '已修改 $modify 个文件',
+    if (other > 0) '已执行 $other 项其他操作',
+  ].join(' · ');
 }
 
 /// 工具行（DESIGN.md「quiet text rows」）：图标按类别走前景不透明度阶梯

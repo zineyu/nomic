@@ -96,6 +96,47 @@ class SystemItem extends ChatItem {
   final String text;
 }
 
+/// 连续工具调用的折叠组（叙事日志：工具噪音收成一条 ledger 行，
+/// 展开才是逐条调用；DESIGN.md「Tool ledger」）。
+class ToolRunItem extends ChatItem {
+  ToolRunItem(List<ToolItem> tools) : tools = List.unmodifiable(tools) {
+    // 组 id 锚定首条工具调用：流式增长（组变长）时渲染 key 稳定，
+    // 展开态不丢
+    id = 'run-${tools.first.toolCallId}';
+  }
+
+  final List<ToolItem> tools;
+
+  bool get hasRunning => tools.any((t) => t.status == ToolStatus.running);
+
+  int get errorCount => tools.where((t) => t.status == ToolStatus.error).length;
+}
+
+/// 把连续 ToolItem 段（≥2 条）折叠为 ToolRunItem；其余项与顺序不变。
+List<ChatItem> groupToolRuns(List<ChatItem> items) {
+  final out = <ChatItem>[];
+  var i = 0;
+  while (i < items.length) {
+    final item = items[i];
+    if (item is! ToolItem) {
+      out.add(item);
+      i++;
+      continue;
+    }
+    var j = i;
+    while (j < items.length && items[j] is ToolItem) {
+      j++;
+    }
+    if (j - i >= 2) {
+      out.add(ToolRunItem(items.sublist(i, j).cast<ToolItem>()));
+    } else {
+      out.add(item);
+    }
+    i = j;
+  }
+  return out;
+}
+
 /// 历史消息 → 消息项（会话快照与 resume 用）。
 List<ChatItem> messagesToItems(List<Message> messages) {
   final items = <ChatItem>[];

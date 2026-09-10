@@ -87,6 +87,10 @@ class _ChatPageState extends State<ChatPage> {
       UserItem i => i.text.length,
       AssistantItem i => i.text.length + i.thinking.length,
       ToolItem i => i.resultPreview.length,
+      ToolRunItem i => i.tools.fold(
+        0,
+        (sum, t) => sum + t.resultPreview.length,
+      ),
       SystemItem i => i.text.length,
     };
   }
@@ -95,6 +99,9 @@ class _ChatPageState extends State<ChatPage> {
   Widget build(BuildContext context) {
     final controller = widget.controller;
     _maybeScrollToBottom();
+    // 连续工具调用折叠为 ledger 行（叙事日志；组 id 锚定首条调用，
+    // 流式增长时展开态不丢）
+    final entries = groupToolRuns(controller.items);
 
     // 运行边沿记录开始时间（Working 状态行计时）
     if (controller.running && _runStartedAt == null) {
@@ -136,13 +143,14 @@ class _ChatPageState extends State<ChatPage> {
                                   horizontal: Spacing.lg,
                                   vertical: Spacing.lg,
                                 ),
-                                itemCount: controller.items.length,
+                                itemCount: entries.length,
                                 // ValueKey 锚定 item.id：插入新项时折叠/展开状态
-                                //（_ThinkingFold / ToolCard）跟随数据而非位置
+                                //（_ThinkingFold / ToolCard / ToolRunLedger）
+                                // 跟随数据而非位置
                                 itemBuilder: (context, index) =>
                                     MessageItemView(
-                                      key: ValueKey(controller.items[index].id),
-                                      item: controller.items[index],
+                                      key: ValueKey(entries[index].id),
+                                      item: entries[index],
                                     ),
                               ),
                             ),
@@ -526,7 +534,10 @@ class _WorkingLineState extends State<_WorkingLine> {
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
-    final elapsed = DateTime.now().difference(widget.startedAt).inSeconds;
+    final seconds = DateTime.now().difference(widget.startedAt).inSeconds;
+    final elapsed = seconds >= 60
+        ? '${seconds ~/ 60}m ${seconds % 60}s'
+        : '${seconds}s';
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: maxPageWidth),
@@ -544,7 +555,7 @@ class _WorkingLineState extends State<_WorkingLine> {
               ),
               const SizedBox(width: Spacing.sm),
               Text(
-                'Working（${elapsed}s · esc 中断）',
+                'Working（$elapsed · esc 中断）',
                 style: AppText.caption(tokens.mutedForeground),
               ),
             ],

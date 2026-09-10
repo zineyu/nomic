@@ -178,4 +178,46 @@ void main() {
       expect(tokens, 40);
     });
   });
+
+  group('groupToolRuns（ledger 折叠）', () {
+    ToolItem tool(String id, {String name = 'bash'}) =>
+        ToolItem(toolCallId: id, name: name);
+
+    test('连续 ≥2 条工具折叠为一组，组 id 锚定首条调用', () {
+      final items = <ChatItem>[
+        UserItem(text: 'hi', imageCount: 0, timestamp: 1),
+        tool('c1'),
+        tool('c2', name: 'read'),
+        tool('c3'),
+        AssistantItem(text: 'done'),
+      ];
+      final grouped = groupToolRuns(items);
+      expect(grouped.length, 3);
+      final run = grouped[1] as ToolRunItem;
+      expect(run.tools.map((t) => t.toolCallId), ['c1', 'c2', 'c3']);
+      expect(run.id, 'run-c1');
+    });
+
+    test('单条工具不折叠；被其他项隔开的工具各自成组', () {
+      final items = <ChatItem>[
+        tool('c1'),
+        AssistantItem(text: 'a'),
+        tool('c2'),
+        tool('c3'),
+        tool('c4'),
+      ];
+      final grouped = groupToolRuns(items);
+      expect(grouped[0], isA<ToolItem>());
+      expect(grouped[1], isA<AssistantItem>());
+      expect((grouped[2] as ToolRunItem).tools.length, 3);
+    });
+
+    test('运行中 / 失败状态从成员聚合', () {
+      final running = tool('c1');
+      final error = tool('c2')..status = ToolStatus.error;
+      final run = ToolRunItem([running, error]);
+      expect(run.hasRunning, isTrue);
+      expect(run.errorCount, 1);
+    });
+  });
 }

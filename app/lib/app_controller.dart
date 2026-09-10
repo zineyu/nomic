@@ -45,6 +45,9 @@ class AppController extends ChangeNotifier {
   List<QueueEntry> queue = [];
   ModelInfo model = ModelInfo.placeholder;
   List<ModelChoice> modelCandidates = [];
+
+  /// 候选模型列表加载中（模型选择器展示加载态用）。
+  bool modelsLoading = false;
   String? reasoning;
   int contextTokens = 0;
   String? project;
@@ -254,6 +257,8 @@ class AppController extends ChangeNotifier {
 
   /// 加载候选模型列表（打开模型选择器时调用）。
   Future<void> loadModels() async {
+    modelsLoading = true;
+    notifyListeners();
     try {
       final result = await _client.request(ClientEvent.listModels);
       modelCandidates = asJsonList(
@@ -263,6 +268,7 @@ class AppController extends ChangeNotifier {
     } on ServerException catch (e) {
       error = e.message;
     }
+    modelsLoading = false;
     notifyListeners();
   }
 

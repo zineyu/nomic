@@ -117,7 +117,7 @@ void main() {
       expect(find.text('删除这个 project？'), findsNothing);
     });
 
-    testWidgets('hover 不改变 project 组头行高（$tag）', (tester) async {
+    testWidgets('hover 不改变组头与 work 行高度（$tag）', (tester) async {
       final controller = AppController(url: 'ws://127.0.0.1:1/ws');
       addTearDown(controller.dispose);
       controller.works = [_work('w1', 's1', '会话甲')];
@@ -144,7 +144,13 @@ void main() {
             .ancestor(of: find.text('project'), matching: find.byType(InkWell))
             .first,
       );
+      Size tileSize() => tester.getSize(
+        find
+            .ancestor(of: find.text('会话甲'), matching: find.byType(InkWell))
+            .first,
+      );
       final headerBefore = headerSize();
+      final tileBefore = tileSize();
 
       final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
       await gesture.addPointer(location: Offset.zero);
@@ -154,9 +160,14 @@ void main() {
       await tester.pumpAndSettle();
       expect(headerSize(), headerBefore);
 
+      await gesture.moveTo(tester.getCenter(find.text('会话甲')));
+      await tester.pumpAndSettle();
+      expect(tileSize(), tileBefore);
+
       await gesture.moveTo(Offset.zero);
       await tester.pumpAndSettle();
       expect(headerSize(), headerBefore);
+      expect(tileSize(), tileBefore);
     });
   }
 }

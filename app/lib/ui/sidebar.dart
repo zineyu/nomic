@@ -497,78 +497,74 @@ class _WorkTileState extends State<_WorkTile> {
                   horizontal: Spacing.sm,
                   vertical: Spacing.sm,
                 ),
-                child: Row(
-                  children: [
-                    // 选中强调条（3px accent；未选中占位保持对齐）
-                    Container(
-                      width: 3,
-                      height: 18,
-                      decoration: BoxDecoration(
-                        color: selected ? tokens.accent : Colors.transparent,
-                        borderRadius: BorderRadius.circular(Radii.full),
+                // 行内容固定 24px：hover 浮现的 MiniIconButton 与状态指示
+                // 同槽，行高不随 hover 抖动
+                child: SizedBox(
+                  height: 24,
+                  child: Row(
+                    children: [
+                      // 选中强调条（3px accent；未选中占位保持对齐）
+                      Container(
+                        width: 3,
+                        height: 18,
+                        decoration: BoxDecoration(
+                          color: selected ? tokens.accent : Colors.transparent,
+                          borderRadius: BorderRadius.circular(Radii.full),
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: Spacing.sm),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            work.displayTitle,
-                            overflow: TextOverflow.ellipsis,
-                            style: AppText.ui(tokens.foreground).copyWith(
-                              fontWeight: selected
-                                  ? FontWeight.w500
-                                  : FontWeight.w400,
+                      const SizedBox(width: Spacing.sm),
+                      Expanded(
+                        child: Text(
+                          work.displayTitle,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.ui(tokens.foreground).copyWith(
+                            fontWeight: selected
+                                ? FontWeight.w500
+                                : FontWeight.w400,
+                          ),
+                        ),
+                      ),
+                      // 右侧状态位：hover 时让位给删除入口；运行中 spinner >
+                      // 未读圆点 > 无
+                      if (_hovered)
+                        Padding(
+                          padding: const EdgeInsets.only(left: Spacing.sm),
+                          child: MiniIconButton(
+                            icon: LucideIcons.trash2,
+                            tooltip: '删除',
+                            onTap: () => showDeleteWorkDialog(
+                              context,
+                              widget.controller,
+                              widget.work,
                             ),
                           ),
-                          Text(
-                            _workSubtitle(work),
-                            style: AppText.caption(tokens.mutedForeground),
+                        )
+                      else if (widget.running)
+                        Padding(
+                          padding: const EdgeInsets.only(left: Spacing.sm),
+                          child: SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: tokens.accent,
+                            ),
                           ),
-                        ],
-                      ),
-                    ),
-                    // 右侧状态位：hover 时让位给删除入口；运行中 spinner >
-                    // 未读圆点 > 无
-                    if (_hovered)
-                      Padding(
-                        padding: const EdgeInsets.only(left: Spacing.sm),
-                        child: MiniIconButton(
-                          icon: LucideIcons.trash2,
-                          tooltip: '删除',
-                          onTap: () => showDeleteWorkDialog(
-                            context,
-                            widget.controller,
-                            widget.work,
-                          ),
-                        ),
-                      )
-                    else if (widget.running)
-                      Padding(
-                        padding: const EdgeInsets.only(left: Spacing.sm),
-                        child: SizedBox(
-                          width: 12,
-                          height: 12,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: tokens.accent,
+                        )
+                      else if (widget.unread)
+                        Padding(
+                          padding: const EdgeInsets.only(left: Spacing.sm),
+                          child: Container(
+                            width: 8,
+                            height: 8,
+                            decoration: BoxDecoration(
+                              color: tokens.accent,
+                              shape: BoxShape.circle,
+                            ),
                           ),
                         ),
-                      )
-                    else if (widget.unread)
-                      Padding(
-                        padding: const EdgeInsets.only(left: Spacing.sm),
-                        child: Container(
-                          width: 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            color: tokens.accent,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -742,33 +738,4 @@ void showDeleteWorkDialog(
 String _basename(String path) {
   final segments = path.split(RegExp(r'[/\\]')).where((s) => s.isNotEmpty);
   return segments.isEmpty ? path : segments.last;
-}
-
-/// 侧栏副标题：相对时间 + 消息数。
-String _workSubtitle(WorkSummary work) {
-  final time = _relativeTime(work.lastMessageAt);
-  if (work.messageCount == 0) return '尚无消息';
-  return time == null
-      ? '${work.messageCount} 条消息'
-      : '$time · ${work.messageCount} 条消息';
-}
-
-/// Unix 毫秒 → 相对时间（刚刚 / n 分钟前 / n 小时前 / 昨天 / n 天前）。
-/// 天数按日历日差计算（不是 24h 窗口），避免跨午夜的「0 天前」。
-String? _relativeTime(int? millis) {
-  if (millis == null) return null;
-  final then = DateTime.fromMillisecondsSinceEpoch(millis);
-  final now = DateTime.now();
-  final diff = now.difference(then);
-  if (diff.inMinutes < 1) return '刚刚';
-  if (diff.inHours < 1) return '${diff.inMinutes} 分钟前';
-  final days = DateTime(
-    now.year,
-    now.month,
-    now.day,
-  ).difference(DateTime(then.year, then.month, then.day)).inDays;
-  if (days == 0) return '${diff.inHours} 小时前';
-  if (days == 1) return '昨天';
-  if (days < 30) return '$days 天前';
-  return '${then.month}/${then.day}';
 }

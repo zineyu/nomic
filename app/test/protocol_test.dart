@@ -130,5 +130,16 @@ void main() {
       final without = ClientEvent.answerQuestion('s1', 'q1', ['a']);
       expect(without.containsKey('custom'), isFalse);
     });
+
+    test('remove_queue_entry / move_queue_entry 负载', () {
+      final remove = ClientEvent.removeQueueEntry('s1', 'q9');
+      expect(remove['type'], 'remove_queue_entry');
+      expect(remove['session_id'], 's1');
+      expect(remove['id'], 'q9');
+
+      final move = ClientEvent.moveQueueEntry('s1', 'q9', 'up');
+      expect(move['type'], 'move_queue_entry');
+      expect(move['direction'], 'up');
+    });
   });
 }

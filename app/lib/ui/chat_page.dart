@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
 import '../app_controller.dart';
+import '../protocol/models.dart';
 import '../state/chat_items.dart';
 import '../theme.dart';
 import 'input_bar.dart';
@@ -264,6 +265,7 @@ class _QueueBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
+    final queue = controller.queue;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(
@@ -277,19 +279,113 @@ class _QueueBar extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '队列（${controller.queue.length}）',
+            '队列（${queue.length}）',
             style: AppText.caption(tokens.mutedForeground),
           ),
-          for (final entry in controller.queue)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
+          for (var i = 0; i < queue.length; i++)
+            _QueueEntryRow(
+              entry: queue[i],
+              isFirst: i == 0,
+              isLast: i == queue.length - 1,
+              controller: controller,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 队列条目行：hover 露出上移 / 下移 / 删除（服务端权威，操作后
+/// `queue_changed` 广播回填）。
+class _QueueEntryRow extends StatefulWidget {
+  const _QueueEntryRow({
+    required this.entry,
+    required this.isFirst,
+    required this.isLast,
+    required this.controller,
+  });
+
+  final QueueEntry entry;
+  final bool isFirst;
+  final bool isLast;
+  final AppController controller;
+
+  @override
+  State<_QueueEntryRow> createState() => _QueueEntryRowState();
+}
+
+class _QueueEntryRowState extends State<_QueueEntryRow> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = tokensOf(context);
+    final entry = widget.entry;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Row(
+          children: [
+            Expanded(
               child: Text(
                 entry.text,
                 overflow: TextOverflow.ellipsis,
                 style: AppText.ui(tokens.foreground),
               ),
             ),
-        ],
+            if (_hovered) ...[
+              if (!widget.isFirst)
+                _QueueAction(
+                  icon: LucideIcons.arrowUp,
+                  tooltip: '上移',
+                  onTap: () =>
+                      widget.controller.moveQueueEntry(entry.id, up: true),
+                ),
+              if (!widget.isLast)
+                _QueueAction(
+                  icon: LucideIcons.arrowDown,
+                  tooltip: '下移',
+                  onTap: () =>
+                      widget.controller.moveQueueEntry(entry.id, up: false),
+                ),
+              _QueueAction(
+                icon: LucideIcons.x,
+                tooltip: '移出队列',
+                onTap: () => widget.controller.removeQueueEntry(entry.id),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _QueueAction extends StatelessWidget {
+  const _QueueAction({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = tokensOf(context);
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(Radii.sm),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: Icon(icon, size: 12, color: tokens.mutedForeground),
+        ),
       ),
     );
   }

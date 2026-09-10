@@ -228,6 +228,20 @@ class AppController extends ChangeNotifier {
     _client.send(ClientEvent.cancel(id));
   }
 
+  /// 删除 steering 队列条目（fire-and-forget；`queue_changed` 广播回填）。
+  void removeQueueEntry(String id) {
+    final sid = sessionId;
+    if (sid == null) return;
+    _client.send(ClientEvent.removeQueueEntry(sid, id));
+  }
+
+  /// 移动 steering 队列条目（up = 向队首方向移一位）。
+  void moveQueueEntry(String id, {required bool up}) {
+    final sid = sessionId;
+    if (sid == null) return;
+    _client.send(ClientEvent.moveQueueEntry(sid, id, up ? 'up' : 'down'));
+  }
+
   /// 回答提问。
   void answerQuestion(List<String> answers, {String? custom}) {
     final id = sessionId;

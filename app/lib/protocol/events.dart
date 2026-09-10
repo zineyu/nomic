@@ -159,6 +159,21 @@ class ClientEvent {
     'session_id': sessionId,
   };
 
+  /// 删除 steering 队列条目（fire-and-forget，变更经 `queue_changed` 广播）。
+  static Json removeQueueEntry(String sessionId, String id) => {
+    'type': 'remove_queue_entry',
+    'session_id': sessionId,
+    'id': id,
+  };
+
+  /// 移动 steering 队列条目（direction：`up` 向队首 / `down` 向队尾）。
+  static Json moveQueueEntry(String sessionId, String id, String direction) => {
+    'type': 'move_queue_entry',
+    'session_id': sessionId,
+    'id': id,
+    'direction': direction,
+  };
+
   /// 回答提问。
   static Json answerQuestion(
     String sessionId,

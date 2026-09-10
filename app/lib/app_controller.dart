@@ -34,6 +34,13 @@ class AppController extends ChangeNotifier {
   List<WorkSummary> works = [];
   List<ProjectSummary> projects = [];
 
+  /// 各 session 运行状态（客户端从全局事件流推导；侧栏 spinner 用）。
+  final Set<String> runningSessions = {};
+
+  /// 各 session 未读状态（非查看中 session 运行完成时置位，打开即清除；
+  /// 客户端会话级状态，重启不保留）。
+  final Set<String> unreadSessions = {};
+
   /// 全局错误（连接失败、请求错误等；banner 展示后可清除）。
   String? error;
 
@@ -107,6 +114,7 @@ class AppController extends ChangeNotifier {
   /// 打开已有 session（work 的主 session 或历史 session）：拉取快照。
   Future<void> openSession(String id) async {
     sessionId = id;
+    unreadSessions.remove(id);
     items = [];
     running = false;
     queue = [];
@@ -150,6 +158,16 @@ class AppController extends ChangeNotifier {
   Future<void> deleteWork(String workId) async {
     try {
       await _client.request((id) => ClientEvent.deleteWork(id, workId));
+      await refreshLists();
+    } on ServerException catch (e) {
+      error = e.message;
+      notifyListeners();
+    }
+  }
+
+  Future<void> renameWork(String workId, String title) async {
+    try {
+      await _client.request((id) => ClientEvent.renameWork(id, workId, title));
       await refreshLists();
     } on ServerException catch (e) {
       error = e.message;
@@ -301,6 +319,18 @@ class AppController extends ChangeNotifier {
     if (event.isSettingsChanged) {
       if (settings != null) unawaited(loadSettings());
       return;
+    }
+    // 全局状态跟踪（侧栏指示器）：运行中集合 / 非查看中 session 完成时
+    // 标记未读。须在 session 过滤之前执行。
+    if (event.isRunStarted) {
+      runningSessions.add(event.sessionId);
+      notifyListeners();
+    } else if (event.isRunFinished) {
+      runningSessions.remove(event.sessionId);
+      if (event.sessionId.isNotEmpty && event.sessionId != sessionId) {
+        unreadSessions.add(event.sessionId);
+      }
+      notifyListeners();
     }
     // 仅当前查看 session 的事件驱动 UI（后台 session 事件忽略；
     // 与原 web 前端 useChat 同一口径）

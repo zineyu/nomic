@@ -14,22 +14,40 @@ import 'chat_page.dart';
 import 'settings_page.dart';
 import 'sidebar.dart';
 
-class HomePage extends StatelessWidget {
+class HomePage extends StatefulWidget {
   const HomePage({super.key, required this.controller});
 
   final AppController controller;
 
   @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  /// 侧栏搜索框焦点（⌘K 聚焦）。
+  final _searchFocusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
+    final controller = widget.controller;
     return ListenableBuilder(
       listenable: controller,
       builder: (context, _) {
-        // 应用级快捷键：Cmd+N 新 work；Cmd+, 设置开关
+        // 应用级快捷键：⌘N 新 work；⌘K 聚焦搜索；⌘, 设置开关
         return CallbackShortcuts(
           bindings: {
             const SingleActivator(LogicalKeyboardKey.keyN, meta: true):
                 controller.closeSession,
+            const SingleActivator(LogicalKeyboardKey.keyK, meta: true): () {
+              _searchFocusNode.requestFocus();
+            },
             const SingleActivator(LogicalKeyboardKey.comma, meta: true): () {
               if (controller.showingSettings) {
                 controller.closeSettings();
@@ -46,7 +64,10 @@ class HomePage extends StatelessWidget {
                 Expanded(
                   child: Row(
                     children: [
-                      Sidebar(controller: controller),
+                      Sidebar(
+                        controller: controller,
+                        searchFocusNode: _searchFocusNode,
+                      ),
                       Container(width: 1, color: tokens.sidebarBorder),
                       Expanded(
                         child: controller.showingSettings

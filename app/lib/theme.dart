@@ -138,6 +138,7 @@ abstract final class Radii {
   static const double lg = 8;
   static const double xl = 12;
   static const double xxl = 16;
+  static const double full = 999;
 }
 
 /// 页面与消息流共享的列宽（760px；DESIGN.md「Proportion and Rhythm」）。

@@ -95,12 +95,14 @@ New visual properties must be added as tokens first, then consumed by components
 - **~20% secondary**: surface-level grays (`muted` / `secondary` / `sidebar-accent`, hover states,
   separators)
 - **≤10% accent**: the `primary` ink (near-black in light mode, near-white in dark mode —
-  inversion, not hue, is the emphasis mechanism) plus the functional `success` / `destructive`
-  semantic colors — only for interactive elements (links, buttons, selected states, focus rings)
-  and status indicators
-- Never flood large areas (whole cards, whole sidebar) with accent color; the interface is
-  achromatic by default and chromatic tokens (`destructive`, `success`) appear only in their
-  single designated role, never decoratively
+  inversion, not hue, is the emphasis mechanism) plus the functional `signal` / `success` /
+  `destructive` semantic colors — only for interactive elements (links, buttons, selected
+  states, focus rings) and status indicators
+- `signal` (blue) is a point, never a fill: it marks what is happening right now (running
+  dot, active-session marker) and appears only as dots and small indicators; never flood
+  large areas (whole cards, whole sidebar) with accent color; the interface is achromatic
+  by default and chromatic tokens appear only in their single designated role, never
+  decoratively
 
 ### 2. Proportion and rhythm
 
@@ -113,10 +115,11 @@ New visual properties must be added as tokens first, then consumed by components
 
 ### 3. One unified set of base tokens
 
-- **Radius**: only the rounded tokens (4/6/8/12/full); cards and bubbles lg(8)/xl(12), controls
-  md(6), badges full
-- **Shadow**: shadows are reserved for overlays (dropdowns/dialogs); in-flow surfaces (cards,
-  bubbles, inputs) are flat and use hairline borders instead; no custom shadow values
+- **Radius**: only the rounded tokens (4/6/8/12/16/full); cards lg(8)/xl(12), user bubbles
+  xl(12), controls md(6), badges full; 2xl(16) is reserved for the floating composer
+- **Shadow**: shadows are reserved for overlays (dropdowns/dialogs) and the floating composer;
+  in-flow surfaces (cards, bubbles, inputs) are flat and use hairline borders instead; no
+  custom shadow values
 - **Border**: uniform 1px `border` token; use `separator` for dividers; focus state is always a
   ring at 50% opacity, never ad-hoc outline colors
 - **Button height**: only the button size steps xs 24 / sm 32 / default 36 / lg 40 (icon buttons

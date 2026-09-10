@@ -1,65 +1,67 @@
 ---
 name: Nomic
 colors:
-  primary: "oklch(0.19 0 0)"
-  primary-foreground: "oklch(0.98 0 0)"
-  secondary: "oklch(0.955 0 0)"
-  secondary-foreground: "oklch(0.19 0 0)"
-  accent: "oklch(0.955 0 0)"
-  accent-foreground: "oklch(0.19 0 0)"
-  destructive: "oklch(0.5 0.17 27)"
-  destructive-foreground: "oklch(0.98 0 0)"
-  background: "oklch(1 0 0)"
-  foreground: "oklch(0.19 0 0)"
-  card: "oklch(1 0 0)"
-  card-foreground: "oklch(0.19 0 0)"
-  muted: "oklch(0.955 0 0)"
-  muted-foreground: "oklch(0.5 0 0)"
-  border: "oklch(0.915 0 0)"
-  input: "oklch(0.915 0 0)"
-  ring: "oklch(0.19 0 0)"
-  success: "oklch(0.52 0.11 155)"
-  sidebar: "oklch(0.975 0 0)"
-  sidebar-foreground: "oklch(0.19 0 0)"
-  sidebar-primary: "oklch(0.19 0 0)"
-  sidebar-primary-foreground: "oklch(0.98 0 0)"
-  sidebar-accent: "oklch(0.94 0 0)"
-  sidebar-accent-foreground: "oklch(0.19 0 0)"
-  sidebar-border: "oklch(0.915 0 0)"
-  sidebar-ring: "oklch(0.19 0 0)"
+  primary: "#1A1A1A"
+  primary-foreground: "#FFFFFF"
+  secondary: "#F0F0EC"
+  secondary-foreground: "#1A1A1A"
+  accent: "#ECECE8"
+  accent-foreground: "#1A1A1A"
+  destructive: "#B8433A"
+  destructive-foreground: "#FFFFFF"
+  background: "#FFFFFF"
+  foreground: "#1A1A1A"
+  card: "#FFFFFF"
+  card-foreground: "#1A1A1A"
+  muted: "#F0F0EC"
+  muted-foreground: "#8F959E"
+  border: "#E9E9E4"
+  input: "#E9E9E4"
+  ring: "#1A1A1A"
+  success: "#2F8F5B"
+  signal: "#3B7FFF"
+  bubble: "#F4F4F2"
+  sidebar: "#F7F7F5"
+  sidebar-foreground: "#1A1A1A"
+  sidebar-primary: "#1A1A1A"
+  sidebar-primary-foreground: "#FFFFFF"
+  sidebar-accent: "#ECECE8"
+  sidebar-accent-foreground: "#1A1A1A"
+  sidebar-border: "#E9E9E4"
+  sidebar-ring: "#1A1A1A"
 typography:
   h1:
-    fontFamily: "Noto Sans, Noto Sans SC, system-ui, sans-serif"
-    fontSize: "2.25rem"
+    fontFamily: "system-ui, PingFang SC, sans-serif"
+    fontSize: "1.75rem"
     fontWeight: "700"
-    lineHeight: "1.2"
+    lineHeight: "1.25"
   h2:
-    fontFamily: "Noto Sans, Noto Sans SC, system-ui, sans-serif"
-    fontSize: "1.875rem"
+    fontFamily: "system-ui, PingFang SC, sans-serif"
+    fontSize: "1.375rem"
     fontWeight: "600"
     lineHeight: "1.3"
   h3:
-    fontFamily: "Noto Sans, Noto Sans SC, system-ui, sans-serif"
-    fontSize: "1.5rem"
+    fontFamily: "system-ui, PingFang SC, sans-serif"
+    fontSize: "1.125rem"
     fontWeight: "600"
     lineHeight: "1.4"
   body:
-    fontFamily: "Noto Sans, Noto Sans SC, system-ui, sans-serif"
+    fontFamily: "system-ui, PingFang SC, sans-serif"
     fontSize: "1rem"
     fontWeight: "400"
     lineHeight: "1.5"
   body-sm:
-    fontFamily: "Noto Sans, Noto Sans SC, system-ui, sans-serif"
+    fontFamily: "system-ui, PingFang SC, sans-serif"
     fontSize: "0.875rem"
     fontWeight: "400"
     lineHeight: "1.5"
   ui:
-    fontFamily: "Noto Sans, Noto Sans SC, system-ui, sans-serif"
+    fontFamily: "system-ui, PingFang SC, sans-serif"
     fontSize: "0.8125rem"
     fontWeight: "400"
     lineHeight: "1.5"
   caption:
-    fontFamily: "Noto Sans, Noto Sans SC, system-ui, sans-serif"
+    fontFamily: "system-ui, PingFang SC, sans-serif"
     fontSize: "0.75rem"
     fontWeight: "400"
     lineHeight: "1.5"
@@ -68,6 +70,7 @@ rounded:
   md: "6px"
   lg: "8px"
   xl: "12px"
+  2xl: "16px"
   full: "9999px"
 spacing:
   sm: "8px"
@@ -131,129 +134,146 @@ components:
     backgroundColor: "{colors.sidebar}"
     textColor: "{colors.sidebar-foreground}"
     rounded: "{rounded.lg}"
+  user-bubble:
+    backgroundColor: "{colors.bubble}"
+    textColor: "{colors.foreground}"
+    rounded: "{rounded.xl}"
+    padding: "8px 16px"
+  composer:
+    backgroundColor: "{colors.card}"
+    textColor: "{colors.foreground}"
+    rounded: "{rounded.2xl}"
+    padding: "16px"
+  signal-dot:
+    backgroundColor: "{colors.signal}"
+    rounded: "{rounded.full}"
 ---
 
 ## Overview
 
-Nomic is an ADE (AI Development Environment). Its design language is **monochrome
-minimalism**: a pure gray skeleton (chroma = 0) with a single achromatic accent —
-*ink* (near-black in light mode, near-white in dark mode). Emphasis is expressed
-through contrast inversion, typographic weight, and whitespace — never through hue.
+Nomic is an ADE (AI Development Environment). Its design language is the
+**narrative log**: a warm-paper canvas on which the agent's work reads as a
+continuous record — bold narrative sentences carry the story, and the noise of
+tool execution collapses into quiet, countable ledger rows ("已读取 3 个文件 ·
+已运行 1 条命令") that expand only on demand.
 
 Design principles, in order:
 
-1. **Content first.** Establish information hierarchy before decoration. Any border,
-   badge, icon, or color block that serves no functional or semantic purpose is removed.
-2. **Whitespace over separators.** Spacing expresses hierarchy; hairline borders are
-   added only where spacing alone cannot.
-3. **One focal point per screen.** A single primary action per view; everything else
-   degrades to secondary or ghost treatments.
-4. **Restraint with color.** The interface is achromatic by default. The only chromatic
-   tokens are `destructive` (errors, destructive actions) and `success` (transient
-   confirmations) — each used in exactly one role, never decoratively.
-5. **Copy as interface.** Typographic hierarchy (weight / size / gray level) carries
-   state instead of badges and icons.
+1. **The narrative is the interface.** The agent's prose is set full-width like a
+   document, not wrapped in bubbles or cards. Everything else (tool calls, status,
+   timestamps) is marginalia: muted, compact, collapsible.
+2. **Content first.** Any border, badge, icon, or color block that serves no
+   functional or semantic purpose is removed.
+3. **Whitespace over separators.** Spacing expresses hierarchy; hairline borders
+   appear only where spacing alone cannot.
+4. **One focal point per screen.** A single primary action per view; everything
+   else degrades to secondary or ghost treatments.
+5. **Copy as interface.** Typographic hierarchy (weight / size / gray level)
+   carries state instead of badges and icons.
 
 ## Colors
 
-The palette is a pure neutral gray ramp (oklch chroma 0, no hue tint) plus two
-functional semantic colors.
+The palette is a warm-leaning neutral ramp (paper whites, soft gray fills) plus
+exactly three functional colors.
 
-- **Primary = ink** (`oklch(0.19 0 0)`): the single accent. Used for the primary
-  button, the user chat bubble, focus rings, selected states, and running-status
-  indicators. On dark mode it inverts to near-white. Inversion — not hue — is the
-  emphasis mechanism.
-- **Secondary / Muted / Accent**: light grays for hover states and sunken surfaces.
-- **Muted-foreground** (`oklch(0.5 0 0)`): secondary text; tertiary text uses opacity
-  steps of foreground (`foreground/70`, `/50`, …) instead of extra tokens.
-- **Border / Input** (`oklch(0.915 0 0)`): hairline only, 1px.
-- **Destructive** (`oklch(0.5 0.17 27)`): errors and destructive actions — the only
-  hue allowed to appear persistently, because errors must be findable.
-- **Success** (`oklch(0.52 0.11 155)`): transient confirmations only (e.g. the
-  copy-button checkmark flash). Never used for persistent decoration.
+- **Primary = ink** (`#1A1A1A`): the high-contrast element — primary buttons and
+  the circular send/stop button. On dark mode it inverts to near-white.
+- **Secondary / Muted / Accent**: light warm grays for hover states, sunken
+  surfaces, and code backgrounds.
+- **Bubble** (`#F4F4F2`): the user's own messages render as borderless,
+  shadowless gray paper blocks — visibly "mine" without shouting.
+- **Muted-foreground** (`#8F959E`): secondary text — timestamps, ledger rows,
+  placeholders. Tertiary text uses opacity steps of foreground instead of extra
+  tokens.
+- **Border / Input** (`#E9E9E4`): hairline only, 1px.
+- **Signal** (`#3B7FFF`): the single chromatic *state* color — it marks what is
+  happening right now: the running dot in the sidebar, the active-session
+  marker. Signal is a point, never a fill: dots and small indicators only.
+- **Destructive** (`#B8433A`): errors and destructive actions.
+- **Success** (`#2F8F5B`): transient confirmations only (e.g. the copy-button
+  checkmark flash). Never used for persistent decoration.
 
-There is deliberately **no categorical/chart palette**. Where the old design tinted
-tool-call icons by category with chromatic colors, categories are now expressed by an
-**opacity ladder of foreground** (100 / 75 / 60 / 45 / 35 percent): stronger ink means
-more consequential action (execute > inspect > modify > interact > agent).
+Tool-call categories are expressed by an **opacity ladder of foreground**
+(100 / 75 / 60 / 45 / 35 percent): stronger ink means more consequential action
+(execute > inspect > modify > interact > agent).
 
 ### Dark Mode
 
-Dark mode inverts the ramp: background near-black, ink (primary) near-white. Token
-structure is identical; only values change:
+Dark mode inverts the ramp: near-black warm canvas, ink near-white, `signal`
+brightened to stay legible. Token structure is identical; only values change:
 
 | Token | Value |
 | --- | --- |
-| `background` | `oklch(0.16 0 0)` |
-| `foreground` / `popover-foreground` / `card-foreground` | `oklch(0.95 0 0)` |
-| `card` / `popover` | `oklch(0.19 0 0)` |
-| `primary` / `ring` / `sidebar-ring` | `oklch(0.95 0 0)` |
-| `primary-foreground` | `oklch(0.19 0 0)` |
-| `secondary` / `muted` / `accent` | `oklch(0.23 0 0)` |
-| `secondary-foreground` / `accent-foreground` | `oklch(0.95 0 0)` |
-| `muted-foreground` | `oklch(0.65 0 0)` |
-| `destructive` / `destructive-foreground` | `oklch(0.62 0.17 25)` / `oklch(0.98 0 0)` |
-| `success` | `oklch(0.68 0.12 155)` |
-| `border` / `input` / `sidebar-border` | `oklch(1 0 0 / 10%)` / `oklch(1 0 0 / 14%)` / `oklch(1 0 0 / 10%)` |
-| `sidebar` | `oklch(0.18 0 0)` |
-| `sidebar-foreground` / `sidebar-accent-foreground` | `oklch(0.95 0 0)` |
-| `sidebar-primary` | `oklch(0.95 0 0)` |
-| `sidebar-primary-foreground` | `oklch(0.19 0 0)` |
-| `sidebar-accent` | `oklch(0.25 0 0)` |
+| `background` | `#161615` |
+| `foreground` / `popover-foreground` / `card-foreground` | `#ECECE8` |
+| `card` / `popover` | `#1C1C1A` |
+| `primary` / `ring` / `sidebar-ring` | `#ECECE8` |
+| `primary-foreground` | `#1A1A1A` |
+| `secondary` / `muted` | `#242422` |
+| `accent` / `sidebar-accent` | `#242422` |
+| `secondary-foreground` / `accent-foreground` / `sidebar-accent-foreground` | `#ECECE8` |
+| `muted-foreground` | `#9A9FA6` |
+| `destructive` | `#D95D54` |
+| `success` | `#4FC08D` |
+| `signal` | `#6B97FF` |
+| `bubble` | `#232321` |
+| `border` / `input` / `sidebar-border` | `#2C2C29` |
+| `sidebar` | `#1A1A18` |
+| `sidebar-foreground` | `#ECECE8` |
+| `sidebar-primary` | `#ECECE8` |
+| `sidebar-primary-foreground` | `#1A1A1A` |
 
 These values are kept in sync with the dark theme in `app/lib/theme.dart`.
 
 ## Typography
 
-A single **Noto Sans** voice for all UI and reading content (`--font-sans`),
-locally bundled via `@fontsource`: sidebar, buttons, inputs, dialogs, user bubbles,
-and assistant markdown messages (including their h1–h3 headings). **Maple Mono**
-(`--font-mono`) covers code blocks, inline code, and tool/terminal surfaces
-(`font-mono` call sites).
-
-CJK is covered by **Noto Sans SC** (also `@fontsource`-bundled, unicode-range
-sliced so the browser only downloads needed glyph chunks) before system fallbacks
-in both stacks. Hierarchy comes from
-weight and the modular scale only: h1 = 2.25rem/700, h2 = 1.875rem/600,
-h3 = 1.5rem/600, body = 1rem/400, body-sm = 0.875rem/400, ui = 0.8125rem/400,
-caption = 0.75rem/400.
-Line heights: headings 1.2–1.4, body and UI text 1.5.
+A single **system-ui** voice (PingFang SC covers CJK via platform fallback) for
+all UI and reading content: sidebar, buttons, inputs, dialogs, user blocks, and
+assistant markdown. **Menlo** (with Monaco / Consolas / Courier New fallbacks)
+covers code blocks, inline code, and quantitative readouts (elapsed time,
+counts, token numbers). Hierarchy comes from weight and the modular scale only:
+h1 = 1.75rem/700, h2 = 1.375rem/600, h3 = 1.125rem/600, body = 1rem/400,
+body-sm = 0.875rem/400 (the message-flow default), ui = 0.8125rem/400,
+caption = 0.75rem/400. Line heights: headings 1.25–1.4, body and UI text 1.5.
 
 ## Proportion and Rhythm
 
-- **Column width**: page and message flow share `max-w-page` (920px, defined in
-  `app/lib/theme.dart`); no other column widths.
-- **Spacing**: only the spacing tokens (8 / 16 / 24 / 32). Card padding 24, section
-  gaps 16–24, control gaps 8. Every `p-*` / `gap-*` value maps to a token step.
-- **Radius**: sm 4 / md 6 / lg 8 / xl 12 / full. Cards and bubbles lg–xl, controls md,
-  badges full. Radii are hierarchy tools — start with none and add only when needed.
-- **Shadow**: shadows are reserved for overlays (dropdowns, dialogs, `shadow-md` and
-  up). Cards, bubbles, and inputs use hairline borders instead of shadows.
-- **Border**: uniform 1px `border`; focus state is always `ring` + `ring/50`.
+- **Column width**: page and message flow share `maxPageWidth` (760px, defined
+  in `app/lib/theme.dart`); no other column widths.
+- **Spacing**: only the spacing tokens (8 / 16 / 24 / 32). Card padding 24,
+  section gaps 16–24, control gaps 8. Every padding / gap value maps to a token
+  step.
+- **Radius**: sm 4 / md 6 / lg 8 / xl 12 / 2xl 16 / full. User blocks xl,
+  controls md, badges full; 2xl is reserved for the floating composer.
+- **Shadow**: shadows are reserved for overlays (dropdowns, dialogs) and the
+  floating composer — the one element that hovers above the transcript.
+  Everything else in-flow is flat and uses hairline borders.
+- **Border**: uniform 1px `border`; focus state is always `ring` + 50% opacity.
 
 ## Components
 
-Components follow shadcn/ui patterns, restrained to the monochrome ramp:
-
-- **Primary button / user chat bubble**: solid ink block with inverted text — the one
-  high-contrast element on screen.
-- **Selected / active states**: neutral `accent` fill plus medium weight; a checkmark
-  or 1.5px ink dot marks "current" instead of a colored pill.
-- **Status in the message flow**: tool calls render as quiet text rows
-  (icon + name + args in muted gray). Completion is neutral (a check in muted ink);
-  only failures turn red. Tool icons differentiate category by the foreground opacity
-  ladder described above — no chromatic category colors.
-- **Context-usage ring**: grayscale escalation — `muted-foreground` below 75%,
-  `foreground` from 75–90%, `destructive` above 90%.
-- **Links**: `foreground` with a `foreground/30` underline that solidifies on hover,
-  instead of a colored link.
-- **Overlays** (dropdown / dialog / tooltip / popover): the only elements with shadow;
-  everything in-flow is flat.
+- **Primary button / send button**: solid ink; the composer's send/stop is a
+  36px ink circle — the one high-contrast element on screen.
+- **User message**: a borderless `bubble` gray block, right-aligned and
+  width-capped; no avatar, no border, no shadow.
+- **Tool ledger**: consecutive tool calls collapse into a single muted ledger
+  row (icon + counts per category + chevron). While any call in the group runs,
+  a spinner replaces the chevron; any failure turns the row's count red.
+  Expanded, each call renders as a quiet text row; completion is a neutral
+  check, only failures turn red. Tool icons differentiate category by the
+  foreground opacity ladder — no chromatic category colors.
+- **Selected / active states**: neutral `accent` fill plus medium weight; the
+  current session additionally carries a `signal` dot.
+- **Context-usage readout**: grayscale escalation — `muted-foreground` below
+  75%, `foreground` from 75–90%, `destructive` above 90%.
+- **Links**: `foreground` with underline, instead of a colored link.
+- **Overlays** (dropdown / dialog / tooltip / popover / composer): the only
+  elements with shadow; everything in-flow is flat.
 
 ## Accessibility
 
-- All text/background combinations meet WCAG AA contrast (foreground 0.19 vs
-  background 1.0 exceeds 12:1 in light mode)
+- All text/background combinations meet WCAG AA contrast
 - Focus states use the ink ring token for visibility
 - State is never carried by color alone: errors pair red with an icon + label,
-  selection pairs the neutral fill with a checkmark or weight change
+  running pairs the signal dot with a spinner or label, selection pairs the
+  neutral fill with a weight change

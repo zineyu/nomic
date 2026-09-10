@@ -91,6 +91,19 @@ class _AssistantBlock extends StatelessWidget {
               },
               styleSheet: MarkdownStyleSheet(
                 p: AppText.bodySm(tokens.foreground),
+                // 标题走 DESIGN.md 字号阶梯（h1 36 / h2 30 / h3 24）
+                h1: AppText.h1(tokens.foreground),
+                h2: AppText.h2(tokens.foreground),
+                h3: AppText.h3(tokens.foreground),
+                h4: AppText.bodySm(
+                  tokens.foreground,
+                ).copyWith(fontWeight: FontWeight.w600),
+                h5: AppText.bodySm(
+                  tokens.foreground,
+                ).copyWith(fontWeight: FontWeight.w600),
+                h6: AppText.bodySm(
+                  tokens.foreground,
+                ).copyWith(fontWeight: FontWeight.w600),
                 // 链接不走彩色：ink + 下划线（DESIGN.md ≤10% accent 规则）
                 a: AppText.bodySm(
                   tokens.foreground,
@@ -99,9 +112,32 @@ class _AssistantBlock extends StatelessWidget {
                   fontSize: 13,
                   color: tokens.foreground,
                 ).copyWith(backgroundColor: tokens.muted),
+                codeblockPadding: const EdgeInsets.all(Spacing.sm),
                 codeblockDecoration: BoxDecoration(
                   color: tokens.muted,
                   borderRadius: BorderRadius.circular(Radii.md),
+                ),
+                listBullet: AppText.bodySm(tokens.foreground),
+                blockquote: AppText.bodySm(tokens.mutedForeground),
+                blockquoteDecoration: BoxDecoration(
+                  border: Border(
+                    left: BorderSide(color: tokens.border, width: 2),
+                  ),
+                ),
+                blockquotePadding: const EdgeInsets.symmetric(
+                  horizontal: Spacing.sm,
+                ),
+                tableHead: AppText.ui(
+                  tokens.foreground,
+                ).copyWith(fontWeight: FontWeight.w600),
+                tableBody: AppText.ui(tokens.foreground),
+                tableBorder: TableBorder.all(color: tokens.border),
+                tableCellsPadding: const EdgeInsets.symmetric(
+                  horizontal: Spacing.sm,
+                  vertical: 4,
+                ),
+                horizontalRuleDecoration: BoxDecoration(
+                  border: Border(top: BorderSide(color: tokens.border)),
                 ),
               ),
             ),

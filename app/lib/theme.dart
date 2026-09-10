@@ -172,6 +172,21 @@ ThemeData buildTheme(NomicTokens tokens, {required bool dark}) {
     scaffoldBackgroundColor: tokens.background,
     dividerColor: tokens.border,
     cardColor: tokens.card,
+    // overlay 组件走 token：dialog 圆角 xl（M3 默认 28 过大），背景 card
+    dialogTheme: DialogThemeData(
+      backgroundColor: tokens.card,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(Radii.xl),
+      ),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: tokens.primary,
+      contentTextStyle: AppText.ui(tokens.primaryForeground),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(Radii.md),
+      ),
+    ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: tokens.background,

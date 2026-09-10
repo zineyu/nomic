@@ -56,26 +56,31 @@ class _SidebarState extends State<Sidebar> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // 品牌行
           Padding(
-            padding: const EdgeInsets.all(Spacing.md),
-            child: Row(
-              children: [
-                Text(
-                  'Nomic',
-                  style: AppText.bodySm(
-                    tokens.foreground,
-                  ).copyWith(fontWeight: FontWeight.w600),
-                ),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(LucideIcons.plus, size: 16),
-                  tooltip: '新 work（选择 project）',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: controller.closeSession,
-                ),
-              ],
+            padding: const EdgeInsets.fromLTRB(
+              Spacing.md,
+              Spacing.md,
+              Spacing.md,
+              Spacing.sm,
+            ),
+            child: Text(
+              'Nomic',
+              style: AppText.bodySm(
+                tokens.foreground,
+              ).copyWith(fontWeight: FontWeight.w700),
             ),
           ),
+          // 主导航：新建任务
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: Spacing.sm),
+            child: _NavTile(
+              icon: LucideIcons.plus,
+              label: '新建任务',
+              onTap: controller.closeSession,
+            ),
+          ),
+          const SizedBox(height: Spacing.sm),
           // 搜索（标题 / project 路径过滤）
           Padding(
             padding: const EdgeInsets.fromLTRB(
@@ -119,6 +124,18 @@ class _SidebarState extends State<Sidebar> {
                         horizontal: Spacing.sm,
                       ),
                       children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(
+                            Spacing.sm,
+                            Spacing.sm,
+                            Spacing.sm,
+                            4,
+                          ),
+                          child: Text(
+                            '项目',
+                            style: AppText.caption(tokens.mutedForeground),
+                          ),
+                        ),
                         for (final entry in byProject.entries) ...[
                           Padding(
                             padding: const EdgeInsets.fromLTRB(
@@ -127,13 +144,25 @@ class _SidebarState extends State<Sidebar> {
                               Spacing.sm,
                               Spacing.sm,
                             ),
-                            child: Tooltip(
-                              message: entry.key,
-                              child: Text(
-                                _basename(entry.key),
-                                overflow: TextOverflow.ellipsis,
-                                style: AppText.caption(tokens.mutedForeground),
-                              ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  LucideIcons.folder,
+                                  size: 14,
+                                  color: tokens.mutedForeground,
+                                ),
+                                const SizedBox(width: Spacing.sm),
+                                Expanded(
+                                  child: Tooltip(
+                                    message: entry.key,
+                                    child: Text(
+                                      _basename(entry.key),
+                                      overflow: TextOverflow.ellipsis,
+                                      style: AppText.ui(tokens.foreground),
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                           for (final work in entry.value)
@@ -180,6 +209,46 @@ class _SidebarState extends State<Sidebar> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 主导航行（新建任务）：图标 + 标签，hover 底色 sidebarAccent。
+class _NavTile extends StatelessWidget {
+  const _NavTile({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = tokensOf(context);
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(Radii.md),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(Radii.md),
+        hoverColor: tokens.sidebarAccent,
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: Spacing.sm,
+            vertical: Spacing.sm,
+          ),
+          child: Row(
+            children: [
+              Icon(icon, size: 14, color: tokens.foreground),
+              const SizedBox(width: Spacing.sm),
+              Text(label, style: AppText.ui(tokens.foreground)),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -252,7 +321,7 @@ class _WorkTileState extends State<_WorkTile> {
                       ],
                     ),
                   ),
-                  // hover 时露出删除入口（Codex 侧栏同款）
+                  // hover 时露出删除入口；否则当前会话带 signal 圆点
                   if (_hovered)
                     GestureDetector(
                       onTap: () => _confirmDelete(context),
@@ -262,6 +331,18 @@ class _WorkTileState extends State<_WorkTile> {
                           LucideIcons.trash2,
                           size: 14,
                           color: tokens.mutedForeground,
+                        ),
+                      ),
+                    )
+                  else if (selected)
+                    Padding(
+                      padding: const EdgeInsets.only(left: Spacing.sm),
+                      child: Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: tokens.signal,
+                          shape: BoxShape.circle,
                         ),
                       ),
                     ),

@@ -174,6 +174,7 @@ class _SidebarState extends State<Sidebar> {
                           ),
                           for (final entry in byProject.entries) ...[
                             _ProjectHeader(
+                              key: ValueKey('group-${entry.key}'),
                               path: entry.key,
                               collapsed: _collapsed.contains(entry.key),
                               controller: controller,
@@ -191,8 +192,12 @@ class _SidebarState extends State<Sidebar> {
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
                                   for (final work in entry.value)
-                                    // 条目缩进与组头文本对齐（图标 14 + 间距 8）
+                                    // 条目缩进与组头文本对齐（图标 14 + 间距 8）；
+                                    // key 锚定 work id：插入/移动/收展时元素
+                                    // 与其状态（hover、颜色渐变进度）跟随数据
+                                    // 而非位置，避免错位触发多余的颜色过渡
                                     Padding(
+                                      key: ValueKey(work.id),
                                       padding: const EdgeInsets.only(left: 14),
                                       child: _WorkTile(
                                         work: work,
@@ -351,6 +356,7 @@ class _NewTaskButtonState extends State<_NewTaskButton> {
 /// hover 浮现行内 icon 操作（在该 project 下新建任务 / 删除项目）。
 class _ProjectHeader extends StatefulWidget {
   const _ProjectHeader({
+    super.key,
     required this.path,
     required this.collapsed,
     required this.controller,

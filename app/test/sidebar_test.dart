@@ -79,6 +79,44 @@ void main() {
       expect(tileMaterial(selectedText).color, tokens.sidebarActive);
     });
 
+    testWidgets('顶部插入新 work 不打乱既有条目的颜色状态（key 锡定）（$tag）', (tester) async {
+      final controller = AppController(url: 'ws://127.0.0.1:1/ws');
+      addTearDown(controller.dispose);
+      controller.works = [_work('w1', 's1', '会话甲'), _work('w2', 's2', '会话乙')];
+      controller.sessionId = 's2';
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildTheme(tokens, dark: dark),
+          home: Scaffold(
+            body: ListenableBuilder(
+              listenable: controller,
+              builder: (context, _) => Sidebar(controller: controller),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      Material tileMaterial(Finder text) => tester.widget(
+        find.ancestor(of: text, matching: find.byType(Material)).first,
+      );
+
+      // 顶部插入新 work（新任务 / 按末条消息时间重排都会触发）
+      controller.works = [_work('w0', 's0', '新会话'), ...controller.works];
+      // ignore: invalid_use_of_protected_member
+      controller.notifyListeners();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      // key 锡定 work id：既有条目的元素与颜色状态跟随数据，
+      // 位置平移不触发任何颜色过渡（无 key 时「会话甲」会接过「会话乙」
+      // 的元素，被错误地从 sidebarActive 渐变回透明）
+      expect(tileMaterial(find.text('会话甲')).color, Colors.transparent);
+      expect(tileMaterial(find.text('会话乙')).color, tokens.sidebarActive);
+      expect(tileMaterial(find.text('新会话')).color, Colors.transparent);
+    });
+
     testWidgets('project 组头 hover 浮现新建/删除 icon（$tag）', (tester) async {
       final controller = AppController(url: 'ws://127.0.0.1:1/ws');
       addTearDown(controller.dispose);

@@ -165,8 +165,43 @@ class AnimatedChevron extends StatelessWidget {
   }
 }
 
+/// 溶解式颜色渐变（cross-dissolve）：在**预乘 alpha 空间**插值。
+///
+/// 直通道的 Color.lerp 以 Colors.transparent（rgba(0,0,0,0)）为端点时，
+/// RGB 随 alpha 一起线性趋零，中间帧是半透明深灰，合成后比两端都深——
+/// 视觉上即「闪黑」。预乘空间插值等价于透明度渐隐（FadeTransition 的
+/// 颜色版）：RGB 保持端点色、只有 alpha 变化，过渡路径单调不经过深色，
+/// 「从无色浮现」的调用方直接使用 transparent 端点即可，无需关心下层
+/// 表面色。
+class DissolveColorTween extends Tween<Color?> {
+  DissolveColorTween({super.begin, super.end});
+
+  @override
+  Color? lerp(double t) {
+    final begin = this.begin;
+    final end = this.end;
+    if (begin == null) return end;
+    if (end == null) return begin;
+    final a = _lerp(begin.a, end.a, t);
+    if (a <= 0) return const Color(0x00000000);
+    // 预乘空间插值后除回：RGB 保持端点色，只有 alpha 随 t 变化
+    double straight(double Function(Color) channel) =>
+        _lerp(channel(begin) * begin.a, channel(end) * end.a, t) / a;
+    return Color.from(
+      alpha: a,
+      red: straight((c) => c.r),
+      green: straight((c) => c.g),
+      blue: straight((c) => c.b),
+    );
+  }
+
+  static double _lerp(double a, double b, double t) => a + (b - a) * t;
+}
+
 /// hover 驱动的颜色过渡（100ms）：行底色 / 图标色等需要平滑切换颜色、
 /// 又不便用 AnimatedContainer 的场景（如 Material.color、Icon.color）。
+/// 渐变走 [DissolveColorTween]（预乘 alpha 插值），端点可以是
+/// Colors.transparent——溶解语义下中间帧不经过深灰，不闪黑。
 class AnimatedColor extends StatelessWidget {
   const AnimatedColor({
     super.key,
@@ -184,7 +219,7 @@ class AnimatedColor extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return TweenAnimationBuilder<Color?>(
-      tween: ColorTween(end: color),
+      tween: DissolveColorTween(end: color),
       duration: duration,
       curve: AppMotion.curve,
       builder: (context, value, _) => builder(context, value ?? color),

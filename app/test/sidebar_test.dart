@@ -60,7 +60,15 @@ void main() {
       final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
       await gesture.addPointer(location: Offset.zero);
       addTearDown(gesture.removePointer);
+      // hover 过渡走溶解插值：中间帧 RGB 保持 hover 端点色（不趋黑），
+      // 只有 alpha 变化
       await gesture.moveTo(tester.getCenter(unselectedText));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(
+        tileMaterial(unselectedText).color!.r,
+        closeTo(tokens.sidebarHover.r, 0.05),
+      );
       await tester.pumpAndSettle();
       expect(tileMaterial(unselectedText).color, tokens.sidebarHover);
       expect(tileMaterial(selectedText).color, tokens.sidebarActive);

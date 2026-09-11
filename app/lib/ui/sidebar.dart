@@ -525,17 +525,18 @@ class _WorkTileState extends State<_WorkTile> {
                     child: Row(
                       children: [
                         // 选中强调条（3px accent；未选中透明占位保持对齐，
-                        // 颜色 100ms 过渡）
-                        AnimatedContainer(
-                          duration: AppMotion.fast,
-                          curve: AppMotion.curve,
-                          width: 3,
-                          height: 18,
-                          decoration: BoxDecoration(
-                            color: selected
-                                ? tokens.business
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(Radii.full),
+                        // 溶解渐变 100ms 过渡）
+                        AnimatedColor(
+                          color: selected
+                              ? tokens.business
+                              : Colors.transparent,
+                          builder: (context, color) => Container(
+                            width: 3,
+                            height: 18,
+                            decoration: BoxDecoration(
+                              color: color,
+                              borderRadius: BorderRadius.circular(Radii.full),
+                            ),
                           ),
                         ),
                         const SizedBox(width: Spacing.sm),

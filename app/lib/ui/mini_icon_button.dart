@@ -45,7 +45,7 @@ class _MiniIconButtonState extends State<MiniIconButton> {
             child: Icon(
               widget.icon,
               size: 14,
-              color: _hovered ? tokens.foreground : tokens.mutedForeground,
+              color: _hovered ? tokens.foreground : tokens.secondary,
             ),
           ),
         ),

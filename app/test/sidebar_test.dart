@@ -52,23 +52,23 @@ void main() {
       expect(tileInkWell(selectedText).hoverColor, Colors.transparent);
       expect(tileInkWell(unselectedText).hoverColor, Colors.transparent);
 
-      // 选中项底色即 sidebarAccent，不随悬停变化
-      expect(tileMaterial(selectedText).color, tokens.sidebarAccent);
+      // 选中项底色即 sidebar-active，不随悬停变化
+      expect(tileMaterial(selectedText).color, tokens.sidebarActive);
 
-      // 未选中项：悬停前透明，悬停后不透明 sidebarAccent，移开后还原
+      // 未选中项：悬停前透明，悬停后 sidebar-hover 底，移开后还原
       expect(tileMaterial(unselectedText).color, Colors.transparent);
       final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
       await gesture.addPointer(location: Offset.zero);
       addTearDown(gesture.removePointer);
       await gesture.moveTo(tester.getCenter(unselectedText));
       await tester.pumpAndSettle();
-      expect(tileMaterial(unselectedText).color, tokens.sidebarAccent);
-      expect(tileMaterial(selectedText).color, tokens.sidebarAccent);
+      expect(tileMaterial(unselectedText).color, tokens.sidebarHover);
+      expect(tileMaterial(selectedText).color, tokens.sidebarActive);
 
       await gesture.moveTo(Offset.zero);
       await tester.pumpAndSettle();
       expect(tileMaterial(unselectedText).color, Colors.transparent);
-      expect(tileMaterial(selectedText).color, tokens.sidebarAccent);
+      expect(tileMaterial(selectedText).color, tokens.sidebarActive);
     });
 
     testWidgets('project 组头 hover 浮现新建/删除 icon（$tag）', (tester) async {

@@ -1,6 +1,6 @@
 /// 输入区：Codex 式统一 composer——圆角容器内嵌多行输入与底部控制行
 /// （模型选择 chip + 上下文用量环 + 圆形发送/停止），聚焦时边框
-/// 变为 ring/50。
+/// 变为 DeepSeek 蓝 ring。
 ///
 /// 运行中提交的消息进 steering 队列（与服务端同一语义：当前步骤完成后
 /// 注入本轮）；Esc 取消当前运行的快捷键绑定在 chat_page。
@@ -94,28 +94,22 @@ class _InputBarState extends State<InputBar> {
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
-    final dark = Theme.of(context).brightness == Brightness.dark;
     final controller = widget.controller;
     final running = controller.running;
     final canSend = _textController.text.trim().isNotEmpty;
     return Container(
       decoration: BoxDecoration(
-        color: tokens.card,
+        color: tokens.inputMajor,
         // 悬浮 composer：全界面唯一带阴影的在流元素（DESIGN.md
         // 「Shadow」例外），radius 走 2xl 胶囊档
-        borderRadius: BorderRadius.circular(Radii.xxl),
-        // focus ring：清晰的 accent 描边（不只依赖阴影变化）
+        borderRadius: BorderRadius.circular(Radii.xxxl),
+        // focus ring：DeepSeek 蓝描边（不只依赖阴影变化）
         border: Border.all(
-          color: _focused ? tokens.accent : tokens.border,
+          color: _focused ? tokens.business : tokens.borderStrong,
           width: _focused ? 1.5 : 1,
         ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: dark ? 0.24 : 0.06),
-            blurRadius: 16,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        // 悬浮 composer：全界面唯一带阴影的在流元素，走 DESIGN.md soft 档
+        boxShadow: AppShadows.soft(),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -170,7 +164,9 @@ class _InputBarState extends State<InputBar> {
                     icon: LucideIcons.arrowUp,
                     iconSize: 18,
                     tooltip: '发送（Enter / ⌘Enter）',
-                    background: canSend ? tokens.accent : tokens.secondary,
+                    background: canSend
+                        ? tokens.business
+                        : tokens.primaryDimmed,
                     foreground: canSend ? Colors.white : tokens.tertiary,
                     onPressed: canSend ? _submit : null,
                   ),
@@ -199,7 +195,7 @@ class _ModelChip extends StatelessWidget {
       borderRadius: BorderRadius.circular(Radii.md),
       child: InkWell(
         borderRadius: BorderRadius.circular(Radii.md),
-        hoverColor: tokens.muted,
+        hoverColor: tokens.primaryDimmed,
         onTap: () => ModelPicker.show(context, controller),
         child: Padding(
           padding: const EdgeInsets.symmetric(
@@ -211,14 +207,10 @@ class _ModelChip extends StatelessWidget {
             children: [
               Text(
                 name.isEmpty ? '选择模型' : name,
-                style: AppText.caption(tokens.mutedForeground),
+                style: AppText.xxs(tokens.secondary),
               ),
               const SizedBox(width: 4),
-              Icon(
-                LucideIcons.chevronDown,
-                size: 12,
-                color: tokens.mutedForeground,
-              ),
+              Icon(LucideIcons.chevronDown, size: 12, color: tokens.secondary),
             ],
           ),
         ),
@@ -290,7 +282,7 @@ class _ContextUsage extends StatelessWidget {
     if (window == null || window == 0) {
       return Text(
         '${_compactTokens(used)} tokens',
-        style: AppText.caption(tokens.mutedForeground),
+        style: AppText.xxs(tokens.secondary),
       );
     }
     final ratio = (used / window).clamp(0.0, 1.0);
@@ -298,7 +290,7 @@ class _ContextUsage extends StatelessWidget {
         ? tokens.warning
         : ratio >= 0.75
         ? tokens.foreground
-        : tokens.mutedForeground;
+        : tokens.secondary;
     final percent = (ratio * 100).round();
     return Tooltip(
       message:

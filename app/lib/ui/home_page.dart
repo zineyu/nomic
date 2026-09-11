@@ -103,7 +103,7 @@ class _ConnectionBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
     return Material(
-      color: tokens.muted,
+      color: tokens.tip,
       child: Padding(
         padding: const EdgeInsets.symmetric(
           horizontal: Spacing.md,
@@ -116,13 +116,13 @@ class _ConnectionBanner extends StatelessWidget {
               height: 12,
               child: CircularProgressIndicator(
                 strokeWidth: 2,
-                color: tokens.mutedForeground,
+                color: tokens.secondary,
               ),
             ),
             const SizedBox(width: Spacing.sm),
             Text(
               controller.hasConnectedOnce ? '连接中断，重连中…' : '连接中…',
-              style: AppText.ui(tokens.mutedForeground),
+              style: AppText.xs(tokens.secondary),
             ),
           ],
         ),
@@ -157,18 +157,15 @@ class _StartPage extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Text('开始工作', style: AppText.h1(tokens.foreground)),
+                      Text('开始工作', style: AppText.xl(tokens.foreground)),
                       const SizedBox(height: Spacing.sm),
                       Text(
                         '选择一个项目开始，或添加新的项目目录。',
-                        style: AppText.bodySm(tokens.mutedForeground),
+                        style: AppText.s(tokens.secondary),
                       ),
                       const SizedBox(height: Spacing.xl),
                       if (projects.isNotEmpty) ...[
-                        Text(
-                          '项目',
-                          style: AppText.caption(tokens.mutedForeground),
-                        ),
+                        Text('项目', style: AppText.xxs(tokens.secondary)),
                         const SizedBox(height: Spacing.sm),
                         for (final project in projects)
                           _ProjectTile(
@@ -182,7 +179,7 @@ class _StartPage extends StatelessWidget {
                         const SizedBox(height: Spacing.sm),
                         Text(
                           '还没有项目。添加的项目目录会显示在这里。',
-                          style: AppText.caption(tokens.tertiary),
+                          style: AppText.xxs(tokens.tertiary),
                         ),
                       ],
                     ],
@@ -220,19 +217,20 @@ class _AddProjectTile extends StatelessWidget {
       borderRadius: BorderRadius.circular(Radii.lg),
       child: InkWell(
         borderRadius: BorderRadius.circular(Radii.lg),
-        hoverColor: tokens.secondary,
+        hoverColor: tokens.primaryDimmed,
         onTap: onTap,
         child: Container(
           decoration: BoxDecoration(
-            border: Border.all(color: tokens.border),
+            // 描边控件走 borderStrong（l3）：需要可见分界，l1 发丝线只用于分隔
+            border: Border.all(color: tokens.borderStrong),
             borderRadius: BorderRadius.circular(Radii.lg),
           ),
           padding: const EdgeInsets.all(Spacing.md),
           child: Row(
             children: [
-              Icon(LucideIcons.plus, size: 16, color: tokens.mutedForeground),
+              Icon(LucideIcons.plus, size: 16, color: tokens.secondary),
               const SizedBox(width: Spacing.sm),
-              Text('添加项目目录…', style: AppText.bodySm(tokens.mutedForeground)),
+              Text('添加项目目录…', style: AppText.s(tokens.secondary)),
             ],
           ),
         ),
@@ -268,17 +266,13 @@ class _ProjectTileState extends State<_ProjectTile> {
         borderRadius: BorderRadius.circular(Radii.lg),
         child: InkWell(
           borderRadius: BorderRadius.circular(Radii.lg),
-          hoverColor: tokens.secondary,
+          hoverColor: tokens.primaryDimmed,
           onTap: () => unawaited(widget.controller.createWork(project.path)),
           child: Padding(
             padding: const EdgeInsets.all(Spacing.md),
             child: Row(
               children: [
-                Icon(
-                  LucideIcons.folder,
-                  size: 16,
-                  color: tokens.mutedForeground,
-                ),
+                Icon(LucideIcons.folder, size: 16, color: tokens.secondary),
                 const SizedBox(width: Spacing.sm),
                 Expanded(
                   child: Column(
@@ -287,14 +281,14 @@ class _ProjectTileState extends State<_ProjectTile> {
                       Text(
                         _basename(project.path),
                         overflow: TextOverflow.ellipsis,
-                        style: AppText.bodySm(
+                        style: AppText.s(
                           tokens.foreground,
                         ).copyWith(fontWeight: FontWeight.w500),
                       ),
                       Text(
                         project.path,
                         overflow: TextOverflow.ellipsis,
-                        style: AppText.caption(tokens.mutedForeground),
+                        style: AppText.xxs(tokens.secondary),
                       ),
                     ],
                   ),
@@ -314,7 +308,7 @@ class _ProjectTileState extends State<_ProjectTile> {
                 else
                   Text(
                     '${project.sessionCount} 个会话',
-                    style: AppText.caption(tokens.mutedForeground),
+                    style: AppText.xxs(tokens.secondary),
                   ),
               ],
             ),

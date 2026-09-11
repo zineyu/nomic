@@ -61,8 +61,8 @@ class _ChatPageState extends State<ChatPage> {
     if (!_scrollController.hasClients) return;
     _scrollController.animateTo(
       _scrollController.position.maxScrollExtent,
-      duration: const Duration(milliseconds: 250),
-      curve: Curves.easeOut,
+      duration: AppMotion.normal,
+      curve: AppMotion.curve,
     );
   }
 
@@ -295,9 +295,9 @@ class _ContextBar extends StatelessWidget {
     final project = controller.project;
     final running = controller.running;
     final (statusIcon, statusColor, statusText) = controller.readOnly
-        ? (LucideIcons.eye, tokens.mutedForeground, '只读回溯')
+        ? (LucideIcons.eye, tokens.secondary, '只读回溯')
         : running
-        ? (null, tokens.accent, '运行中')
+        ? (null, tokens.business, '运行中')
         : controller.items.isEmpty
         ? (LucideIcons.circle, tokens.tertiary, '空闲')
         : (LucideIcons.check, tokens.success, '已完成');
@@ -314,16 +314,16 @@ class _ContextBar extends StatelessWidget {
               child: Text(
                 _basename(project),
                 overflow: TextOverflow.ellipsis,
-                style: AppText.ui(tokens.mutedForeground),
+                style: AppText.xs(tokens.secondary),
               ),
             ),
-            Text(' / ', style: AppText.ui(tokens.tertiary)),
+            Text(' / ', style: AppText.xs(tokens.tertiary)),
           ],
           Flexible(
             child: Text(
               work?.displayTitle ?? '会话',
               overflow: TextOverflow.ellipsis,
-              style: AppText.ui(
+              style: AppText.xs(
                 tokens.foreground,
               ).copyWith(fontWeight: FontWeight.w500),
             ),
@@ -335,20 +335,20 @@ class _ContextBar extends StatelessWidget {
               height: 12,
               child: CircularProgressIndicator(
                 strokeWidth: 2,
-                color: tokens.accent,
+                color: tokens.business,
               ),
             )
           else if (statusIcon != null)
             Icon(statusIcon, size: 12, color: statusColor),
           const SizedBox(width: 4),
-          Text(statusText, style: AppText.caption(statusColor)),
+          Text(statusText, style: AppText.xxs(statusColor)),
           if (work != null) ...[
             const SizedBox(width: Spacing.sm),
             IconButton(
               icon: Icon(
                 LucideIcons.moreHorizontal,
                 size: 16,
-                color: tokens.mutedForeground,
+                color: tokens.secondary,
               ),
               tooltip: '更多操作',
               visualDensity: VisualDensity.compact,
@@ -384,12 +384,12 @@ class _ContextBar extends StatelessWidget {
         PopupMenuItem(
           value: 'rename',
           height: 32,
-          child: Text('重命名', style: AppText.ui(tokens.foreground)),
+          child: Text('重命名', style: AppText.xs(tokens.foreground)),
         ),
         PopupMenuItem(
           value: 'delete',
           height: 32,
-          child: Text('删除', style: AppText.ui(tokens.destructive)),
+          child: Text('删除', style: AppText.xs(tokens.error)),
         ),
       ],
     ).then((value) {
@@ -419,9 +419,9 @@ class _ReadOnlyBar extends StatelessWidget {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Text('子 agent 会话（只读回溯）', style: AppText.ui(tokens.mutedForeground)),
+        Text('子 agent 会话（只读回溯）', style: AppText.xs(tokens.secondary)),
         if (parentId != null) ...[
-          Text(' · ', style: AppText.ui(tokens.mutedForeground)),
+          Text(' · ', style: AppText.xs(tokens.secondary)),
           InkWell(
             borderRadius: BorderRadius.circular(Radii.sm),
             onTap: () => controller.openSession(parentId),
@@ -432,7 +432,7 @@ class _ReadOnlyBar extends StatelessWidget {
                 const SizedBox(width: 4),
                 Text(
                   '返回父会话',
-                  style: AppText.ui(
+                  style: AppText.xs(
                     tokens.foreground,
                   ).copyWith(decoration: TextDecoration.underline),
                 ),
@@ -454,7 +454,7 @@ class _ErrorBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
     return Material(
-      color: tokens.destructive.withValues(alpha: 0.08),
+      color: tokens.error.withValues(alpha: 0.08),
       child: Padding(
         padding: const EdgeInsets.symmetric(
           horizontal: Spacing.md,
@@ -462,13 +462,10 @@ class _ErrorBanner extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Icon(LucideIcons.alertCircle, size: 14, color: tokens.destructive),
+            Icon(LucideIcons.alertCircle, size: 14, color: tokens.error),
             const SizedBox(width: Spacing.sm),
             Expanded(
-              child: Text(
-                controller.error!,
-                style: AppText.ui(tokens.destructive),
-              ),
+              child: Text(controller.error!, style: AppText.xs(tokens.error)),
             ),
             IconButton(
               icon: const Icon(LucideIcons.x, size: 14),
@@ -496,11 +493,11 @@ class _GoalBanner extends StatelessWidget {
         horizontal: Spacing.md,
         vertical: Spacing.sm,
       ),
-      color: tokens.muted,
+      color: tokens.tip,
       child: Text(
         '目标：$goal',
         overflow: TextOverflow.ellipsis,
-        style: AppText.caption(tokens.foreground),
+        style: AppText.xxs(tokens.foreground),
       ),
     );
   }
@@ -527,10 +524,7 @@ class _QueueBar extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            '队列（${queue.length}）',
-            style: AppText.caption(tokens.mutedForeground),
-          ),
+          Text('队列（${queue.length}）', style: AppText.xxs(tokens.secondary)),
           for (var i = 0; i < queue.length; i++)
             _QueueEntryRow(
               entry: queue[i],
@@ -581,7 +575,7 @@ class _QueueEntryRowState extends State<_QueueEntryRow> {
               child: Text(
                 entry.text,
                 overflow: TextOverflow.ellipsis,
-                style: AppText.ui(tokens.foreground),
+                style: AppText.xs(tokens.foreground),
               ),
             ),
             if (_hovered) ...[
@@ -633,7 +627,7 @@ class _QueueAction extends StatelessWidget {
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.all(4),
-          child: Icon(icon, size: 12, color: tokens.mutedForeground),
+          child: Icon(icon, size: 12, color: tokens.secondary),
         ),
       ),
     );
@@ -651,11 +645,11 @@ class _EmptySessionHint extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text('输入消息开始对话', style: AppText.ui(tokens.mutedForeground)),
+          Text('输入消息开始对话', style: AppText.xs(tokens.secondary)),
           const SizedBox(height: Spacing.sm),
           Text(
             'Enter 发送 · Shift+Enter 换行 · Esc 中断',
-            style: AppText.caption(tokens.mutedForeground),
+            style: AppText.xxs(tokens.secondary),
           ),
         ],
       ),
@@ -750,7 +744,7 @@ class _WorkingLineState extends State<_WorkingLine> {
               const SizedBox(width: Spacing.sm),
               Text(
                 'Working（$elapsed · esc 中断）',
-                style: AppText.caption(tokens.mutedForeground),
+                style: AppText.xxs(tokens.secondary),
               ),
             ],
           ),

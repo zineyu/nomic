@@ -34,7 +34,7 @@ void main() {
       );
       await pumpFrames(tester);
 
-      expect(find.text('选择一个 project 开始'), findsOneWidget);
+      expect(find.textContaining('选择一个项目开始'), findsOneWidget);
       expect(find.text('添加项目目录…'), findsOneWidget);
       expect(find.text('alpha'), findsOneWidget);
       expect(find.text('0 个会话'), findsOneWidget);
@@ -61,7 +61,7 @@ void main() {
       // 「添加项目目录…」：测试环境无平台 handler，静默取消（不崩溃）
       await tester.tap(find.text('添加项目目录…'));
       await pumpFrames(tester);
-      expect(find.text('选择一个 project 开始'), findsOneWidget);
+      expect(find.textContaining('选择一个项目开始'), findsOneWidget);
     });
   }
 }

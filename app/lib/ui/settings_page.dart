@@ -81,7 +81,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   ? Center(
                       child: Text(
                         controller.error ?? '加载中…',
-                        style: AppText.bodySm(tokens.mutedForeground),
+                        style: AppText.s(tokens.secondary),
                       ),
                     )
                   : Center(
@@ -155,7 +155,7 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           Text(
             title,
-            style: AppText.bodySm(
+            style: AppText.s(
               tokens.foreground,
             ).copyWith(fontWeight: FontWeight.w600),
           ),
@@ -168,14 +168,14 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _emptyHint(NomicTokens tokens, String text) => Padding(
     padding: const EdgeInsets.only(bottom: Spacing.sm),
-    child: Text(text, style: AppText.ui(tokens.mutedForeground)),
+    child: Text(text, style: AppText.xs(tokens.secondary)),
   );
 
   Widget _card(NomicTokens tokens, List<Widget> children) => Container(
     width: double.infinity,
     decoration: BoxDecoration(
       color: tokens.card,
-      borderRadius: BorderRadius.circular(Radii.lg),
+      borderRadius: BorderRadius.circular(Radii.xxl),
       border: Border.all(color: tokens.border),
     ),
     padding: const EdgeInsets.all(Spacing.md),
@@ -188,8 +188,8 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _cardTitle(NomicTokens tokens, String title, String caption) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Text(title, style: AppText.ui(tokens.foreground)),
-      Text(caption, style: AppText.caption(tokens.mutedForeground)),
+      Text(title, style: AppText.xs(tokens.foreground)),
+      Text(caption, style: AppText.xxs(tokens.secondary)),
     ],
   );
 
@@ -281,7 +281,7 @@ class _SettingsPageState extends State<SettingsPage> {
               child: Text(
                 path,
                 overflow: TextOverflow.ellipsis,
-                style: AppText.ui(tokens.foreground),
+                style: AppText.xs(tokens.foreground),
               ),
             ),
             IconButton(
@@ -335,20 +335,20 @@ class _SettingsPageState extends State<SettingsPage> {
       for (final entry in aliases.entries)
         Row(
           children: [
-            Text(entry.key, style: AppText.ui(tokens.foreground)),
+            Text(entry.key, style: AppText.xs(tokens.foreground)),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: Spacing.sm),
               child: Icon(
                 LucideIcons.arrowRight,
                 size: 12,
-                color: tokens.mutedForeground,
+                color: tokens.secondary,
               ),
             ),
             Expanded(
               child: Text(
                 entry.value,
                 overflow: TextOverflow.ellipsis,
-                style: AppText.ui(tokens.foreground),
+                style: AppText.xs(tokens.foreground),
               ),
             ),
             IconButton(
@@ -421,11 +421,11 @@ class _SettingsPageState extends State<SettingsPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(provider.name, style: AppText.ui(tokens.foreground)),
+                Text(provider.name, style: AppText.xs(tokens.foreground)),
                 Text(
                   subtitle,
                   overflow: TextOverflow.ellipsis,
-                  style: AppText.caption(tokens.mutedForeground),
+                  style: AppText.xxs(tokens.secondary),
                 ),
               ],
             ),
@@ -437,7 +437,7 @@ class _SettingsPageState extends State<SettingsPage> {
             onPressed: () => ProviderDialog.show(context, controller, provider),
           ),
           IconButton(
-            icon: Icon(LucideIcons.trash2, size: 14, color: tokens.destructive),
+            icon: Icon(LucideIcons.trash2, size: 14, color: tokens.error),
             tooltip: '删除（其模型覆盖一并清除）',
             visualDensity: VisualDensity.compact,
             onPressed: () => _confirmDelete(
@@ -459,11 +459,11 @@ class _SettingsPageState extends State<SettingsPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(row.spec, style: AppText.ui(tokens.foreground)),
+                Text(row.spec, style: AppText.xs(tokens.foreground)),
                 Text(
                   row.summary.isEmpty ? '（空覆盖）' : row.summary,
                   overflow: TextOverflow.ellipsis,
-                  style: AppText.caption(tokens.mutedForeground),
+                  style: AppText.xxs(tokens.secondary),
                 ),
               ],
             ),
@@ -480,7 +480,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ),
           IconButton(
-            icon: Icon(LucideIcons.trash2, size: 14, color: tokens.destructive),
+            icon: Icon(LucideIcons.trash2, size: 14, color: tokens.error),
             tooltip: '删除',
             visualDensity: VisualDensity.compact,
             onPressed: () => _confirmDelete(
@@ -504,7 +504,7 @@ class _SettingsPageState extends State<SettingsPage> {
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text(title, style: AppText.body(null)),
+        title: Text(title, style: AppText.base(null)),
         content: Text(body),
         actions: [
           TextButton(
@@ -513,7 +513,7 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           FilledButton(
             style: FilledButton.styleFrom(
-              backgroundColor: tokens.destructive,
+              backgroundColor: tokens.error,
               foregroundColor: tokens.primaryForeground,
             ),
             onPressed: () {
@@ -549,7 +549,7 @@ class _Header extends StatelessWidget {
         children: [
           Text(
             '设置',
-            style: AppText.bodySm(
+            style: AppText.s(
               tokens.foreground,
             ).copyWith(fontWeight: FontWeight.w600),
           ),
@@ -578,7 +578,7 @@ class _AddButton extends StatelessWidget {
     return TextButton.icon(
       onPressed: onPressed,
       icon: const Icon(LucideIcons.plus, size: 14),
-      label: Text(label, style: AppText.ui(null)),
+      label: Text(label, style: AppText.xs(null)),
     );
   }
 }

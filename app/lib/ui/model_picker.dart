@@ -56,7 +56,7 @@ class _ModelPickerState extends State<ModelPicker> {
                   .toList();
         final current = widget.controller.model;
         return AlertDialog(
-          title: Text('选择模型', style: AppText.body(null)),
+          title: Text('选择模型', style: AppText.base(null)),
           content: SizedBox(
             width: 420,
             height: 480,
@@ -65,7 +65,7 @@ class _ModelPickerState extends State<ModelPicker> {
                 TextField(
                   controller: _searchController,
                   autofocus: true,
-                  style: AppText.ui(tokens.foreground),
+                  style: AppText.xs(tokens.foreground),
                   decoration: const InputDecoration(
                     hintText: '搜索模型…',
                     isDense: true,
@@ -86,7 +86,7 @@ class _ModelPickerState extends State<ModelPicker> {
                             height: 16,
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
-                              color: tokens.mutedForeground,
+                              color: tokens.secondary,
                             ),
                           ),
                         )
@@ -94,14 +94,14 @@ class _ModelPickerState extends State<ModelPicker> {
                       ? Center(
                           child: Text(
                             '无候选模型（在设置中配置 provider）',
-                            style: AppText.ui(tokens.mutedForeground),
+                            style: AppText.xs(tokens.secondary),
                           ),
                         )
                       : candidates.isEmpty
                       ? Center(
                           child: Text(
                             '无匹配模型',
-                            style: AppText.ui(tokens.mutedForeground),
+                            style: AppText.xs(tokens.secondary),
                           ),
                         )
                       : ListView(
@@ -115,18 +115,16 @@ class _ModelPickerState extends State<ModelPicker> {
                                       ? LucideIcons.check
                                       : LucideIcons.cpu,
                                   size: 14,
-                                  color: tokens.mutedForeground,
+                                  color: tokens.secondary,
                                 ),
                                 title: Text(
                                   choice.name,
-                                  style: AppText.ui(null),
+                                  style: AppText.xs(null),
                                 ),
                                 subtitle: Text(
                                   '${choice.spec} · ${choice.contextWindow} ctx'
                                   '${choice.reasoning ? ' · reasoning' : ''}',
-                                  style: AppText.caption(
-                                    tokens.mutedForeground,
-                                  ),
+                                  style: AppText.xxs(tokens.secondary),
                                 ),
                                 onTap: () {
                                   widget.controller.switchModel(choice.spec);

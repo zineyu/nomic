@@ -1,8 +1,9 @@
 /// 侧栏：品牌行 + 新建任务 + 搜索 + work 列表（按 project 分组，可折叠）。
 ///
 /// work 是侧栏一等入口（ADR-0044）：点击打开其主 session。
-/// 状态指示三态分离：选中 = 浅灰底 + 左侧 3px accent 条；未读 = accent 圆点；
-/// 运行中 = spinner（运行/未读由 controller 从全局事件流推导）。
+/// 状态指示三态分离：选中 = sidebar-active 底 + 左侧 3px 蓝条 + 字重；
+/// 未读 = DeepSeek 蓝圆点；运行中 = spinner
+///（运行/未读由 controller 从全局事件流推导）。
 library;
 
 import 'dart:async';
@@ -90,7 +91,7 @@ class _SidebarState extends State<Sidebar> {
             ),
             child: Text(
               'Nomic',
-              style: AppText.bodySm(
+              style: AppText.s(
                 tokens.foreground,
               ).copyWith(fontWeight: FontWeight.w700),
             ),
@@ -112,7 +113,7 @@ class _SidebarState extends State<Sidebar> {
             child: TextField(
               controller: _searchController,
               focusNode: widget.searchFocusNode,
-              style: AppText.ui(tokens.foreground),
+              style: AppText.xs(tokens.foreground),
               decoration: InputDecoration(
                 hintText: '搜索会话…',
                 isDense: true,
@@ -133,7 +134,7 @@ class _SidebarState extends State<Sidebar> {
                 ? Center(
                     child: Text(
                       controller.works.isEmpty ? '暂无 work' : '无匹配会话',
-                      style: AppText.ui(tokens.mutedForeground),
+                      style: AppText.xs(tokens.secondary),
                     ),
                   )
                 : Focus(
@@ -159,9 +160,7 @@ class _SidebarState extends State<Sidebar> {
                               children: [
                                 Text(
                                   '项目',
-                                  style: AppText.caption(
-                                    tokens.mutedForeground,
-                                  ),
+                                  style: AppText.xxs(tokens.secondary),
                                 ),
                                 const Spacer(),
                                 MiniIconButton(
@@ -225,10 +224,10 @@ class _SidebarState extends State<Sidebar> {
             ),
             child: Material(
               color: controller.showingSettings
-                  ? tokens.sidebarAccent
+                  ? tokens.sidebarActive
                   : Colors.transparent,
               child: InkWell(
-                hoverColor: tokens.sidebarAccent,
+                hoverColor: tokens.sidebarHover,
                 onTap: controller.openSettings,
                 child: Padding(
                   padding: const EdgeInsets.all(Spacing.md),
@@ -237,10 +236,10 @@ class _SidebarState extends State<Sidebar> {
                       Icon(
                         LucideIcons.settings,
                         size: 14,
-                        color: tokens.mutedForeground,
+                        color: tokens.secondary,
                       ),
                       const SizedBox(width: Spacing.sm),
-                      Text('设置', style: AppText.ui(tokens.foreground)),
+                      Text('设置', style: AppText.xs(tokens.foreground)),
                     ],
                   ),
                 ),
@@ -305,7 +304,7 @@ class _NewTaskButtonState extends State<_NewTaskButton> {
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
       child: Material(
-        color: _hovered ? tokens.sidebarAccent : tokens.secondary,
+        color: _hovered ? tokens.surfaceOverlay : tokens.primaryDimmed,
         borderRadius: BorderRadius.circular(Radii.lg),
         child: InkWell(
           borderRadius: BorderRadius.circular(Radii.lg),
@@ -320,7 +319,7 @@ class _NewTaskButtonState extends State<_NewTaskButton> {
                 const SizedBox(width: 4),
                 Text(
                   '新建任务',
-                  style: AppText.ui(
+                  style: AppText.xs(
                     tokens.foreground,
                   ).copyWith(fontWeight: FontWeight.w500),
                 ),
@@ -368,7 +367,7 @@ class _ProjectHeaderState extends State<_ProjectHeader> {
         onExit: (_) => setState(() => _hovered = false),
         child: InkWell(
           borderRadius: BorderRadius.circular(Radii.md),
-          hoverColor: tokens.sidebarAccent,
+          hoverColor: tokens.sidebarHover,
           onTap: widget.onToggle,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(
@@ -391,17 +390,13 @@ class _ProjectHeaderState extends State<_ProjectHeader> {
                     color: tokens.tertiary,
                   ),
                   const SizedBox(width: 4),
-                  Icon(
-                    LucideIcons.folder,
-                    size: 14,
-                    color: tokens.mutedForeground,
-                  ),
+                  Icon(LucideIcons.folder, size: 14, color: tokens.secondary),
                   const SizedBox(width: Spacing.sm),
                   Expanded(
                     child: Text(
                       _basename(widget.path),
                       overflow: TextOverflow.ellipsis,
-                      style: AppText.ui(
+                      style: AppText.xs(
                         tokens.foreground,
                       ).copyWith(fontWeight: FontWeight.w500),
                     ),
@@ -448,7 +443,7 @@ class _WorkTile extends StatefulWidget {
   final WorkSummary work;
   final AppController controller;
 
-  /// 当前打开的 work：浅灰底 + 左侧 3px accent 条 + 字重标记。
+  /// 当前打开的 work：sidebar-active 底 + 左侧 3px 蓝条 + 字重标记。
   final bool selected;
 
   /// 运行中（spinner）与未读（accent 圆点）分离；未读不对选中项展示。
@@ -481,11 +476,9 @@ class _WorkTileState extends State<_WorkTile> {
             // hoverColor：后者（主题默认 4% 黑）在 macOS Impeller 下会
             // 渲染成实心黑块（_NewTaskButton 同款处理）
             color: selected
-                ? tokens.sidebarAccent
-                : _hovered
-                ? tokens.sidebarAccent
-                : widget.keyboardFocused
-                ? tokens.secondary
+                ? tokens.sidebarActive
+                : _hovered || widget.keyboardFocused
+                ? tokens.sidebarHover
                 : Colors.transparent,
             borderRadius: BorderRadius.circular(Radii.lg),
             child: InkWell(
@@ -508,7 +501,9 @@ class _WorkTileState extends State<_WorkTile> {
                         width: 3,
                         height: 18,
                         decoration: BoxDecoration(
-                          color: selected ? tokens.accent : Colors.transparent,
+                          color: selected
+                              ? tokens.business
+                              : Colors.transparent,
                           borderRadius: BorderRadius.circular(Radii.full),
                         ),
                       ),
@@ -517,7 +512,7 @@ class _WorkTileState extends State<_WorkTile> {
                         child: Text(
                           work.displayTitle,
                           overflow: TextOverflow.ellipsis,
-                          style: AppText.ui(tokens.foreground).copyWith(
+                          style: AppText.xs(tokens.foreground).copyWith(
                             fontWeight: selected
                                 ? FontWeight.w500
                                 : FontWeight.w400,
@@ -547,7 +542,7 @@ class _WorkTileState extends State<_WorkTile> {
                             height: 12,
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
-                              color: tokens.accent,
+                              color: tokens.business,
                             ),
                           ),
                         )
@@ -558,7 +553,7 @@ class _WorkTileState extends State<_WorkTile> {
                             width: 8,
                             height: 8,
                             decoration: BoxDecoration(
-                              color: tokens.accent,
+                              color: tokens.business,
                               shape: BoxShape.circle,
                             ),
                           ),
@@ -589,12 +584,12 @@ class _WorkTileState extends State<_WorkTile> {
         PopupMenuItem(
           value: 'rename',
           height: 32,
-          child: Text('重命名', style: AppText.ui(tokens.foreground)),
+          child: Text('重命名', style: AppText.xs(tokens.foreground)),
         ),
         PopupMenuItem(
           value: 'delete',
           height: 32,
-          child: Text('删除', style: AppText.ui(tokens.destructive)),
+          child: Text('删除', style: AppText.xs(tokens.error)),
         ),
       ],
     ).then((value) {
@@ -626,7 +621,7 @@ void showRenameWorkDialog(
   showDialog<void>(
     context: context,
     builder: (context) => AlertDialog(
-      title: Text('重命名任务', style: AppText.body(null)),
+      title: Text('重命名任务', style: AppText.base(null)),
       content: TextField(
         controller: controller,
         autofocus: true,
@@ -666,7 +661,7 @@ void showDeleteProjectDialog(
   showDialog<void>(
     context: context,
     builder: (context) => AlertDialog(
-      title: Text('删除这个 project？', style: AppText.body(null)),
+      title: Text('删除这个 project？', style: AppText.base(null)),
       content: Text(
         cascade
             ? '「${_basename(project.path)}」名下的 ${project.sessionCount} 个会话将一并删除；磁盘目录不受影响。'
@@ -679,7 +674,7 @@ void showDeleteProjectDialog(
         ),
         FilledButton(
           style: FilledButton.styleFrom(
-            backgroundColor: tokens.destructive,
+            backgroundColor: tokens.error,
             foregroundColor: tokens.primaryForeground,
           ),
           onPressed: () {
@@ -711,7 +706,7 @@ void showDeleteWorkDialog(
   showDialog<void>(
     context: context,
     builder: (context) => AlertDialog(
-      title: Text('删除这个 work？', style: AppText.body(null)),
+      title: Text('删除这个 work？', style: AppText.base(null)),
       content: Text('「${work.displayTitle}」及其全部会话将被删除。'),
       actions: [
         TextButton(
@@ -720,7 +715,7 @@ void showDeleteWorkDialog(
         ),
         FilledButton(
           style: FilledButton.styleFrom(
-            backgroundColor: tokens.destructive,
+            backgroundColor: tokens.error,
             foregroundColor: tokens.primaryForeground,
           ),
           onPressed: () {

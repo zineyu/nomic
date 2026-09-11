@@ -62,7 +62,7 @@ class _QuestionPanelState extends State<QuestionPanel> {
       width: double.infinity,
       decoration: BoxDecoration(
         color: tokens.card,
-        borderRadius: BorderRadius.circular(Radii.lg),
+        borderRadius: BorderRadius.circular(Radii.xxl),
         border: Border.all(color: tokens.border),
       ),
       padding: const EdgeInsets.all(Spacing.md),
@@ -72,16 +72,12 @@ class _QuestionPanelState extends State<QuestionPanel> {
         children: [
           Row(
             children: [
-              Icon(
-                LucideIcons.helpCircle,
-                size: 14,
-                color: tokens.mutedForeground,
-              ),
+              Icon(LucideIcons.helpCircle, size: 14, color: tokens.secondary),
               const SizedBox(width: Spacing.sm),
               Expanded(
                 child: Text(
                   q.question,
-                  style: AppText.ui(
+                  style: AppText.xs(
                     tokens.foreground,
                   ).copyWith(fontWeight: FontWeight.w500),
                 ),
@@ -158,7 +154,7 @@ class _OptionRow extends StatelessWidget {
         : (selected ? LucideIcons.circleDot : LucideIcons.circle);
     return InkWell(
       borderRadius: BorderRadius.circular(Radii.md),
-      hoverColor: tokens.muted,
+      hoverColor: tokens.primaryDimmed,
       onTap: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(
@@ -170,10 +166,10 @@ class _OptionRow extends StatelessWidget {
             Icon(
               icon,
               size: 14,
-              color: selected ? tokens.foreground : tokens.mutedForeground,
+              color: selected ? tokens.foreground : tokens.secondary,
             ),
             const SizedBox(width: Spacing.sm),
-            Expanded(child: Text(label, style: AppText.ui(tokens.foreground))),
+            Expanded(child: Text(label, style: AppText.xs(tokens.foreground))),
           ],
         ),
       ),

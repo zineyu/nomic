@@ -21,7 +21,7 @@ class MessageItemView extends StatelessWidget {
 
   /// 是否为「回答」区块（用户请求段内、最后一段执行过程之后的首条
   /// assistant 正文；由 chat_page 标注）。回答块前出现分隔与标签，
-  /// 并使用 prose 排版档（15px / 1.7）。
+  /// 并使用 prose 排版档（markdown body，14/24）。
   final bool isAnswer;
 
   @override
@@ -55,7 +55,7 @@ class _UserBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
-    // 用户消息是浅灰纸块（bubble token）：无边框无阴影、限宽右对齐
+    // 用户消息气泡（bubble token，light 为浅蓝 #EDF3FE）：无边框无阴影、限宽右对齐
     return LayoutBuilder(
       builder: (context, constraints) => Align(
         alignment: Alignment.centerRight,
@@ -69,11 +69,11 @@ class _UserBubble extends StatelessWidget {
             ),
             decoration: BoxDecoration(
               color: tokens.bubble,
-              borderRadius: BorderRadius.circular(Radii.xl),
+              borderRadius: BorderRadius.circular(Radii.xxl),
             ),
             child: SelectableText(
               item.text,
-              style: AppText.bodySm(tokens.foreground),
+              style: AppText.s(tokens.foreground),
             ),
           ),
         ),
@@ -93,10 +93,10 @@ class _AssistantBlock extends StatelessWidget {
     final tokens = tokensOf(context);
     if (item.isEmpty) return const SizedBox.shrink();
     final failed = item.stopReason == 'error' || item.stopReason == 'aborted';
-    // 回答块用 prose（15px / 1.7）；中间过程叙述用 bodySm（弱化）
+    // 回答块用 prose（markdown body 档）；中间过程叙述用 s 档（弱化）
     final textStyle = isAnswer
         ? AppText.prose(tokens.foreground)
-        : AppText.bodySm(tokens.foreground);
+        : AppText.s(tokens.foreground);
     return Padding(
       padding: const EdgeInsets.only(bottom: Spacing.md),
       child: Column(
@@ -110,8 +110,8 @@ class _AssistantBlock extends StatelessWidget {
                 children: [
                   Text(
                     '回答',
-                    style: AppText.caption(
-                      tokens.mutedForeground,
+                    style: AppText.xxs(
+                      tokens.secondary,
                     ).copyWith(fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(width: Spacing.sm),
@@ -139,29 +139,23 @@ class _AssistantBlock extends StatelessWidget {
                 h1: AppText.h1(tokens.foreground),
                 h2: AppText.h2(tokens.foreground),
                 h3: AppText.h3(tokens.foreground),
-                h4: AppText.body(
-                  tokens.foreground,
-                ).copyWith(fontWeight: FontWeight.w600),
-                h5: AppText.body(
-                  tokens.foreground,
-                ).copyWith(fontWeight: FontWeight.w600),
-                h6: AppText.body(
-                  tokens.foreground,
-                ).copyWith(fontWeight: FontWeight.w600),
+                h4: AppText.h4(tokens.foreground),
+                h5: AppText.h4(tokens.foreground),
+                h6: AppText.h4(tokens.foreground),
                 // 链接不走彩色：ink + 下划线
                 a: textStyle.copyWith(decoration: TextDecoration.underline),
                 // 行内 code chip：等宽 + 浅灰底（crate 名 / 版本号 / 路径）
                 code: AppFonts.mono(
-                  fontSize: 13,
+                  fontSize: 12,
                   color: tokens.foreground,
-                ).copyWith(backgroundColor: tokens.secondary),
+                ).copyWith(backgroundColor: tokens.codeSurface),
                 codeblockPadding: const EdgeInsets.all(Spacing.md),
                 codeblockDecoration: BoxDecoration(
-                  color: tokens.secondary,
+                  color: tokens.codeSurface,
                   borderRadius: BorderRadius.circular(Radii.lg),
                 ),
                 listBullet: textStyle,
-                blockquote: textStyle.copyWith(color: tokens.mutedForeground),
+                blockquote: textStyle.copyWith(color: tokens.secondary),
                 blockquoteDecoration: BoxDecoration(
                   border: Border(
                     left: BorderSide(color: tokens.borderStrong, width: 2),
@@ -173,14 +167,12 @@ class _AssistantBlock extends StatelessWidget {
                 // 表格：14px 正文、strong 细边框、斑马纹底（表头用字重
                 // 区分）；Intrinsic 列宽 + 窄窗口横向滚动，代码文本不被
                 // 压缩截断
-                tableHead: AppText.bodySm(
-                  tokens.foreground,
-                ).copyWith(fontWeight: FontWeight.w600),
-                tableBody: AppText.bodySm(tokens.foreground),
+                tableHead: AppText.tableHead(tokens.foreground),
+                tableBody: AppText.table(tokens.foreground),
                 tableBorder: TableBorder.all(color: tokens.borderStrong),
                 tableColumnWidth: const IntrinsicColumnWidth(),
                 tableScrollbarThumbVisibility: true,
-                tableCellsDecoration: BoxDecoration(color: tokens.secondary),
+                tableCellsDecoration: BoxDecoration(color: tokens.codeSurface),
                 tableCellsPadding: const EdgeInsets.symmetric(
                   horizontal: Spacing.sm,
                   vertical: 6,
@@ -200,10 +192,7 @@ class _AssistantBlock extends StatelessWidget {
           if (failed && item.errorMessage != null)
             Padding(
               padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                item.errorMessage!,
-                style: AppText.ui(tokens.destructive),
-              ),
+              child: Text(item.errorMessage!, style: AppText.xs(tokens.error)),
             ),
         ],
       ),
@@ -237,7 +226,7 @@ class _ExecutionCardState extends State<ExecutionCard> {
       margin: const EdgeInsets.only(bottom: Spacing.md),
       decoration: BoxDecoration(
         color: tokens.card,
-        borderRadius: BorderRadius.circular(Radii.xl),
+        borderRadius: BorderRadius.circular(Radii.xxl),
         border: Border.all(color: tokens.border),
       ),
       child: Column(
@@ -245,8 +234,8 @@ class _ExecutionCardState extends State<ExecutionCard> {
         children: [
           // 摘要头（整行可点，键盘可聚焦展开）
           InkWell(
-            borderRadius: BorderRadius.circular(Radii.xl),
-            hoverColor: tokens.secondary,
+            borderRadius: BorderRadius.circular(Radii.xxl),
+            hoverColor: tokens.primaryDimmed,
             onTap: () => setState(() => _expanded = !_expanded),
             child: Padding(
               padding: const EdgeInsets.symmetric(
@@ -255,26 +244,19 @@ class _ExecutionCardState extends State<ExecutionCard> {
               ),
               child: Row(
                 children: [
-                  Icon(
-                    LucideIcons.layers,
-                    size: 14,
-                    color: tokens.mutedForeground,
-                  ),
+                  Icon(LucideIcons.layers, size: 14, color: tokens.secondary),
                   const SizedBox(width: Spacing.sm),
                   Expanded(
                     child: Text(
                       _executionSummary(item),
                       overflow: TextOverflow.ellipsis,
-                      style: AppText.ui(tokens.mutedForeground),
+                      style: AppText.xs(tokens.secondary),
                     ),
                   ),
                   if (errorCount > 0) ...[
-                    Icon(LucideIcons.x, size: 12, color: tokens.destructive),
+                    Icon(LucideIcons.x, size: 12, color: tokens.error),
                     const SizedBox(width: 4),
-                    Text(
-                      '$errorCount 失败',
-                      style: AppText.caption(tokens.destructive),
-                    ),
+                    Text('$errorCount 失败', style: AppText.xxs(tokens.error)),
                     const SizedBox(width: Spacing.sm),
                   ],
                   if (item.hasRunning)
@@ -283,7 +265,7 @@ class _ExecutionCardState extends State<ExecutionCard> {
                       height: 12,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        color: tokens.accent,
+                        color: tokens.business,
                       ),
                     )
                   else
@@ -292,7 +274,7 @@ class _ExecutionCardState extends State<ExecutionCard> {
                           ? LucideIcons.chevronDown
                           : LucideIcons.chevronRight,
                       size: 12,
-                      color: tokens.mutedForeground,
+                      color: tokens.secondary,
                     ),
                 ],
               ),
@@ -311,6 +293,7 @@ class _ExecutionCardState extends State<ExecutionCard> {
                         step is ToolItem ? step.toolCallId : step.id,
                       ),
                       step: step,
+                      inCard: true,
                     ),
                 ],
               ),
@@ -380,10 +363,14 @@ String _formatDuration(Duration d) {
 /// 摘要 + 耗时 + 状态，点击展开详情。摘要内容：工具取调用参数
 /// （`_toolArgSummary`），思考取首行；耗时与状态仅工具步骤有。
 class _StepRow extends StatefulWidget {
-  const _StepRow({super.key, required this.step});
+  const _StepRow({super.key, required this.step, this.inCard = false});
 
   /// ToolItem 或纯思考 AssistantItem（text 为空、thinking 非空）。
   final ChatItem step;
+
+  /// 是否在执行过程卡片内：卡片内保留 Spacing.md 水平 inset（与摘要头对齐）；
+  /// 直接落在消息列的步骤行无 inset，图标与 agent 正文左对齐。
+  final bool inCard;
 
   @override
   State<_StepRow> createState() => _StepRowState();
@@ -403,9 +390,7 @@ class _StepRowState extends State<_StepRow> {
     final tool = step is ToolItem ? step : null;
     final thinking = step is AssistantItem ? step : null;
     final failed = tool?.status == ToolStatus.error;
-    final (icon, opacity) = tool != null
-        ? _toolStyle(tool.name)
-        : (LucideIcons.brain, 0.45);
+    final icon = tool != null ? _toolIcon(tool.name) : LucideIcons.brain;
     final label = tool != null ? _toolLabel(tool.name) : '思考';
     final summary = tool != null
         ? _toolArgSummary(tool.args)
@@ -418,13 +403,13 @@ class _StepRowState extends State<_StepRow> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         InkWell(
-          hoverColor: tokens.secondary,
+          hoverColor: tokens.primaryDimmed,
           onTap: expandable
               ? () => setState(() => _expanded = !_expanded)
               : null,
           child: Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: Spacing.md,
+            padding: EdgeInsets.symmetric(
+              horizontal: widget.inCard ? Spacing.md : 0,
               vertical: 6,
             ),
             child: Row(
@@ -432,31 +417,32 @@ class _StepRowState extends State<_StepRow> {
                 Icon(
                   icon,
                   size: 14,
-                  color: failed
-                      ? tokens.destructive
-                      : tokens.foreground.withValues(alpha: opacity),
+                  color: failed ? tokens.error : tokens.secondary,
                 ),
                 const SizedBox(width: Spacing.sm),
                 Text(
                   label,
-                  style: AppText.ui(
-                    tokens.foreground,
+                  style: AppText.xs(
+                    tokens.secondary,
                   ).copyWith(fontWeight: FontWeight.w500),
                 ),
                 if (summary.isNotEmpty) ...[
                   const SizedBox(width: Spacing.sm),
-                  Flexible(
+                  // Expanded（tight）独占全部剩余空间，右侧耗时/状态/折叠
+                  // 按钮钉在最右，不随 summary 长度漂移（Flexible + Spacer
+                  // 双 flex 会均分剩余空间，短 summary 的未用配额会漏到行尾）
+                  Expanded(
                     child: Text(
                       summary,
                       overflow: TextOverflow.ellipsis,
                       style: AppFonts.mono(
                         fontSize: 12,
-                        color: tokens.mutedForeground,
+                        color: tokens.secondary,
                       ),
                     ),
                   ),
-                ],
-                const Spacer(),
+                ] else
+                  const Spacer(),
                 if (duration != null) ...[
                   Text(
                     _formatDuration(duration),
@@ -472,7 +458,7 @@ class _StepRowState extends State<_StepRow> {
                         ? LucideIcons.chevronDown
                         : LucideIcons.chevronRight,
                     size: 12,
-                    color: tokens.mutedForeground,
+                    color: tokens.secondary,
                   ),
                 ],
               ],
@@ -481,10 +467,10 @@ class _StepRowState extends State<_StepRow> {
         ),
         if (_expanded && expandable)
           Padding(
-            // 与步骤名左对齐（左右 padding 16 + 图标 14 + 间距 8）
-            padding: const EdgeInsets.only(
-              left: Spacing.md + 14 + Spacing.sm,
-              right: Spacing.md,
+            // 与步骤名左对齐（行水平 inset + 图标 14 + 间距 8）
+            padding: EdgeInsets.only(
+              left: (widget.inCard ? Spacing.md : 0) + 14 + Spacing.sm,
+              right: widget.inCard ? Spacing.md : 0,
               bottom: Spacing.sm,
             ),
             child: Column(
@@ -493,7 +479,7 @@ class _StepRowState extends State<_StepRow> {
                 if (tool != null && tool.args.isNotEmpty)
                   _CopyableCodeBlock(
                     text: _prettyJson(tool.args),
-                    color: tokens.mutedForeground,
+                    color: tokens.secondary,
                   ),
                 if (tool != null && tool.resultPreview.isNotEmpty)
                   Padding(
@@ -502,15 +488,13 @@ class _StepRowState extends State<_StepRow> {
                       text: tool.resultPreview.length > 2000
                           ? '${tool.resultPreview.substring(0, 2000)}…'
                           : tool.resultPreview,
-                      color: tool.isError
-                          ? tokens.destructive
-                          : tokens.foreground,
+                      color: tool.isError ? tokens.error : tokens.foreground,
                     ),
                   ),
                 if (thinking != null)
                   SelectableText(
                     thinking.thinking,
-                    style: AppText.ui(tokens.mutedForeground),
+                    style: AppText.xs(tokens.secondary),
                   ),
               ],
             ),
@@ -542,7 +526,7 @@ class _CopyableCodeBlock extends StatelessWidget {
           icon: Icon(
             LucideIcons.copy,
             size: 12,
-            color: tokensOf(context).mutedForeground,
+            color: tokensOf(context).secondary,
           ),
           tooltip: '复制',
           visualDensity: VisualDensity.compact,
@@ -573,44 +557,44 @@ class _ToolStatus extends StatelessWidget {
         height: 12,
         child: CircularProgressIndicator(
           strokeWidth: 2,
-          color: tokens.mutedForeground,
+          color: tokens.secondary,
         ),
       ),
       ToolStatus.done => Icon(
         LucideIcons.check,
         size: 12,
-        color: tokens.mutedForeground,
+        color: tokens.secondary,
       ),
       ToolStatus.error => Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(LucideIcons.x, size: 12, color: tokens.destructive),
+          Icon(LucideIcons.x, size: 12, color: tokens.error),
           const SizedBox(width: 4),
-          Text('失败', style: AppText.caption(tokens.destructive)),
+          Text('失败', style: AppText.xxs(tokens.error)),
         ],
       ),
     };
   }
 }
 
-/// 工具名 →（lucide 图标，前景不透明度）；不透明度阶梯表达类别
-///（DESIGN.md：execute > inspect > modify > interact > agent）。
-(IconData, double) _toolStyle(String name) => switch (name) {
-  'bash' => (LucideIcons.terminal, 1.0),
-  'read' => (LucideIcons.fileText, 0.75),
-  'grep' => (LucideIcons.search, 0.75),
-  'find' => (LucideIcons.folderSearch, 0.75),
-  'list_agents' => (LucideIcons.users, 0.75),
-  'todo_read' => (LucideIcons.listChecks, 0.75),
-  'write' => (LucideIcons.filePlus, 0.6),
-  'edit' => (LucideIcons.fileEdit, 0.6),
-  'todo_write' => (LucideIcons.listTodo, 0.6),
-  'ask_user_question' => (LucideIcons.helpCircle, 0.45),
-  'send_message' => (LucideIcons.send, 0.45),
-  'goal_done' => (LucideIcons.flag, 0.45),
-  'create_agent' || 'close_agent' => (LucideIcons.bot, 0.35),
-  'wait_result' || 'wait_all' => (LucideIcons.hourglass, 0.35),
-  _ => (LucideIcons.wrench, 0.6),
+/// 工具名 → lucide 图标（类别由图标图形表达；步骤行内容统一灰阶，
+/// 仅失败态用 error 红）。
+IconData _toolIcon(String name) => switch (name) {
+  'bash' => LucideIcons.terminal,
+  'read' => LucideIcons.fileText,
+  'grep' => LucideIcons.search,
+  'find' => LucideIcons.folderSearch,
+  'list_agents' => LucideIcons.users,
+  'todo_read' => LucideIcons.listChecks,
+  'write' => LucideIcons.filePlus,
+  'edit' => LucideIcons.fileEdit,
+  'todo_write' => LucideIcons.listTodo,
+  'ask_user_question' => LucideIcons.helpCircle,
+  'send_message' => LucideIcons.send,
+  'goal_done' => LucideIcons.flag,
+  'create_agent' || 'close_agent' => LucideIcons.bot,
+  'wait_result' || 'wait_all' => LucideIcons.hourglass,
+  _ => LucideIcons.wrench,
 };
 
 /// 工具参数摘要：取最具辨识度的一个标量参数（首行），无则空串。
@@ -664,11 +648,7 @@ class _ShimmerTextState extends State<_ShimmerText>
         return ShaderMask(
           blendMode: BlendMode.srcIn,
           shaderCallback: (bounds) => LinearGradient(
-            colors: [
-              tokens.mutedForeground,
-              tokens.foreground,
-              tokens.mutedForeground,
-            ],
+            colors: [tokens.secondary, tokens.foreground, tokens.secondary],
             stops: [
               (t - 0.3).clamp(0.0, 1.0),
               t.clamp(0.0, 1.0),
@@ -678,7 +658,7 @@ class _ShimmerTextState extends State<_ShimmerText>
           child: child,
         );
       },
-      child: Text(widget.text, style: AppText.caption(Colors.white)),
+      child: Text(widget.text, style: AppText.xxs(Colors.white)),
     );
   }
 }
@@ -694,7 +674,7 @@ class _SystemLine extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: Spacing.md),
       child: Center(
-        child: Text(item.text, style: AppText.caption(tokens.mutedForeground)),
+        child: Text(item.text, style: AppText.xxs(tokens.secondary)),
       ),
     );
   }

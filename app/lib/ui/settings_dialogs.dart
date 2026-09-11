@@ -43,7 +43,7 @@ Widget _errorText(BuildContext context, String? error) {
   final tokens = tokensOf(context);
   return Padding(
     padding: const EdgeInsets.only(top: Spacing.sm),
-    child: Text(error, style: AppText.caption(tokens.destructive)),
+    child: Text(error, style: AppText.xxs(tokens.error)),
   );
 }
 
@@ -152,7 +152,7 @@ class _ProviderDialogState extends State<ProviderDialog> {
     return AlertDialog(
       title: Text(
         existing == null ? '添加 provider' : '编辑 ${existing.name}',
-        style: AppText.body(null),
+        style: AppText.base(null),
       ),
       content: SizedBox(
         width: 420,
@@ -426,7 +426,7 @@ class _ModelSpecDialogState extends State<ModelSpecDialog> {
     return AlertDialog(
       title: Text(
         existing == null ? '添加模型覆盖' : '编辑 ${existing.spec}',
-        style: AppText.body(null),
+        style: AppText.base(null),
       ),
       content: SizedBox(
         width: 420,
@@ -512,7 +512,7 @@ class _ModelSpecDialogState extends State<ModelSpecDialog> {
               const SizedBox(height: Spacing.md),
               Text(
                 '每百万 token 费率（清空即清除；留空即不覆盖）',
-                style: AppText.caption(tokensOf(context).mutedForeground),
+                style: AppText.xxs(tokensOf(context).secondary),
               ),
               const SizedBox(height: Spacing.sm),
               Row(

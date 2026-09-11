@@ -148,8 +148,10 @@ class ExecutionItem extends ChatItem {
 
 /// 折叠规则：连续的执行步骤段（工具调用 + 夹在其中的纯思考段）在**两侧
 /// 都被边界项包裹**时折叠为 ExecutionItem。边界项 = 用户消息、含正文的
-/// assistant、出错/中止的 assistant；`SystemItem`（压缩提示等）透明——
-/// 不打断步骤段的连续性、不参与边界判定、原样输出（折叠时移到卡片之后）。
+/// assistant、出错/中止的 assistant。透明项 = `SystemItem`（压缩提示等）
+/// 与**空 assistant 消息**（仅含工具调用、无思考无正文的回合，如工具
+/// 失败后立即重试；渲染为 `SizedBox.shrink`）——不打断步骤段的连续性、
+/// 不参与边界判定、原样输出（折叠时移到卡片之后）。
 /// 尚无边界收尾的尾部段（运行中的当前段）保持平铺、实时可见；只有单个
 /// 步骤的段不折叠（折叠没有收益）。其余项与顺序不变。
 List<ChatItem> groupExecutionSteps(List<ChatItem> items) {
@@ -160,17 +162,22 @@ List<ChatItem> groupExecutionSteps(List<ChatItem> items) {
           item.thinking.isNotEmpty &&
           !item.isFailed);
 
+  /// 不可见项：渲染为空，若参与判定会成为看不见的「隔墙」，把两侧步骤段
+  /// 都留在平铺态（流式中的 assistant 会渲染 shimmer，不算透明）。
+  bool isTransparent(ChatItem item) =>
+      item is SystemItem || (item is AssistantItem && item.isEmpty);
+
   bool isBoundary(ChatItem item) => switch (item) {
     UserItem() => true,
     AssistantItem a => a.text.isNotEmpty || a.isFailed,
     _ => false,
   };
 
-  /// 从 `from` 起沿 `direction` 找最近的非 SystemItem 项（透明项跳过）。
+  /// 从 `from` 起沿 `direction` 找最近的非透明项。
   ChatItem? nearestVisible(int from, int direction) {
     var k = from;
     while (k >= 0 && k < items.length) {
-      if (items[k] is! SystemItem) return items[k];
+      if (!isTransparent(items[k])) return items[k];
       k += direction;
     }
     return null;
@@ -184,11 +191,11 @@ List<ChatItem> groupExecutionSteps(List<ChatItem> items) {
       i++;
       continue;
     }
-    // 步骤段：连续步骤，SystemItem 透明（不打断段，但不并入步骤）
-    final slice = <ChatItem>[]; // 原始顺序（含 SystemItem）
+    // 步骤段：连续步骤，透明项不打断段（但也不并入步骤）
+    final slice = <ChatItem>[]; // 原始顺序（含透明项）
     final steps = <ChatItem>[];
     var j = i;
-    while (j < items.length && (isStep(items[j]) || items[j] is SystemItem)) {
+    while (j < items.length && (isStep(items[j]) || isTransparent(items[j]))) {
       slice.add(items[j]);
       if (isStep(items[j])) steps.add(items[j]);
       j++;
@@ -199,8 +206,8 @@ List<ChatItem> groupExecutionSteps(List<ChatItem> items) {
         left != null && isBoundary(left) && right != null && isBoundary(right);
     if (wrapped && steps.length >= 2) {
       out.add(ExecutionItem(steps));
-      // 段内的系统提示（压缩等）移到卡片之后，保持可见
-      out.addAll(slice.whereType<SystemItem>());
+      // 段内的透明项（压缩提示、空回合等）移到卡片之后
+      out.addAll(slice.where(isTransparent));
     } else {
       out.addAll(slice);
     }

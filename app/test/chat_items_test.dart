@@ -257,6 +257,27 @@ void main() {
       expect(grouped[3], isA<AssistantItem>());
     });
 
+    test('空 assistant（仅工具调用、无思考无正文的回合）透明：不打断折叠', () {
+      // 工具失败后立即重试等回合的消息只含 tool_call 块：无思考、无正文，
+      // 渲染为空（SizedBox.shrink）。它既非步骤也非边界，若参与判定会成为
+      // 看不见的「隔墙」，把两侧步骤段都留在平铺态。
+      final items = <ChatItem>[
+        UserItem(text: 'hi', imageCount: 0, timestamp: 1),
+        AssistantItem(thinking: '先想想'),
+        tool('c1', name: 'read'),
+        tool('c2'),
+        AssistantItem(), // 空回合（重试的工具调用消息）
+        tool('c3'),
+        AssistantItem(text: 'done'),
+      ];
+      final grouped = groupExecutionSteps(items);
+      expect(grouped, hasLength(4));
+      final run = grouped[1] as ExecutionItem;
+      expect(run.steps.length, 4, reason: '空 assistant 不打断步骤段');
+      expect(grouped[2], isA<AssistantItem>(), reason: '空 assistant 移到卡片之后');
+      expect((grouped[3] as AssistantItem).text, 'done');
+    });
+
     test('夹在工具段中的纯思考段并入同组', () {
       final items = <ChatItem>[
         UserItem(text: 'hi', imageCount: 0, timestamp: 1),

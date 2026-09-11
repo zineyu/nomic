@@ -183,40 +183,124 @@ void main() {
     ToolItem tool(String id, {String name = 'bash'}) =>
         ToolItem(toolCallId: id, name: name);
 
-    test('text 出现时折叠其前的执行段（含单条工具），组 id 锚定首个工具调用', () {
+    test('被边界包裹的多步段折叠，组 id 锚定首个工具调用', () {
       final items = <ChatItem>[
         UserItem(text: 'hi', imageCount: 0, timestamp: 1),
         tool('c1'),
-        AssistantItem(text: '第一段'),
         tool('c2', name: 'read'),
-        tool('c3'),
+        AssistantItem(text: '第一段'),
+        tool('c3', name: 'read'),
+        tool('c4'),
         AssistantItem(text: 'done'),
       ];
       final grouped = groupExecutionSteps(items);
       expect(grouped.length, 5);
-      // 单条工具段同样被 text 收尾折叠
       final first = grouped[1] as ExecutionItem;
-      expect(first.tools.map((t) => t.toolCallId), ['c1']);
+      expect(first.tools.map((t) => t.toolCallId), ['c1', 'c2']);
       expect(first.id, 'exec-c1');
       final second = grouped[3] as ExecutionItem;
-      expect(second.tools.map((t) => t.toolCallId), ['c2', 'c3']);
+      expect(second.tools.map((t) => t.toolCallId), ['c3', 'c4']);
+    });
+
+    test('只有单个步骤的段不折叠（折叠没有收益）', () {
+      final items = <ChatItem>[
+        UserItem(text: 'hi', imageCount: 0, timestamp: 1),
+        tool('c1'),
+        AssistantItem(text: 'done'),
+      ];
+      final grouped = groupExecutionSteps(items);
+      expect(grouped.length, 3);
+      expect(grouped[1], isA<ToolItem>());
+    });
+
+    test('用户输入也能收尾折叠（出错/中断后的步骤段不再永远平铺）', () {
+      final items = <ChatItem>[
+        UserItem(text: 'hi', imageCount: 0, timestamp: 1),
+        tool('c1'),
+        tool('c2'),
+        UserItem(text: '换个问题', imageCount: 0, timestamp: 2),
+      ];
+      final grouped = groupExecutionSteps(items);
+      expect(grouped.length, 3);
+      final run = grouped[1] as ExecutionItem;
+      expect(run.tools.map((t) => t.toolCallId), ['c1', 'c2']);
+      expect(grouped[2], isA<UserItem>());
+    });
+
+    test('出错/中止的 assistant 也是边界，能收尾折叠', () {
+      final items = <ChatItem>[
+        UserItem(text: 'hi', imageCount: 0, timestamp: 1),
+        tool('c1'),
+        tool('c2'),
+        AssistantItem(stopReason: 'error', errorMessage: 'boom'),
+      ];
+      final grouped = groupExecutionSteps(items);
+      expect(grouped.length, 3);
+      expect(grouped[1], isA<ExecutionItem>());
+      expect(grouped[2], isA<AssistantItem>());
+    });
+
+    test('SystemItem 透明：不打断步骤段、不参与边界判定，折叠时移到卡片后', () {
+      final items = <ChatItem>[
+        UserItem(text: 'hi', imageCount: 0, timestamp: 1),
+        tool('c1'),
+        tool('c2'),
+        SystemItem('上下文已压缩'),
+        tool('c3'),
+        AssistantItem(text: 'done'),
+      ];
+      final grouped = groupExecutionSteps(items);
+      expect(grouped.length, 4);
+      final run = grouped[1] as ExecutionItem;
+      expect(run.steps.length, 3, reason: '压缩提示不打断步骤段');
+      expect(grouped[2], isA<SystemItem>(), reason: '系统提示移到卡片之后');
+      expect(grouped[3], isA<AssistantItem>());
     });
 
     test('夹在工具段中的纯思考段并入同组', () {
       final items = <ChatItem>[
+        UserItem(text: 'hi', imageCount: 0, timestamp: 1),
         tool('c1'),
         AssistantItem(thinking: '先想想'),
         tool('c2'),
         AssistantItem(text: 'done'),
       ];
       final grouped = groupExecutionSteps(items);
-      expect(grouped, hasLength(2));
-      final run = grouped[0] as ExecutionItem;
+      expect(grouped, hasLength(3));
+      final run = grouped[1] as ExecutionItem;
       expect(run.steps.length, 3);
       expect(run.steps[1], isA<AssistantItem>());
     });
 
-    test('尚无 text 收尾的尾部执行段不折叠（运行中实时可见）', () {
+    test('被边界包裹的纯思考段也折叠，组 id 锚定首个步骤', () {
+      final thinking1 = AssistantItem(thinking: '先想想');
+      final thinking2 = AssistantItem(thinking: '再想想');
+      final items = <ChatItem>[
+        UserItem(text: 'hi', imageCount: 0, timestamp: 1),
+        thinking1,
+        thinking2,
+        AssistantItem(text: 'done'),
+      ];
+      final grouped = groupExecutionSteps(items);
+      expect(grouped, hasLength(3));
+      final run = grouped[1] as ExecutionItem;
+      expect(run.steps, [thinking1, thinking2]);
+      expect(run.tools, isEmpty);
+      expect(run.id, 'exec-${thinking1.id}');
+    });
+
+    test('单个纯思考段不折叠（步数不足）', () {
+      final items = <ChatItem>[
+        UserItem(text: 'hi', imageCount: 0, timestamp: 1),
+        AssistantItem(thinking: '先想想'),
+        AssistantItem(text: 'done'),
+      ];
+      final grouped = groupExecutionSteps(items);
+      expect(grouped, hasLength(3));
+      expect(grouped[1], isA<AssistantItem>());
+    });
+
+    test('尚无边界收尾的尾部执行段不折叠（运行中实时可见）', () {
       final items = <ChatItem>[
         UserItem(text: 'hi', imageCount: 0, timestamp: 1),
         tool('c1'),
@@ -228,38 +312,41 @@ void main() {
       expect(grouped[2], isA<ToolItem>());
     });
 
-    test('text 后再出现的执行段不折叠，直到下一次 text 出现', () {
+    test('段首无边界（列表开头）不折叠', () {
       final items = <ChatItem>[
         tool('c1'),
-        AssistantItem(text: 'a'),
         tool('c2'),
-        tool('c3'),
-      ];
-      // 尾部段（c2/c3）尚无 text 收尾，保持平铺
-      var grouped = groupExecutionSteps(items);
-      expect(grouped.length, 4);
-      expect(grouped[0], isA<ExecutionItem>());
-      expect(grouped[2], isA<ToolItem>());
-      expect(grouped[3], isA<ToolItem>());
-
-      // 下一段 text 出现后折叠
-      items.add(AssistantItem(text: 'b'));
-      grouped = groupExecutionSteps(items);
-      expect(grouped.length, 4);
-      expect(grouped[0], isA<ExecutionItem>());
-      final second = grouped[2] as ExecutionItem;
-      expect(second.tools.map((t) => t.toolCallId), ['c2', 'c3']);
-    });
-
-    test('无工具的纯思考段不折叠（跟随的 text 只是叙述）', () {
-      final items = <ChatItem>[
-        AssistantItem(thinking: '先想想'),
         AssistantItem(text: 'done'),
       ];
       final grouped = groupExecutionSteps(items);
-      expect(grouped, hasLength(2));
-      expect(grouped[0], isA<AssistantItem>());
-      expect(grouped[1], isA<AssistantItem>());
+      expect(grouped.length, 3);
+      expect(grouped[0], isA<ToolItem>());
+      expect(grouped[1], isA<ToolItem>());
+    });
+
+    test('text 后再出现的执行段不折叠，直到下一个边界出现', () {
+      final items = <ChatItem>[
+        UserItem(text: 'hi', imageCount: 0, timestamp: 1),
+        tool('c1'),
+        tool('c2'),
+        AssistantItem(text: 'a'),
+        tool('c3'),
+        tool('c4'),
+      ];
+      // 尾部段（c3/c4）尚无边界收尾，保持平铺
+      var grouped = groupExecutionSteps(items);
+      expect(grouped.length, 5);
+      expect(grouped[1], isA<ExecutionItem>());
+      expect(grouped[3], isA<ToolItem>());
+      expect(grouped[4], isA<ToolItem>());
+
+      // 下一个边界（用户输入）出现后折叠
+      items.add(UserItem(text: '继续', imageCount: 0, timestamp: 2));
+      grouped = groupExecutionSteps(items);
+      expect(grouped.length, 5);
+      expect(grouped[1], isA<ExecutionItem>());
+      final second = grouped[3] as ExecutionItem;
+      expect(second.tools.map((t) => t.toolCallId), ['c3', 'c4']);
     });
 
     test('运行中 / 失败 / 用时从成员聚合', () {

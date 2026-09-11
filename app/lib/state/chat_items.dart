@@ -67,9 +67,12 @@ class AssistantItem extends ChatItem {
 
   /// 空 assistant 消息（无正文、无思考、非失败、非流式）不渲染。
   bool get isEmpty {
-    final failed = stopReason == 'error' || stopReason == 'aborted';
-    return !failed && !streaming && text.isEmpty && thinking.isEmpty;
+    return !isFailed && !streaming && text.isEmpty && thinking.isEmpty;
   }
+
+  /// 失败/中止（渲染错误行；也是执行过程折叠的边界，见
+  /// [groupExecutionSteps]）。
+  bool get isFailed => stopReason == 'error' || stopReason == 'aborted';
 }
 
 class ToolItem extends ChatItem {
@@ -110,15 +113,18 @@ class SystemItem extends ChatItem {
   final String text;
 }
 
-/// 执行过程分组（DESIGN.md「Tool ledger」）：一段连续的工具调用与纯思考
-/// 段在下一段 assistant 正文（text）出现时折叠为一张卡片，默认只露一行
-/// 摘要（执行过程 · N 步 · 搜索 X 次 · 命令 Y 条 · 用时 Zs），展开才是
-/// 逐步时间线。
+/// 执行过程分组（DESIGN.md「Tool ledger」）：两侧被边界项包裹的一段连续
+/// 步骤（工具调用与纯思考段）折叠为一张卡片，默认只露一行摘要
+///（执行过程 · N 步 · 搜索 X 次 · 命令 Y 条 · 用时 Zs），展开才是
+/// 逐步时间线。分组规则见 [groupExecutionSteps]。
 class ExecutionItem extends ChatItem {
   ExecutionItem(List<ChatItem> steps) : steps = List.unmodifiable(steps) {
-    // 组 id 锚定首个工具调用：流式增长（组变长）时渲染 key 稳定，
-    // 展开态不丢
-    id = 'exec-${tools.first.toolCallId}';
+    // 组 id 锚定首个工具调用（纯思考组锚定首个步骤）：流式增长（组变长）
+    // 时渲染 key 稳定，展开态不丢
+    final tools = this.tools;
+    id = tools.isNotEmpty
+        ? 'exec-${tools.first.toolCallId}'
+        : 'exec-${steps.first.id}';
   }
 
   /// 步骤：ToolItem 或纯思考 AssistantItem（text 为空、thinking 非空）。
@@ -140,18 +146,35 @@ class ExecutionItem extends ChatItem {
   }
 }
 
-/// 折叠规则：连续的执行步骤段（工具调用 + 夹在其中的纯思考段）在
-/// **其后出现 assistant 正文（text）时**折叠为 ExecutionItem——text 是
-/// 一段执行过程的收尾标记。尚无文本收尾的尾部段（运行中的当前段）保持
-/// 平铺、实时可见，直到下一次 text 出现才折叠。段内至少含一个工具调用
-/// 才折叠（纯思考段维持独立渲染）；其余项与顺序不变。
+/// 折叠规则：连续的执行步骤段（工具调用 + 夹在其中的纯思考段）在**两侧
+/// 都被边界项包裹**时折叠为 ExecutionItem。边界项 = 用户消息、含正文的
+/// assistant、出错/中止的 assistant；`SystemItem`（压缩提示等）透明——
+/// 不打断步骤段的连续性、不参与边界判定、原样输出（折叠时移到卡片之后）。
+/// 尚无边界收尾的尾部段（运行中的当前段）保持平铺、实时可见；只有单个
+/// 步骤的段不折叠（折叠没有收益）。其余项与顺序不变。
 List<ChatItem> groupExecutionSteps(List<ChatItem> items) {
   bool isStep(ChatItem item) =>
       item is ToolItem ||
-      (item is AssistantItem && item.text.isEmpty && item.thinking.isNotEmpty);
+      (item is AssistantItem &&
+          item.text.isEmpty &&
+          item.thinking.isNotEmpty &&
+          !item.isFailed);
 
-  bool isTextItem(ChatItem item) =>
-      item is AssistantItem && item.text.isNotEmpty;
+  bool isBoundary(ChatItem item) => switch (item) {
+    UserItem() => true,
+    AssistantItem a => a.text.isNotEmpty || a.isFailed,
+    _ => false,
+  };
+
+  /// 从 `from` 起沿 `direction` 找最近的非 SystemItem 项（透明项跳过）。
+  ChatItem? nearestVisible(int from, int direction) {
+    var k = from;
+    while (k >= 0 && k < items.length) {
+      if (items[k] is! SystemItem) return items[k];
+      k += direction;
+    }
+    return null;
+  }
 
   final out = <ChatItem>[];
   var i = 0;
@@ -161,16 +184,25 @@ List<ChatItem> groupExecutionSteps(List<ChatItem> items) {
       i++;
       continue;
     }
+    // 步骤段：连续步骤，SystemItem 透明（不打断段，但不并入步骤）
+    final slice = <ChatItem>[]; // 原始顺序（含 SystemItem）
+    final steps = <ChatItem>[];
     var j = i;
-    while (j < items.length && isStep(items[j])) {
+    while (j < items.length && (isStep(items[j]) || items[j] is SystemItem)) {
+      slice.add(items[j]);
+      if (isStep(items[j])) steps.add(items[j]);
       j++;
     }
-    final segment = items.sublist(i, j);
-    final closedByText = j < items.length && isTextItem(items[j]);
-    if (closedByText && segment.any((step) => step is ToolItem)) {
-      out.add(ExecutionItem(segment));
+    final left = nearestVisible(i - 1, -1);
+    final right = nearestVisible(j, 1);
+    final wrapped =
+        left != null && isBoundary(left) && right != null && isBoundary(right);
+    if (wrapped && steps.length >= 2) {
+      out.add(ExecutionItem(steps));
+      // 段内的系统提示（压缩等）移到卡片之后，保持可见
+      out.addAll(slice.whereType<SystemItem>());
     } else {
-      out.addAll(segment);
+      out.addAll(slice);
     }
     i = j;
   }

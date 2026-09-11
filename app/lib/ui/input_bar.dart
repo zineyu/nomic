@@ -14,6 +14,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 
 import '../app_controller.dart';
 import '../theme.dart';
+import 'animations.dart';
 import 'model_picker.dart';
 
 class InputBar extends StatefulWidget {
@@ -97,7 +98,10 @@ class _InputBarState extends State<InputBar> {
     final controller = widget.controller;
     final running = controller.running;
     final canSend = _textController.text.trim().isNotEmpty;
-    return Container(
+    return AnimatedContainer(
+      // focus ring / 边框过渡：100ms 颜色与线宽插值（不闪现）
+      duration: AppMotion.fast,
+      curve: AppMotion.curve,
       decoration: BoxDecoration(
         color: tokens.inputMajor,
         // 悬浮 composer：全界面唯一带阴影的在流元素（DESIGN.md
@@ -219,7 +223,8 @@ class _ModelChip extends StatelessWidget {
   }
 }
 
-/// 圆形发送/停止按钮（36px；composer 主操作位）。
+/// 圆形发送/停止按钮（36px；composer 主操作位）。底色随可用态 100ms
+/// 过渡，发送 ↔ 停止图标交叉淡入淡出 + 缩放。
 class _CircleButton extends StatelessWidget {
   const _CircleButton({
     required this.icon,
@@ -241,16 +246,36 @@ class _CircleButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Tooltip(
       message: tooltip,
-      child: Material(
-        color: background,
-        shape: const CircleBorder(),
-        child: InkWell(
-          customBorder: const CircleBorder(),
-          onTap: onPressed,
-          child: SizedBox(
-            width: 36,
-            height: 36,
-            child: Icon(icon, size: iconSize, color: foreground),
+      child: AnimatedContainer(
+        duration: AppMotion.fast,
+        curve: AppMotion.curve,
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(color: background, shape: BoxShape.circle),
+        child: Material(
+          color: Colors.transparent,
+          shape: const CircleBorder(),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: onPressed,
+            child: Center(
+              child: AnimatedSwitcher(
+                duration: AppMotion.fast,
+                switchInCurve: AppMotion.curve,
+                switchOutCurve: AppMotion.curve,
+                transitionBuilder: (child, animation) => FadeTransition(
+                  opacity: animation,
+                  child: ScaleTransition(scale: animation, child: child),
+                ),
+                // key 同时含图标与前色：可用态翻转时整体交叉淡切
+                child: Icon(
+                  icon,
+                  key: ValueKey(Object.hash(icon, foreground)),
+                  size: iconSize,
+                  color: foreground,
+                ),
+              ),
+            ),
           ),
         ),
       ),
@@ -298,12 +323,22 @@ class _ContextUsage extends StatelessWidget {
           'tokens · $percent%',
       child: Semantics(
         label: '上下文用量 $percent%',
-        child: CustomPaint(
-          size: const Size.square(_ContextRing.size),
-          painter: _ContextRingPainter(
-            ratio: ratio,
-            color: color,
-            track: tokens.border,
+        // 占比与色阶随快照 200ms 插值（retarget 平滑，不跳变）
+        child: AnimatedColor(
+          color: color,
+          duration: AppMotion.normal,
+          builder: (context, ringColor) => TweenAnimationBuilder<double>(
+            tween: Tween(end: ratio),
+            duration: AppMotion.normal,
+            curve: AppMotion.curve,
+            builder: (context, value, _) => CustomPaint(
+              size: const Size.square(_ContextRing.size),
+              painter: _ContextRingPainter(
+                ratio: value,
+                color: ringColor,
+                track: tokens.border,
+              ),
+            ),
           ),
         ),
       ),

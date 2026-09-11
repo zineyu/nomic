@@ -14,6 +14,7 @@ import '../app_controller.dart';
 import '../platform/file_picker.dart';
 import '../protocol/models.dart';
 import '../theme.dart';
+import 'animations.dart';
 import 'chat_page.dart';
 import 'mini_icon_button.dart';
 import 'settings_page.dart';
@@ -64,8 +65,11 @@ class _HomePageState extends State<HomePage> {
           child: Scaffold(
             body: Column(
               children: [
-                if (!controller.connected)
-                  _ConnectionBanner(controller: controller),
+                // 连接横幅：高度 + 透明度收展（不硬跳）
+                AnimatedReveal(
+                  visible: !controller.connected,
+                  child: _ConnectionBanner(controller: controller),
+                ),
                 Expanded(
                   child: Row(
                     children: [
@@ -75,11 +79,38 @@ class _HomePageState extends State<HomePage> {
                       ),
                       Container(width: 1, color: tokens.sidebarBorder),
                       Expanded(
-                        child: controller.showingSettings
-                            ? SettingsPage(controller: controller)
-                            : controller.hasSession
-                            ? ChatPage(controller: controller)
-                            : _StartPage(controller: controller),
+                        // 设置 / 聊天 / 启动页切换：交叉淡入 + 轻微位移；
+                        // key 只区分页面类型，会话切换不重建 ChatPage 状态
+                        child: AnimatedSwitcher(
+                          duration: AppMotion.normal,
+                          switchInCurve: AppMotion.curve,
+                          switchOutCurve: AppMotion.curve,
+                          transitionBuilder: (child, animation) =>
+                              FadeTransition(
+                                opacity: animation,
+                                child: SlideTransition(
+                                  position: Tween<Offset>(
+                                    begin: const Offset(0, 0.015),
+                                    end: Offset.zero,
+                                  ).animate(animation),
+                                  child: child,
+                                ),
+                              ),
+                          child: controller.showingSettings
+                              ? SettingsPage(
+                                  key: const ValueKey('settings'),
+                                  controller: controller,
+                                )
+                              : controller.hasSession
+                              ? ChatPage(
+                                  key: const ValueKey('chat'),
+                                  controller: controller,
+                                )
+                              : _StartPage(
+                                  key: const ValueKey('start'),
+                                  controller: controller,
+                                ),
+                        ),
                       ),
                     ],
                   ),
@@ -134,7 +165,7 @@ class _ConnectionBanner extends StatelessWidget {
 /// 启动页：选择 project 后开始新 work（首条消息在聊天页发送）；
 /// 「添加项目目录…」经系统文件选择器登记新 project。
 class _StartPage extends StatelessWidget {
-  const _StartPage({required this.controller});
+  const _StartPage({super.key, required this.controller});
 
   final AppController controller;
 
@@ -294,22 +325,29 @@ class _ProjectTileState extends State<_ProjectTile> {
                   ),
                 ),
                 const SizedBox(width: Spacing.sm),
-                // 右侧：hover 时让位给删除入口（与侧栏 work 行同一模式）
-                if (_hovered)
-                  MiniIconButton(
-                    icon: LucideIcons.trash2,
-                    tooltip: '删除项目',
-                    onTap: () => showDeleteProjectDialog(
-                      context,
-                      widget.controller,
-                      project,
-                    ),
-                  )
-                else
-                  Text(
-                    '${project.sessionCount} 个会话',
-                    style: AppText.xxs(tokens.secondary),
-                  ),
+                // 右侧：hover 时让位给删除入口（与侧栏 work 行同一模式）；
+                // 槽位切换交叉淡入淡出
+                AnimatedSwitcher(
+                  duration: AppMotion.fast,
+                  switchInCurve: AppMotion.curve,
+                  switchOutCurve: AppMotion.curve,
+                  child: _hovered
+                      ? MiniIconButton(
+                          key: const ValueKey('delete'),
+                          icon: LucideIcons.trash2,
+                          tooltip: '删除项目',
+                          onTap: () => showDeleteProjectDialog(
+                            context,
+                            widget.controller,
+                            project,
+                          ),
+                        )
+                      : Text(
+                          '${project.sessionCount} 个会话',
+                          key: const ValueKey('count'),
+                          style: AppText.xxs(tokens.secondary),
+                        ),
+                ),
               ],
             ),
           ),

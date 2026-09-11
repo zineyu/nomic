@@ -9,6 +9,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import '../app_controller.dart';
 import '../protocol/models.dart';
 import '../theme.dart';
+import 'animations.dart';
 import 'settings_dialogs.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -240,8 +241,11 @@ class _SettingsPageState extends State<SettingsPage> {
         maxLines: 4,
         decoration: const InputDecoration(hintText: '如：总是用中文回复…'),
       ),
-      if (dirty || isSet)
-        Padding(
+      // 保存/恢复默认操作行：随编辑态收展（高度 + 透明度，不硬跳）
+      AnimatedReveal(
+        visible: dirty || isSet,
+        duration: AppMotion.fast,
+        child: Padding(
           padding: const EdgeInsets.only(top: Spacing.sm),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.end,
@@ -267,6 +271,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ],
           ),
         ),
+      ),
     ]);
   }
 

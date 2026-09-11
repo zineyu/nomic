@@ -9,6 +9,7 @@ import 'package:lucide_icons/lucide_icons.dart';
 import '../app_controller.dart';
 import '../protocol/models.dart';
 import '../theme.dart';
+import 'animations.dart';
 
 class QuestionPanel extends StatefulWidget {
   const QuestionPanel({
@@ -163,10 +164,10 @@ class _OptionRow extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Icon(
-              icon,
-              size: 14,
+            // 选中态：图标颜色 100ms 过渡（灰 → ink）
+            AnimatedColor(
               color: selected ? tokens.foreground : tokens.secondary,
+              builder: (context, color) => Icon(icon, size: 14, color: color),
             ),
             const SizedBox(width: Spacing.sm),
             Expanded(child: Text(label, style: AppText.xs(tokens.foreground))),

@@ -16,6 +16,7 @@ import '../app_controller.dart';
 import '../platform/file_picker.dart';
 import '../protocol/models.dart';
 import '../theme.dart';
+import 'animations.dart';
 import 'mini_icon_button.dart';
 
 class Sidebar extends StatefulWidget {
@@ -182,35 +183,45 @@ class _SidebarState extends State<Sidebar> {
                                 }
                               }),
                             ),
-                            if (!_collapsed.contains(entry.key))
-                              for (final work in entry.value)
-                                // 条目缩进与组头文本对齐（图标 14 + 间距 8）
-                                Padding(
-                                  padding: const EdgeInsets.only(left: 14),
-                                  child: _WorkTile(
-                                    work: work,
-                                    controller: controller,
-                                    selected:
-                                        controller.sessionId ==
-                                        work.mainSessionId,
-                                    running: controller.runningSessions
-                                        .contains(work.mainSessionId),
-                                    unread:
-                                        controller.unreadSessions.contains(
-                                          work.mainSessionId,
-                                        ) &&
-                                        controller.sessionId !=
+                            // 分组收展：高度 + 透明度过渡（key 锚定组路径）
+                            AnimatedReveal(
+                              key: ValueKey(entry.key),
+                              visible: !_collapsed.contains(entry.key),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  for (final work in entry.value)
+                                    // 条目缩进与组头文本对齐（图标 14 + 间距 8）
+                                    Padding(
+                                      padding: const EdgeInsets.only(left: 14),
+                                      child: _WorkTile(
+                                        work: work,
+                                        controller: controller,
+                                        selected:
+                                            controller.sessionId ==
                                             work.mainSessionId,
-                                    keyboardFocused:
-                                        visible.indexOf(work) == _focusedIndex,
-                                    onTap: () {
-                                      _listFocusNode.requestFocus();
-                                      controller.openSession(
-                                        work.mainSessionId,
-                                      );
-                                    },
-                                  ),
-                                ),
+                                        running: controller.runningSessions
+                                            .contains(work.mainSessionId),
+                                        unread:
+                                            controller.unreadSessions.contains(
+                                              work.mainSessionId,
+                                            ) &&
+                                            controller.sessionId !=
+                                                work.mainSessionId,
+                                        keyboardFocused:
+                                            visible.indexOf(work) ==
+                                            _focusedIndex,
+                                        onTap: () {
+                                          _listFocusNode.requestFocus();
+                                          controller.openSession(
+                                            work.mainSessionId,
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
                           ],
                         ],
                       ),
@@ -303,27 +314,31 @@ class _NewTaskButtonState extends State<_NewTaskButton> {
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
-      child: Material(
+      // hover 底色 100ms 颜色过渡（不闪现）
+      child: AnimatedColor(
         color: _hovered ? tokens.surfaceOverlay : tokens.primaryDimmed,
-        borderRadius: BorderRadius.circular(Radii.lg),
-        child: InkWell(
+        builder: (context, color) => Material(
+          color: color,
           borderRadius: BorderRadius.circular(Radii.lg),
-          hoverColor: Colors.transparent,
-          onTap: widget.onTap,
-          child: SizedBox(
-            height: 32,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(LucideIcons.plus, size: 14, color: tokens.foreground),
-                const SizedBox(width: 4),
-                Text(
-                  '新建任务',
-                  style: AppText.xs(
-                    tokens.foreground,
-                  ).copyWith(fontWeight: FontWeight.w500),
-                ),
-              ],
+          child: InkWell(
+            borderRadius: BorderRadius.circular(Radii.lg),
+            hoverColor: Colors.transparent,
+            onTap: widget.onTap,
+            child: SizedBox(
+              height: 32,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(LucideIcons.plus, size: 14, color: tokens.foreground),
+                  const SizedBox(width: 4),
+                  Text(
+                    '新建任务',
+                    style: AppText.xs(
+                      tokens.foreground,
+                    ).copyWith(fontWeight: FontWeight.w500),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -382,11 +397,9 @@ class _ProjectHeaderState extends State<_ProjectHeader> {
               height: 24,
               child: Row(
                 children: [
-                  Icon(
-                    widget.collapsed
-                        ? LucideIcons.chevronRight
-                        : LucideIcons.chevronDown,
-                    size: 12,
+                  // chevron 连续旋转表达折叠态（替代图标硬切）
+                  AnimatedChevron(
+                    expanded: !widget.collapsed,
                     color: tokens.tertiary,
                   ),
                   const SizedBox(width: 4),
@@ -401,24 +414,37 @@ class _ProjectHeaderState extends State<_ProjectHeader> {
                       ).copyWith(fontWeight: FontWeight.w500),
                     ),
                   ),
-                  if (_hovered) ...[
-                    MiniIconButton(
-                      icon: LucideIcons.plus,
-                      tooltip: '新建任务',
-                      onTap: () =>
-                          unawaited(widget.controller.createWork(widget.path)),
-                    ),
-                    if (project != null)
-                      MiniIconButton(
-                        icon: LucideIcons.trash2,
-                        tooltip: '删除项目',
-                        onTap: () => showDeleteProjectDialog(
-                          context,
-                          widget.controller,
-                          project,
-                        ),
-                      ),
-                  ],
+                  // hover 浮现操作位：交叉淡入淡出，行高不抖动
+                  AnimatedSwitcher(
+                    duration: AppMotion.fast,
+                    switchInCurve: AppMotion.curve,
+                    switchOutCurve: AppMotion.curve,
+                    child: _hovered
+                        ? Row(
+                            key: const ValueKey('actions'),
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              MiniIconButton(
+                                icon: LucideIcons.plus,
+                                tooltip: '新建任务',
+                                onTap: () => unawaited(
+                                  widget.controller.createWork(widget.path),
+                                ),
+                              ),
+                              if (project != null)
+                                MiniIconButton(
+                                  icon: LucideIcons.trash2,
+                                  tooltip: '删除项目',
+                                  onTap: () => showDeleteProjectDialog(
+                                    context,
+                                    widget.controller,
+                                    project,
+                                  ),
+                                ),
+                            ],
+                          )
+                        : const SizedBox(key: ValueKey('idle')),
+                  ),
                 ],
               ),
             ),
@@ -471,94 +497,115 @@ class _WorkTileState extends State<_WorkTile> {
         onExit: (_) => setState(() => _hovered = false),
         child: GestureDetector(
           onSecondaryTapUp: (details) => _showContextMenu(details, context),
-          child: Material(
-            // hover 底色走 Material 的不透明颜色而非 InkWell 的半透明
-            // hoverColor：后者（主题默认 4% 黑）在 macOS Impeller 下会
-            // 渲染成实心黑块（_NewTaskButton 同款处理）
+          // hover/选中底色 100ms 颜色过渡（不闪现）；走不透明颜色而非
+          // InkWell 的半透明 hoverColor：后者（主题默认 4% 黑）在 macOS
+          // Impeller 下会渲染成实心黑块
+          child: AnimatedColor(
             color: selected
                 ? tokens.sidebarActive
                 : _hovered || widget.keyboardFocused
                 ? tokens.sidebarHover
                 : Colors.transparent,
-            borderRadius: BorderRadius.circular(Radii.lg),
-            child: InkWell(
+            builder: (context, color) => Material(
+              color: color,
               borderRadius: BorderRadius.circular(Radii.lg),
-              hoverColor: Colors.transparent,
-              onTap: widget.onTap,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: Spacing.sm,
-                  vertical: Spacing.sm,
-                ),
-                // 行内容固定 24px：hover 浮现的 MiniIconButton 与状态指示
-                // 同槽，行高不随 hover 抖动
-                child: SizedBox(
-                  height: 24,
-                  child: Row(
-                    children: [
-                      // 选中强调条（3px accent；未选中占位保持对齐）
-                      Container(
-                        width: 3,
-                        height: 18,
-                        decoration: BoxDecoration(
-                          color: selected
-                              ? tokens.business
-                              : Colors.transparent,
-                          borderRadius: BorderRadius.circular(Radii.full),
-                        ),
-                      ),
-                      const SizedBox(width: Spacing.sm),
-                      Expanded(
-                        child: Text(
-                          work.displayTitle,
-                          overflow: TextOverflow.ellipsis,
-                          style: AppText.xs(tokens.foreground).copyWith(
-                            fontWeight: selected
-                                ? FontWeight.w500
-                                : FontWeight.w400,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(Radii.lg),
+                hoverColor: Colors.transparent,
+                onTap: widget.onTap,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: Spacing.sm,
+                    vertical: Spacing.sm,
+                  ),
+                  // 行内容固定 24px：hover 浮现的 MiniIconButton 与状态指示
+                  // 同槽，行高不随 hover 抖动
+                  child: SizedBox(
+                    height: 24,
+                    child: Row(
+                      children: [
+                        // 选中强调条（3px accent；未选中透明占位保持对齐，
+                        // 颜色 100ms 过渡）
+                        AnimatedContainer(
+                          duration: AppMotion.fast,
+                          curve: AppMotion.curve,
+                          width: 3,
+                          height: 18,
+                          decoration: BoxDecoration(
+                            color: selected
+                                ? tokens.business
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(Radii.full),
                           ),
                         ),
-                      ),
-                      // 右侧状态位：hover 时让位给删除入口；运行中 spinner >
-                      // 未读圆点 > 无
-                      if (_hovered)
-                        Padding(
-                          padding: const EdgeInsets.only(left: Spacing.sm),
-                          child: MiniIconButton(
-                            icon: LucideIcons.trash2,
-                            tooltip: '删除',
-                            onTap: () => showDeleteWorkDialog(
-                              context,
-                              widget.controller,
-                              widget.work,
-                            ),
-                          ),
-                        )
-                      else if (widget.running)
-                        Padding(
-                          padding: const EdgeInsets.only(left: Spacing.sm),
-                          child: SizedBox(
-                            width: 12,
-                            height: 12,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: tokens.business,
-                            ),
-                          ),
-                        )
-                      else if (widget.unread)
-                        Padding(
-                          padding: const EdgeInsets.only(left: Spacing.sm),
-                          child: Container(
-                            width: 8,
-                            height: 8,
-                            decoration: BoxDecoration(
-                              color: tokens.business,
-                              shape: BoxShape.circle,
+                        const SizedBox(width: Spacing.sm),
+                        Expanded(
+                          child: Text(
+                            work.displayTitle,
+                            overflow: TextOverflow.ellipsis,
+                            style: AppText.xs(tokens.foreground).copyWith(
+                              fontWeight: selected
+                                  ? FontWeight.w500
+                                  : FontWeight.w400,
                             ),
                           ),
                         ),
-                    ],
+                        // 右侧状态位：hover 时让位给删除入口；运行中 spinner >
+                        // 未读圆点 > 无；槽位切换交叉淡入淡出
+                        AnimatedSwitcher(
+                          duration: AppMotion.fast,
+                          switchInCurve: AppMotion.curve,
+                          switchOutCurve: AppMotion.curve,
+                          child: _hovered
+                              ? Padding(
+                                  key: const ValueKey('delete'),
+                                  padding: const EdgeInsets.only(
+                                    left: Spacing.sm,
+                                  ),
+                                  child: MiniIconButton(
+                                    icon: LucideIcons.trash2,
+                                    tooltip: '删除',
+                                    onTap: () => showDeleteWorkDialog(
+                                      context,
+                                      widget.controller,
+                                      widget.work,
+                                    ),
+                                  ),
+                                )
+                              : widget.running
+                              ? Padding(
+                                  key: const ValueKey('running'),
+                                  padding: const EdgeInsets.only(
+                                    left: Spacing.sm,
+                                  ),
+                                  child: SizedBox(
+                                    width: 12,
+                                    height: 12,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: tokens.business,
+                                    ),
+                                  ),
+                                )
+                              : widget.unread
+                              ? Padding(
+                                  key: const ValueKey('unread'),
+                                  padding: const EdgeInsets.only(
+                                    left: Spacing.sm,
+                                  ),
+                                  child: Container(
+                                    width: 8,
+                                    height: 8,
+                                    decoration: BoxDecoration(
+                                      color: tokens.business,
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                )
+                              : const SizedBox(key: ValueKey('idle')),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),

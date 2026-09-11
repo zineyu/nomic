@@ -572,6 +572,27 @@ All transitions ride `cubic-bezier(0.4, 0, 0.2, 1)` at 100 ms (fast) / 200 ms
 (default) / 300 ms (slow). Preserve keyboard focus visibility and
 reduced-motion behavior when adding transitions or hover-only controls.
 
+Feature-level micro-animation conventions (shared primitives in
+`app/lib/ui/animations.dart`):
+
+- **Entrance** (`FadeSlideIn`): one-shot fade + ≤8 px upward drift at 200 ms
+  for newly appearing content (message items, banners, panels, empty states).
+  Paint-time transform only — never perturbs list layout or scroll metrics.
+- **Reveal** (`AnimatedReveal`): paired size + fade at 200 ms for in-place
+  expand/collapse (execution card details, banners, queue, working line);
+  the subtree stays mounted through the exit animation, so callers cache the
+  last non-empty content for the collapsing frame.
+- **Hover/focus color**: 100 ms color interpolation (row fills, icon
+  foreground ladder, composer focus ring, button fills) — state changes
+  interpolate, never snap.
+- **Slot swaps**: cross-fade (optionally with a subtle scale) at 100 ms for
+  hover-revealed actions and status-indicator exchanges (spinner ↔ icon ↔
+  dot); chevrons express expand state by a continuous 90° rotation instead of
+  an icon swap.
+- **Reduced motion**: when the platform requests reduced motion
+  (`MediaQuery.disableAnimations`), entrance and reveal animations jump
+  straight to their end state.
+
 ## Do's and Don'ts
 
 - Do consume semantic alias tokens in feature components; don't copy static

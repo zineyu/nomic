@@ -7,6 +7,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../theme.dart';
+import 'animations.dart';
 
 class MiniIconButton extends StatefulWidget {
   const MiniIconButton({
@@ -39,13 +40,14 @@ class _MiniIconButtonState extends State<MiniIconButton> {
         child: GestureDetector(
           onTap: widget.onTap,
           behavior: HitTestBehavior.opaque,
+          // 前景色随 hover 100ms 过渡（muted → foreground，不闪现）
           child: SizedBox(
             width: 24,
             height: 24,
-            child: Icon(
-              widget.icon,
-              size: 14,
+            child: AnimatedColor(
               color: _hovered ? tokens.foreground : tokens.secondary,
+              builder: (context, color) =>
+                  Icon(widget.icon, size: 14, color: color),
             ),
           ),
         ),

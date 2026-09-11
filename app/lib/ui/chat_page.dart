@@ -11,6 +11,7 @@ import '../app_controller.dart';
 import '../protocol/models.dart';
 import '../state/chat_items.dart';
 import '../theme.dart';
+import 'animations.dart';
 import 'input_bar.dart';
 import 'message_item.dart';
 import 'question_panel.dart';
@@ -32,8 +33,18 @@ class _ChatPageState extends State<ChatPage> {
   /// 流式增长不改条数，靠末条长度变化识别。
   int _lastSignature = 0;
 
-  /// 本轮运行开始时间（Working 状态行计时用；空闲时为 null）。
+  /// 本轮运行开始时间（Working 状态行计时用；运行结束后保留最后一次
+  /// 起算点，供退出动画期间继续渲染，下一次运行开始时重置）。
   DateTime? _runStartedAt;
+
+  /// 上一帧的运行态（检测运行开始边沿）。
+  bool _wasRunning = false;
+
+  /// 横幅/队列退出动画期间保留的上次内容（AnimatedReveal 收起时子树仍
+  /// 挂载，上游值已清空，需缓存最后非空内容继续渲染）。
+  String? _lastError;
+  String? _lastGoal;
+  List<QueueEntry> _lastQueue = const [];
 
   /// 用户是否停留在底部附近（决定「回到底部」浮钮是否显示）。
   bool _atBottom = true;
@@ -152,12 +163,17 @@ class _ChatPageState extends State<ChatPage> {
     final entries = groupExecutionSteps(controller.items);
     final answerIds = _answerItemIds(entries);
 
-    // 运行边沿记录开始时间（Working 状态行计时）
-    if (controller.running && _runStartedAt == null) {
+    // 运行开始边沿记录开始时间（Working 状态行计时）；结束后保留
+    // 起算点供收展动画渲染，下一次运行开始时重置
+    if (controller.running && !_wasRunning) {
       _runStartedAt = DateTime.now();
-    } else if (!controller.running) {
-      _runStartedAt = null;
     }
+    _wasRunning = controller.running;
+
+    // 横幅/队列内容缓存：退出动画期间上游已清空，用最后非空值渲染
+    if (controller.error != null) _lastError = controller.error;
+    if (controller.goal != null) _lastGoal = controller.goal;
+    if (controller.queue.isNotEmpty) _lastQueue = controller.queue;
 
     return CallbackShortcuts(
       bindings: {
@@ -174,8 +190,18 @@ class _ChatPageState extends State<ChatPage> {
         child: Column(
           children: [
             _ContextBar(controller: controller),
-            if (controller.error != null) _ErrorBanner(controller: controller),
-            if (controller.goal != null) _GoalBanner(goal: controller.goal!),
+            // 错误/目标横幅与队列区：高度 + 透明度收展
+            AnimatedReveal(
+              visible: controller.error != null,
+              child: _ErrorBanner(
+                message: _lastError ?? '',
+                onDismiss: controller.clearError,
+              ),
+            ),
+            AnimatedReveal(
+              visible: controller.goal != null,
+              child: _GoalBanner(goal: _lastGoal ?? ''),
+            ),
             Expanded(
               child: controller.items.isEmpty && !controller.running
                   ? const _EmptySessionHint()
@@ -215,22 +241,40 @@ class _ChatPageState extends State<ChatPage> {
                             ),
                           ),
                         ),
-                        // 「回到底部」浮钮：输入框上方右侧，不压正文
-                        if (!_atBottom)
-                          Positioned(
-                            right: Spacing.lg,
-                            bottom: Spacing.sm,
-                            child: _ScrollToBottomButton(
-                              onTap: _scrollToBottom,
+                        // 「回到底部」浮钮：输入框上方右侧，不压正文；
+                        // 常驻树内，出现/消失走透明度 + 缩放过渡
+                        Positioned(
+                          right: Spacing.lg,
+                          bottom: Spacing.sm,
+                          child: AnimatedScale(
+                            scale: _atBottom ? 0.8 : 1,
+                            duration: AppMotion.fast,
+                            curve: AppMotion.curve,
+                            child: AnimatedOpacity(
+                              opacity: _atBottom ? 0 : 1,
+                              duration: AppMotion.fast,
+                              curve: AppMotion.curve,
+                              child: IgnorePointer(
+                                ignoring: _atBottom,
+                                child: _ScrollToBottomButton(
+                                  onTap: _scrollToBottom,
+                                ),
+                              ),
                             ),
                           ),
+                        ),
                       ],
                     ),
             ),
             // steering 队列区（服务端权威：queue_changed / 快照驱动）
-            if (controller.queue.isNotEmpty) _QueueBar(controller: controller),
-            if (controller.running && _runStartedAt != null)
-              _WorkingLine(startedAt: _runStartedAt!),
+            AnimatedReveal(
+              visible: controller.queue.isNotEmpty,
+              child: _QueueBar(entries: _lastQueue, controller: controller),
+            ),
+            AnimatedReveal(
+              visible: controller.running && _runStartedAt != null,
+              child: _WorkingLine(startedAt: _runStartedAt ?? DateTime.now()),
+            ),
             // 提问面板（内嵌不阻塞；ValueKey 锚定 id，新提问重置表单态）
             if (controller.question != null)
               Center(
@@ -243,10 +287,13 @@ class _ChatPageState extends State<ChatPage> {
                       Spacing.md,
                       Spacing.sm,
                     ),
-                    child: QuestionPanel(
-                      key: ValueKey(controller.question!.id),
-                      controller: controller,
-                      question: controller.question!,
+                    // 入场：淡入 + 轻微上浮
+                    child: FadeSlideIn(
+                      child: QuestionPanel(
+                        key: ValueKey(controller.question!.id),
+                        controller: controller,
+                        question: controller.question!,
+                      ),
                     ),
                   ),
                 ),
@@ -329,19 +376,40 @@ class _ContextBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: Spacing.sm),
-          if (running)
-            SizedBox(
-              width: 12,
-              height: 12,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: tokens.business,
-              ),
-            )
-          else if (statusIcon != null)
-            Icon(statusIcon, size: 12, color: statusColor),
+          // 状态指示：图标/spinner 交叉淡入淡出（100ms），文本随内容切换
+          AnimatedSwitcher(
+            duration: AppMotion.fast,
+            switchInCurve: AppMotion.curve,
+            switchOutCurve: AppMotion.curve,
+            child: running
+                ? SizedBox(
+                    key: const ValueKey('running'),
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: tokens.business,
+                    ),
+                  )
+                : Icon(
+                    // 非运行态必有状态图标（只读/空闲/已完成）
+                    statusIcon!,
+                    key: ValueKey(statusIcon),
+                    size: 12,
+                    color: statusColor,
+                  ),
+          ),
           const SizedBox(width: 4),
-          Text(statusText, style: AppText.xxs(statusColor)),
+          AnimatedSwitcher(
+            duration: AppMotion.fast,
+            switchInCurve: AppMotion.curve,
+            switchOutCurve: AppMotion.curve,
+            child: Text(
+              statusText,
+              key: ValueKey(statusText),
+              style: AppText.xxs(statusColor),
+            ),
+          ),
           if (work != null) ...[
             const SizedBox(width: Spacing.sm),
             IconButton(
@@ -446,9 +514,11 @@ class _ReadOnlyBar extends StatelessWidget {
 }
 
 class _ErrorBanner extends StatelessWidget {
-  const _ErrorBanner({required this.controller});
+  const _ErrorBanner({required this.message, required this.onDismiss});
 
-  final AppController controller;
+  /// 退出动画期间渲染的是缓存的最后一条错误（上游已清空）。
+  final String message;
+  final VoidCallback onDismiss;
 
   @override
   Widget build(BuildContext context) {
@@ -464,13 +534,11 @@ class _ErrorBanner extends StatelessWidget {
           children: [
             Icon(LucideIcons.alertCircle, size: 14, color: tokens.error),
             const SizedBox(width: Spacing.sm),
-            Expanded(
-              child: Text(controller.error!, style: AppText.xs(tokens.error)),
-            ),
+            Expanded(child: Text(message, style: AppText.xs(tokens.error))),
             IconButton(
               icon: const Icon(LucideIcons.x, size: 14),
               visualDensity: VisualDensity.compact,
-              onPressed: controller.clearError,
+              onPressed: onDismiss,
             ),
           ],
         ),
@@ -504,14 +572,16 @@ class _GoalBanner extends StatelessWidget {
 }
 
 class _QueueBar extends StatelessWidget {
-  const _QueueBar({required this.controller});
+  const _QueueBar({required this.entries, required this.controller});
 
+  /// 队列条目（退出动画期间渲染的是缓存的最后非空队列）。
+  final List<QueueEntry> entries;
   final AppController controller;
 
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
-    final queue = controller.queue;
+    final queue = entries;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(
@@ -578,27 +648,44 @@ class _QueueEntryRowState extends State<_QueueEntryRow> {
                 style: AppText.xs(tokens.foreground),
               ),
             ),
-            if (_hovered) ...[
-              if (!widget.isFirst)
-                _QueueAction(
-                  icon: LucideIcons.arrowUp,
-                  tooltip: '上移',
-                  onTap: () =>
-                      widget.controller.moveQueueEntry(entry.id, up: true),
-                ),
-              if (!widget.isLast)
-                _QueueAction(
-                  icon: LucideIcons.arrowDown,
-                  tooltip: '下移',
-                  onTap: () =>
-                      widget.controller.moveQueueEntry(entry.id, up: false),
-                ),
-              _QueueAction(
-                icon: LucideIcons.x,
-                tooltip: '移出队列',
-                onTap: () => widget.controller.removeQueueEntry(entry.id),
-              ),
-            ],
+            // hover 浮现操作位：交叉淡入淡出，避免闪现
+            AnimatedSwitcher(
+              duration: AppMotion.fast,
+              switchInCurve: AppMotion.curve,
+              switchOutCurve: AppMotion.curve,
+              child: _hovered
+                  ? Row(
+                      key: const ValueKey('actions'),
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (!widget.isFirst)
+                          _QueueAction(
+                            icon: LucideIcons.arrowUp,
+                            tooltip: '上移',
+                            onTap: () => widget.controller.moveQueueEntry(
+                              entry.id,
+                              up: true,
+                            ),
+                          ),
+                        if (!widget.isLast)
+                          _QueueAction(
+                            icon: LucideIcons.arrowDown,
+                            tooltip: '下移',
+                            onTap: () => widget.controller.moveQueueEntry(
+                              entry.id,
+                              up: false,
+                            ),
+                          ),
+                        _QueueAction(
+                          icon: LucideIcons.x,
+                          tooltip: '移出队列',
+                          onTap: () =>
+                              widget.controller.removeQueueEntry(entry.id),
+                        ),
+                      ],
+                    )
+                  : const SizedBox(key: ValueKey('idle')),
+            ),
           ],
         ),
       ),
@@ -641,17 +728,19 @@ class _EmptySessionHint extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tokens = tokensOf(context);
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text('输入消息开始对话', style: AppText.xs(tokens.secondary)),
-          const SizedBox(height: Spacing.sm),
-          Text(
-            'Enter 发送 · Shift+Enter 换行 · Esc 中断',
-            style: AppText.xxs(tokens.secondary),
-          ),
-        ],
+    return FadeSlideIn(
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('输入消息开始对话', style: AppText.xs(tokens.secondary)),
+            const SizedBox(height: Spacing.sm),
+            Text(
+              'Enter 发送 · Shift+Enter 换行 · Esc 中断',
+              style: AppText.xxs(tokens.secondary),
+            ),
+          ],
+        ),
       ),
     );
   }

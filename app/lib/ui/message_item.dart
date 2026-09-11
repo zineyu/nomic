@@ -13,6 +13,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../state/chat_items.dart';
 import '../theme.dart';
+import 'animations.dart';
 
 class MessageItemView extends StatelessWidget {
   const MessageItemView({super.key, required this.item, this.isAnswer = false});
@@ -26,24 +27,27 @@ class MessageItemView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return switch (item) {
-      UserItem i => _UserBubble(item: i),
-      // 纯思考（组外未折叠的尾部段、流式中的思考阶段）与工具调用
-      // 都复用执行过程卡片内部的步骤行组件
-      AssistantItem i =>
-        i.text.isEmpty && i.thinking.isNotEmpty
-            ? Padding(
-                padding: const EdgeInsets.only(bottom: Spacing.sm),
-                child: _StepRow(step: i),
-              )
-            : _AssistantBlock(item: i, isAnswer: isAnswer),
-      ToolItem i => Padding(
-        padding: const EdgeInsets.only(bottom: 4),
-        child: _StepRow(step: i),
-      ),
-      ExecutionItem i => ExecutionCard(item: i),
-      SystemItem i => _SystemLine(item: i),
-    };
+    // 新条目入场：淡入 + 轻微上浮（key 锚定 item.id，流式更新不重播）
+    return FadeSlideIn(
+      child: switch (item) {
+        UserItem i => _UserBubble(item: i),
+        // 纯思考（组外未折叠的尾部段、流式中的思考阶段）与工具调用
+        // 都复用执行过程卡片内部的步骤行组件
+        AssistantItem i =>
+          i.text.isEmpty && i.thinking.isNotEmpty
+              ? Padding(
+                  padding: const EdgeInsets.only(bottom: Spacing.sm),
+                  child: _StepRow(step: i),
+                )
+              : _AssistantBlock(item: i, isAnswer: isAnswer),
+        ToolItem i => Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: _StepRow(step: i),
+        ),
+        ExecutionItem i => ExecutionCard(item: i),
+        SystemItem i => _SystemLine(item: i),
+      },
+    );
   }
 }
 
@@ -269,36 +273,40 @@ class _ExecutionCardState extends State<ExecutionCard> {
                       ),
                     )
                   else
-                    Icon(
-                      _expanded
-                          ? LucideIcons.chevronDown
-                          : LucideIcons.chevronRight,
-                      size: 12,
+                    AnimatedChevron(
+                      expanded: _expanded,
                       color: tokens.secondary,
                     ),
                 ],
               ),
             ),
           ),
-          if (_expanded) ...[
-            Divider(height: 1, color: tokens.border),
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 4),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  for (final step in item.steps)
-                    _StepRow(
-                      key: ValueKey(
-                        step is ToolItem ? step.toolCallId : step.id,
-                      ),
-                      step: step,
-                      inCard: true,
-                    ),
-                ],
-              ),
+          // 展开区：高度 + 透明度收展（退出动画期间步骤行保持挂载）
+          AnimatedReveal(
+            visible: _expanded,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Divider(height: 1, color: tokens.border),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final step in item.steps)
+                        _StepRow(
+                          key: ValueKey(
+                            step is ToolItem ? step.toolCallId : step.id,
+                          ),
+                          step: step,
+                          inCard: true,
+                        ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ],
       ),
     );
@@ -453,20 +461,16 @@ class _StepRowState extends State<_StepRow> {
                 if (tool != null) _ToolStatus(status: tool.status),
                 if (expandable) ...[
                   const SizedBox(width: 4),
-                  Icon(
-                    _expanded
-                        ? LucideIcons.chevronDown
-                        : LucideIcons.chevronRight,
-                    size: 12,
-                    color: tokens.secondary,
-                  ),
+                  AnimatedChevron(expanded: _expanded, color: tokens.secondary),
                 ],
               ],
             ),
           ),
         ),
-        if (_expanded && expandable)
-          Padding(
+        // 详情区：高度 + 透明度收展（padding 放入子树，收起时一并裁掉）
+        AnimatedReveal(
+          visible: _expanded && expandable,
+          child: Padding(
             // 与步骤名左对齐（行水平 inset + 图标 14 + 间距 8）
             padding: EdgeInsets.only(
               left: (widget.inCard ? Spacing.md : 0) + 14 + Spacing.sm,
@@ -499,6 +503,7 @@ class _StepRowState extends State<_StepRow> {
               ],
             ),
           ),
+        ),
       ],
     );
   }

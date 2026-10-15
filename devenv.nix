@@ -24,7 +24,6 @@
     typos # 拼写检查
     ripgrep # 快速文本搜索（rg）
     fd # 快速文件查找
-    flutter # Flutter GUI（app/）：flutter run / analyze / test
 
     # 常见原生依赖，按需取消注释：
     # pkg-config
@@ -47,25 +46,6 @@
     echo "== machete =="   && cargo-machete --with-metadata
     echo "== taplo =="     && taplo fmt --check $(fd -e toml)
     echo "== typos =="     && typos
-    echo "== app =="       && app-check
-  '';
-
-  # ── Flutter GUI（app/）──────────────────────────────────────────────────
-  # 需先启动后端：nomic --serve（事件流服务，ADR-0046）
-  # 注意：必须使用 scripts/flutter 而非裸 flutter——它会净化 Nix 注入的
-  # DEVELOPER_DIR/SDKROOT/LD 等变量并维护可写 SDK 镜像，否则 Xcode/SPM 构建
-  # 失败（详见 scripts/flutter 头部注释）。
-  scripts.app-dev.exec = ''
-    cd app && ../scripts/flutter run -d macos
-  '';
-  # App 侧与 check 等价的完整检查：依赖 → 格式 → 静态分析 → 单测
-  scripts.app-check.exec = ''
-    set -e
-    cd app
-    echo "== app:pub get ==" && ../scripts/flutter pub get
-    echo "== app:format =="  && ../scripts/flutter dart format --output=none --set-exit-if-changed .
-    echo "== app:analyze ==" && ../scripts/flutter analyze
-    echo "== app:test =="    && ../scripts/flutter test
   '';
 
   # ── 版本发布 ─────────────────────────────────────────────────────────────
@@ -169,7 +149,6 @@
     echo "🦀 nomic dev shell"
     echo "  rustc: $(rustc --version)"
     echo "  cargo: $(cargo --version)"
-    echo "  flutter: $(scripts/flutter --version | head -1)"
-    echo "  运行 \`check\` 执行与 CI 等价的全部本地检查（含 app/ Flutter GUI）"
+    echo "  运行 \`check\` 执行与 CI 等价的全部本地检查"
   '';
 }

@@ -4,8 +4,12 @@
 
 ## 架构
 
-- **server**：常驻进程，SQLite 存储的唯一写者，agent loop 的宿主。
-  独占数据库，负责 checkpoint/replay、消息串行化、向客户端广播。
+- **server**：常驻进程，SQLite 存储的唯一写者，agent loop 的宿主与
+  监管者。独占数据库，负责 checkpoint/replay 路由、向客户端广播。
+  本身不含 loop 逻辑，只做会话路由与生命周期管理。
+- **会话 actor（session actor）**：每个会话一个的独占 tokio 任务 +
+  命令邮箱（见 ADR-0007）。会话内串行、会话间并行；客户端订阅时
+  按需拉起，启动时回放 checkpoint。
 - **客户端（client）**：经 Unix socket + JSON Lines 协议连接 server
   的进程；TUI 是第一个客户端。客户端是「视图 + 输入」，无状态权威。
 - **存储抽象（storage trait）**：server 依赖的存储接口；SQLite 是

@@ -36,3 +36,10 @@ S1 评审指出三个缺口：
   执行环境持有工具注册表并按名称派发。
 - `ToolSpec` 的 wire 形态携带 `input_schema` 与 `output_schema`
   两个字段，供 provider 协议层与客户端展示。
+- `Tool` 刻意不做 dyn 兼容：关联类型各异的工具无法以
+  `dyn Tool` 异构存放（每个实现需独立指定 `Input`/`Output`），
+  引入 `async_trait` 只解决 async 的 dyn 兼容性，不解决异构擦除。
+  执行环境的工具注册表以类型擦除条目持有工具——声明 + 装箱的
+  参数解析与执行闭包——按名称派发，不依赖 dyn trait。
+- `call` 以 `impl Future + Send` 声明（非 `async fn`，与全仓库
+  trait 形态一致），实现侧可用 `async fn` 满足。

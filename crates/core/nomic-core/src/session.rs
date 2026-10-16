@@ -14,7 +14,7 @@ use crate::id::{MessageId, SessionId};
 pub struct ParentRef {
     /// 父会话 id。
     pub session: SessionId,
-    /// 分叉点：新会话从父会话的该消息之后继续。
+    /// 分叉点：新会话复制父会话截至该消息（含）的前缀，此后继续。
     pub forked_at: MessageId,
 }
 

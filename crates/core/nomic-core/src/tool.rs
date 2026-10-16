@@ -277,7 +277,7 @@ mod trait_tests {
     }
 
     #[test]
-    fn 工具自身报错与成功_拒绝_环境故障可区分() {
+    fn 工具自身报错回灌为_error_分支且与成功_拒绝区分() {
         // 工具自身报错：Err(ToolError) → ToolResult::Error 回灌模型
         let tool_error =
             futures::executor::block_on(AlwaysFailTool.call(GreetInput { name: "x".into() }))

@@ -29,5 +29,5 @@ pub use session::{ParentRef, Session, SessionState, StateTransitionError};
 pub use step::Step;
 pub use storage::Storage;
 pub use submission::{Acceptance, SessionTarget, Submission};
-pub use tool::{ToolCall, ToolName, ToolResult, ToolSpec};
+pub use tool::{Tool, ToolCall, ToolError, ToolName, ToolResult, ToolSpec};
 pub use tree::{SessionTree, SessionTreeSnapshot, TreeError};

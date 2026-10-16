@@ -1,0 +1,11 @@
+[package]
+name = "nomic-ai"
+description = "nomic rig-core LLM 适配层（骨架，适配器在 S5 实现）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

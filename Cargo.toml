@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/nomic"]
+members = [
+  "crates/ai/nomic-ai",
+  "crates/core/nomic-core",
+  "crates/server/nomic-server",
+  "crates/tui/nomic-tui",
+]
 
 [workspace.package]
 version = "0.4.0"

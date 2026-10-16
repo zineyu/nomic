@@ -1,6 +1,6 @@
 [package]
-name = "nomic"
-description = "nomic workspace placeholder crate"
+name = "nomic-server"
+description = "nomic 常驻 server：受理、调度、worker 与 IPC 服务端（骨架）"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -41,5 +41,5 @@ S1 评审指出三个缺口：
   引入 `async_trait` 只解决 async 的 dyn 兼容性，不解决异构擦除。
   执行环境的工具注册表以类型擦除条目持有工具——声明 + 装箱的
   参数解析与执行闭包——按名称派发，不依赖 dyn trait。
-- `call` 以 `impl Future + Send` 声明（非 `async fn`，与全仓库
-  trait 形态一致），实现侧可用 `async fn` 满足。
+- `call` 以 `impl Future + Send` 声明（clippy `async_fn_in_trait`
+  建议形态，Send 界限显式可查），实现侧可用 `async fn` 满足。

@@ -27,6 +27,15 @@ pub enum Step {
         /// 执行结果。
         result: ToolResult,
     },
+    /// 未完成的工具调用被标记为 interrupted：已派发但中断前未产出
+    /// 最终结果（如 server 崩溃）。恢复时其已提交的部分输出回灌模型，
+    /// 副作用绝不重复执行。
+    ToolCallInterrupted {
+        /// 调用 id。
+        call_id: ToolCallId,
+        /// 中断前已提交的部分输出；无已提交输出时为 `None`。
+        partial_output: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -51,6 +60,14 @@ mod tests {
             Step::ToolCallFinished {
                 call_id: call.id,
                 result: ToolResult::rejected("denied"),
+            },
+            Step::ToolCallInterrupted {
+                call_id: call.id,
+                partial_output: Some("partial stdout".into()),
+            },
+            Step::ToolCallInterrupted {
+                call_id: ToolCallId::new(),
+                partial_output: None,
             },
         ] {
             let json = serde_json::to_string(&step).unwrap();

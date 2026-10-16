@@ -3,6 +3,8 @@
 //! 客户端每次提交携带自己生成的 [`RequestId`]；服务端在提交层
 //! 按 requestId 去重——重复提交视为同一受理，绝不重复进入会话。
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::id::{RequestId, SessionId};
@@ -28,6 +30,10 @@ pub struct Submission {
     pub request_id: RequestId,
     /// 目标会话。
     pub target: SessionTarget,
+    /// 提交来源的工作目录；目标为新建会话时服务端据以创建会话。
+    /// 它是持久化的工作区标识（参照 Pi durable 的会话头 cwd），
+    /// 坐标系由执行环境解释（本地路径或沙箱内路径）。
+    pub working_dir: PathBuf,
     /// 用户消息文本。
     pub content: String,
 }
@@ -70,11 +76,13 @@ mod tests {
             Submission {
                 request_id: RequestId::new(),
                 target: SessionTarget::New,
+                working_dir: PathBuf::from("/tmp/ws"),
                 content: "新任务".into(),
             },
             Submission {
                 request_id: RequestId::new(),
                 target: SessionTarget::Existing(SessionId::new()),
+                working_dir: PathBuf::from("/tmp/ws"),
                 content: "继续".into(),
             },
         ] {

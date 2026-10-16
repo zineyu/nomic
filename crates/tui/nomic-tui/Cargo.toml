@@ -1,0 +1,11 @@
+[package]
+name = "nomic-tui"
+description = "nomic 终端客户端：连接 server、渲染会话树与流式输出（骨架）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

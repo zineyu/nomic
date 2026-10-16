@@ -236,10 +236,13 @@ dependencies = [
 name = "nomic-server"
 version = "0.4.0"
 dependencies = [
+ "futures",
+ "futures-util",
  "nomic-core",
  "rusqlite",
  "serde_json",
  "tempfile",
+ "thiserror",
  "tokio",
 ]
 

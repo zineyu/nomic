@@ -1,7 +1,9 @@
 # AGENTS.md
 
-> nomic 仓库当前为初始骨架状态：源码已清空，仅保留 CI 与 Rust 工具链配置。
-> 新增 crate 放入 `crates/<category>/<name>/` 并加入 `Cargo.toml` 的 workspace members。
+> crate 按 `crates/<category>/<name>/` 组织，当前四个 crate：
+> `core/nomic-core`（领域模型与 trait 词汇，全仓库唯一的领域依赖）、
+> `ai/nomic-ai`（rig-core 适配）、`server/nomic-server`（常驻 server）、
+> `tui/nomic-tui`（终端客户端）。新 crate 加入 `Cargo.toml` 的 workspace members。
 
 ## Build & Check
 

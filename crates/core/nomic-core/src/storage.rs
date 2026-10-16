@@ -12,7 +12,7 @@ use crate::id::{MessageId, SessionId, ToolCallId};
 use crate::session::{Session, SessionState};
 use crate::step::Step;
 use crate::submission::{Acceptance, Submission};
-use crate::tree::SessionTree;
+use crate::tree::SessionTreeSnapshot;
 
 /// 存储抽象：会话树、步骤日志与受理台账的唯一读写入口。
 pub trait Storage: Send + Sync {
@@ -56,8 +56,10 @@ pub trait Storage: Send + Sync {
         session: SessionId,
     ) -> impl Future<Output = Result<Vec<Step>, StorageError>> + Send;
 
-    /// 读取会话树快照。
-    fn session_tree(&self) -> impl Future<Output = Result<SessionTree, StorageError>> + Send;
+    /// 读取会话树快照（只含会话元数据，不含消息体）。
+    fn session_tree(
+        &self,
+    ) -> impl Future<Output = Result<SessionTreeSnapshot, StorageError>> + Send;
 
     /// 在 `source` 的 `at` 消息处分叉：写时复制分叉点之前的消息
     /// 前缀，返回新会话。`at` 不属于 `source` 时返回

@@ -1,7 +1,8 @@
 //! 会话树领域逻辑。
 //!
-//! 纯内存结构，按 [`SessionId`] 排序保证遍历确定性。树只维护
-//! 父子结构；分叉点的消息归属由存储层校验（树不持有消息）。
+//! 树持有会话元数据与各会话自有消息。分叉在分叉点（含）处复制
+//! 消息前缀到新会话——写时复制语义的可执行表示：此后父子各自的
+//! 追加互不可见。遍历按 [`SessionId`] 排序保证确定性。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -9,6 +10,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::id::{MessageId, SessionId};
+use crate::message::Message;
 use crate::session::Session;
 
 /// 会话树操作失败。
@@ -17,15 +19,55 @@ pub enum TreeError {
     /// 引用的会话不存在。
     #[error("session not found: {0}")]
     SessionMissing(SessionId),
+    /// 分叉点消息不属于来源会话。
+    #[error("fork point message not found in source session: {0}")]
+    ForkPointMissing(MessageId),
 }
 
-/// 会话树：全部会话及其父子从属关系。
+/// 会话树中的一个节点：元数据 + 本会话自有消息。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SessionNode {
+    session: Session,
+    /// 本会话的消息序列；分叉时已复制前缀，之后父子追加互不可见。
+    messages: Vec<Message>,
+}
+
+/// 会话树快照（事件负载）：只含会话元数据，不含消息体。
 ///
-/// 存储实现读取后据此渲染树形列表；分叉产生新节点，
-/// 父子会话的后续追加互不可见（各自的消息序列独立）。
+/// `SessionTreeChanged` 事件携带本类型；消息体经
+/// `Resume`/回放路径按需传输，事件流不带无界负载。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionTreeSnapshot {
+    sessions: Vec<Session>,
+}
+
+impl SessionTreeSnapshot {
+    /// 快照中的全部会话（按 id 排序）。
+    #[must_use]
+    pub fn sessions(&self) -> &[Session] {
+        &self.sessions
+    }
+
+    /// 快照是否为空。
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.sessions.is_empty()
+    }
+
+    /// 快照中的会话数量。
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.sessions.len()
+    }
+}
+
+/// 会话树：全部会话、父子从属关系与各会话消息序列。
+///
+/// 分叉产生新节点并复制写时复制前缀；父子会话的后续追加
+/// 互不可见。存储实现读取后据此渲染树形列表。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionTree {
-    sessions: BTreeMap<SessionId, Session>,
+    sessions: BTreeMap<SessionId, SessionNode>,
 }
 
 impl SessionTree {
@@ -39,33 +81,80 @@ impl SessionTree {
     pub fn create_root(&mut self, working_dir: impl Into<PathBuf>) -> SessionId {
         let session = Session::root(working_dir.into());
         let id = session.id();
-        self.sessions.insert(id, session);
+        self.sessions.insert(
+            id,
+            SessionNode {
+                session,
+                messages: Vec::new(),
+            },
+        );
         id
+    }
+
+    /// 向会话追加一条消息。
+    ///
+    /// # Errors
+    ///
+    /// 会话不存在时返回 [`TreeError::SessionMissing`]。
+    pub fn append_message(
+        &mut self,
+        session: SessionId,
+        message: Message,
+    ) -> Result<(), TreeError> {
+        let node = self
+            .sessions
+            .get_mut(&session)
+            .ok_or(TreeError::SessionMissing(session))?;
+        node.messages.push(message);
+        Ok(())
+    }
+
+    /// 读取会话的消息序列（含分叉时复制的前缀）。
+    ///
+    /// # Errors
+    ///
+    /// 会话不存在时返回 [`TreeError::SessionMissing`]。
+    pub fn messages(&self, session: SessionId) -> Result<&[Message], TreeError> {
+        let node = self
+            .sessions
+            .get(&session)
+            .ok_or(TreeError::SessionMissing(session))?;
+        Ok(&node.messages)
     }
 
     /// 在 `source` 会话的 `at` 消息处分叉出新会话。
     ///
-    /// 新会话继承工作目录，父子关系写入树；写时复制的消息前缀
-    /// 由存储层落库。`at` 是否属于 `source` 的校验同样属于存储层。
+    /// 复制 `source` 消息序列中至 `at`（含）的前缀作为新会话的
+    /// 初始序列；此后父子追加互不可见。新会话继承工作目录。
     ///
     /// # Errors
     ///
-    /// 返回 [`TreeError::SessionMissing`] 当 `source` 不存在。
+    /// 返回 [`TreeError::SessionMissing`] 当 `source` 不存在；
+    /// 返回 [`TreeError::ForkPointMissing`] 当 `at` 不属于 `source`。
     pub fn fork(&mut self, source: SessionId, at: MessageId) -> Result<SessionId, TreeError> {
-        let parent = self
+        let node = self
             .sessions
             .get(&source)
             .ok_or(TreeError::SessionMissing(source))?;
-        let child = Session::forked_from(parent, at);
+        let index = node
+            .messages
+            .iter()
+            .position(|message| message.id() == at)
+            .ok_or(TreeError::ForkPointMissing(at))?;
+        let child = Session::forked_from(&node.session, at);
         let id = child.id();
-        self.sessions.insert(id, child);
+        let node = SessionNode {
+            session: child,
+            messages: node.messages[..=index].to_vec(),
+        };
+        self.sessions.insert(id, node);
         Ok(id)
     }
 
-    /// 取会话。
+    /// 取会话元数据。
     #[must_use]
     pub fn get(&self, id: SessionId) -> Option<&Session> {
-        self.sessions.get(&id)
+        self.sessions.get(&id).map(|node| &node.session)
     }
 
     /// 根会话列表（无父节点的会话），按 id 排序。
@@ -73,6 +162,7 @@ impl SessionTree {
     pub fn roots(&self) -> Vec<&Session> {
         self.sessions
             .values()
+            .map(|node| &node.session)
             .filter(|session| session.parent().is_none())
             .collect()
     }
@@ -82,8 +172,21 @@ impl SessionTree {
     pub fn children_of(&self, id: SessionId) -> Vec<&Session> {
         self.sessions
             .values()
+            .map(|node| &node.session)
             .filter(|session| session.parent().is_some_and(|parent| parent.session == id))
             .collect()
+    }
+
+    /// 不含消息体的树快照，供事件负载使用。
+    #[must_use]
+    pub fn snapshot(&self) -> SessionTreeSnapshot {
+        SessionTreeSnapshot {
+            sessions: self
+                .sessions
+                .values()
+                .map(|node| node.session.clone())
+                .collect(),
+        }
     }
 
     /// 会话总数。
@@ -97,11 +200,6 @@ impl SessionTree {
     pub fn is_empty(&self) -> bool {
         self.sessions.is_empty()
     }
-
-    /// 按 id 遍历全部会话（排序确定）。
-    pub fn iter(&self) -> impl Iterator<Item = &Session> {
-        self.sessions.values()
-    }
 }
 
 #[cfg(test)]
@@ -110,6 +208,13 @@ mod tests {
 
     use super::*;
     use crate::session::SessionState;
+
+    fn user_message(id: MessageId, text: &str) -> Message {
+        Message::User {
+            id,
+            text: text.into(),
+        }
+    }
 
     #[test]
     fn 新树为空() {
@@ -123,6 +228,14 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert_eq!(tree.get(id).unwrap().id(), id);
         assert_eq!(tree.roots(), vec![tree.get(id).unwrap()]);
+        assert!(tree.messages(id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn 向不存在会话追加消息返回错误() {
+        let mut tree = SessionTree::new();
+        let result = tree.append_message(SessionId::new(), user_message(MessageId::new(), "m"));
+        assert!(matches!(result, Err(TreeError::SessionMissing(_))));
     }
 
     #[test]
@@ -133,11 +246,112 @@ mod tests {
     }
 
     #[test]
+    fn 对空会话或未知消息分叉返回分叉点错误() {
+        let mut tree = SessionTree::new();
+        let root = tree.create_root("/tmp/ws");
+        // 空会话没有任何消息可作分叉点
+        assert!(matches!(
+            tree.fork(root, MessageId::new()),
+            Err(TreeError::ForkPointMissing(_))
+        ));
+        let message = MessageId::new();
+        tree.append_message(root, user_message(message, "m1"))
+            .unwrap();
+        // 分叉点不属于来源会话
+        assert!(matches!(
+            tree.fork(root, MessageId::new()),
+            Err(TreeError::ForkPointMissing(_))
+        ));
+        // 分叉点属于其他会话同样拒绝
+        let other = tree.create_root("/tmp/other");
+        assert!(matches!(
+            tree.fork(other, message),
+            Err(TreeError::ForkPointMissing(_))
+        ));
+    }
+
+    #[test]
+    fn 分叉复制至分叉点含的前缀() {
+        let mut tree = SessionTree::new();
+        let root = tree.create_root("/tmp/ws");
+        let m1 = MessageId::new();
+        let m2 = MessageId::new();
+        let m3 = MessageId::new();
+        for (id, text) in [(m1, "m1"), (m2, "m2"), (m3, "m3")] {
+            tree.append_message(root, user_message(id, text)).unwrap();
+        }
+        let child = tree.fork(root, m2).unwrap();
+        let child_messages: Vec<MessageId> = tree
+            .messages(child)
+            .unwrap()
+            .iter()
+            .map(Message::id)
+            .collect();
+        assert_eq!(child_messages, vec![m1, m2]);
+    }
+
+    #[test]
+    fn 分叉后父子各自追加互不可见() {
+        let mut tree = SessionTree::new();
+        let root = tree.create_root("/tmp/ws");
+        let m1 = MessageId::new();
+        tree.append_message(root, user_message(m1, "m1")).unwrap();
+        let child = tree.fork(root, m1).unwrap();
+
+        // 分叉后父会话追加，子会话不可见
+        let m2 = MessageId::new();
+        tree.append_message(root, user_message(m2, "root only"))
+            .unwrap();
+        let child_ids: Vec<MessageId> = tree
+            .messages(child)
+            .unwrap()
+            .iter()
+            .map(Message::id)
+            .collect();
+        assert_eq!(child_ids, vec![m1]);
+
+        // 子会话追加，父会话不可见
+        let c1 = MessageId::new();
+        tree.append_message(child, user_message(c1, "child only"))
+            .unwrap();
+        let root_ids: Vec<MessageId> = tree
+            .messages(root)
+            .unwrap()
+            .iter()
+            .map(Message::id)
+            .collect();
+        assert_eq!(root_ids, vec![m1, m2]);
+        let child_ids: Vec<MessageId> = tree
+            .messages(child)
+            .unwrap()
+            .iter()
+            .map(Message::id)
+            .collect();
+        assert_eq!(child_ids, vec![m1, c1]);
+    }
+
+    #[test]
+    fn 同一分叉点可分出前缀相同的兄弟会话() {
+        let mut tree = SessionTree::new();
+        let root = tree.create_root("/tmp/ws");
+        let m1 = MessageId::new();
+        tree.append_message(root, user_message(m1, "m1")).unwrap();
+        let left = tree.fork(root, m1).unwrap();
+        let right = tree.fork(root, m1).unwrap();
+        assert_eq!(tree.messages(left).unwrap(), tree.messages(right).unwrap());
+        assert_ne!(left, right);
+    }
+
+    #[test]
     fn 分叉记录父子关系且树形列表正确() {
         let mut tree = SessionTree::new();
         let root = tree.create_root("/tmp/ws");
-        let child = tree.fork(root, MessageId::new()).unwrap();
-        let grandchild = tree.fork(child, MessageId::new()).unwrap();
+        let m1 = MessageId::new();
+        let m2 = MessageId::new();
+        tree.append_message(root, user_message(m1, "m1")).unwrap();
+        tree.append_message(root, user_message(m2, "m2")).unwrap();
+        let child = tree.fork(root, m1).unwrap();
+        let grandchild = tree.fork(child, m1).unwrap();
 
         assert_eq!(tree.len(), 3);
         assert_eq!(tree.roots().len(), 1);
@@ -148,24 +362,6 @@ mod tests {
         assert_eq!(
             tree.get(grandchild).unwrap().parent().unwrap().session,
             child
-        );
-    }
-
-    #[test]
-    fn 分叉后父子各自追加互不可见() {
-        let mut tree = SessionTree::new();
-        let root = tree.create_root("/tmp/ws");
-        let child = tree.fork(root, MessageId::new()).unwrap();
-        let sibling = tree.fork(root, MessageId::new()).unwrap();
-
-        // 树层面互不可见：子会话的 children 不混入兄弟分支
-        let child_ids: Vec<_> = tree.children_of(root).iter().map(|s| s.id()).collect();
-        assert!(child_ids.contains(&child));
-        assert!(child_ids.contains(&sibling));
-        assert_eq!(tree.children_of(child).len(), 0);
-        assert_ne!(
-            tree.get(child).unwrap().id(),
-            tree.get(sibling).unwrap().id()
         );
     }
 
@@ -181,10 +377,40 @@ mod tests {
     }
 
     #[test]
-    fn 树json_往返保持值() {
+    fn 快照只含元数据且按_id_排序() {
         let mut tree = SessionTree::new();
         let root = tree.create_root("/tmp/ws");
-        tree.fork(root, MessageId::new()).unwrap();
+        let m1 = MessageId::new();
+        tree.append_message(root, user_message(m1, "m1")).unwrap();
+        tree.fork(root, m1).unwrap();
+
+        let snapshot = tree.snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert!(!snapshot.is_empty());
+        let ids: Vec<SessionId> = snapshot.sessions().iter().map(Session::id).collect();
+        let mut sorted = ids;
+        sorted.sort();
+        assert_eq!(
+            snapshot
+                .sessions()
+                .iter()
+                .map(Session::id)
+                .collect::<Vec<_>>(),
+            sorted
+        );
+        // 快照可序列化（事件负载），且不含消息体字段
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert!(json.to_string().contains("working_dir"));
+        assert!(!json.to_string().contains("m1"));
+    }
+
+    #[test]
+    fn 树json_往返保持值_含消息() {
+        let mut tree = SessionTree::new();
+        let root = tree.create_root("/tmp/ws");
+        let m1 = MessageId::new();
+        tree.append_message(root, user_message(m1, "m1")).unwrap();
+        tree.fork(root, m1).unwrap();
         let json = serde_json::to_string(&tree).unwrap();
         assert_eq!(serde_json::from_str::<SessionTree>(&json).unwrap(), tree);
     }
@@ -193,7 +419,9 @@ mod tests {
     fn 分叉的子会话继承工作目录与初始静止状态() {
         let mut tree = SessionTree::new();
         let root = tree.create_root("/tmp/ws");
-        let child = tree.fork(root, MessageId::new()).unwrap();
+        let m1 = MessageId::new();
+        tree.append_message(root, user_message(m1, "m1")).unwrap();
+        let child = tree.fork(root, m1).unwrap();
         let child = tree.get(child).unwrap();
         assert_eq!(child.working_dir(), Path::new("/tmp/ws"));
         assert_eq!(child.state(), SessionState::Idle);

@@ -46,13 +46,14 @@ pub struct StateTransitionError {
 }
 
 impl SessionState {
-    /// 调度器取走会话：待处理或静止的会话可进入运行中。
+    /// 调度器取走待处理会话：待处理 → 运行中。
     ///
-    /// 运行中的会话不可被二次分发（同一时刻至多一个 worker）。
+    /// 静止会话没有待处理工作，必须经受理重新进入待处理后才可被
+    /// 分发；运行中的会话不可被二次分发（同一时刻至多一个 worker）。
     pub const fn dispatch(self) -> Result<Self, StateTransitionError> {
         match self {
-            Self::Pending | Self::Idle => Ok(Self::Running),
-            Self::Running => Err(StateTransitionError {
+            Self::Pending => Ok(Self::Running),
+            Self::Running | Self::Idle => Err(StateTransitionError {
                 from: self,
                 op: "dispatch",
             }),
@@ -155,10 +156,6 @@ mod tests {
             SessionState::Running
         );
         assert_eq!(
-            SessionState::Idle.dispatch().unwrap(),
-            SessionState::Running
-        );
-        assert_eq!(
             SessionState::Running.suspend().unwrap(),
             SessionState::Pending
         );
@@ -167,6 +164,8 @@ mod tests {
 
     #[test]
     fn 非法状态转换返回错误() {
+        // 静止会话没有待处理工作，不可被直接分发
+        assert!(SessionState::Idle.dispatch().is_err());
         assert!(SessionState::Running.dispatch().is_err());
         assert!(SessionState::Idle.suspend().is_err());
         assert!(SessionState::Pending.quiesce().is_err());

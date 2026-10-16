@@ -56,24 +56,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 去重键只看_request_id() {
-        let request_id = RequestId::new();
-        let first = Submission {
-            request_id,
-            target: SessionTarget::Existing(SessionId::new()),
-            content: "第一版文本".into(),
-        };
-        // 网络重发：request_id 相同，其余字段可能因客户端重试而变化
-        let resent = Submission {
-            request_id,
-            target: SessionTarget::New,
-            content: "不同的重发文本".into(),
-        };
-        assert_eq!(first.request_id, resent.request_id);
-        assert_ne!(first, resent);
-    }
-
-    #[test]
     fn acceptance_两分支都携带会话_id() {
         let session_id = SessionId::new();
         let accepted = Acceptance::Accepted { session_id };

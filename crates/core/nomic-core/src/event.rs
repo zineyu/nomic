@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::id::{MessageId, SessionId, ToolCallId};
 use crate::message::Message;
 use crate::tool::{ToolCall, ToolResult};
-use crate::tree::SessionTree;
+use crate::tree::SessionTreeSnapshot;
 
 /// 事件中的错误类别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,8 +73,8 @@ pub enum Event {
     },
     /// 会话树发生变化（新建、分叉、删除）。
     SessionTreeChanged {
-        /// 变化后的会话树快照。
-        tree: SessionTree,
+        /// 变化后的会话树快照（只含元数据，不含消息体）。
+        tree: SessionTreeSnapshot,
     },
 }
 
@@ -126,7 +126,7 @@ mod tests {
                 message: "接近上下文上限".into(),
             },
             Event::SessionTreeChanged {
-                tree: SessionTree::new(),
+                tree: SessionTreeSnapshot::default(),
             },
         ];
         for event in events {

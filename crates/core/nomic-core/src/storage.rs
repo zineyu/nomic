@@ -71,16 +71,21 @@ pub trait Storage: Send + Sync {
         at: MessageId,
     ) -> impl Future<Output = Result<Session, StorageError>> + Send;
 
-    /// 把未完成的工具调用标记为 interrupted：恢复时其已提交输出
-    /// 回灌模型，副作用绝不重复执行。
+    /// 把未完成的工具调用标记为 interrupted：恢复时其已提交的
+    /// 部分输出回灌模型，副作用绝不重复执行。
+    ///
+    /// `partial_output` 为中断前已提交的输出；无已提交输出时为 `None`。
+    /// 已完成的调用不可再标记。
     ///
     /// # Errors
     ///
-    /// 目标调用不存在时返回 [`StorageError::NotFound`]。
+    /// 目标会话不存在、或调用不存在/已完成时返回
+    /// [`StorageError::NotFound`]。
     fn mark_interrupted(
         &self,
         session: SessionId,
         call: ToolCallId,
+        partial_output: Option<String>,
     ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// 设置会话执行状态（调度与重驱路径）。

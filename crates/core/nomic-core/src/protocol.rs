@@ -99,6 +99,7 @@ mod tests {
                 submission: Submission {
                     request_id: RequestId::new(),
                     target: SessionTarget::New,
+                    working_dir: std::path::PathBuf::from("/ws"),
                     content: "任务".into(),
                 },
             },

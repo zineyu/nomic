@@ -154,12 +154,14 @@ fn 重发提交经协议后仍持有同一去重键() {
     let original = Submission {
         request_id,
         target: SessionTarget::New,
+        working_dir: "/ws/a".into(),
         content: "原始任务".into(),
     };
     // 网络重发：request_id 相同，其余字段已被客户端改动
     let resent = Submission {
         request_id,
         target: SessionTarget::Existing(SessionId::new()),
+        working_dir: "/ws/b".into(),
         content: "重发时已不同的文本".into(),
     };
 
@@ -205,6 +207,7 @@ fn 受理回执经_request_id_关联到提交() {
     let submission = Submission {
         request_id,
         target: SessionTarget::New,
+        working_dir: "/ws".into(),
         content: "任务".into(),
     };
     let wire = serde_json::to_string(&ClientMessage::Submit { submission }).unwrap();
@@ -234,6 +237,7 @@ fn all_client_messages() -> Vec<ClientMessage> {
             submission: Submission {
                 request_id: RequestId::new(),
                 target: SessionTarget::Existing(SessionId::new()),
+                working_dir: "/ws".into(),
                 content: "继续任务".into(),
             },
         },
@@ -338,6 +342,7 @@ fn 协议帧标签为_snake_case_可读形式() {
             submission: Submission {
                 request_id: RequestId::new(),
                 target: SessionTarget::New,
+                working_dir: "/ws".into(),
                 content: "x".into(),
             },
         })

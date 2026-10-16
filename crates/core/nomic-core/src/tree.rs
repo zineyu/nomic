@@ -48,6 +48,15 @@ impl SessionTreeSnapshot {
         &self.sessions
     }
 
+    /// 从会话元数据列表构造快照（存储实现读取路径专用）。
+    ///
+    /// 会话按 id 排序，与 [`SessionTree::snapshot`] 的输出形态一致。
+    #[must_use]
+    pub fn from_sessions(mut sessions: Vec<Session>) -> Self {
+        sessions.sort_by_key(Session::id);
+        Self { sessions }
+    }
+
     /// 快照是否为空。
     #[must_use]
     pub const fn is_empty(&self) -> bool {
@@ -374,6 +383,25 @@ mod tests {
         assert_eq!(roots.len(), 2);
         assert!(roots.iter().any(|s| s.id() == a));
         assert!(roots.iter().any(|s| s.id() == b));
+    }
+
+    #[test]
+    fn from_sessions_按_id_排序且保留全部会话() {
+        let mut tree = SessionTree::new();
+        let root = tree.create_root("/tmp/ws");
+        let m1 = MessageId::new();
+        tree.append_message(root, user_message(m1, "m1")).unwrap();
+        let child = tree.fork(root, m1).unwrap();
+        let unordered: Vec<Session> = [child, root]
+            .into_iter()
+            .filter_map(|id| tree.get(id).cloned())
+            .collect();
+        let snapshot = SessionTreeSnapshot::from_sessions(unordered);
+        let ids: Vec<SessionId> = snapshot.sessions().iter().map(Session::id).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted);
+        assert_eq!(snapshot.len(), 2);
     }
 
     #[test]

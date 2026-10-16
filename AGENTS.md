@@ -2,8 +2,8 @@
 
 > crate 按 `crates/<category>/<name>/` 组织，当前四个 crate：
 > `core/nomic-core`（领域模型与 trait 词汇，全仓库唯一的领域依赖）、
-> `ai/nomic-ai`（rig-core 适配）、`server/nomic-server`（常驻 server）、
-> `tui/nomic-tui`（终端客户端）。新 crate 加入 `Cargo.toml` 的 workspace members。
+> `ai/nomic-ai`（rig-core 适配）、`server/nomic-server`（常驻 server：
+> SQLite 存储实现）、`tui/nomic-tui`（终端客户端）。新 crate 加入 `Cargo.toml` 的 workspace members。
 
 ## Build & Check
 

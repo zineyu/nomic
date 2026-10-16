@@ -85,8 +85,9 @@ impl SessionState {
 
 /// 会话：与 agent 的一次连续对话，会话树中的一个节点。
 ///
-/// 字段私有，只能经 [`crate::SessionTree`] 的构造路径创建，
-/// 保证父子引用与状态合法。
+/// 字段私有，构造路径有两条：经 [`crate::SessionTree`] 的内存树
+/// 构造（会话树领域逻辑），或经 [`Session::restore`] 从持久化字段
+/// 完整回放（存储实现读取路径）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
     id: SessionId,
@@ -117,6 +118,25 @@ impl Session {
             }),
             working_dir: parent.working_dir.clone(),
             state: SessionState::Idle,
+        }
+    }
+
+    /// 从持久化字段完整回放构造（存储实现读取路径专用）。
+    ///
+    /// 字段与落库形态一一对应，无额外不变量可校验；调用方必须保证
+    /// 传入的是从存储真实读回的字段。
+    #[must_use]
+    pub const fn restore(
+        id: SessionId,
+        parent: Option<ParentRef>,
+        working_dir: PathBuf,
+        state: SessionState,
+    ) -> Self {
+        Self {
+            id,
+            parent,
+            working_dir,
+            state,
         }
     }
 
@@ -190,6 +210,28 @@ mod tests {
         assert_eq!(child.working_dir(), parent.working_dir());
         assert_eq!(child.state(), SessionState::Idle);
         assert_ne!(child.id(), parent.id());
+    }
+
+    #[test]
+    fn restore_回放构造保留全部字段() {
+        let parent = Session::root(PathBuf::from("/tmp/ws"));
+        let forked_at = MessageId::new();
+        let child = Session::forked_from(&parent, forked_at);
+        let restored = Session::restore(
+            child.id(),
+            child.parent(),
+            child.working_dir().to_path_buf(),
+            child.state(),
+        );
+        assert_eq!(restored, child);
+        // 状态字段原样回放：落库为 Pending 时读回仍为 Pending
+        let pending = Session::restore(
+            child.id(),
+            child.parent(),
+            child.working_dir().to_path_buf(),
+            SessionState::Pending,
+        );
+        assert_eq!(pending.state(), SessionState::Pending);
     }
 
     #[test]

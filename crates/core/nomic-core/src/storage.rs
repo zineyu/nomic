@@ -61,9 +61,10 @@ pub trait Storage: Send + Sync {
         &self,
     ) -> impl Future<Output = Result<SessionTreeSnapshot, StorageError>> + Send;
 
-    /// 在 `source` 的 `at` 消息处分叉：写时复制分叉点之前的消息
-    /// 前缀，返回新会话。`at` 不属于 `source` 时返回
-    /// [`StorageError::NotFound`]。分叉后父子追加互不可见。
+    /// 在 `source` 的 `at` 消息处分叉：复制 `source` 截至 `at`（含）的
+    /// 消息前缀作为新会话的初始序列（写时复制），返回新会话。
+    /// `at` 不属于 `source` 时返回 [`StorageError::NotFound`]。
+    /// 分叉后父子追加互不可见。
     fn fork(
         &self,
         source: SessionId,

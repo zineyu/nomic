@@ -11,19 +11,24 @@ use nomic_core::{
 
 // ---------- seam ①：会话树分叉（父子独立） ----------
 
+/// seam ① 测试公用：构造用户消息并追加到会话。
+fn append_user(tree: &mut SessionTree, session: SessionId, id: MessageId, text: &str) {
+    tree.append_message(
+        session,
+        Message::User {
+            id,
+            text: text.into(),
+        },
+    )
+    .unwrap();
+}
+
 #[test]
 fn 分叉点消息_id_记录于父子引用() {
     let mut tree = SessionTree::new();
     let root = tree.create_root("/tmp/ws");
     let at = MessageId::new();
-    tree.append_message(
-        root,
-        Message::User {
-            id: at,
-            text: "m1".into(),
-        },
-    )
-    .unwrap();
+    append_user(&mut tree, root, at, "m1");
     let child = tree.fork(root, at).unwrap();
 
     let parent_ref = tree.get(child).unwrap().parent().unwrap();
@@ -41,14 +46,7 @@ fn 同一消息可分叉出相互独立的兄弟会话() {
     let mut tree = SessionTree::new();
     let root = tree.create_root("/tmp/ws");
     let at = MessageId::new();
-    tree.append_message(
-        root,
-        Message::User {
-            id: at,
-            text: "m1".into(),
-        },
-    )
-    .unwrap();
+    append_user(&mut tree, root, at, "m1");
     let left = tree.fork(root, at).unwrap();
     let right = tree.fork(root, at).unwrap();
 
@@ -67,14 +65,7 @@ fn 分叉会话独立于父会话且继承工作目录() {
     let mut tree = SessionTree::new();
     let root = tree.create_root("/tmp/ws");
     let at = MessageId::new();
-    tree.append_message(
-        root,
-        Message::User {
-            id: at,
-            text: "m1".into(),
-        },
-    )
-    .unwrap();
+    append_user(&mut tree, root, at, "m1");
     let before = tree.get(root).unwrap().clone();
     let child = tree.fork(root, at).unwrap();
 
@@ -98,14 +89,7 @@ fn 树形列表正确反映从属关系() {
     let other_root = tree.create_root("/tmp/other");
     let root = tree.create_root("/tmp/ws");
     let m1 = MessageId::new();
-    tree.append_message(
-        root,
-        Message::User {
-            id: m1,
-            text: "m1".into(),
-        },
-    )
-    .unwrap();
+    append_user(&mut tree, root, m1, "m1");
     let child = tree.fork(root, m1).unwrap();
     let grandchild = tree.fork(child, m1).unwrap();
 
@@ -138,34 +122,13 @@ fn 分叉后父子消息追加互不可见() {
     let mut tree = SessionTree::new();
     let root = tree.create_root("/tmp/ws");
     let m1 = MessageId::new();
-    tree.append_message(
-        root,
-        Message::User {
-            id: m1,
-            text: "m1".into(),
-        },
-    )
-    .unwrap();
+    append_user(&mut tree, root, m1, "m1");
     let child = tree.fork(root, m1).unwrap();
 
     let m2 = MessageId::new();
-    tree.append_message(
-        root,
-        Message::User {
-            id: m2,
-            text: "root only".into(),
-        },
-    )
-    .unwrap();
+    append_user(&mut tree, root, m2, "root only");
     let c1 = MessageId::new();
-    tree.append_message(
-        child,
-        Message::User {
-            id: c1,
-            text: "child only".into(),
-        },
-    )
-    .unwrap();
+    append_user(&mut tree, child, c1, "child only");
 
     let root_ids: Vec<MessageId> = tree
         .messages(root)
@@ -474,6 +437,8 @@ fn 非法转换返回错误且错误可区分() {
         SessionState::Running.dispatch(),
         Err(StateTransitionError { .. })
     ));
+    // 静止会话没有待处理工作，须经受理回到待处理后才可被分发
+    assert!(SessionState::Idle.dispatch().is_err());
     assert!(SessionState::Idle.suspend().is_err());
     assert!(SessionState::Pending.quiesce().is_err());
     assert!(SessionState::Idle.quiesce().is_err());

@@ -82,7 +82,7 @@ pub enum ServerMessage {
 mod tests {
     use super::*;
     use crate::submission::SessionTarget;
-    use crate::tree::SessionTree;
+    use crate::tree::SessionTreeSnapshot;
 
     #[test]
     fn 协议版本为_1() {
@@ -144,7 +144,7 @@ mod tests {
                 },
             },
             ServerMessage::Event(Event::SessionTreeChanged {
-                tree: SessionTree::new(),
+                tree: SessionTreeSnapshot::default(),
             }),
         ];
         for message in messages {

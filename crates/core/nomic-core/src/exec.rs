@@ -14,9 +14,11 @@ use crate::tool::{ToolCall, ToolResult};
 pub trait ExecutionEnvironment: Send + Sync {
     /// 执行一次工具调用。
     ///
-    /// 返回 `Ok(ToolResult::Rejected)` 表示工具语义层面的拒绝
-    /// （如越出工作目录边界）；返回 `Err` 表示环境自身故障。
-    /// 调用方必须区分两者：拒绝回灌模型，故障中断当前步骤。
+    /// 返回 `Ok(ToolResult)` 表达工具语义层面的三层结果——成功输出、
+    /// 工具自身报错（[`crate::ToolResult::Error`]）、边界拒绝
+    /// （[`crate::ToolResult::Rejected`]）；返回 `Err` 表示环境自身
+    /// 故障（无法派发调用）。调用方必须区分两者：三层结果回灌模型，
+    /// 故障中断当前步骤。
     fn execute(
         &self,
         session: SessionId,

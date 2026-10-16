@@ -92,7 +92,7 @@ impl Message {
             }
             Self::Tool { result, .. } => match result {
                 ToolResult::Ok { output } => output,
-                ToolResult::Rejected { reason } => reason,
+                ToolResult::Error { message } | ToolResult::Rejected { reason: message } => message,
             },
         }
     }

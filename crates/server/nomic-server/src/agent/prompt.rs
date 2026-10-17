@@ -24,6 +24,10 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("default_system_prompt.md")
 /// 文件不存在不是错误（未注入项目即无该约定）；文件存在但为空
 /// 同样不注入。读取失败（权限等部署故障）以 [`io::Error`] 传播，
 /// 不静默降级。
+///
+/// # Errors
+///
+/// 工作目录不可读（权限等部署故障）时返回底层 [`io::Error`]。
 pub fn assemble_system_prompt(working_dir: &Path) -> io::Result<String> {
     let mut prompt = String::from(DEFAULT_SYSTEM_PROMPT.trim_end());
     for name in CONTEXT_FILES {

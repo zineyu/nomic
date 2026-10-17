@@ -75,7 +75,7 @@ const CURRENT_VERSION: u32 = 3;
 ///
 /// 版本高于当前实现时返回 [`StorageError::Migration`]（库由更新
 /// 版本的 release 写出，本实现无法解读）。
-pub fn migrate(conn: &mut Connection) -> Result<(), StorageError> {
+pub(super) fn migrate(conn: &mut Connection) -> Result<(), StorageError> {
     let version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|error| StorageError::Migration(error.to_string()))?;

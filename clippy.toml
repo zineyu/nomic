@@ -7,3 +7,5 @@ cognitive-complexity-threshold = 30
 # 单函数最大行数（含注释与空行，默认即 100；显式声明以固化约束）
 # lint 本身由 workspace lints 的 clippy::pedantic deny 启用
 too-many-lines-threshold = 100
+# 命名：禁止占位名进入变量、参数与函数名（clippy::disallowed_names）
+disallowed-names = ["foo", "bar", "baz", "quux", "toto"]

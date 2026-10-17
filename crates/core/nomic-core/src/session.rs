@@ -50,6 +50,10 @@ impl SessionState {
     ///
     /// 静止会话没有待处理工作，必须经受理重新进入待处理后才可被
     /// 分发；运行中的会话不可被二次分发（同一时刻至多一个 worker）。
+    ///
+    /// # Errors
+    ///
+    /// 当前状态不是 [`SessionState::Pending`] 时返回转换错误。
     pub const fn dispatch(self) -> Result<Self, StateTransitionError> {
         match self {
             Self::Pending => Ok(Self::Running),
@@ -61,6 +65,10 @@ impl SessionState {
     }
 
     /// worker / 进程死亡，会话回到待处理队列等待重驱。
+    ///
+    /// # Errors
+    ///
+    /// 当前状态不是 [`SessionState::Running`] 时返回转换错误。
     pub const fn suspend(self) -> Result<Self, StateTransitionError> {
         match self {
             Self::Running => Ok(Self::Pending),
@@ -72,6 +80,10 @@ impl SessionState {
     }
 
     /// 任务执行到静止，worker 释放会话。
+    ///
+    /// # Errors
+    ///
+    /// 当前状态不是 [`SessionState::Running`] 时返回转换错误。
     pub const fn quiesce(self) -> Result<Self, StateTransitionError> {
         match self {
             Self::Running => Ok(Self::Idle),

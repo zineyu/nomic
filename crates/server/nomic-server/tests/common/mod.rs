@@ -2,6 +2,11 @@
 //!
 //! 测试经 `nomic_core::Storage` trait 驱动临时目录上的真实 SQLite。
 
+#![allow(
+    unreachable_pub,
+    reason = "共享测试支撑在测试二进制内以 pub 声明共享项"
+)]
+
 use std::path::Path;
 
 use nomic_server::storage::SQLiteStorage;

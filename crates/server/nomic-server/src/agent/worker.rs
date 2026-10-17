@@ -98,6 +98,15 @@ impl<'a, S: Storage, L: LlmAdapter, E: ExecutionEnvironment> Worker<'a, S, L, E>
     /// 工具调用开始/结束）；每个事件对应其 checkpoint 落库步骤
     /// （流式增量除外）。请求 LLM
     /// 或派发工具失败时会话挂回待处理，错误向上传播。
+    ///
+    /// # Errors
+    ///
+    /// 存储访问失败，或 LLM 请求与工具派发失败时返回
+    /// [`AgentRunError`]。
+    ///
+    /// # Panics
+    ///
+    /// 会话领取后必然处于运行中；状态被外部改动时 panic。
     pub async fn run_session(
         &self,
         session_id: SessionId,

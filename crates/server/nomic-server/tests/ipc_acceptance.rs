@@ -152,7 +152,7 @@ async fn 会话树操作帧_列表_恢复_分叉_删除() {
     // 订阅并收到完整事件流：增量 + 消息完成
     agent_seam::subscribe_synced(&mut client, session_id).await;
     gate.release_all(2);
-    let events = agent_seam::read_events(&mut client, 2).await;
+    let events = agent_seam::read_session_events(&mut client, 2).await;
     match &events[..] {
         [
             Event::TokenDelta { delta, .. },
@@ -316,6 +316,8 @@ async fn 失败会话不阻塞后续会话_且不被无关请求重跑() {
     let mut client = fixture.connect().await;
 
     let a = submit_new(&mut client, dir.path(), "会话 A").await;
+    // 先等首次请求发生，避免把刚受理的 Pending 误判为「失败挂回」
+    agent_seam::wait_for(|| async { fixture.llm.captured().len() == 1 }).await;
     agent_seam::wait_for(|| async {
         fixture
             .storage
@@ -381,7 +383,7 @@ async fn 订阅期间发请求_事件进入缓冲不丢失() {
     .await;
     let tree = client.list_sessions().await.unwrap();
     assert_eq!(tree.sessions().len(), 1);
-    let events = agent_seam::read_events(&mut client, 2).await;
+    let events = agent_seam::read_session_events(&mut client, 2).await;
     match &events[..] {
         [
             Event::TokenDelta { delta, .. },
@@ -420,7 +422,7 @@ async fn 重复订阅不重复投递事件() {
     client.list_sessions().await.unwrap();
 
     first_gate.release_all(2);
-    let first_events = agent_seam::read_events(&mut client, 2).await;
+    let first_events = agent_seam::read_session_events(&mut client, 2).await;
     assert!(matches!(&first_events[0], Event::TokenDelta { delta, .. } if delta == "一"));
 
     // 第二轮：若上轮重复投递，剩余帧会先于本轮事件出现
@@ -450,12 +452,14 @@ async fn 重复订阅不重复投递事件() {
     })
     .await;
     second_gate.release_all(2);
-    let second_events = agent_seam::read_events(&mut client, 2).await;
+    let second_events = agent_seam::read_session_events(&mut client, 3).await;
     match &second_events[..] {
         [
+            Event::MessageCompleted { message: user, .. },
             Event::TokenDelta { delta, .. },
             Event::MessageCompleted { message, .. },
         ] => {
+            assert_eq!(user.text(), "第二段", "受理的用户消息进入事件流");
             assert_eq!(delta, "二", "上轮事件被重复投递: {second_events:?}");
             assert_eq!(message.text(), "二");
         }

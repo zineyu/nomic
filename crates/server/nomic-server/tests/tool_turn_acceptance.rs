@@ -10,7 +10,8 @@
 mod agent_seam;
 
 use agent_seam::{
-    ProtocolFixture, ScriptedEnv, ScriptedEvent, ScriptedLlm, ScriptedTurn, next_event, wait_for,
+    ProtocolFixture, ScriptedEnv, ScriptedEvent, ScriptedLlm, ScriptedTurn, next_session_event,
+    wait_for,
 };
 use nomic_core::{
     Acceptance, EnvironmentError, Event, ExecutionEnvironment, Message, RequestId, Role, SessionId,
@@ -99,7 +100,7 @@ async fn 剧本驱动工具回合完整闭环_事件与落库步骤一一对应(
     agent_seam::subscribe_synced(&mut client, session_id).await;
     // 2 个事件 + 流终止各等待一次放行
     gate.release_all(3);
-    let events = agent_seam::read_events(&mut client, 7).await;
+    let events = agent_seam::read_session_events(&mut client, 7).await;
 
     let finished = assert_event_sequence(&events, &call);
     assert_step_sequence(&fixture.storage, session_id, &call, finished).await;
@@ -326,7 +327,7 @@ async fn 工具回合_checkpoint_先行顺序钉扎() {
         let storage = std::sync::Arc::clone(&fixture.storage);
         async move { storage.steps(session_id).await.unwrap().len() >= count }
     };
-    match next_event(&mut client).await {
+    match next_session_event(&mut client).await {
         Event::MessageCompleted { message, .. } => {
             assert!(!message.tool_calls().is_empty(), "助手消息必须携带调用");
         }
@@ -334,17 +335,17 @@ async fn 工具回合_checkpoint_先行顺序钉扎() {
     }
     // 助手消息完成事件到达时必须已落库（含工具调用请求）
     assert!(steps_after(2).await, "助手步骤必须先于完成事件落库");
-    match next_event(&mut client).await {
+    match next_session_event(&mut client).await {
         Event::ToolCallStarted { .. } => {}
         other => panic!("次事件必须是调用开始: {other:?}"),
     }
     assert!(steps_after(3).await, "开始步骤必须先于开始事件落库");
-    match next_event(&mut client).await {
+    match next_session_event(&mut client).await {
         Event::ToolCallFinished { .. } => {}
         other => panic!("三事件必须是调用完成: {other:?}"),
     }
     assert!(steps_after(4).await, "结束步骤必须先于完成事件落库");
-    match next_event(&mut client).await {
+    match next_session_event(&mut client).await {
         Event::MessageCompleted { message, .. } => assert_eq!(message.role(), Role::Tool),
         other => panic!("四事件必须是回灌完成: {other:?}"),
     }
@@ -603,7 +604,7 @@ async fn 工具回合中_llm_失败_已落库历史保留_重驱续跑() {
     // 首轮：工具执行与回灌已落库，第二轮请求失败
     agent_seam::subscribe_synced(&mut client, session_id).await;
     gate.release_all(2);
-    let events = agent_seam::read_events(&mut client, 5).await;
+    let events = agent_seam::read_session_events(&mut client, 5).await;
     let last = events.last().unwrap();
     match last {
         Event::Error { kind, message, .. } => {
@@ -669,7 +670,7 @@ async fn 环境派发故障_闭合为_interrupted_重驱恢复() {
     // 无已提交输出）
     agent_seam::subscribe_synced(&mut client, session_id).await;
     gate.release_all(2);
-    let events = agent_seam::read_events(&mut client, 3).await;
+    let events = agent_seam::read_session_events(&mut client, 3).await;
     assert!(
         events
             .iter()

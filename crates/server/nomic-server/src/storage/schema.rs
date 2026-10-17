@@ -56,10 +56,20 @@ const MIGRATIONS: &[Migration] = &[
         version: 2,
         ddl: "ALTER TABLE sessions ADD COLUMN state TEXT NOT NULL DEFAULT 'idle';",
     },
+    Migration {
+        version: 3,
+        ddl: "
+            CREATE TABLE pending_submissions (
+                request_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                body TEXT NOT NULL
+            );
+        ",
+    },
 ];
 
 /// 当前 schema 版本。
-const CURRENT_VERSION: u32 = 2;
+const CURRENT_VERSION: u32 = 3;
 
 /// 把 `conn` 的 schema 迁移到当前版本。
 ///

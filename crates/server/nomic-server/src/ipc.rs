@@ -1,12 +1,16 @@
-//! IPC 服务端：Unix socket 上的 JSON Lines 双向协议（#39）。
+//! IPC 服务端：Unix socket 上的 JSON Lines 双向协议（#39/#42）。
 //!
 //! 连接首帧交换协议版本（不兼容即拒绝并关闭）；之后客户端逐帧
-//! 发送请求，服务端回执并推送事件。会话事件只路由给该会话的
-//! 订阅者；会话树事件按请求回给发起连接（列表/分叉/删除），
-//! 跨客户端广播是 S8 范围。提交受理层按 requestId 去重（台账在存储内），
-//! 受理成功即通知调度器：worker 串行领取待处理会话执行到静止，
-//! 失败时向订阅者发出错误事件并把会话挂回待处理。启动先做恢复：
-//! 崩溃残留的执行中会话回到待处理，与原有待处理工作一起入队重驱。
+//! 发送请求。全部连接的帧经单一队列进入分派循环，串行处理
+//! （到达顺序 = 受理顺序）；提交受理层按 requestId 去重（台账在
+//! 存储内），受理成功即通知调度器：worker 串行领取待处理会话执行
+//! 到静止，失败时向订阅者发出错误事件并把会话挂回待处理。
+//!
+//! 广播经单一注册表锁出口：会话事件推送给该会话的订阅者，受理的
+//! 用户消息同样入事件流（围观方可见对方输入），会话树变更推送给
+//! 全部连接——同锁保证各连接收到的相对顺序一致。一方断连只摘除
+//! 该连接的订阅，不影响其余连接。启动先做恢复：崩溃残留的执行中
+//! 会话回到待处理，与原有待处理工作一起入队重驱。
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -15,22 +19,19 @@ use std::sync::{Arc, Mutex};
 
 use nomic_core::{
     ClientMessage, Event, EventErrorKind, ExecutionEnvironment, LlmAdapter, PROTOCOL_VERSION,
-    ServerMessage, SessionId, Storage, StorageError,
+    ServerMessage, SessionId, SessionTarget, SessionTreeSnapshot, Storage, StorageError,
 };
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::agent::{AgentError, RunError, Worker, partial_messages};
 use crate::recovery::recoverable_sessions;
 
 use std::os::unix::fs::PermissionsExt;
-
-/// 一个会话的订阅发送端列表（连接 id 区分归属，断连时移除）。
-type SenderList = Vec<(u64, mpsc::UnboundedSender<ServerMessage>)>;
 
 /// IPC 服务端故障。
 #[derive(Debug, Error)]
@@ -69,13 +70,25 @@ pub async fn bind_listener(socket_path: &Path) -> Result<UnixListener, IpcError>
     Ok(listener)
 }
 
-/// 订阅注册表：会话事件按会话路由给订阅者。
+/// 订阅与广播注册表。
+///
+/// 全部出口共用同一把锁：任何一次广播在锁内发给所有收件人，因此
+/// 多次广播的先后对所有连接一致（各连接的发送通道按序投递）。
 #[derive(Debug, Default)]
 struct Hub {
     /// 连接 id 生成器。
     next_conn: AtomicU64,
-    /// 会话订阅：会话 → 订阅发送端列表。
-    sessions: Mutex<HashMap<SessionId, SenderList>>,
+    /// 连接集合与订阅关系。
+    inner: Mutex<HubInner>,
+}
+
+/// 注册表的内部状态。
+#[derive(Debug, Default)]
+struct HubInner {
+    /// 全部活动连接：连接 id → 发送端（树事件广播的收件人集合）。
+    connections: HashMap<u64, mpsc::UnboundedSender<ServerMessage>>,
+    /// 会话订阅：会话 → 订阅连接的 id 列表。
+    sessions: HashMap<SessionId, Vec<u64>>,
 }
 
 /// 事件的会话坐标；树事件为全局负载，无会话坐标。
@@ -95,62 +108,92 @@ impl Hub {
         self.next_conn.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn subscribe(&self, conn: u64, session: SessionId, tx: mpsc::UnboundedSender<ServerMessage>) {
-        // 同一连接重复订阅（Subscribe + Resume）只保留一个发送端，
-        // 否则每条事件会被重复投递
-        self.sessions
+    /// 登记一个完成握手的连接：成为树事件广播的收件人。
+    fn register(&self, conn: u64, tx: mpsc::UnboundedSender<ServerMessage>) {
+        self.inner
             .lock()
-            .expect("hub sessions poisoned")
-            .entry(session)
-            .or_default()
-            .retain(|(id, _)| *id != conn);
-        self.sessions
-            .lock()
-            .expect("hub sessions poisoned")
-            .entry(session)
-            .or_default()
-            .push((conn, tx));
+            .expect("hub poisoned")
+            .connections
+            .insert(conn, tx);
     }
 
-    /// 连接结束：从全部订阅中移除。
+    /// 连接结束：从全部订阅与广播收件人中移除。
     fn remove_conn(&self, conn: u64) {
-        self.sessions
-            .lock()
-            .expect("hub sessions poisoned")
-            .retain(|_, senders| {
-                senders.retain(|(id, _)| *id != conn);
-                !senders.is_empty()
-            });
+        let mut inner = self.inner.lock().expect("hub poisoned");
+        inner.connections.remove(&conn);
+        inner.sessions.retain(|_, conns| {
+            conns.retain(|id| *id != conn);
+            !conns.is_empty()
+        });
     }
 
-    /// 会话事件：只路由给该会话的订阅者；发送端已断开的顺手剪除。
-    fn broadcast_session_event(&self, event: Event) {
-        let Some(session) = event_session(&event) else {
+    /// 订阅会话：同连接重复订阅（Subscribe + Resume）只保留一个，
+    /// 否则每条事件会被重复投递。
+    fn subscribe(&self, conn: u64, session: SessionId) {
+        let mut inner = self.inner.lock().expect("hub poisoned");
+        let conns = inner.sessions.entry(session).or_default();
+        if !conns.contains(&conn) {
+            conns.push(conn);
+        }
+        drop(inner);
+    }
+
+    /// 摘除某连接的会话订阅（回放期间避免同一会话的实时事件
+    /// 混入历史；回放结束后重新订阅）。
+    fn unsubscribe(&self, conn: u64, session: SessionId) {
+        let mut inner = self.inner.lock().expect("hub poisoned");
+        if let Some(conns) = inner.sessions.get_mut(&session) {
+            conns.retain(|id| *id != conn);
+            if conns.is_empty() {
+                inner.sessions.remove(&session);
+            }
+        }
+    }
+
+    /// 向指定连接发送帧（响应或定向事件）；连接已断开返回 `false`。
+    fn send_to(&self, conn: u64, message: ServerMessage) -> bool {
+        self.inner
+            .lock()
+            .expect("hub poisoned")
+            .connections
+            .get(&conn)
+            .is_some_and(|tx| tx.send(message).is_ok())
+    }
+
+    /// 会话事件：广播给该会话的全部订阅连接。
+    fn broadcast_session_event(&self, event: &Event) {
+        let Some(session) = event_session(event) else {
             return;
         };
-        let message = ServerMessage::Event(event);
-        if let Some(senders) = self
-            .sessions
-            .lock()
-            .expect("hub sessions poisoned")
-            .get_mut(&session)
-        {
-            senders.retain(|(_, tx)| tx.send(message.clone()).is_ok());
+        let inner = self.inner.lock().expect("hub poisoned");
+        let Some(conns) = inner.sessions.get(&session) else {
+            return;
+        };
+        for conn in conns {
+            if let Some(tx) = inner.connections.get(conn) {
+                let _ = tx.send(ServerMessage::Event(event.clone()));
+            }
+        }
+    }
+
+    /// 会话树变更：广播给全部活动连接。
+    fn broadcast_tree(&self, tree: SessionTreeSnapshot) {
+        let inner = self.inner.lock().expect("hub poisoned");
+        let message = ServerMessage::Event(Event::SessionTreeChanged { tree });
+        for tx in inner.connections.values() {
+            let _ = tx.send(message.clone());
         }
     }
 }
 
-/// 会话树响应：按请求回给发起连接。
-///
-/// 读取失败时关闭连接（`Err`）：客户端在等响应帧，静默丢弃会让
-/// 它挂死；协议无错误响应帧，关闭是显式失败。
-async fn send_tree<S: Storage>(
-    storage: &S,
-    tx: &mpsc::UnboundedSender<ServerMessage>,
-) -> Result<(), ()> {
-    let tree = storage.session_tree().await.map_err(|_| ())?;
-    tx.send(ServerMessage::Event(Event::SessionTreeChanged { tree }))
-        .map_err(|_| ())
+/// 分派请求：一个连接的下一帧。
+struct DispatchRequest {
+    /// 发起连接的 id。
+    conn: u64,
+    /// 解出的客户端消息。
+    message: ClientMessage,
+    /// 处理结果：`true` 继续本连接，`false` 关闭（协议违约或存储不可信）。
+    done: oneshot::Sender<bool>,
 }
 
 /// 执行失败映射为事件错误类别。
@@ -221,6 +264,7 @@ where
         for session in recoverable_sessions(&*self.storage).await? {
             let _ = self.schedule.send(session);
         }
+        let (dispatch, requests) = mpsc::unbounded_channel();
         tokio::spawn(scheduler(
             Arc::clone(&self.storage),
             Arc::clone(&self.llm),
@@ -228,15 +272,39 @@ where
             Arc::clone(&self.hub),
             pending,
         ));
+        tokio::spawn(dispatcher(
+            Arc::clone(&self.storage),
+            Arc::clone(&self.hub),
+            self.schedule.clone(),
+            requests,
+        ));
         loop {
             let (stream, _) = listener.accept().await?;
             tokio::spawn(handle_connection(
                 stream,
-                Arc::clone(&self.storage),
                 Arc::clone(&self.hub),
-                self.schedule.clone(),
+                dispatch.clone(),
             ));
         }
+    }
+}
+
+/// 分派循环：串行处理全部连接的客户端帧。
+///
+/// 这是 server 的唯一受理串行点——全部连接经同一队列进入，按到达
+/// 顺序落库并广播。长耗时的会话执行在 [`scheduler`] 任务中进行，
+/// 不阻塞受理。
+async fn dispatcher<S: Storage + 'static>(
+    storage: Arc<S>,
+    hub: Arc<Hub>,
+    schedule: mpsc::UnboundedSender<SessionId>,
+    mut requests: mpsc::UnboundedReceiver<DispatchRequest>,
+) {
+    while let Some(request) = requests.recv().await {
+        let keep = dispatch(&request.message, request.conn, &*storage, &hub, &schedule)
+            .await
+            .is_ok();
+        let _ = request.done.send(keep);
     }
 }
 
@@ -261,14 +329,14 @@ async fn scheduler<S, L, E>(
     let worker = Worker::new(&*storage, &*llm, &*env);
     while let Some(session_id) = pending.recv().await {
         let emit_hub = Arc::clone(&hub);
-        let mut emit = move |event: Event| emit_hub.broadcast_session_event(event);
+        let mut emit = move |event: Event| emit_hub.broadcast_session_event(&event);
         // 已执行、请求时已不处于待处理（幂等跳过）或领取时存储
         // 不可信（连接侧另行显式失败）：均无需广播
         match worker.run_session(session_id, &mut emit).await {
             Ok(_) | Err(RunError::Queue(_)) => {}
             // 会话执行失败：已挂回待处理，向订阅者发出错误事件
             Err(RunError::Session(failure)) => {
-                hub.broadcast_session_event(Event::Error {
+                hub.broadcast_session_event(&Event::Error {
                     session_id: failure.session,
                     kind: error_kind(&failure.error),
                     message: failure.error.to_string(),
@@ -301,12 +369,11 @@ async fn write_frame<T: serde::Serialize + Sync>(
     writer.write_all(&frame).await
 }
 
-/// 单连接服务：握手 → 逐帧分派，直到 EOF 或协议违约。
-async fn handle_connection<S: Storage + 'static>(
+/// 单连接服务：握手 → 逐帧转发给分派循环，直到 EOF 或协议违约。
+async fn handle_connection(
     stream: UnixStream,
-    storage: Arc<S>,
     hub: Arc<Hub>,
-    schedule: mpsc::UnboundedSender<SessionId>,
+    dispatch: mpsc::UnboundedSender<DispatchRequest>,
 ) {
     let (read_half, write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -342,17 +409,26 @@ async fn handle_connection<S: Storage + 'static>(
         let _ = writer_task.await;
         return;
     }
+    hub.register(conn, tx.clone());
 
     loop {
         // EOF 或协议违约：关闭连接
         let Ok(Some(message)) = read_frame::<ClientMessage>(&mut reader).await else {
             break;
         };
-        if dispatch(&message, conn, &*storage, &hub, &schedule, &tx)
-            .await
+        let (done, result) = oneshot::channel();
+        if dispatch
+            .send(DispatchRequest {
+                conn,
+                message,
+                done,
+            })
             .is_err()
         {
-            // 协议违约或存储已不可信：关闭连接
+            break;
+        }
+        // 分派结果：协议违约或存储不可信时关闭本连接
+        if !matches!(result.await, Ok(true)) {
             break;
         }
     }
@@ -368,7 +444,6 @@ async fn dispatch<S: Storage>(
     storage: &S,
     hub: &Hub,
     schedule: &mpsc::UnboundedSender<SessionId>,
-    tx: &mpsc::UnboundedSender<ServerMessage>,
 ) -> Result<(), ()> {
     match message {
         ClientMessage::Hello { .. } => {
@@ -376,26 +451,38 @@ async fn dispatch<S: Storage>(
             Err(())
         }
         ClientMessage::Submit { submission } => {
-            match storage.record_submission(submission).await {
-                Ok(acceptance) => {
-                    if tx
-                        .send(ServerMessage::SubmissionReceipt {
-                            request_id: submission.request_id,
-                            acceptance,
-                        })
-                        .is_err()
-                    {
-                        return Ok(());
-                    }
-                    // 受理即调度该会话（重复受理同样触发：请求方
-                    // 以同一 requestId 重提即表达重试意图）
-                    let _ = schedule.send(acceptance.session_id());
-                    Ok(())
-                }
-                // 协议无错误响应帧：受理失败（目标不存在/存储故障）
-                // 无法给出回执，关闭连接显式失败，避免客户端挂死
-                Err(_) => Err(()),
+            // 协议无错误响应帧：受理失败（目标不存在/存储故障）
+            // 无法给出回执，返回 Err 关闭连接显式失败，避免客户端挂死
+            let record = storage
+                .record_submission(submission)
+                .await
+                .map_err(|_| ())?;
+            let session = record.acceptance.session_id();
+            let created =
+                record.message.is_some() && matches!(submission.target, SessionTarget::New);
+            let _ = hub.send_to(
+                conn,
+                ServerMessage::SubmissionReceipt {
+                    request_id: submission.request_id,
+                    acceptance: record.acceptance,
+                },
+            );
+            // 受理的用户消息进入事件流：订阅方（含旁观者）看到对方输入
+            if let Some(user_message) = record.message {
+                hub.broadcast_session_event(&Event::MessageCompleted {
+                    session_id: session,
+                    message: user_message,
+                });
             }
+            // 受理即调度该会话（重复受理同样触发：请求方以同一
+            // requestId 重提即表达重试意图）；先于树广播，使树读取
+            // 失败也不会滞留待处理工作
+            let _ = schedule.send(session);
+            // 新建会话改变树结构：广播给全部连接
+            if created {
+                hub.broadcast_tree(session_tree(storage).await?);
+            }
+            Ok(())
         }
         // Cancel 是 fire-and-forget 信号：协议无回执帧，客户端
         // 不可观察「成功」；协作式中断语义在 S10 落地，本切片
@@ -403,54 +490,66 @@ async fn dispatch<S: Storage>(
         ClientMessage::Cancel { .. } => Ok(()),
         ClientMessage::Subscribe { session_id } => match storage.get_session(*session_id).await {
             Ok(Some(_)) => {
-                hub.subscribe(conn, *session_id, tx.clone());
+                hub.subscribe(conn, *session_id);
                 Ok(())
             }
             // 订阅不存在的会话是客户端契约违约（无错误响应帧）
             Ok(None) | Err(_) => Err(()),
         },
-        ClientMessage::ListSessions => match storage.session_tree().await {
-            Ok(tree) => {
-                let _ = tx.send(ServerMessage::Event(Event::SessionTreeChanged { tree }));
-                Ok(())
-            }
-            Err(_) => Err(()),
-        },
+        ClientMessage::ListSessions => {
+            let tree = session_tree(storage).await?;
+            let _ = hub.send_to(conn, ServerMessage::SessionTree { tree });
+            Ok(())
+        }
         ClientMessage::Resume { session_id } => {
-            match storage.steps(*session_id).await {
-                Ok(steps) => match partial_messages(&steps) {
-                    Ok(messages) => {
-                        for message in messages {
-                            if tx
-                                .send(ServerMessage::Event(Event::MessageCompleted {
-                                    session_id: *session_id,
-                                    message,
-                                }))
-                                .is_err()
-                            {
-                                return Ok(());
-                            }
-                        }
-                        // 同步边界：树快照表示历史回放完毕，此后为实时事件
-                        send_tree(storage, tx).await?;
-                        hub.subscribe(conn, *session_id, tx.clone());
-                        // 恢复包含重驱：显式请求调度该会话
-                        let _ = schedule.send(*session_id);
-                        Ok(())
-                    }
-                    // 历史配对违约：会话不可回放，关闭连接显式失败
-                    Err(_) => Err(()),
-                },
-                Err(_) => Err(()),
+            // 回放期间摘除该会话订阅：历史必须来自落库步骤，不得混入
+            // 同一会话的实时事件；回放结束后重新订阅
+            hub.unsubscribe(conn, *session_id);
+            let steps = storage.steps(*session_id).await.map_err(|_| ())?;
+            // 历史配对违约：会话不可回放，关闭连接显式失败
+            let messages = partial_messages(&steps).map_err(|_| ())?;
+            for message in messages {
+                if !hub.send_to(
+                    conn,
+                    ServerMessage::Event(Event::MessageCompleted {
+                        session_id: *session_id,
+                        message,
+                    }),
+                ) {
+                    return Ok(());
+                }
             }
+            // 同步边界：树快照表示历史回放完毕，此后为实时事件
+            let _ = hub.send_to(
+                conn,
+                ServerMessage::SessionTree {
+                    tree: session_tree(storage).await?,
+                },
+            );
+            hub.subscribe(conn, *session_id);
+            // 恢复包含重驱：显式请求调度该会话
+            let _ = schedule.send(*session_id);
+            Ok(())
         }
         ClientMessage::Fork { session_id, at } => {
             storage.fork(*session_id, *at).await.map_err(|_| ())?;
-            send_tree(storage, tx).await
+            let tree = session_tree(storage).await?;
+            let _ = hub.send_to(conn, ServerMessage::SessionTree { tree: tree.clone() });
+            hub.broadcast_tree(tree);
+            Ok(())
         }
         ClientMessage::Delete { session_id } => {
             storage.delete(*session_id).await.map_err(|_| ())?;
-            send_tree(storage, tx).await
+            let tree = session_tree(storage).await?;
+            let _ = hub.send_to(conn, ServerMessage::SessionTree { tree: tree.clone() });
+            hub.broadcast_tree(tree);
+            Ok(())
         }
     }
+}
+
+/// 读取会话树快照；读取失败关闭连接（客户端在等响应帧，静默丢弃
+/// 会让它挂死）。
+async fn session_tree<S: Storage>(storage: &S) -> Result<SessionTreeSnapshot, ()> {
+    storage.session_tree().await.map_err(|_| ())
 }

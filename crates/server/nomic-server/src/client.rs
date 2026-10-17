@@ -114,21 +114,23 @@ impl Client {
 
     /// 恢复会话：回放历史消息（经消息完成事件逐条重放）。
     ///
-    /// 返回回放出的完整消息序列；树快照事件是回放结束边界
-    /// （收到即历史已同步，之后 [`Client::next_event`] 读到的是
-    /// 实时事件）。恢复同时订阅会话并重驱其待处理工作。
+    /// 返回回放出的完整消息序列；树快照响应帧（[`ServerMessage::SessionTree`]）
+    /// 是回放结束边界（收到即历史已同步，之后 [`Client::next_event`]
+    /// 读到的是实时事件）。恢复同时订阅会话并重驱其待处理工作。
     pub async fn resume(&mut self, session_id: SessionId) -> std::io::Result<Vec<Message>> {
         self.send(&ClientMessage::Resume { session_id }).await?;
         let mut messages = Vec::new();
         loop {
             match self.recv_frame().await? {
-                ServerMessage::Event(Event::MessageCompleted { message, .. }) => {
+                // 只把目标会话的历史计入回放；其他会话的实时消息入缓冲
+                ServerMessage::Event(Event::MessageCompleted {
+                    session_id: sid,
+                    message,
+                }) if sid == session_id => {
                     messages.push(message);
                 }
-                ServerMessage::Event(Event::SessionTreeChanged { .. }) => {
-                    return Ok(messages);
-                }
-                // 回放期间到达的实时事件（其他会话/订阅）进入缓冲
+                ServerMessage::SessionTree { .. } => return Ok(messages),
+                // 回放期间到达的实时事件（含树变更广播）进入缓冲
                 ServerMessage::Event(event) => self.buffered.push_back(event),
                 ServerMessage::SubmissionReceipt { .. } | ServerMessage::HelloAck { .. } => {
                     return Err(violation("expected replay messages then tree boundary"));
@@ -160,9 +162,9 @@ impl Client {
         }
         match self.recv_frame().await? {
             ServerMessage::Event(event) => Ok(Some(event)),
-            ServerMessage::SubmissionReceipt { .. } | ServerMessage::HelloAck { .. } => {
-                Err(violation("expected event"))
-            }
+            ServerMessage::SubmissionReceipt { .. }
+            | ServerMessage::SessionTree { .. }
+            | ServerMessage::HelloAck { .. } => Err(violation("expected event")),
         }
     }
 
@@ -177,29 +179,23 @@ impl Client {
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
     }
 
-    /// 读取下一帧响应：异步事件（会话事件）按到达顺序缓冲，
-    /// 请求与事件共享连接但不互相丢失。
+    /// 读取下一帧响应：异步事件按到达顺序缓冲，请求与事件共享
+    /// 连接但不互相丢失。
     async fn recv_response(&mut self) -> std::io::Result<ServerMessage> {
         loop {
             match self.recv_frame().await? {
-                ServerMessage::Event(event) if !is_response_frame(&event) => {
-                    self.buffered.push_back(event);
-                }
+                // 异步事件（含树变更广播）按到达顺序缓冲；非事件帧为响应
+                ServerMessage::Event(event) => self.buffered.push_back(event),
                 message => return Ok(message),
             }
         }
     }
 }
 
-/// 请求范围响应帧：会话树快照（列表/分叉/删除/恢复边界）。
-const fn is_response_frame(event: &Event) -> bool {
-    matches!(event, Event::SessionTreeChanged { .. })
-}
-
 /// 取响应里的树快照；其他帧为协议违约。
 fn expect_tree(message: ServerMessage) -> std::io::Result<SessionTreeSnapshot> {
     match message {
-        ServerMessage::Event(Event::SessionTreeChanged { tree }) => Ok(tree),
+        ServerMessage::SessionTree { tree } => Ok(tree),
         _ => Err(violation("expected session tree")),
     }
 }

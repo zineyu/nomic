@@ -380,7 +380,9 @@ async fn 待处理会话重启后自动重驱并从最后checkpoint继续() {
     let mut client = fixture.connect().await;
     let session_id = submit_new(&mut client, dir.path(), "继续任务").await;
 
-    // 失败挂回待处理后无人重驱：会话静置
+    // 失败挂回待处理后无人重驱：会话静置；先等首次请求发生，
+    // 避免把刚受理的 Pending 误判为「失败挂回」
+    wait_for(|| async { fixture.llm.captured().len() == 1 }).await;
     wait_state(&fixture, session_id, SessionState::Pending).await;
     let steps_before = steps_of(&fixture, session_id).await;
     assert_eq!(fixture.llm.captured().len(), 1);

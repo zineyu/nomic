@@ -143,17 +143,34 @@ impl<'a, S: Storage, L: LlmAdapter, E: ExecutionEnvironment> Worker<'a, S, L, E>
             .await?
             .ok_or_else(|| StorageError::NotFound(format!("session {session_id}")))?;
 
-        // 重驱入口：闭合上一回合未完成的工具调用；回合已在助手
-        // 消息处结束时直接释放，不再请求 LLM
-        if self
-            .resume_turn(session_id, session.working_dir(), emit)
-            .await?
-        {
-            return self.quiesce(session_id).await;
+        loop {
+            // 先闭合/推进当前回合：崩溃残留的工具调用必须先闭合，
+            // 之后才是回合边界——否则待处理消息会插进工具调用中间
+            if !self
+                .resume_turn(session_id, session.working_dir(), emit)
+                .await?
+            {
+                self.run_turns(session_id, session.working_dir(), emit)
+                    .await?;
+            }
+            // 回合边界：排入执行期间受理的待处理消息，使其排在
+            // 本回合全部步骤（含工具调用）之后
+            let drained = self.drain_pending(session_id, emit).await?;
+            // 排入新消息则继续下一回合；否则释放（无待处理提交）
+            if !drained && self.quiesce(session_id).await? {
+                return Ok(());
+            }
         }
+    }
 
-        // 工具回合循环：每轮请求 LLM，若其请求工具调用则派发执行、
-        // 结果回灌后继续下一轮，直到一轮不再请求工具调用。
+    /// 工具回合循环：每轮请求 LLM，若其请求工具调用则派发执行、
+    /// 结果回灌后继续下一轮，直到一轮不再请求工具调用。
+    async fn run_turns(
+        &self,
+        session_id: SessionId,
+        working_dir: &std::path::Path,
+        emit: &mut impl FnMut(Event),
+    ) -> Result<(), AgentError> {
         loop {
             // 历史回放：已落库步骤经显式构造（工具步骤配对为工具结果
             // 消息）+ 运行时确定性重建的系统提示，与恢复路径一致。
@@ -161,7 +178,7 @@ impl<'a, S: Storage, L: LlmAdapter, E: ExecutionEnvironment> Worker<'a, S, L, E>
             let mut messages = Vec::with_capacity(steps.len() + 1);
             messages.push(Message::System {
                 id: MessageId::new(),
-                text: assemble_system_prompt(session.working_dir())?,
+                text: assemble_system_prompt(working_dir)?,
             });
             messages.extend(replay_messages(&steps)?);
 
@@ -201,29 +218,38 @@ impl<'a, S: Storage, L: LlmAdapter, E: ExecutionEnvironment> Worker<'a, S, L, E>
             });
 
             if calls.is_empty() {
-                break;
+                return Ok(());
             }
 
             for call in calls {
-                self.run_tool_call(session_id, session.working_dir(), &call, emit)
+                self.run_tool_call(session_id, working_dir, &call, emit)
                     .await?;
             }
         }
-
-        self.quiesce(session_id).await
     }
 
-    /// 释放会话：运行中 → 静止。
-    async fn quiesce(&self, session_id: SessionId) -> Result<(), AgentError> {
-        self.storage
-            .set_state(
+    /// 回合边界：把执行期间受理的待处理提交排入步骤日志并广播；
+    /// 返回是否排入了新消息（有新消息则须继续下一回合）。
+    async fn drain_pending(
+        &self,
+        session_id: SessionId,
+        emit: &mut impl FnMut(Event),
+    ) -> Result<bool, AgentError> {
+        let messages = self.storage.drain_pending_submissions(session_id).await?;
+        let drained = !messages.is_empty();
+        for message in messages {
+            emit(Event::MessageCompleted {
                 session_id,
-                SessionState::Running
-                    .quiesce()
-                    .expect("claimed session must be running"),
-            )
-            .await?;
-        Ok(())
+                message,
+            });
+        }
+        Ok(drained)
+    }
+
+    /// 释放会话：转为静止返回 `true`；仍有待处理提交时保持运行并
+    /// 返回 `false`（调用方继续下一回合）。
+    async fn quiesce(&self, session_id: SessionId) -> Result<bool, AgentError> {
+        Ok(self.storage.quiesce_session(session_id).await?)
     }
 
     /// 重驱入口：闭合上一回合未完成的工具调用。
@@ -235,7 +261,7 @@ impl<'a, S: Storage, L: LlmAdapter, E: ExecutionEnvironment> Worker<'a, S, L, E>
     ///   错误层推送（模型可见）。
     ///
     /// 返回 `true` 表示回合已在助手消息处结束（最后一步是无工具
-    /// 调用的助手消息），调用方直接释放会话。
+    /// 调用的助手消息），调用方据此判定是否需要请求下一回合。
     async fn resume_turn(
         &self,
         session_id: SessionId,

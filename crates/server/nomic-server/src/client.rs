@@ -52,6 +52,11 @@ impl std::fmt::Debug for Client {
 
 impl Client {
     /// 连接 socket 并完成版本握手。
+    ///
+    /// # Errors
+    ///
+    /// socket 连接或帧读写失败，协议版本不匹配，或收到非握手应答时
+    /// 返回 [`ConnectError`]。
     pub async fn connect(socket_path: &Path) -> Result<Self, ConnectError> {
         let stream = UnixStream::connect(socket_path).await?;
         let (read_half, mut writer) = stream.into_split();
@@ -87,6 +92,10 @@ impl Client {
     /// 受理后立即产生的事件可能早于 [`Client::subscribe`]。需要
     /// 完整流（含首批增量）的调用方在回执后调用 [`Client::resume`]
     /// ——回放以落库步骤为准，已 checkpoint 的事件不会缺失。
+    ///
+    /// # Errors
+    ///
+    /// 帧读写失败或收到非受理回执时返回 [`std::io::Error`]。
     pub async fn submit(&mut self, submission: &Submission) -> std::io::Result<Acceptance> {
         self.send(&ClientMessage::Submit {
             submission: submission.clone(),
@@ -102,11 +111,19 @@ impl Client {
     }
 
     /// 订阅会话事件流。
+    ///
+    /// # Errors
+    ///
+    /// 帧读写失败时返回 [`std::io::Error`]。
     pub async fn subscribe(&mut self, session_id: SessionId) -> std::io::Result<()> {
         self.send(&ClientMessage::Subscribe { session_id }).await
     }
 
     /// 请求会话树快照（列表/树形展示）。
+    ///
+    /// # Errors
+    ///
+    /// 帧读写失败或收到非树快照时返回 [`std::io::Error`]。
     pub async fn list_sessions(&mut self) -> std::io::Result<SessionTreeSnapshot> {
         self.send(&ClientMessage::ListSessions).await?;
         expect_tree(self.recv_response().await?)
@@ -117,6 +134,10 @@ impl Client {
     /// 返回回放出的完整消息序列；树快照响应帧（[`ServerMessage::SessionTree`]）
     /// 是回放结束边界（收到即历史已同步，之后 [`Client::next_event`]
     /// 读到的是实时事件）。恢复同时订阅会话并重驱其待处理工作。
+    ///
+    /// # Errors
+    ///
+    /// 帧读写失败或回放中途收到非预期帧时返回 [`std::io::Error`]。
     pub async fn resume(&mut self, session_id: SessionId) -> std::io::Result<Vec<Message>> {
         self.send(&ClientMessage::Resume { session_id }).await?;
         let mut messages = Vec::new();
@@ -140,6 +161,10 @@ impl Client {
     }
 
     /// 在任意消息处分叉会话；返回变化后的会话树快照。
+    ///
+    /// # Errors
+    ///
+    /// 帧读写失败或收到非树快照时返回 [`std::io::Error`]。
     pub async fn fork(
         &mut self,
         session_id: SessionId,
@@ -150,12 +175,20 @@ impl Client {
     }
 
     /// 删除会话（级联其子树）；返回变化后的会话树快照。
+    ///
+    /// # Errors
+    ///
+    /// 帧读写失败或收到非树快照时返回 [`std::io::Error`]。
     pub async fn delete(&mut self, session_id: SessionId) -> std::io::Result<SessionTreeSnapshot> {
         self.send(&ClientMessage::Delete { session_id }).await?;
         expect_tree(self.recv_response().await?)
     }
 
     /// 读取下一条事件；连接关闭返回 `Ok(None)`。
+    ///
+    /// # Errors
+    ///
+    /// 帧读写失败或收到非事件帧时返回 [`std::io::Error`]。
     pub async fn next_event(&mut self) -> std::io::Result<Option<Event>> {
         if let Some(event) = self.buffered.pop_front() {
             return Ok(Some(event));

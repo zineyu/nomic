@@ -32,7 +32,12 @@ pub enum PendingCall {
 /// 落库步骤回放为 LLM 请求消息序列（不含系统提示）。
 ///
 /// 历史必须完整：工具调用开始与结束配对，助手消息声明的调用都已
-/// 有结果。违反时返回 [`AgentError::BrokenHistory`]。
+/// 有结果。
+///
+/// # Errors
+///
+/// 工具调用未配对，或助手消息声明的调用缺少结果时返回
+/// [`AgentError::BrokenHistory`]。
 pub fn replay_messages(steps: &[Step]) -> Result<Vec<Message>, AgentError> {
     let replayed = replay(steps)?;
     if let Some(open) = replayed.in_flight {
@@ -55,6 +60,10 @@ pub fn replay_messages(steps: &[Step]) -> Result<Vec<Message>, AgentError> {
 /// 崩溃残留的会话处于「已声明未开始」或「已开始未闭合」状态，
 /// 由重驱路径闭合后再推送结果；展示路径不因该状态失败。非末尾的
 /// 配对违约仍报破损。
+///
+/// # Errors
+///
+/// 非末尾回合的工具调用配对违约时返回 [`AgentError::BrokenHistory`]。
 pub fn partial_messages(steps: &[Step]) -> Result<Vec<Message>, AgentError> {
     Ok(replay(steps)?.messages)
 }
@@ -64,6 +73,10 @@ pub fn partial_messages(steps: &[Step]) -> Result<Vec<Message>, AgentError> {
 /// 恢复路径据此判断续跑还是标记 interrupted。已开始的调用优先
 /// （必须先闭合才能续跑同回合的后续调用）；其次按声明顺序返回
 /// 未开始的调用。非末尾的配对违约仍报破损。
+///
+/// # Errors
+///
+/// 非末尾回合的工具调用配对违约时返回 [`AgentError::BrokenHistory`]。
 pub fn pending_call(steps: &[Step]) -> Result<Option<PendingCall>, AgentError> {
     let replayed = replay(steps)?;
     if let Some(call) = replayed.in_flight {
@@ -177,7 +190,7 @@ fn take_in_flight(
 /// interrupted 调用的回灌消息：已提交的部分输出随中断说明回灌，
 /// 无已提交输出时回灌中断说明。归为工具错误层（调用未完成），
 /// 绝不归类为成功输出。
-pub fn interrupted_message(call_id: ToolCallId, partial_output: Option<&str>) -> Message {
+pub(super) fn interrupted_message(call_id: ToolCallId, partial_output: Option<&str>) -> Message {
     let result = match partial_output {
         Some(output) => ToolResult::error(format!(
             "tool call interrupted before completion; partial output committed:\n{output}"

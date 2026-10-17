@@ -62,6 +62,10 @@ impl ToolRegistry {
     }
 
     /// 登记工具；重名属于注册代码错误，立即 panic 以 fast-fail。
+    ///
+    /// # Panics
+    ///
+    /// 同名工具已登记时 panic。
     pub fn register<T: Tool + 'static>(&mut self, tool: T) {
         let spec = tool.spec();
         assert!(
@@ -119,6 +123,10 @@ impl ToolRegistry {
 
     /// 按名称派发调用：未注册名称显式失败（[`UnknownTool`]），
     /// 返回的 future 为工具执行本身（只借用工作目录坐标）。
+    ///
+    /// # Errors
+    ///
+    /// 名称未注册时返回 [`UnknownTool`]。
     pub fn call<'w>(
         &self,
         name: &ToolName,

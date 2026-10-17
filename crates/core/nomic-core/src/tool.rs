@@ -23,6 +23,10 @@ impl ToolName {
     /// 构造工具名称；名称为空属于调用方错误，立即 panic 以 fast-fail。
     ///
     /// 工具名称由本仓库内置工具注册处提供，非外部输入。
+    ///
+    /// # Panics
+    ///
+    /// `name` 为空时 panic。
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         let name = name.into();

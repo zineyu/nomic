@@ -51,6 +51,11 @@ pub enum IpcError {
 ///
 /// 返回监听者时 socket 文件已就绪且权限已钉住——客户端等待
 /// 「socket 可连接」即可视为 server 拉起成功的信号。
+///
+/// # Errors
+///
+/// 目录创建、socket 绑定或权限设置失败，或 socket 被运行中的 server
+/// 占用时返回 [`IpcError`]。
 pub async fn bind_listener(socket_path: &Path) -> Result<UnixListener, IpcError> {
     if let Some(parent) = socket_path.parent() {
         // 只创建目录，不改目录权限：目录权限由数据目录所有者
@@ -246,12 +251,24 @@ where
     }
 
     /// 绑定 socket 并服务到进程结束。
+    ///
+    /// # Errors
+    ///
+    /// socket 绑定失败，或服务期间发生 IPC 错误时返回 [`IpcError`]。
     pub async fn run(self, socket_path: &Path) -> Result<(), IpcError> {
         let listener = bind_listener(socket_path).await?;
         self.serve(listener).await
     }
 
     /// 在已绑定的监听者上服务到进程结束。
+    ///
+    /// # Errors
+    ///
+    /// 服务期间发生 IPC 错误时返回 [`IpcError`]。
+    ///
+    /// # Panics
+    ///
+    /// `serve` 被重复调用，或调度接收端被污染时 panic。
     pub async fn serve(self, listener: UnixListener) -> Result<(), IpcError> {
         let pending = self
             .pending

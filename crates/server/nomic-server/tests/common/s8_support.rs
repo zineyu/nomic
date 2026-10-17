@@ -2,7 +2,14 @@
 //!
 //! 经 `#[path]` 引入多个复核测试二进制；各二进制只使用其中一个子集。
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "共享支撑模块经 #[path] 引入多个测试二进制，各二进制只使用其中一个子集"
+)]
+#![allow(
+    unreachable_pub,
+    reason = "共享测试支撑在测试二进制内以 pub 声明共享项"
+)]
 
 use std::path::Path;
 use std::time::{Duration, Instant};

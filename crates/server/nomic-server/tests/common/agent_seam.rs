@@ -14,7 +14,14 @@
 // 共享测试替身模块经 #[path] 引入多个测试二进制（tests/ 每个 .rs
 // 独立编译），每个二进制只使用其中一个子集；未使用项在本二进制
 // 中不构成死代码。
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "共享测试替身经 #[path] 引入多个测试二进制，每个二进制只使用其中一个子集"
+)]
+#![allow(
+    unreachable_pub,
+    reason = "共享测试支撑在测试二进制内以 pub 声明共享项"
+)]
 
 use std::collections::VecDeque;
 use std::future::Future;

@@ -18,6 +18,10 @@ use tokio::net::UnixStream;
 use crate::client::ConnectError;
 
 /// 默认数据目录：`~/.local/share/nomic`。
+///
+/// # Panics
+///
+/// `HOME` 环境变量未设置时 panic。
 pub fn default_data_dir() -> PathBuf {
     let home = std::env::var_os("HOME").expect("HOME 环境变量未设置");
     PathBuf::from(home).join(".local/share/nomic")
@@ -50,6 +54,11 @@ pub struct PidLock {
 }
 
 /// 写入 pid 并持有排它锁；锁随返回值存活。
+///
+/// # Errors
+///
+/// pid 文件打开、加锁或写入失败时返回 [`std::io::Error`]；文件已被
+/// 其他进程锁定时返回 `AlreadyExists`。
 pub fn hold_pid(data_dir: &Path) -> std::io::Result<PidLock> {
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -88,6 +97,10 @@ fn pid_held(data_dir: &Path) -> std::io::Result<bool> {
 }
 
 /// 读取 pid 文件；文件缺失返回 `Ok(None)`。
+///
+/// # Errors
+///
+/// 文件读取失败，或内容不是整数时返回 [`std::io::Error`]。
 pub async fn read_pid(data_dir: &Path) -> std::io::Result<Option<i32>> {
     match tokio::fs::read_to_string(pid_path(data_dir)).await {
         Ok(text) => text.trim().parse::<i32>().map(Some).map_err(|error| {
@@ -106,6 +119,10 @@ pub async fn read_pid(data_dir: &Path) -> std::io::Result<Option<i32>> {
 ///
 /// 入口进程是双层拉起中的中间进程：它 detached 拉起 daemon 本体后
 /// 立即退出，本函数回收中间进程并等待 socket 就绪。
+///
+/// # Errors
+///
+/// socket 不可连接且拉起失败或就绪超时时返回 [`ConnectError`]。
 pub async fn ensure_server(
     socket_path: &Path,
     data_dir: &Path,
@@ -165,6 +182,10 @@ pub enum StopError {
 
 /// 停止 server：向 pid 对应进程发 SIGTERM 并等待退出，随后清理
 /// socket 与 pid 文件（daemon 自身也做清理，双保险容忍其未及执行）。
+///
+/// # Errors
+///
+/// server 未运行、pid 文件损坏，或等待退出超时时返回 [`StopError`]。
 pub async fn stop_server(socket_path: &Path, data_dir: &Path) -> Result<(), StopError> {
     let pid = match read_pid(data_dir).await? {
         Some(pid) => pid,

@@ -743,7 +743,10 @@ async fn 环境派发故障_闭合为_interrupted_重驱恢复() {
 
 // replay_messages 经 Resume 路径间接覆盖（ipc 回放与 worker 回放
 // 同一函数）；显式引用保持模块级可检查性。
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "显式引用保持模块级可检查性；实际命中路径为 Resume 回放"
+)]
 fn _replay_anchor(steps: &[Step]) -> Result<Vec<Message>, nomic_server::agent::AgentError> {
     replay_messages(steps)
 }

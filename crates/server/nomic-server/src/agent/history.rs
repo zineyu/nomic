@@ -13,7 +13,7 @@ use crate::agent::AgentError;
 ///
 /// 步骤序列违反配对不变式（开始缺少结束、结束缺少开始、
 /// 调用 id 不匹配）时返回 [`AgentError::BrokenHistory`]。
-pub(super) fn replay_messages(steps: &[Step]) -> Result<Vec<Message>, AgentError> {
+pub fn replay_messages(steps: &[Step]) -> Result<Vec<Message>, AgentError> {
     let mut messages = Vec::with_capacity(steps.len());
     let mut in_flight: Option<&nomic_core::ToolCall> = None;
     for step in steps {

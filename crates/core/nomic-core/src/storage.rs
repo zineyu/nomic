@@ -71,6 +71,15 @@ pub trait Storage: Send + Sync {
         at: MessageId,
     ) -> impl Future<Output = Result<Session, StorageError>> + Send;
 
+    /// 删除会话及其整个子树（分叉后代）：父子从属关系不允许悬挂，
+    /// 删除父会话时后代一并删除。受理台账保留——历史提交的
+    /// requestId 去重不受影响。
+    ///
+    /// # Errors
+    ///
+    /// 会话不存在时返回 [`StorageError::NotFound`]。
+    fn delete(&self, session: SessionId) -> impl Future<Output = Result<(), StorageError>> + Send;
+
     /// 把未完成的工具调用标记为 interrupted：恢复时其已提交的
     /// 部分输出回灌模型，副作用绝不重复执行。
     ///
@@ -99,8 +108,21 @@ pub trait Storage: Send + Sync {
         state: SessionState,
     ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
-    /// 调度器取下一个待处理会话：原子地把该会话转为运行中并返回；
-    /// 没有待处理工作时返回 `None`。
+    /// 领取调度请求指定的会话：仅当处于待处理时原子转为运行中。
+    /// 会话不存在或不在待处理时返回 `Ok(false)`（幂等跳过）。
+    ///
+    /// 调度单位是显式请求的会话 id（受理/恢复），不是全局队列：
+    /// 失败挂回待处理后的会话不会被无关请求重复领取。
+    fn claim_session(
+        &self,
+        session: SessionId,
+    ) -> impl Future<Output = Result<bool, StorageError>> + Send;
+
+    /// 全局队列领取：取最老的待处理会话并原子转为运行中；没有
+    /// 待处理工作时返回 `None`。
+    ///
+    /// 当前调度器按显式会话 id 领取（[`Storage::claim_session`]）；
+    /// 本方法供启动重驱（S6）枚举待处理工作使用。
     fn claim_next_pending(
         &self,
     ) -> impl Future<Output = Result<Option<SessionId>, StorageError>> + Send;

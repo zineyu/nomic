@@ -619,3 +619,64 @@ async fn 分叉树与中断标记经重开完整恢复() {
     );
     assert_eq!(storage.claim_next_pending().await.unwrap(), Some(parent_id));
 }
+
+#[tokio::test]
+async fn 删除会话_级联删除其子树_无关会话不受影响() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = open_storage(dir.path());
+
+    // 父会话 + 一条用户消息
+    let parent = storage
+        .create_session(dir.path().to_path_buf())
+        .await
+        .unwrap();
+    storage
+        .record_submission(&nomic_core::Submission {
+            request_id: nomic_core::RequestId::new(),
+            target: nomic_core::SessionTarget::Existing(parent.id()),
+            working_dir: dir.path().to_path_buf(),
+            content: "父消息".into(),
+        })
+        .await
+        .unwrap();
+    // 分叉出子会话（复制父的消息前缀）
+    let fork_point = {
+        let steps = storage.steps(parent.id()).await.unwrap();
+        match &steps[0] {
+            nomic_core::Step::Message(message) => message.id(),
+            other => panic!("首步骤必须是消息: {other:?}"),
+        }
+    };
+    let child = storage.fork(parent.id(), fork_point).await.unwrap();
+    // 无关会话
+    let other = storage
+        .create_session(dir.path().to_path_buf())
+        .await
+        .unwrap();
+
+    storage.delete(parent.id()).await.unwrap();
+
+    // 父与子一并消失：元数据与步骤都不可再读
+    assert_eq!(storage.get_session(parent.id()).await.unwrap(), None);
+    assert_eq!(storage.get_session(child.id()).await.unwrap(), None);
+    assert!(matches!(
+        storage.steps(parent.id()).await,
+        Err(nomic_core::StorageError::NotFound(_))
+    ));
+    assert!(matches!(
+        storage.steps(child.id()).await,
+        Err(nomic_core::StorageError::NotFound(_))
+    ));
+    // 无关会话原样保留
+    let tree = storage.session_tree().await.unwrap();
+    assert_eq!(tree.sessions(), std::slice::from_ref(&other));
+    assert_eq!(storage.steps(other.id()).await.unwrap(), Vec::new());
+}
+
+#[tokio::test]
+async fn 删除不存在会话返回_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = open_storage(dir.path());
+    let result = storage.delete(SessionId::new()).await;
+    assert!(matches!(result, Err(nomic_core::StorageError::NotFound(_))));
+}

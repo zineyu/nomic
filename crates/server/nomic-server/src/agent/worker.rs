@@ -45,6 +45,31 @@ pub enum AgentError {
     },
 }
 
+/// 执行失败：携带出错会话坐标。
+///
+/// 调度与事件广播需要会话 id 定位（如失败时向订阅者发出
+/// 错误事件），而 [`AgentError`] 本身不携带会话信息。
+#[derive(Debug, thiserror::Error)]
+#[error("session {session}: {error}")]
+pub struct AgentRunError {
+    /// 出错的会话。
+    pub session: SessionId,
+    /// 失败类别。
+    #[source]
+    pub error: AgentError,
+}
+
+/// 领取或执行失败。
+#[derive(Debug, thiserror::Error)]
+pub enum RunError {
+    /// 待处理队列读取失败：此时没有会话被领取，无会话坐标。
+    #[error(transparent)]
+    Queue(#[from] StorageError),
+    /// 会话执行失败：会话已挂回待处理，坐标在场。
+    #[error(transparent)]
+    Session(#[from] AgentRunError),
+}
+
 /// Agent loop 执行引擎：持有存储、LLM 适配器与执行环境，串行执行会话。
 ///
 /// 依赖以引用持有（`'a`）：调度器、广播等其它组件共享同一存储。
@@ -62,42 +87,52 @@ impl<'a, S: Storage, L: LlmAdapter, E: ExecutionEnvironment> Worker<'a, S, L, E>
         Self { storage, llm, env }
     }
 
-    /// 从待处理队列领取一个会话并执行到静止，返回该会话 id。
-    /// 没有待处理工作时返回 `Ok(None)`。
+    /// 领取调度请求指定的会话并执行到静止。
+    ///
+    /// 会话不在待处理（已静止、运行中或不存在）时返回 `Ok(false)`，
+    /// 不产生任何副作用——调度请求幂等。调度单位是显式请求的
+    /// 会话 id（受理/恢复），不是全局队列：失败挂回待处理的会话
+    /// 不会被无关请求重复领取。
     ///
     /// `emit` 接收执行过程产生的事件（流式增量、消息完成、
     /// 工具调用开始/结束）；每个事件对应其 checkpoint 落库步骤
     /// （流式增量除外）。请求 LLM
     /// 或派发工具失败时会话挂回待处理，错误向上传播。
-    pub async fn run_next_pending(
+    pub async fn run_session(
         &self,
+        session_id: SessionId,
         emit: &mut impl FnMut(Event),
-    ) -> Result<Option<SessionId>, AgentError> {
-        let Some(session_id) = self.storage.claim_next_pending().await? else {
-            return Ok(None);
-        };
-        match self.run_session(session_id, emit).await {
-            Ok(()) => Ok(Some(session_id)),
+    ) -> Result<bool, RunError> {
+        if !self.storage.claim_session(session_id).await? {
+            return Ok(false);
+        }
+        match self.execute_session(session_id, emit).await {
+            Ok(()) => Ok(true),
             Err(error) => {
                 // 失败悬挂保护：领取的会话回到待处理，调度器可重驱
                 let state = SessionState::Running
                     .suspend()
                     .expect("claimed session must be running");
-                match self.storage.set_state(session_id, state).await {
-                    Ok(()) => Err(error),
+                let error = match self.storage.set_state(session_id, state).await {
+                    Ok(()) => error,
                     // 挂回失败时存储已不可信：原始错误与挂回错误一并给出，
                     // 不相互覆盖
-                    Err(suspend) => Err(AgentError::SuspendFailed {
+                    Err(suspend) => AgentError::SuspendFailed {
                         original: Box::new(error),
                         suspend,
-                    }),
+                    },
+                };
+                Err(AgentRunError {
+                    session: session_id,
+                    error,
                 }
+                .into())
             }
         }
     }
 
     /// 执行一个已领取（Running）的会话到静止。
-    async fn run_session(
+    async fn execute_session(
         &self,
         session_id: SessionId,
         emit: &mut impl FnMut(Event),

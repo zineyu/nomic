@@ -25,7 +25,7 @@ async fn 新会话提交后进入待处理并可被原子取走() {
         content: "新任务".into(),
     };
     let accepted = storage.record_submission(&submission).await.unwrap();
-    let session_id = match accepted {
+    let session_id = match accepted.acceptance {
         nomic_core::Acceptance::Accepted { session_id } => session_id,
         nomic_core::Acceptance::Duplicate { .. } => panic!("首次提交必须受理"),
     };
@@ -37,6 +37,9 @@ async fn 新会话提交后进入待处理并可被原子取走() {
         &steps[0],
         nomic_core::Step::Message(Message::User { text, .. }) if text == "新任务"
     ));
+    // 受理返回值携带落库的用户消息（服务端据以广播）
+    let recorded = accepted.message.expect("首次受理必须返回用户消息");
+    assert!(matches!(&steps[0], nomic_core::Step::Message(message) if message == &recorded));
     let session = storage.get_session(session_id).await.unwrap().unwrap();
     assert_eq!(session.state(), SessionState::Pending);
     assert_eq!(session.working_dir(), Path::new("/ws/project"));
@@ -103,7 +106,7 @@ async fn 向既有会话提交追加消息并置为待处理() {
         .await
         .unwrap();
     assert!(matches!(
-        accepted,
+        accepted.acceptance,
         nomic_core::Acceptance::Accepted { session_id } if session_id == session.id()
     ));
     assert_eq!(
@@ -143,7 +146,7 @@ async fn 同一请求_id_重复提交返回_duplicate_且消息不重复() {
         content: "重试我".into(),
     };
     let first = storage.record_submission(&submission).await.unwrap();
-    let session_id = match first {
+    let session_id = match first.acceptance {
         nomic_core::Acceptance::Accepted { session_id } => session_id,
         nomic_core::Acceptance::Duplicate { .. } => panic!("首次提交必须受理"),
     };
@@ -151,7 +154,7 @@ async fn 同一请求_id_重复提交返回_duplicate_且消息不重复() {
     // 网络重发：同一 request_id 得到同一受理结果，消息绝不重复进入会话
     let again = storage.record_submission(&submission).await.unwrap();
     assert!(matches!(
-        again,
+        again.acceptance,
         nomic_core::Acceptance::Duplicate { session_id: dup } if dup == session_id
     ));
     assert_eq!(storage.steps(session_id).await.unwrap().len(), 1);
@@ -161,7 +164,7 @@ async fn 同一请求_id_重复提交返回_duplicate_且消息不重复() {
     let storage = SQLiteStorage::open(dir.path().join("nomic.db")).unwrap();
     let third = storage.record_submission(&submission).await.unwrap();
     assert!(matches!(
-        third,
+        third.acceptance,
         nomic_core::Acceptance::Duplicate { session_id: dup } if dup == session_id
     ));
     assert_eq!(storage.steps(session_id).await.unwrap().len(), 1);
@@ -209,7 +212,7 @@ async fn 待处理会话按创建顺序枚举并可逐个领取() {
             })
             .await
             .unwrap();
-        match accepted {
+        match accepted.acceptance {
             nomic_core::Acceptance::Accepted { session_id } => arrival.push(session_id),
             nomic_core::Acceptance::Duplicate { .. } => panic!("首次提交必须受理"),
         }
@@ -253,7 +256,7 @@ async fn 并发领取不会把同一会话分发给两个调度器() {
             })
             .await
             .unwrap();
-        match accepted {
+        match accepted.acceptance {
             nomic_core::Acceptance::Accepted { session_id } => pending.push(session_id),
             nomic_core::Acceptance::Duplicate { .. } => panic!("首次提交必须受理"),
         }

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use nomic_core::{
     Acceptance, Message, MessageId, ParentRef, Session, SessionId, SessionState,
-    SessionTreeSnapshot, Step, Storage, StorageError, Submission, ToolCallId,
+    SessionTreeSnapshot, Step, Storage, StorageError, Submission, SubmissionRecord, ToolCallId,
 };
 use rusqlite::{Connection, OptionalExtension, Row};
 use tokio::task::spawn_blocking;
@@ -290,7 +290,7 @@ impl Storage for SQLiteStorage {
     fn record_submission(
         &self,
         submission: &Submission,
-    ) -> impl Future<Output = Result<Acceptance, StorageError>> + Send {
+    ) -> impl Future<Output = Result<SubmissionRecord, StorageError>> + Send {
         let submission = submission.clone();
         blocking(&self.conn, move |conn| {
             let tx = conn
@@ -309,8 +309,11 @@ impl Storage for SQLiteStorage {
             if let Some(session) = ledger {
                 tx.commit()
                     .map_err(|error| StorageError::Query(error.to_string()))?;
-                return Ok(Acceptance::Duplicate {
-                    session_id: parse_id(&session)?,
+                return Ok(SubmissionRecord {
+                    acceptance: Acceptance::Duplicate {
+                        session_id: parse_id(&session)?,
+                    },
+                    message: None,
                 });
             }
 
@@ -326,7 +329,32 @@ impl Storage for SQLiteStorage {
                     (session.id(), true)
                 }
                 nomic_core::SessionTarget::Existing(id) => {
-                    session_exists(&tx, *id)?;
+                    let session = load_session(&tx, *id)?
+                        .ok_or_else(|| StorageError::NotFound(format!("session {id}")))?;
+                    // 回合进行中：消息持久化为待处理提交，由 worker 在
+                    // 回合边界排入步骤日志，保证排在当前助手消息之后；
+                    // 状态保持运行中，待处理事实由本表承载
+                    if session.state() == SessionState::Running {
+                        tx.execute(
+                            "INSERT INTO submissions (request_id, session_id) VALUES (?1, ?2)",
+                            (submission.request_id.to_string(), id.to_string()),
+                        )
+                        .map_err(|error| StorageError::Query(error.to_string()))?;
+                        let body = serde_json::to_string(&submission)
+                            .map_err(|error| StorageError::Query(error.to_string()))?;
+                        tx.execute(
+                            "INSERT INTO pending_submissions (request_id, session_id, body) \
+                             VALUES (?1, ?2, ?3)",
+                            (submission.request_id.to_string(), id.to_string(), body),
+                        )
+                        .map_err(|error| StorageError::Query(error.to_string()))?;
+                        tx.commit()
+                            .map_err(|error| StorageError::Query(error.to_string()))?;
+                        return Ok(SubmissionRecord {
+                            acceptance: Acceptance::Accepted { session_id: *id },
+                            message: None,
+                        });
+                    }
                     (*id, false)
                 }
             };
@@ -353,7 +381,10 @@ impl Storage for SQLiteStorage {
             .map_err(|error| StorageError::Query(error.to_string()))?;
             tx.commit()
                 .map_err(|error| StorageError::Query(error.to_string()))?;
-            Ok(Acceptance::Accepted { session_id })
+            Ok(SubmissionRecord {
+                acceptance: Acceptance::Accepted { session_id },
+                message: Some(message),
+            })
         })
     }
 
@@ -564,6 +595,7 @@ impl Storage for SQLiteStorage {
             session_exists(conn, session)?;
             // 级联删除整个子树：父子从属关系不允许悬挂
             for (table, key) in [
+                ("pending_submissions", "session_id"),
                 ("steps", "session_id"),
                 ("messages", "session_id"),
                 ("sessions", "id"),
@@ -592,6 +624,94 @@ impl Storage for SQLiteStorage {
                 return Err(StorageError::NotFound(format!("session {session}")));
             }
             Ok(())
+        })
+    }
+
+    fn quiesce_session(
+        &self,
+        session: SessionId,
+    ) -> impl Future<Output = Result<bool, StorageError>> + Send {
+        blocking(&self.conn, move |conn| {
+            let tx = conn
+                .transaction()
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            // 判定与转静止同事务：避免并发受理在两者之间到达被丢弃
+            let pending: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM pending_submissions WHERE session_id = ?1",
+                    [session.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            if load_session(&tx, session)?.is_none() {
+                return Err(StorageError::NotFound(format!("session {session}")));
+            }
+            if pending > 0 {
+                // 仍有待处理提交：保持运行中，调用方继续下一回合
+                tx.commit()
+                    .map_err(|error| StorageError::Query(error.to_string()))?;
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE sessions SET state = ?1 WHERE id = ?2 AND state = ?3",
+                (
+                    state_code(SessionState::Idle),
+                    session.to_string(),
+                    state_code(SessionState::Running),
+                ),
+            )
+            .map_err(|error| StorageError::Query(error.to_string()))?;
+            tx.commit()
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            Ok(true)
+        })
+    }
+
+    fn drain_pending_submissions(
+        &self,
+        session: SessionId,
+    ) -> impl Future<Output = Result<Vec<Message>, StorageError>> + Send {
+        blocking(&self.conn, move |conn| {
+            let tx = conn
+                .transaction()
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            session_exists(&tx, session)?;
+            let pending = {
+                let mut statement = tx
+                    .prepare(
+                        "SELECT request_id, body FROM pending_submissions \
+                         WHERE session_id = ?1 ORDER BY rowid ASC",
+                    )
+                    .map_err(|error| StorageError::Query(error.to_string()))?;
+                let rows = statement
+                    .query_map([session.to_string()], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(|error| StorageError::Query(error.to_string()))?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| StorageError::Query(error.to_string()))?
+            };
+            let mut messages = Vec::with_capacity(pending.len());
+            for (request_id, body) in pending {
+                let submission: Submission = serde_json::from_str(&body).map_err(|error| {
+                    StorageError::Query(format!("corrupt pending submission {request_id}: {error}"))
+                })?;
+                let message = Message::User {
+                    id: MessageId::new(),
+                    text: submission.content,
+                };
+                insert_step(&tx, session, &Step::Message(message.clone()))?;
+                insert_message(&tx, session, &message)?;
+                tx.execute(
+                    "DELETE FROM pending_submissions WHERE request_id = ?1",
+                    [request_id],
+                )
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+                messages.push(message);
+            }
+            tx.commit()
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            Ok(messages)
         })
     }
 

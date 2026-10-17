@@ -9,23 +9,33 @@ use std::path::PathBuf;
 
 use crate::error::StorageError;
 use crate::id::{MessageId, SessionId, ToolCallId};
+use crate::message::Message;
 use crate::session::{Session, SessionState};
 use crate::step::Step;
-use crate::submission::{Acceptance, Submission};
+use crate::submission::{Submission, SubmissionRecord};
 use crate::tree::SessionTreeSnapshot;
 
 /// 存储抽象：会话树、步骤日志与受理台账的唯一读写入口。
 pub trait Storage: Send + Sync {
-    /// 受理一次提交：按 `request_id` 去重，首次受理把消息排入目标
-    /// 会话并返回 `Accepted`；同一 `request_id` 的重复提交返回
-    /// `Duplicate`（携带原受理的会话 id），消息绝不重复进入会话。
+    /// 受理一次提交：按 `request_id` 去重，首次受理返回 `Accepted`；
+    /// 同一 `request_id` 的重复提交返回 `Duplicate`（携带原受理的
+    /// 会话 id），消息绝不重复进入会话。
     ///
-    /// `target` 为 `New` 时创建新会话。台账随存储持久化：
-    /// 进程崩溃后重发的提交仍被识别为重复。
+    /// 目标会话空闲（非运行中）时，用户消息立即排入步骤日志，
+    /// 返回值中的 `message` 即该消息（服务端据以广播）。
+    /// 目标会话正在运行时（worker 持有、回合进行中），消息先持久
+    /// 化为待处理提交，在回合边界由
+    /// [`Storage::drain_pending_submissions`] 排入步骤日志；此时
+    /// `message` 为 `None`（广播由排入方发出）。重复受理同样为
+    /// `None`。
+    ///
+    /// `target` 为 `New` 时创建新会话（新建会话并非运行中，消息
+    /// 立即排入）。台账随存储持久化：进程崩溃后重发的提交仍被
+    /// 识别为重复。
     fn record_submission(
         &self,
         submission: &Submission,
-    ) -> impl Future<Output = Result<Acceptance, StorageError>> + Send;
+    ) -> impl Future<Output = Result<SubmissionRecord, StorageError>> + Send;
 
     /// 直接创建新会话（系统路径使用，如恢复入口）。
     fn create_session(
@@ -108,6 +118,36 @@ pub trait Storage: Send + Sync {
         session: SessionId,
         state: SessionState,
     ) -> impl Future<Output = Result<(), StorageError>> + Send;
+
+    /// 运行收尾：原子判定会话是否仍有待处理提交（执行期间受理的）。
+    ///
+    /// - 无待处理提交：运行中 → 静止，返回 `true`（会话已释放）。
+    /// - 有待处理提交：保持运行中，返回 `false`——调用方应继续下一
+    ///   回合，先 [`Storage::drain_pending_submissions`] 再请求 LLM。
+    ///
+    /// 判定与状态转换在同一事务内完成：避免「查无待处理」与「转
+    /// 静止」之间到达的提交被静默丢弃。
+    ///
+    /// # Errors
+    ///
+    /// 会话不存在时返回 [`StorageError::NotFound`]。
+    fn quiesce_session(
+        &self,
+        session: SessionId,
+    ) -> impl Future<Output = Result<bool, StorageError>> + Send;
+
+    /// 回合边界：把当前会话的全部待处理提交按受理顺序排入步骤日志，
+    /// 返回排入的用户消息（调用方据以广播，保证事件顺序与步骤一致）。
+    ///
+    /// 排入与删除待处理记录在同一事务内完成，崩溃后不会重复排入。
+    ///
+    /// # Errors
+    ///
+    /// 会话不存在或待处理提交载荷损坏时返回对应错误。
+    fn drain_pending_submissions(
+        &self,
+        session: SessionId,
+    ) -> impl Future<Output = Result<Vec<Message>, StorageError>> + Send;
 
     /// 领取调度请求指定的会话：仅当处于待处理时原子转为运行中。
     /// 会话不存在或不在待处理时返回 `Ok(false)`（幂等跳过）。

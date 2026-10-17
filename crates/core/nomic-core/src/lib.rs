@@ -29,7 +29,7 @@ pub use protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
 pub use session::{ParentRef, Session, SessionState, StateTransitionError};
 pub use step::Step;
 pub use storage::Storage;
-pub use submission::{Acceptance, SessionTarget, Submission};
+pub use submission::{Acceptance, SessionTarget, Submission, SubmissionRecord};
 pub use tool::{Tool, ToolCall, ToolError, ToolName, ToolResult, ToolSpec};
 pub use tool_registry::{ToolRegistry, UnknownTool};
 pub use tree::{SessionTree, SessionTreeSnapshot, TreeError};

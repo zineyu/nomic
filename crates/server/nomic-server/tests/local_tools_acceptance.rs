@@ -252,7 +252,7 @@ async fn 未注册工具名归为_unknown_tool_环境故障() {
     gate.release_all(2);
 
     // 派发故障经事件流到达：Environment 类别 + unknown tool 说明
-    let events = agent_seam::read_events(&mut client, 3).await;
+    let events = agent_seam::read_session_events(&mut client, 3).await;
     assert!(events.iter().any(|event| matches!(
         event,
         Event::MessageCompleted { message, .. } if message.role() == Role::Assistant

@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 use crate::event::Event;
 use crate::id::{MessageId, RequestId, SessionId};
 use crate::submission::{Acceptance, Submission};
+use crate::tree::SessionTreeSnapshot;
 
 /// 当前协议版本；连接首帧交换，不兼容版本拒绝连接。
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// 客户端 → 服务端消息。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +77,14 @@ pub enum ServerMessage {
     },
     /// 订阅会话的事件流。
     Event(Event),
+    /// 会话树快照响应：对列表/恢复/分叉/删除请求的应答。
+    ///
+    /// 与广播事件 [`Event::SessionTreeChanged`] 区分：本帧只回发起
+    /// 连接的请求，广播事件推送给全部连接。
+    SessionTree {
+        /// 当前会话树快照（只含元数据，不含消息体）。
+        tree: SessionTreeSnapshot,
+    },
 }
 
 #[cfg(test)]
@@ -85,8 +94,8 @@ mod tests {
     use crate::tree::SessionTreeSnapshot;
 
     #[test]
-    fn 协议版本为_1() {
-        assert_eq!(PROTOCOL_VERSION, 1);
+    fn 协议版本为_2() {
+        assert_eq!(PROTOCOL_VERSION, 2);
     }
 
     #[test]
@@ -147,6 +156,9 @@ mod tests {
             ServerMessage::Event(Event::SessionTreeChanged {
                 tree: SessionTreeSnapshot::default(),
             }),
+            ServerMessage::SessionTree {
+                tree: SessionTreeSnapshot::default(),
+            },
         ];
         for message in messages {
             let line = serde_json::to_string(&message).unwrap();

@@ -471,11 +471,33 @@ pub async fn next_event(client: &mut Client) -> Event {
         .expect("事件流意外结束")
 }
 
+/// 下一条**会话事件**：跳过全局的会话树变更广播。
+///
+/// 会话树广播发给全部连接，与「事件 ↔ checkpoint 步骤一一对应」
+/// 无关；关注会话流的断言用它。
+pub async fn next_session_event(client: &mut Client) -> Event {
+    loop {
+        let event = next_event(client).await;
+        if !matches!(event, Event::SessionTreeChanged { .. }) {
+            return event;
+        }
+    }
+}
+
 /// 连续读取 n 条事件。
 pub async fn read_events(client: &mut Client, n: usize) -> Vec<Event> {
     let mut events = Vec::with_capacity(n);
     for _ in 0..n {
         events.push(next_event(client).await);
+    }
+    events
+}
+
+/// 连续读取 n 条**会话事件**（跳过会话树变更广播）。
+pub async fn read_session_events(client: &mut Client, n: usize) -> Vec<Event> {
+    let mut events = Vec::with_capacity(n);
+    for _ in 0..n {
+        events.push(next_session_event(client).await);
     }
     events
 }

@@ -366,6 +366,17 @@ fn 协议帧标签为_snake_case_可读形式() {
 }
 
 #[test]
+fn 树快照响应与广播事件是不同帧() {
+    let tree = SessionTree::new().snapshot();
+    let response = serde_json::to_value(ServerMessage::SessionTree { tree: tree.clone() }).unwrap();
+    let broadcast =
+        serde_json::to_value(ServerMessage::Event(Event::SessionTreeChanged { tree })).unwrap();
+    assert!(response.get("session_tree").is_some());
+    assert!(response.get("event").is_none());
+    assert!(broadcast.get("event").is_some());
+}
+
+#[test]
 fn 连接首帧交换协议版本() {
     let hello = ClientMessage::Hello {
         protocol_version: PROTOCOL_VERSION,

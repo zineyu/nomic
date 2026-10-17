@@ -12,7 +12,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use agent_seam::{
-    ProtocolFixture, ScriptedEnv, ScriptedEvent, ScriptedLlm, ScriptedTurn, next_event, wait_for,
+    ProtocolFixture, ScriptedEnv, ScriptedEvent, ScriptedLlm, ScriptedTurn, next_session_event,
+    wait_for,
 };
 use nomic_core::{
     Acceptance, Event, Message, MessageId, RequestId, Role, SessionId, SessionState, SessionTarget,
@@ -32,6 +33,19 @@ async fn submit(client: &mut nomic_server::client::Client, dir: &Path, content: 
         Acceptance::Accepted { session_id } => session_id,
         Acceptance::Duplicate { .. } => panic!("首次提交不应判重"),
     }
+}
+
+/// 等待会话回到静止（事件到达后收尾是异步的）。
+async fn wait_idle(fixture: &ProtocolFixture<ScriptedLlm, ScriptedEnv>, session: SessionId) {
+    wait_for(|| async {
+        fixture
+            .storage
+            .get_session(session)
+            .await
+            .unwrap()
+            .is_some_and(|stored| stored.state() == SessionState::Idle)
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -56,10 +70,10 @@ async fn 剧本驱动完成单轮对话_事件序列与落库步骤一一对应(
 
     // 事件序列：逐 token 增量（共享同一消息 id）+ 消息完成
     let events = Vec::from([
-        next_event(&mut client).await,
-        next_event(&mut client).await,
-        next_event(&mut client).await,
-        next_event(&mut client).await,
+        next_session_event(&mut client).await,
+        next_session_event(&mut client).await,
+        next_session_event(&mut client).await,
+        next_session_event(&mut client).await,
     ]);
     let completed = match &events[..] {
         [
@@ -111,6 +125,7 @@ async fn 剧本驱动完成单轮对话_事件序列与落库步骤一一对应(
     }
 
     // 释放：会话回到静止，无待处理工作
+    wait_idle(&fixture, session_id).await;
     let session = fixture
         .storage
         .get_session(session_id)
@@ -159,6 +174,7 @@ async fn 系统提示等于内置默认加存在的上下文文件() {
         text.find("## AGENTS.md").unwrap() < text.find("## CLAUDE.md").unwrap(),
         "AGENTS.md 节必须先于 CLAUDE.md 节"
     );
+    wait_idle(&fixture, session_id).await;
     let session = fixture
         .storage
         .get_session(session_id)
@@ -204,7 +220,10 @@ async fn 串行领取_每次一个会话_先受理先执行_静止后释放() {
     // 首轮：每次运行只推进一个会话；闸门钉住「订阅先于事件」
     agent_seam::subscribe_synced(&mut client, first).await;
     first_gate.release_all(2);
-    let first_events = Vec::from([next_event(&mut client).await, next_event(&mut client).await]);
+    let first_events = Vec::from([
+        next_session_event(&mut client).await,
+        next_session_event(&mut client).await,
+    ]);
     assert!(
         first_events.iter().all(|event| matches!(
             event,
@@ -226,7 +245,10 @@ async fn 串行领取_每次一个会话_先受理先执行_静止后释放() {
     // 次轮：第二个会话按受理顺序推进（闸门同样钉住订阅先于事件）
     agent_seam::subscribe_synced(&mut client, second).await;
     second_gate.release_all(2);
-    let second_events = Vec::from([next_event(&mut client).await, next_event(&mut client).await]);
+    let second_events = Vec::from([
+        next_session_event(&mut client).await,
+        next_session_event(&mut client).await,
+    ]);
     assert!(
         second_events.iter().all(|event| matches!(
             event,
@@ -246,6 +268,7 @@ async fn 串行领取_每次一个会话_先受理先执行_静止后释放() {
             }
             other => panic!("会话 {session} 落库步骤不符: {other:?}"),
         }
+        wait_idle(&fixture, session).await;
         let session = fixture.storage.get_session(session).await.unwrap().unwrap();
         assert_eq!(session.state(), SessionState::Idle);
     }
@@ -275,7 +298,10 @@ async fn 事件增量与完成携带的助手消息_id_与落库步骤一致() {
 
     agent_seam::subscribe_synced(&mut client, session_id).await;
     gate.release_all(2);
-    let events = Vec::from([next_event(&mut client).await, next_event(&mut client).await]);
+    let events = Vec::from([
+        next_session_event(&mut client).await,
+        next_session_event(&mut client).await,
+    ]);
 
     // 落库后重新读取，id 与流式期间事件携带的 id 相同
     let steps = fixture.storage.steps(session_id).await.unwrap();
@@ -314,7 +340,7 @@ async fn llm_传输错误_会话挂回待处理_重驱按同一历史续跑() {
     // 首轮：订阅后放行，错误经事件流到达
     agent_seam::subscribe_synced(&mut client, session_id).await;
     gate.release();
-    match next_event(&mut client).await {
+    match next_session_event(&mut client).await {
         Event::Error {
             session_id: got,
             kind,
@@ -346,11 +372,11 @@ async fn llm_传输错误_会话挂回待处理_重驱按同一历史续跑() {
     let replayed = client.resume(session_id).await.unwrap();
     assert_eq!(replayed.len(), 1, "回放只含用户消息: {replayed:?}");
     assert_eq!(replayed[0].role(), Role::User);
-    match next_event(&mut client).await {
+    match next_session_event(&mut client).await {
         Event::TokenDelta { delta, .. } => assert_eq!(delta, "重试成功"),
         other => panic!("重驱必须先收到增量: {other:?}"),
     }
-    match next_event(&mut client).await {
+    match next_session_event(&mut client).await {
         Event::MessageCompleted { message, .. } => assert_eq!(message.text(), "重试成功"),
         other => panic!("重驱必须完成回复: {other:?}"),
     }
@@ -385,6 +411,7 @@ async fn llm_传输错误_会话挂回待处理_重驱按同一历史续跑() {
         }
         other => panic!("落库步骤不符: {other:?}"),
     }
+    wait_idle(&fixture, session_id).await;
     let session = fixture
         .storage
         .get_session(session_id)
@@ -423,9 +450,9 @@ async fn 请求未注册工具名_派发失败挂回待处理() {
     // 调用请求事件 + 流终止各等待一次放行
     gate.release_all(2);
     let events = Vec::from([
-        next_event(&mut client).await,
-        next_event(&mut client).await,
-        next_event(&mut client).await,
+        next_session_event(&mut client).await,
+        next_session_event(&mut client).await,
+        next_session_event(&mut client).await,
     ]);
 
     // 助手消息与调用开始步骤已 checkpoint，完成事件未发出
@@ -504,7 +531,7 @@ async fn 助手消息先落库_完成事件后才释放() {
         "放行前只有用户消息落库（worker 阻塞在事件流上）"
     );
     gate.release();
-    match next_event(&mut client).await {
+    match next_session_event(&mut client).await {
         Event::TokenDelta { delta, .. } => assert_eq!(delta, "回"),
         other => panic!("首事件必须是增量: {other:?}"),
     }
@@ -513,7 +540,7 @@ async fn 助手消息先落库_完成事件后才释放() {
         "增量事件先于落库发出：助手步骤不得提前落库"
     );
     gate.release();
-    match next_event(&mut client).await {
+    match next_session_event(&mut client).await {
         Event::TokenDelta { delta, .. } => assert_eq!(delta, "复"),
         other => panic!("次事件必须是增量: {other:?}"),
     }
@@ -523,7 +550,7 @@ async fn 助手消息先落库_完成事件后才释放() {
         "增量事件先于落库发出：助手步骤不得提前落库"
     );
     gate.release();
-    match next_event(&mut client).await {
+    match next_session_event(&mut client).await {
         Event::MessageCompleted { message, .. } => assert_eq!(message.text(), "回复"),
         other => panic!("末事件必须是消息完成: {other:?}"),
     }
@@ -537,6 +564,7 @@ async fn 助手消息先落库_完成事件后才释放() {
         ),
         "完成事件发出前助手消息必须已落库: {steps:?}"
     );
+    wait_idle(&fixture, session_id).await;
     let session = fixture
         .storage
         .get_session(session_id)
@@ -560,7 +588,7 @@ async fn 空token剧本_助手消息为空文本_会话仍静止() {
     gate.release();
 
     // 无增量事件，直接完成；空文本也构成完整助手消息
-    match next_event(&mut client).await {
+    match next_session_event(&mut client).await {
         Event::MessageCompleted { message, .. } => {
             assert_eq!(message.role(), Role::Assistant);
             assert_eq!(message.text(), "");
@@ -575,6 +603,7 @@ async fn 空token剧本_助手消息为空文本_会话仍静止() {
         }
         other => panic!("落库步骤不符: {other:?}"),
     }
+    wait_idle(&fixture, session_id).await;
     let session = fixture
         .storage
         .get_session(session_id)
@@ -599,7 +628,7 @@ async fn 上下文路径为目录_读取失败向上传播且挂回待处理() {
     // 随后 Resume 确定性重驱，重驱后的错误事件同样必达
     agent_seam::subscribe_synced(&mut client, session_id).await;
     for round in 0..2 {
-        match next_event(&mut client).await {
+        match next_session_event(&mut client).await {
             Event::Error { kind, message, .. } => {
                 assert_eq!(kind, nomic_core::EventErrorKind::Internal);
                 assert!(

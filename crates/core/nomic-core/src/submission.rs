@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::id::{RequestId, SessionId};
+use crate::message::Message;
 
 /// 提交的目标会话。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +66,20 @@ impl Acceptance {
             Self::Accepted { session_id } | Self::Duplicate { session_id } => session_id,
         }
     }
+}
+
+/// 受理写入结果：受理判定与（可立即排入时）进入会话的用户消息。
+///
+/// 服务端据 `message` 把用户输入广播给该会话订阅者。会话空闲时
+/// 消息立即排入步骤日志，`message` 为其真值；会话运行中时消息
+/// 持久化为待处理提交，由 worker 在回合边界排入并广播，此时
+/// `message` 为 `None`；重复受理也为 `None`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmissionRecord {
+    /// 受理判定（首次受理或重复受理）。
+    pub acceptance: Acceptance,
+    /// 可立即排入步骤日志的用户消息；未排入（运行中推迟或重复受理）为 `None`。
+    pub message: Option<Message>,
 }
 
 #[cfg(test)]

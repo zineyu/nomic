@@ -19,8 +19,7 @@ use crate::client::ConnectError;
 
 /// 默认数据目录：`~/.local/share/nomic`。
 pub fn default_data_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").expect("HOME 环境变量未设置");
-    PathBuf::from(home).join(".local/share/nomic")
+    crate::config::default_data_dir(&crate::config::ProcessEnv)
 }
 
 /// 默认 socket 路径：数据目录下的 `nomic.sock`。

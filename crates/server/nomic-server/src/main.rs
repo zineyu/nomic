@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use nomic_ai::RigAdapter;
+use nomic_server::config::{self, Config, ProcessEnv};
 use nomic_server::daemon;
 use nomic_server::environment::LocalEnvironment;
 use nomic_server::ipc::{self, IpcServer};
@@ -46,11 +47,17 @@ fn main() -> ExitCode {
         socket,
         data_dir,
     } = cli.command;
-    let data_dir = data_dir.unwrap_or_else(daemon::default_data_dir);
-    let socket = socket.unwrap_or_else(|| daemon::default_socket_path(&data_dir));
+    let env = ProcessEnv;
+    let config = match Config::load(&env, &config::default_config_path(&env)) {
+        Ok(config) => config.apply_cli(data_dir, socket),
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let result = match action {
-        None => serve(&data_dir, &socket),
-        Some(ServerAction::Stop) => stop(&data_dir, &socket),
+        None => serve(&config),
+        Some(ServerAction::Stop) => stop(&config),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -67,15 +74,15 @@ const DAEMON_CHILD_ENV: &str = "NOMIC_DAEMON_CHILD";
 /// server 入口：未带本体标记时是双层拉起的中间进程——detached 拉起
 /// 本体（孙进程）并等待其 socket 就绪后退出；本体由 init 收养，
 /// 退出即被回收（无僵尸），客户端断开不影响 daemon。
-fn serve(data_dir: &std::path::Path, socket_path: &std::path::Path) -> Result<(), String> {
+fn serve(config: &Config) -> Result<(), String> {
     if std::env::var_os(DAEMON_CHILD_ENV).is_none() {
-        return supervise(data_dir, socket_path);
+        return supervise(config.data_dir(), config.socket());
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("启动运行时失败: {error}"))?;
-    runtime.block_on(serve_async(data_dir, socket_path))
+    runtime.block_on(serve_async(config))
 }
 
 /// 中间进程：detached 拉起本体，轮询 socket 就绪后退出。
@@ -110,11 +117,10 @@ fn supervise(data_dir: &std::path::Path, socket_path: &std::path::Path) -> Resul
 }
 
 /// daemon 本体：写 pid、绑定 socket、服务到 SIGTERM。
-async fn serve_async(
-    data_dir: &std::path::Path,
-    socket_path: &std::path::Path,
-) -> Result<(), String> {
+async fn serve_async(config: &Config) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
+    let data_dir = config.data_dir();
+    let socket_path = config.socket();
     tokio::fs::create_dir_all(data_dir)
         .await
         .map_err(|error| format!("创建数据目录失败: {error}"))?;
@@ -126,11 +132,15 @@ async fn serve_async(
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|error| format!("安装 SIGTERM 处理失败: {error}"))?;
 
-    let storage = SQLiteStorage::open(data_dir.join("nomic.db"))
-        .map_err(|error| format!("打开存储失败: {error}"))?;
+    let storage =
+        SQLiteStorage::open(config.storage()).map_err(|error| format!("打开存储失败: {error}"))?;
+    let llm = match config.provider() {
+        Some(provider) => RigAdapter::openai(provider),
+        None => RigAdapter::unconfigured(),
+    };
     let server = IpcServer::new(
         Arc::new(storage),
-        Arc::new(RigAdapter::unconfigured()),
+        Arc::new(llm),
         Arc::new(LocalEnvironment::new()),
     );
     // 先绑定再写 pid：绑定失败的第二实例不得覆盖活 daemon 的 pid
@@ -153,12 +163,12 @@ async fn serve_async(
     result
 }
 
-fn stop(data_dir: &std::path::Path, socket_path: &std::path::Path) -> Result<(), String> {
+fn stop(config: &Config) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("启动运行时失败: {error}"))?;
     runtime
-        .block_on(daemon::stop_server(socket_path, data_dir))
+        .block_on(daemon::stop_server(config.socket(), config.data_dir()))
         .map_err(|error| error.to_string())
 }

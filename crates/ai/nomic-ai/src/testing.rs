@@ -12,9 +12,9 @@ use rig_core::providers::openai::OpenAIConfig;
 use rig_core::test_utils::SequencedHttpClient;
 
 use crate::RigAdapter;
-use crate::sse::{self, ScriptedTurn};
+use crate::sse;
 
-pub use crate::sse::{SCRIPTED_MODEL, ScriptedEvent};
+pub use crate::sse::{SCRIPTED_MODEL, ScriptedEvent, ScriptedTurn};
 
 /// 剧本端点的基址。
 pub const SCRIPTED_BASE_URL: &str = "http://scripted.invalid/v1";

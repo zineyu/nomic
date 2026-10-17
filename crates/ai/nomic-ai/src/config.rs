@@ -10,13 +10,14 @@ use std::fmt;
 pub struct ApiKey(String);
 
 impl ApiKey {
-    /// 解析密钥：空值（含纯空白）是显式错误。
+    /// 解析密钥：空值（含纯空白）是显式错误；首尾空白被剔除。
     pub fn parse(value: impl Into<String>) -> Result<Self, ProviderConfigError> {
         let value = value.into();
-        if value.trim().is_empty() {
+        let value = value.trim();
+        if value.is_empty() {
             return Err(ProviderConfigError::MissingApiKey);
         }
-        Ok(Self(value))
+        Ok(Self(value.to_owned()))
     }
 
     /// 密钥原文；仅供构造 provider 客户端使用。
@@ -47,19 +48,21 @@ impl ProviderConfig {
         model: impl Into<String>,
     ) -> Result<Self, ProviderConfigError> {
         let model = model.into();
-        if model.trim().is_empty() {
+        let model = model.trim();
+        if model.is_empty() {
             return Err(ProviderConfigError::MissingModel);
         }
         let base_url = match base_url {
             Some(url) if url.trim().is_empty() => {
                 return Err(ProviderConfigError::EmptyBaseUrl);
             }
-            url => url,
+            Some(url) => Some(url.trim().to_owned()),
+            None => None,
         };
         Ok(Self {
             base_url,
             api_key,
-            model,
+            model: model.to_owned(),
         })
     }
 
@@ -109,6 +112,20 @@ mod tests {
         let config = ProviderConfig::new(None, key, "gpt-test").expect("合法配置不应失败");
         let rendered = format!("{config:?}");
         assert!(!rendered.contains("sk-super-secret"), "实际: {rendered}");
+    }
+
+    #[test]
+    fn 首尾空白被剔除() {
+        let key = ApiKey::parse("  sk-test  ").unwrap();
+        assert_eq!(key.expose(), "sk-test");
+        let config = ProviderConfig::new(
+            Some("  https://example.test/v1 ".into()),
+            key,
+            "  gpt-test ",
+        )
+        .unwrap();
+        assert_eq!(config.base_url(), Some("https://example.test/v1"));
+        assert_eq!(config.model(), "gpt-test");
     }
 
     #[test]

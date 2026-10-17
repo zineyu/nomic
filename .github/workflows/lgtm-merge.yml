@@ -40,4 +40,4 @@ jobs:
       # match-head-commit 保证评论后 PR 又推了新提交时不会合并意外的代码
       - name: Enable auto merge
         if: steps.trigger.outputs.triggered == 'true'
-        run: gh pr merge "$PR_URL" --rebase --auto --delete-branch --match-head-commit "${{ steps.pr.outputs.head_sha }}"
+        run: gh pr merge "$PR_URL" --rebase --delete-branch --match-head-commit "${{ steps.pr.outputs.head_sha }}"

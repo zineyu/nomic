@@ -57,6 +57,16 @@ pub enum Acceptance {
     },
 }
 
+impl Acceptance {
+    /// 受理（或已受理过）的会话 id。
+    #[must_use]
+    pub const fn session_id(self) -> SessionId {
+        match self {
+            Self::Accepted { session_id } | Self::Duplicate { session_id } => session_id,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

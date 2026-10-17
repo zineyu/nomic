@@ -203,6 +203,13 @@ fn next_ordinal(
 
 /// 步骤类别的落库编码：steps.kind 列的唯一事实源。
 ///（迁移 fixture 固化的 v1 契约除外，它不随实现演进。）
+/// 会话子树的递归查询（删除级联用）。
+const SUBTREE: &str = "WITH RECURSIVE subtree(id) AS ( \
+     SELECT id FROM sessions WHERE id = ?1 \
+     UNION ALL \
+     SELECT s.id FROM sessions s JOIN subtree t ON s.parent_session = t.id) \
+     SELECT id FROM subtree";
+
 const KIND_MESSAGE: &str = "message";
 const KIND_TOOL_CALL_STARTED: &str = "tool_call_started";
 const KIND_TOOL_CALL_FINISHED: &str = "tool_call_finished";
@@ -550,6 +557,23 @@ impl Storage for SQLiteStorage {
         })
     }
 
+    fn delete(&self, session: SessionId) -> impl Future<Output = Result<(), StorageError>> + Send {
+        blocking(&self.conn, move |conn| {
+            session_exists(conn, session)?;
+            // 级联删除整个子树：父子从属关系不允许悬挂
+            for (table, key) in [
+                ("steps", "session_id"),
+                ("messages", "session_id"),
+                ("sessions", "id"),
+            ] {
+                let sql = format!("DELETE FROM {table} WHERE {key} IN ({SUBTREE})");
+                conn.execute(&sql, [session.to_string()])
+                    .map_err(|error| StorageError::Query(error.to_string()))?;
+            }
+            Ok(())
+        })
+    }
+
     fn set_state(
         &self,
         session: SessionId,
@@ -566,6 +590,25 @@ impl Storage for SQLiteStorage {
                 return Err(StorageError::NotFound(format!("session {session}")));
             }
             Ok(())
+        })
+    }
+
+    fn claim_session(
+        &self,
+        session: SessionId,
+    ) -> impl Future<Output = Result<bool, StorageError>> + Send {
+        blocking(&self.conn, move |conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE sessions SET state = ?1 WHERE id = ?2 AND state = ?3",
+                    (
+                        state_code(SessionState::Running),
+                        session.to_string(),
+                        state_code(SessionState::Pending),
+                    ),
+                )
+                .map_err(|error| StorageError::Query(error.to_string()))?;
+            Ok(updated > 0)
         })
     }
 

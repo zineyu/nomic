@@ -4,13 +4,14 @@
 //! worker 领取会话并串行执行 agent loop 到静止后释放。
 //! SQLite 存储实现见 [`storage`]；单轮对话执行引擎见 [`agent`]；
 //! IPC 服务端见 [`ipc`]；协议客户端见 [`client`]；server 生命周期
-//! （自动拉起/停止）见 [`daemon`]。
+//! （自动拉起/停止）见 [`daemon`]；启动恢复见 [`recovery`]。
 
 pub mod agent;
 pub mod client;
 pub mod daemon;
 pub mod environment;
 pub mod ipc;
+pub mod recovery;
 pub mod storage;
 pub mod tools;
 

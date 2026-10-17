@@ -5,7 +5,8 @@
 //! 订阅者；会话树事件按请求回给发起连接（列表/分叉/删除），
 //! 跨客户端广播是 S8 范围。提交受理层按 requestId 去重（台账在存储内），
 //! 受理成功即通知调度器：worker 串行领取待处理会话执行到静止，
-//! 失败时向订阅者发出错误事件并把会话挂回待处理。
+//! 失败时向订阅者发出错误事件并把会话挂回待处理。启动先做恢复：
+//! 崩溃残留的执行中会话回到待处理，与原有待处理工作一起入队重驱。
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -14,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use nomic_core::{
     ClientMessage, Event, EventErrorKind, ExecutionEnvironment, LlmAdapter, PROTOCOL_VERSION,
-    ServerMessage, SessionId, Storage,
+    ServerMessage, SessionId, Storage, StorageError,
 };
 use serde::de::DeserializeOwned;
 use thiserror::Error;
@@ -23,7 +24,8 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
-use crate::agent::{AgentError, RunError, Worker, replay_messages};
+use crate::agent::{AgentError, RunError, Worker, partial_messages};
+use crate::recovery::recoverable_sessions;
 
 use std::os::unix::fs::PermissionsExt;
 
@@ -39,6 +41,9 @@ pub enum IpcError {
     /// socket 已被活着的 server 占用（并发拉起时只有一个赢家）。
     #[error("socket already in use by a running server: {0}")]
     AddressInUse(String),
+    /// 启动恢复读取或写入存储失败。
+    #[error(transparent)]
+    Storage(#[from] StorageError),
 }
 
 /// 绑定 socket：父目录按 0700 创建，残留文件清除，socket 权限 0700。
@@ -211,6 +216,11 @@ where
             .expect("schedule receiver poisoned")
             .take()
             .expect("serve 只能调用一次");
+        // 启动恢复：崩溃残留的执行中会话回到待处理，与原有待处理
+        // 工作一起入队；调度器从最后 checkpoint 重驱
+        for session in recoverable_sessions(&*self.storage).await? {
+            let _ = self.schedule.send(session);
+        }
         tokio::spawn(scheduler(
             Arc::clone(&self.storage),
             Arc::clone(&self.llm),
@@ -232,10 +242,10 @@ where
 
 /// 调度器：按到达顺序串行执行显式请求的会话。
 ///
-/// 调度单位是会话 id（受理/恢复），不是全局待处理队列：
+/// 调度单位是会话 id（受理/恢复/启动重驱），不是全局待处理队列：
 /// 失败挂回待处理的会话不会被后续无关请求重复领取，
 /// 失败也不会阻塞队列中的其他会话——重驱只能由对该会话的
-/// 再次受理（同 requestId 重提）或 Resume 显式触发
+/// 再次受理（同 requestId 重提）、Resume 或启动恢复显式触发
 /// （S10/S11 提供自动重试与无人值守重驱）。
 async fn scheduler<S, L, E>(
     storage: Arc<S>,
@@ -408,7 +418,7 @@ async fn dispatch<S: Storage>(
         },
         ClientMessage::Resume { session_id } => {
             match storage.steps(*session_id).await {
-                Ok(steps) => match replay_messages(&steps) {
+                Ok(steps) => match partial_messages(&steps) {
                     Ok(messages) => {
                         for message in messages {
                             if tx

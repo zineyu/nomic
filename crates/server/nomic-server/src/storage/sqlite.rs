@@ -486,13 +486,15 @@ impl Storage for SQLiteStorage {
                 (child.id().to_string(), source.to_string(), index),
             )
             .map_err(|error| StorageError::Query(error.to_string()))?;
-            // 会话内容的消息步骤前缀同步复制（序号重排为稠密序列）；
-            // 工具执行步骤不复制——子会话的执行日志从分叉点重新起算
+            // 会话内容截至分叉点的步骤前缀整体同步复制（序号重排为
+            // 稠密序列）：消息步骤与它们之间的工具步骤都属于共享历史，
+            // 子会话只在分叉点之后重新起算执行日志。
             tx.execute(
                 "INSERT INTO steps (session_id, ordinal, kind, call_id, message_id, body) \
                  SELECT ?1, ROW_NUMBER() OVER (ORDER BY ordinal) - 1, kind, call_id, message_id, body \
-                 FROM steps WHERE session_id = ?2 AND message_id IN ( \
-                     SELECT message_id FROM messages WHERE session_id = ?2 AND ordinal <= ?3)",
+                 FROM steps WHERE session_id = ?2 AND ordinal <= ( \
+                     SELECT MAX(ordinal) FROM steps WHERE session_id = ?2 AND message_id IN ( \
+                         SELECT message_id FROM messages WHERE session_id = ?2 AND ordinal <= ?3))",
                 (child.id().to_string(), source.to_string(), index),
             )
             .map_err(|error| StorageError::Query(error.to_string()))?;
@@ -612,37 +614,23 @@ impl Storage for SQLiteStorage {
         })
     }
 
-    fn claim_next_pending(
+    fn session_ids_in_state(
         &self,
-    ) -> impl Future<Output = Result<Option<SessionId>, StorageError>> + Send {
+        state: SessionState,
+    ) -> impl Future<Output = Result<Vec<SessionId>, StorageError>> + Send {
         blocking(&self.conn, move |conn| {
-            let tx = conn
-                .transaction()
+            let mut statement = conn
+                .prepare("SELECT id FROM sessions WHERE state = ?1 ORDER BY rowid ASC")
                 .map_err(|error| StorageError::Query(error.to_string()))?;
-            let pending: Option<String> = tx
-                .query_row(
-                    "SELECT id FROM sessions WHERE state = ?1 ORDER BY rowid ASC LIMIT 1",
-                    [state_code(SessionState::Pending)],
-                    |row| row.get(0),
-                )
-                .optional()
+            let rows = statement
+                .query_map([state_code(state)], |row| row.get::<_, String>(0))
                 .map_err(|error| StorageError::Query(error.to_string()))?;
-            let Some(id) = pending else {
-                return Ok(None);
-            };
-            // 原子领取：仅当仍为待处理时转为运行中
-            tx.execute(
-                "UPDATE sessions SET state = ?1 WHERE id = ?2 AND state = ?3",
-                (
-                    state_code(SessionState::Running),
-                    &id,
-                    state_code(SessionState::Pending),
-                ),
-            )
-            .map_err(|error| StorageError::Query(error.to_string()))?;
-            tx.commit()
-                .map_err(|error| StorageError::Query(error.to_string()))?;
-            Ok(Some(parse_id(&id)?))
+            let mut ids = Vec::new();
+            for row in rows {
+                let id = row.map_err(|error| StorageError::Query(error.to_string()))?;
+                ids.push(parse_id(&id)?);
+            }
+            Ok(ids)
         })
     }
 }

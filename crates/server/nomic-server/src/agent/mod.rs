@@ -8,6 +8,6 @@ mod history;
 mod prompt;
 mod worker;
 
-pub use history::replay_messages;
+pub use history::{PendingCall, partial_messages, pending_call, replay_messages};
 pub use prompt::{DEFAULT_SYSTEM_PROMPT, assemble_system_prompt};
 pub use worker::{AgentError, AgentRunError, RunError, Worker};

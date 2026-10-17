@@ -9,10 +9,10 @@
 use futures_util::StreamExt;
 use nomic_core::{
     EnvironmentError, Event, ExecutionEnvironment, LlmAdapter, LlmError, LlmEvent, Message,
-    MessageId, SessionId, SessionState, Step, Storage, StorageError, ToolCall,
+    MessageId, SessionId, SessionState, Step, Storage, StorageError, ToolCall, ToolName,
 };
 
-use crate::agent::history::replay_messages;
+use crate::agent::history::{PendingCall, interrupted_message, pending_call, replay_messages};
 use crate::agent::prompt::assemble_system_prompt;
 
 /// agent loop 执行失败。
@@ -143,6 +143,15 @@ impl<'a, S: Storage, L: LlmAdapter, E: ExecutionEnvironment> Worker<'a, S, L, E>
             .await?
             .ok_or_else(|| StorageError::NotFound(format!("session {session_id}")))?;
 
+        // 重驱入口：闭合上一回合未完成的工具调用；回合已在助手
+        // 消息处结束时直接释放，不再请求 LLM
+        if self
+            .resume_turn(session_id, session.working_dir(), emit)
+            .await?
+        {
+            return self.quiesce(session_id).await;
+        }
+
         // 工具回合循环：每轮请求 LLM，若其请求工具调用则派发执行、
         // 结果回灌后继续下一轮，直到一轮不再请求工具调用。
         loop {
@@ -201,6 +210,11 @@ impl<'a, S: Storage, L: LlmAdapter, E: ExecutionEnvironment> Worker<'a, S, L, E>
             }
         }
 
+        self.quiesce(session_id).await
+    }
+
+    /// 释放会话：运行中 → 静止。
+    async fn quiesce(&self, session_id: SessionId) -> Result<(), AgentError> {
         self.storage
             .set_state(
                 session_id,
@@ -210,6 +224,56 @@ impl<'a, S: Storage, L: LlmAdapter, E: ExecutionEnvironment> Worker<'a, S, L, E>
             )
             .await?;
         Ok(())
+    }
+
+    /// 重驱入口：闭合上一回合未完成的工具调用。
+    ///
+    /// - 声明但从未开始：`ToolCallStarted` 先于派发落库，未开始即
+    ///   副作用未发生，直接续跑（与 replay-safe 声明无关）。
+    /// - 已开始、未闭合：replay-safe 恰好续跑一次；非 replay-safe
+    ///   标记 interrupted，副作用绝不重复执行，中断通知作为工具
+    ///   错误层推送（模型可见）。
+    ///
+    /// 返回 `true` 表示回合已在助手消息处结束（最后一步是无工具
+    /// 调用的助手消息），调用方直接释放会话。
+    async fn resume_turn(
+        &self,
+        session_id: SessionId,
+        working_dir: &std::path::Path,
+        emit: &mut impl FnMut(Event),
+    ) -> Result<bool, AgentError> {
+        loop {
+            let steps = self.storage.steps(session_id).await?;
+            match pending_call(&steps)? {
+                Some(PendingCall::Unstarted(call)) => {
+                    self.run_tool_call(session_id, working_dir, &call, emit)
+                        .await?;
+                }
+                Some(PendingCall::InFlight(call)) => {
+                    if self.replay_safe(&call.tool) {
+                        self.finish_tool_call(session_id, working_dir, &call, emit)
+                            .await?;
+                    } else {
+                        self.storage
+                            .mark_interrupted(session_id, call.id, None)
+                            .await?;
+                        emit(Event::MessageCompleted {
+                            session_id,
+                            message: interrupted_message(call.id, None),
+                        });
+                    }
+                }
+                None => return Ok(turn_completed(&steps)),
+            }
+        }
+    }
+
+    /// 工具是否声明可安全重放；未注册的工具按不可重放处理。
+    fn replay_safe(&self, tool: &ToolName) -> bool {
+        self.env
+            .tool_specs()
+            .iter()
+            .any(|spec| spec.name == *tool && spec.replay_safe)
     }
 
     /// 执行一次工具调用并把结果回灌为工具结果消息。
@@ -232,12 +296,24 @@ impl<'a, S: Storage, L: LlmAdapter, E: ExecutionEnvironment> Worker<'a, S, L, E>
             session_id,
             call: call.clone(),
         });
+        self.finish_tool_call(session_id, working_dir, call, emit)
+            .await
+    }
 
+    /// 执行一个已落库开始的调用并把结果 checkpoint。
+    ///
+    /// 派发故障：调用状态不确定且无已提交输出，按 interrupted 闭合
+    /// 历史——重驱时回放可构造回灌消息，恢复面保持打开。
+    async fn finish_tool_call(
+        &self,
+        session_id: SessionId,
+        working_dir: &std::path::Path,
+        call: &ToolCall,
+        emit: &mut impl FnMut(Event),
+    ) -> Result<(), AgentError> {
         let result = match self.env.execute(session_id, working_dir, call).await {
             Ok(result) => result,
             Err(error) => {
-                // 派发故障：调用状态不确定且无已提交输出，按 interrupted
-                // 闭合历史——重驱时回放可构造回灌消息，恢复面保持打开
                 self.storage
                     .append_step(
                         session_id,
@@ -276,4 +352,13 @@ impl<'a, S: Storage, L: LlmAdapter, E: ExecutionEnvironment> Worker<'a, S, L, E>
         });
         Ok(())
     }
+}
+
+/// 回合是否已在 break 处结束：最后一步是无工具调用的助手消息，
+/// 只差释放会话。重驱不得再请求一次 LLM。
+const fn turn_completed(steps: &[Step]) -> bool {
+    matches!(
+        steps.last(),
+        Some(Step::Message(Message::Assistant { tool_calls, .. })) if tool_calls.is_empty()
+    )
 }

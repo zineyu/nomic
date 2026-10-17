@@ -110,7 +110,7 @@ async fn 剧本驱动完成单轮对话_事件序列与落库步骤一一对应(
         other => panic!("请求历史不符: {other:?}"),
     }
 
-    // 释放：会话回到静止，待处理队列已空
+    // 释放：会话回到静止，无待处理工作
     let session = fixture
         .storage
         .get_session(session_id)
@@ -118,7 +118,14 @@ async fn 剧本驱动完成单轮对话_事件序列与落库步骤一一对应(
         .unwrap()
         .unwrap();
     assert_eq!(session.state(), SessionState::Idle);
-    assert_eq!(fixture.storage.claim_next_pending().await.unwrap(), None);
+    assert!(
+        fixture
+            .storage
+            .session_ids_in_state(SessionState::Pending)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -244,7 +251,14 @@ async fn 串行领取_每次一个会话_先受理先执行_静止后释放() {
     }
 
     // 队列耗尽：worker 无事可做
-    assert_eq!(fixture.storage.claim_next_pending().await.unwrap(), None);
+    assert!(
+        fixture
+            .storage
+            .session_ids_in_state(SessionState::Pending)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]

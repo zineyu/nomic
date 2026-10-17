@@ -298,7 +298,7 @@ async fn 分叉点不属于来源会话返回_not_found() {
 }
 
 #[tokio::test]
-async fn 分叉前缀中的消息步骤保持原序即使穿插工具步骤() {
+async fn 分叉复制截至分叉点的完整步骤前缀并可完整回放() {
     let dir = tempfile::tempdir().unwrap();
     let storage = open_storage(dir.path());
     let parent = storage
@@ -320,8 +320,7 @@ async fn 分叉前缀中的消息步骤保持原序即使穿插工具步骤() {
         text: String::new(),
         tool_calls: vec![call.clone()],
     };
-    let tool_reply = Message::Tool {
-        id: MessageId::new(),
+    let finished = nomic_core::Step::ToolCallFinished {
         call_id: call.id,
         result: nomic_core::ToolResult::ok("file body"),
     };
@@ -337,29 +336,32 @@ async fn 分叉前缀中的消息步骤保持原序即使穿插工具步骤() {
         nomic_core::Step::Message(m1.clone()),
         nomic_core::Step::Message(assistant.clone()),
         nomic_core::Step::ToolCallStarted { call: call.clone() },
-        nomic_core::Step::ToolCallFinished {
-            call_id: call.id,
-            result: nomic_core::ToolResult::ok("file body"),
-        },
-        nomic_core::Step::Message(tool_reply.clone()),
+        finished.clone(),
         nomic_core::Step::Message(m2.clone()),
         nomic_core::Step::Message(m3.clone()),
     ] {
         storage.append_step(parent.id(), step).await.unwrap();
     }
 
-    // 分叉复制消息前缀：穿插的工具步骤不属于前缀；分叉点之后的消息（m3）不复制
+    // 分叉复制截至分叉点的完整步骤前缀（含穿插的工具步骤）；
+    // 分叉点之后的 m3 不复制
     let child = storage.fork(parent.id(), m2.id()).await.unwrap();
+    let child_steps = storage.steps(child.id()).await.unwrap();
     assert_eq!(
-        storage.steps(child.id()).await.unwrap(),
+        child_steps,
         vec![
             nomic_core::Step::Message(m1),
             nomic_core::Step::Message(assistant),
-            nomic_core::Step::Message(tool_reply),
+            nomic_core::Step::ToolCallStarted { call: call.clone() },
+            finished,
             nomic_core::Step::Message(m2),
         ]
     );
-    assert_eq!(storage.steps(parent.id()).await.unwrap().len(), 7);
+    // 子会话历史完整可回放：工具结果由配对步骤构造
+    let messages = nomic_server::agent::replay_messages(&child_steps).unwrap();
+    assert_eq!(messages.len(), 4);
+    assert!(matches!(&messages[2], Message::Tool { call_id, .. } if *call_id == call.id));
+    assert_eq!(storage.steps(parent.id()).await.unwrap().len(), 6);
 }
 
 #[tokio::test]
@@ -617,7 +619,8 @@ async fn 分叉树与中断标记经重开完整恢复() {
         ),
         "中断步骤携带的部分输出必须随库持久化"
     );
-    assert_eq!(storage.claim_next_pending().await.unwrap(), Some(parent_id));
+    let pending = storage.session_ids_in_state(SessionState::Pending).await;
+    assert_eq!(pending.unwrap(), vec![parent_id]);
 }
 
 #[tokio::test]

@@ -62,8 +62,9 @@ pub trait Storage: Send + Sync {
     ) -> impl Future<Output = Result<SessionTreeSnapshot, StorageError>> + Send;
 
     /// 在 `source` 的 `at` 消息处分叉：复制 `source` 截至 `at`（含）的
-    /// 消息前缀作为新会话的初始序列（写时复制），返回新会话。
-    /// `at` 不属于 `source` 时返回 [`StorageError::NotFound`]。
+    /// 完整步骤前缀（消息与它们之间的工具步骤）作为新会话的初始
+    /// 序列（写时复制），返回新会话。子会话只在分叉点之后重新起算
+    /// 执行日志。`at` 不属于 `source` 时返回 [`StorageError::NotFound`]。
     /// 分叉后父子追加互不可见。
     fn fork(
         &self,
@@ -118,12 +119,12 @@ pub trait Storage: Send + Sync {
         session: SessionId,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send;
 
-    /// 全局队列领取：取最老的待处理会话并原子转为运行中；没有
-    /// 待处理工作时返回 `None`。
+    /// 按执行状态枚举会话 id（稳定顺序：创建先后）。
     ///
-    /// 当前调度器按显式会话 id 领取（[`Storage::claim_session`]）；
-    /// 本方法供启动重驱（S6）枚举待处理工作使用。
-    fn claim_next_pending(
+    /// 启动恢复用它枚举待处理工作；本方法只读，不改变会话状态，
+    /// 调度器仍按显式会话 id 原子领取（[`Storage::claim_session`]）。
+    fn session_ids_in_state(
         &self,
-    ) -> impl Future<Output = Result<Option<SessionId>, StorageError>> + Send;
+        state: SessionState,
+    ) -> impl Future<Output = Result<Vec<SessionId>, StorageError>> + Send;
 }

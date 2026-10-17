@@ -41,11 +41,15 @@ async fn 新会话提交后进入待处理并可被原子取走() {
     assert_eq!(session.state(), SessionState::Pending);
     assert_eq!(session.working_dir(), Path::new("/ws/project"));
 
-    // 待处理会话被调度器原子取走：转为运行中，不可二次取走
+    // 待处理工作可枚举；调度器原子领取：转为运行中，不可二次领取
     assert_eq!(
-        storage.claim_next_pending().await.unwrap(),
-        Some(session_id)
+        storage
+            .session_ids_in_state(SessionState::Pending)
+            .await
+            .unwrap(),
+        vec![session_id]
     );
+    assert!(storage.claim_session(session_id).await.unwrap());
     assert_eq!(
         storage
             .get_session(session_id)
@@ -55,7 +59,7 @@ async fn 新会话提交后进入待处理并可被原子取走() {
             .state(),
         SessionState::Running
     );
-    assert!(storage.claim_next_pending().await.unwrap().is_none());
+    assert!(!storage.claim_session(session_id).await.unwrap());
 
     // 步骤推进后状态随之更新
     storage
@@ -71,7 +75,13 @@ async fn 新会话提交后进入待处理并可被原子取走() {
             .state(),
         SessionState::Idle
     );
-    assert!(storage.claim_next_pending().await.unwrap().is_none());
+    assert!(
+        storage
+            .session_ids_in_state(SessionState::Idle)
+            .await
+            .unwrap()
+            .contains(&session_id)
+    );
 }
 
 #[tokio::test]
@@ -184,7 +194,7 @@ async fn 不存在会话的查询返回_none_而非故障() {
 }
 
 #[tokio::test]
-async fn 多个待处理会话按到达顺序依次被取走() {
+async fn 待处理会话按创建顺序枚举并可逐个领取() {
     let dir = tempfile::tempdir().unwrap();
     let storage = open_storage(dir.path());
 
@@ -205,11 +215,26 @@ async fn 多个待处理会话按到达顺序依次被取走() {
         }
     }
 
-    // 待处理工作可逐个列出：每个会话恰好被取走一次，顺序等于到达顺序
+    // 只读枚举顺序等于创建顺序，且不改变会话状态
+    assert_eq!(
+        storage
+            .session_ids_in_state(SessionState::Pending)
+            .await
+            .unwrap(),
+        arrival
+    );
+    // 逐个原子领取：每个会话恰好一次成功，二次领取必失败
     for expected in &arrival {
-        assert_eq!(storage.claim_next_pending().await.unwrap(), Some(*expected));
+        assert!(storage.claim_session(*expected).await.unwrap());
+        assert!(!storage.claim_session(*expected).await.unwrap());
     }
-    assert!(storage.claim_next_pending().await.unwrap().is_none());
+    assert!(
+        storage
+            .session_ids_in_state(SessionState::Pending)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -234,19 +259,24 @@ async fn 并发领取不会把同一会话分发给两个调度器() {
         }
     }
 
-    // 四个调度器并发领取：原子转换保证每个会话至多一个领取者
+    // 四个调度器并发领取同一批会话：原子转换保证每个会话至多一个赢家
     let mut handles = Vec::new();
     for _ in 0..4 {
         let storage = Arc::clone(&storage);
+        let ids = pending.clone();
         handles.push(tokio::spawn(async move {
-            storage.claim_next_pending().await.unwrap()
+            let mut won = Vec::new();
+            for id in ids {
+                if storage.claim_session(id).await.unwrap() {
+                    won.push(id);
+                }
+            }
+            won
         }));
     }
     let mut claimed = Vec::new();
     for handle in handles {
-        if let Some(session_id) = handle.await.unwrap() {
-            claimed.push(session_id);
-        }
+        claimed.extend(handle.await.unwrap());
     }
 
     pending.sort();

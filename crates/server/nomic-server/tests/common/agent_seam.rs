@@ -7,7 +7,9 @@
 //! S7 起 seam 经协议驱动：[`ProtocolFixture`] 在临时目录上启动
 //! 进程内 server 实例（真实 Unix socket + 注入替身），测试经
 //! 协议客户端驱动、直接断言存储与替身快照（值断言与进程内
-//! 直调时期一致）。
+//! 直调时期一致）。崩溃恢复 seam（S6）经 [`ScriptedOutcome`]
+//! 注入工具执行前/后死亡，经 [`ProtocolFixture::restart`] 在同一
+//! SQLite 文件上重启实例。
 
 // 共享测试替身模块经 #[path] 引入多个测试二进制（tests/ 每个 .rs
 // 独立编译），每个二进制只使用其中一个子集；未使用项在本二进制
@@ -219,10 +221,31 @@ pub struct CapturedExecution {
     pub call: ToolCall,
 }
 
+/// 一次工具派发的剧本结果。
+///
+/// 崩溃脚本模拟 server 在工具执行前/后死亡：`CrashBeforeEffect`
+/// 在记录派发前永久挂起（副作用未发生）；`CrashAfterEffect` 在记录
+/// 派发后永久挂起（副作用已发生、结果未落库）。
+#[derive(Debug)]
+pub enum ScriptedOutcome {
+    /// 派发返回给定结果（成功或环境故障）。
+    Return(Result<ToolResult, EnvironmentError>),
+    /// 派发前永久挂起：模拟工具执行前崩溃。
+    CrashBeforeEffect,
+    /// 记录派发后永久挂起：模拟副作用已发生、结果未落库时崩溃。
+    CrashAfterEffect,
+}
+
+impl From<Result<ToolResult, EnvironmentError>> for ScriptedOutcome {
+    fn from(outcome: Result<ToolResult, EnvironmentError>) -> Self {
+        Self::Return(outcome)
+    }
+}
+
 /// 脚本化执行环境替身：结果按剧本推进，派发快照可回放断言。
 #[derive(Debug)]
 pub struct ScriptedEnv {
-    outcomes: Mutex<VecDeque<Result<ToolResult, EnvironmentError>>>,
+    outcomes: Mutex<VecDeque<ScriptedOutcome>>,
     executions: Mutex<Vec<CapturedExecution>>,
     specs: Vec<ToolSpec>,
     /// 派发闸门：每次 execute 在返回结果前等待一次放行。
@@ -231,9 +254,12 @@ pub struct ScriptedEnv {
 
 impl ScriptedEnv {
     /// 按剧本创建替身；`specs` 为对外声明的工具列表。
-    pub fn new(outcomes: Vec<Result<ToolResult, EnvironmentError>>, specs: Vec<ToolSpec>) -> Self {
+    pub fn new(
+        outcomes: impl IntoIterator<Item = impl Into<ScriptedOutcome>>,
+        specs: Vec<ToolSpec>,
+    ) -> Self {
         Self {
-            outcomes: Mutex::new(outcomes.into()),
+            outcomes: Mutex::new(outcomes.into_iter().map(Into::into).collect()),
             executions: Mutex::new(Vec::new()),
             specs,
             gate: None,
@@ -243,12 +269,12 @@ impl ScriptedEnv {
     /// 带派发闸门的替身：每次 execute 在返回结果前等待一次放行，
     /// 钉住「调用开始事件到达时执行尚未完成」等时序断言。
     pub fn gated(
-        outcomes: Vec<Result<ToolResult, EnvironmentError>>,
+        outcomes: impl IntoIterator<Item = impl Into<ScriptedOutcome>>,
         specs: Vec<ToolSpec>,
         gate: Gate,
     ) -> Self {
         Self {
-            outcomes: Mutex::new(outcomes.into()),
+            outcomes: Mutex::new(outcomes.into_iter().map(Into::into).collect()),
             executions: Mutex::new(Vec::new()),
             specs,
             gate: Some(gate),
@@ -257,7 +283,7 @@ impl ScriptedEnv {
 
     /// 无任何剧本的环境：单轮对话测试使用，任何派发都视为剧本越界。
     pub fn inert() -> Self {
-        Self::new(Vec::new(), Vec::new())
+        Self::new(Vec::<ScriptedOutcome>::new(), Vec::new())
     }
 
     /// 已捕获的派发快照（按到达顺序）。
@@ -282,20 +308,31 @@ impl ExecutionEnvironment for ScriptedEnv {
             .expect("scripted outcomes poisoned")
             .pop_front()
             .expect("script exhausted: more tool executions than scripted outcomes");
-        self.executions
-            .lock()
-            .expect("captured executions poisoned")
-            .push(CapturedExecution {
-                session,
-                working_dir: working_dir.to_path_buf(),
-                call: call.clone(),
-            });
+        // 执行前崩溃：副作用未发生，派发不记录
+        let record = !matches!(&outcome, ScriptedOutcome::CrashBeforeEffect);
+        if record {
+            self.executions
+                .lock()
+                .expect("captured executions poisoned")
+                .push(CapturedExecution {
+                    session,
+                    working_dir: working_dir.to_path_buf(),
+                    call: call.clone(),
+                });
+        }
         let gate = self.gate.clone();
         async move {
+            if !record {
+                return std::future::pending().await;
+            }
             if let Some(gate) = gate {
                 gate.wait().await;
             }
-            outcome
+            match outcome {
+                ScriptedOutcome::Return(result) => result,
+                ScriptedOutcome::CrashAfterEffect => std::future::pending().await,
+                ScriptedOutcome::CrashBeforeEffect => unreachable!("已按 record 分支"),
+            }
         }
     }
 
@@ -318,6 +355,8 @@ pub struct ProtocolFixture<L, E> {
     /// 执行环境：派发快照回放断言。
     pub env: Arc<E>,
     socket: PathBuf,
+    db_path: PathBuf,
+    serve: tokio::task::JoinHandle<()>,
 }
 
 impl<L, E> ProtocolFixture<L, E>
@@ -327,25 +366,52 @@ where
 {
     /// 在临时目录上启动 server（socket 为 `<dir>/nomic.sock`）。
     pub async fn start(dir: &Path, llm: L, env: E) -> Self {
-        let storage = Arc::new(SQLiteStorage::open(dir.join("nomic.db")).unwrap());
+        let db_path = dir.join("nomic.db");
         let socket = dir.join("nomic.sock");
+        let storage = Arc::new(SQLiteStorage::open(&db_path).unwrap());
         let llm = Arc::new(llm);
         let env = Arc::new(env);
-        let server = IpcServer::new(Arc::clone(&storage), Arc::clone(&llm), Arc::clone(&env));
-        let serve_socket = socket.clone();
-        tokio::spawn(async move { server.run(&serve_socket).await.unwrap() });
-        // spawn 只是入队：等待 socket 文件出现（绑定完成）再返回
-        let start = std::time::Instant::now();
-        while !socket.exists() {
-            assert!(start.elapsed() < WAIT, "server 未在 {WAIT:?} 内绑定 socket");
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let serve = spawn_server(
+            Arc::clone(&storage),
+            Arc::clone(&llm),
+            Arc::clone(&env),
+            &socket,
+        );
+        wait_for_socket(&socket).await;
         Self {
             storage,
             llm,
             env,
             socket,
+            db_path,
+            serve,
         }
+    }
+
+    /// 模拟进程崩溃后重启：停止服务循环，在同一个 SQLite 文件上
+    /// 打开新存储并启动新实例。
+    ///
+    /// 在途 worker 随旧任务图丢弃（等价于进程死亡）；新实例的启动
+    /// 恢复把崩溃残留转回待处理并重驱。返回新实例上完成握手的
+    /// 客户端。
+    pub async fn restart(&mut self) -> Client {
+        self.serve.abort();
+        // 等待任务真正结束：旧监听者已释放，随后的 bind 不会撞名
+        let _ = (&mut self.serve).await;
+        // 清除崩溃现场的 socket 文件；新实例的 bind 也会处理残留，
+        // 这里先清使「文件重现」成为可靠的就绪信号
+        let _ = tokio::fs::remove_file(&self.socket).await;
+        // 残留 socket 文件按崩溃现场处理，由新实例的 bind 逻辑清除
+        let storage = Arc::new(SQLiteStorage::open(&self.db_path).unwrap());
+        self.serve = spawn_server(
+            Arc::clone(&storage),
+            Arc::clone(&self.llm),
+            Arc::clone(&self.env),
+            &self.socket,
+        );
+        self.storage = storage;
+        wait_for_socket(&self.socket).await;
+        self.connect().await
     }
 
     /// 连接并完成版本握手。
@@ -356,6 +422,31 @@ where
     /// socket 路径（权限断言用）。
     pub fn socket_path(&self) -> &Path {
         &self.socket
+    }
+}
+
+/// 启动进程内 server 实例并返回服务任务句柄。
+fn spawn_server<L, E>(
+    storage: Arc<SQLiteStorage>,
+    llm: Arc<L>,
+    env: Arc<E>,
+    socket: &Path,
+) -> tokio::task::JoinHandle<()>
+where
+    L: LlmAdapter + 'static,
+    E: ExecutionEnvironment + 'static,
+{
+    let server = IpcServer::new(storage, llm, env);
+    let socket = socket.to_path_buf();
+    tokio::spawn(async move { server.run(&socket).await.unwrap() })
+}
+
+/// 轮询等待 socket 文件出现（绑定完成）。
+async fn wait_for_socket(socket: &Path) {
+    let start = std::time::Instant::now();
+    while !socket.exists() {
+        assert!(start.elapsed() < WAIT, "server 未在 {WAIT:?} 内绑定 socket");
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 

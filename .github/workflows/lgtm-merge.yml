@@ -36,8 +36,24 @@ jobs:
         id: pr
         run: echo "head_sha=$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid)" >> "$GITHUB_OUTPUT"
 
+      # GitHub 异步重算合并性期间返回 mergeStateStatus: UNKNOWN；此时无法判断 PR 是否
+      # 已满足合并条件，auto-merge 会被拒绝。等待状态确定后再合并。
+      - name: Wait for merge state
+        if: steps.trigger.outputs.triggered == 'true'
+        run: |
+          for attempt in {1..30}; do
+            state=$(gh pr view "$PR_URL" --json mergeStateStatus --jq .mergeStateStatus)
+            if [ "$state" != UNKNOWN ]; then
+              echo "mergeStateStatus=$state"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::mergeStateStatus 在 60 秒内未确定"
+          exit 1
+
       # 启用 auto-merge：分支保护要求的 CI（check 任务）通过后由 GitHub 自动合并；
       # match-head-commit 保证评论后 PR 又推了新提交时不会合并意外的代码
       - name: Enable auto merge
         if: steps.trigger.outputs.triggered == 'true'
-        run: gh pr merge "$PR_URL" --rebase --delete-branch --match-head-commit "${{ steps.pr.outputs.head_sha }}"
+        run: gh pr merge "$PR_URL" --rebase --auto --delete-branch --match-head-commit "${{ steps.pr.outputs.head_sha }}"

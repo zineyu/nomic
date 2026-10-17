@@ -7,10 +7,10 @@ mod common;
 
 use std::path::Path;
 
-use agent_seam::{ScriptedLlm, ScriptedTurn, run_collect};
+use agent_seam::{ScriptedEnv, ScriptedLlm, ScriptedTurn, run_collect};
 use nomic_core::{
     Acceptance, Event, LlmError, Message, MessageId, RequestId, Role, SessionId, SessionState,
-    SessionTarget, Step, Storage, Submission,
+    SessionTarget, Step, Storage, Submission, ToolCall, ToolCallId, ToolName,
 };
 use nomic_server::agent::{AgentError, DEFAULT_SYSTEM_PROMPT, Worker};
 
@@ -39,12 +39,9 @@ async fn 剧本驱动完成单轮对话_事件序列与落库步骤一一对应(
     let storage = open_storage(dir.path());
     let session_id = submit(&storage, dir.path(), "帮我补一个单测").await;
 
-    let llm = ScriptedLlm::new(vec![ScriptedTurn::Reply(vec![
-        "好的".into(),
-        "，".into(),
-        "马上处理".into(),
-    ])]);
-    let (ran, events) = run_collect(&storage, &llm).await;
+    let llm = ScriptedLlm::new(vec![ScriptedTurn::reply(["好的", "，", "马上处理"])]);
+    let env = ScriptedEnv::inert();
+    let (ran, events) = run_collect(&storage, &llm, &env).await;
     assert_eq!(ran.unwrap(), Some(session_id));
 
     // 事件序列：逐 token 增量（共享同一消息 id）+ 消息完成
@@ -111,8 +108,9 @@ async fn 系统提示等于内置默认加存在的上下文文件() {
     let storage = open_storage(dir.path());
     let session_id = submit(&storage, dir.path(), "继续").await;
 
-    let llm = ScriptedLlm::new(vec![ScriptedTurn::Reply(vec!["收到".into()])]);
-    let (ran, _) = run_collect(&storage, &llm).await;
+    let llm = ScriptedLlm::new(vec![ScriptedTurn::reply(["收到"])]);
+    let env = ScriptedEnv::inert();
+    let (ran, _) = run_collect(&storage, &llm, &env).await;
     assert_eq!(ran.unwrap(), Some(session_id));
 
     let captured = llm.captured();
@@ -137,12 +135,13 @@ async fn 串行领取_每次一个会话_先受理先执行_静止后释放() {
     assert_ne!(first, second);
 
     let llm = ScriptedLlm::new(vec![
-        ScriptedTurn::Reply(vec!["一".into()]),
-        ScriptedTurn::Reply(vec!["二".into()]),
+        ScriptedTurn::reply(["一"]),
+        ScriptedTurn::reply(["二"]),
     ]);
 
     // 每次运行只推进一个会话，按受理顺序
-    let (first_ran, first_events) = run_collect(&storage, &llm).await;
+    let env = ScriptedEnv::inert();
+    let (first_ran, first_events) = run_collect(&storage, &llm, &env).await;
     assert_eq!(first_ran.unwrap(), Some(first));
     assert!(
         first_events.iter().all(|event| matches!(
@@ -152,7 +151,7 @@ async fn 串行领取_每次一个会话_先受理先执行_静止后释放() {
         )),
         "首轮事件必须全部属于第一个会话: {first_events:?}"
     );
-    let (second_ran, second_events) = run_collect(&storage, &llm).await;
+    let (second_ran, second_events) = run_collect(&storage, &llm, &env).await;
     assert_eq!(second_ran.unwrap(), Some(second));
     assert!(
         second_events.iter().all(|event| matches!(
@@ -178,7 +177,7 @@ async fn 串行领取_每次一个会话_先受理先执行_静止后释放() {
     }
 
     // 队列耗尽：worker 无事可做
-    let (idle_ran, idle_events) = run_collect(&storage, &llm).await;
+    let (idle_ran, idle_events) = run_collect(&storage, &llm, &env).await;
     assert_eq!(idle_ran.unwrap(), None);
     assert!(idle_events.is_empty());
 }
@@ -189,8 +188,9 @@ async fn 事件增量与完成携带的助手消息_id_与落库步骤一致() {
     let storage = open_storage(dir.path());
     let session_id = submit(&storage, dir.path(), "id 一致性").await;
 
-    let llm = ScriptedLlm::new(vec![ScriptedTurn::Reply(vec!["x".into()])]);
-    let (_, events) = run_collect(&storage, &llm).await;
+    let llm = ScriptedLlm::new(vec![ScriptedTurn::reply(["x"])]);
+    let env = ScriptedEnv::inert();
+    let (_, events) = run_collect(&storage, &llm, &env).await;
 
     // 落库后重新读取，id 与流式期间事件携带的 id 相同
     let steps = storage.steps(session_id).await.unwrap();
@@ -219,11 +219,12 @@ async fn llm_传输错误_会话挂回待处理_重驱按同一历史续跑() {
 
     let llm = ScriptedLlm::new(vec![
         ScriptedTurn::Fail(LlmError::Transport("timeout".into())),
-        ScriptedTurn::Reply(vec!["重试成功".into()]),
+        ScriptedTurn::reply(["重试成功"]),
     ]);
 
     // 首次运行：错误向上传播，不推进任何状态
-    let (result, events) = run_collect(&storage, &llm).await;
+    let env = ScriptedEnv::inert();
+    let (result, events) = run_collect(&storage, &llm, &env).await;
     assert!(matches!(
         result.unwrap_err(),
         AgentError::Llm(LlmError::Transport(_))
@@ -237,7 +238,8 @@ async fn llm_传输错误_会话挂回待处理_重驱按同一历史续跑() {
     assert_eq!(session.state(), SessionState::Pending);
 
     // 重驱：LLM 收到与首次完全一致的历史序列（系统提示 + 用户消息）
-    let (result, _) = run_collect(&storage, &llm).await;
+    let env = ScriptedEnv::inert();
+    let (result, _) = run_collect(&storage, &llm, &env).await;
     assert_eq!(result.unwrap(), Some(session_id));
     let captured = llm.captured();
     assert_eq!(captured.len(), 2);
@@ -274,22 +276,58 @@ async fn llm_传输错误_会话挂回待处理_重驱按同一历史续跑() {
 }
 
 #[tokio::test]
-async fn 未注册工具却请求工具调用_协议违约挂回待处理() {
+async fn 请求未注册工具名_派发失败挂回待处理() {
     let dir = tempfile::tempdir().unwrap();
     let storage = open_storage(dir.path());
     let session_id = submit(&storage, dir.path(), "任务").await;
 
-    let llm = ScriptedLlm::new(vec![ScriptedTurn::RequestToolCall]);
-    let (result, events) = run_collect(&storage, &llm).await;
+    // 执行环境返回未注册名称的显式失败（真实注册表路径见
+    // local_tools_acceptance）
+    let call = ToolCall {
+        id: ToolCallId::new(),
+        tool: ToolName::new("nope"),
+        arguments: serde_json::json!({}),
+    };
+    let llm = ScriptedLlm::new(vec![ScriptedTurn::Play(vec![
+        agent_seam::ScriptedEvent::ToolCall(call.clone()),
+    ])]);
+    let env = ScriptedEnv::new(
+        vec![Err(nomic_core::EnvironmentError::UnknownTool(
+            ToolName::new("nope"),
+        ))],
+        Vec::new(),
+    );
+    let (result, events) = run_collect(&storage, &llm, &env).await;
     assert!(matches!(
         result.unwrap_err(),
-        AgentError::UnexpectedToolCall
+        AgentError::Environment(nomic_core::EnvironmentError::UnknownTool(_))
     ));
-    assert!(events.is_empty(), "违约前不得发出事件: {events:?}");
+    // 派发快照确认调用到达执行环境（与 tool_turn_acceptance 共用替身项）
+    assert_eq!(env.executions().len(), 1);
+    // 助手消息与调用开始步骤已 checkpoint，完成事件未发出
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::MessageCompleted { message, .. } if message.tool_calls().len() == 1
+    )));
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, Event::ToolCallFinished { .. }))
+    );
 
-    // 不推进：无助手步骤，会话回到待处理
+    // 会话回到待处理：统一失败悬挂语义；本类为确定性协议违约，
+    // 不属于状态不确定的崩溃恢复，可重试类别区分由 S10 决定。
+    // 派发失败一律以 interrupted 闭合历史，保持回放配对完整
     let steps = storage.steps(session_id).await.unwrap();
-    assert_eq!(steps.len(), 1, "违约不得追加助手步骤: {steps:?}");
+    assert_eq!(
+        steps.len(),
+        4,
+        "助手步骤、开始步骤与 interrupted 闭合必须已落库: {steps:?}"
+    );
+    assert!(matches!(
+        steps.last(),
+        Some(Step::ToolCallInterrupted { .. })
+    ));
     let session = storage.get_session(session_id).await.unwrap().unwrap();
     assert_eq!(session.state(), SessionState::Pending);
 }
@@ -300,7 +338,7 @@ async fn 助手消息先落库_完成事件后才释放() {
     let storage = open_storage(dir.path());
     let session_id = submit(&storage, dir.path(), "顺序").await;
 
-    let llm = ScriptedLlm::new(vec![ScriptedTurn::Reply(vec!["回".into(), "复".into()])]);
+    let llm = ScriptedLlm::new(vec![ScriptedTurn::reply(["回", "复"])]);
 
     // 事件 sink 在事件到达时即刻回读存储，钉住顺序：
     // 增量事件期间助手消息尚未落库；完成事件发出时已落库；
@@ -322,7 +360,8 @@ async fn 助手消息先落库_完成事件后才释放() {
             }
             other => panic!("单轮剧本不得产出其他事件: {other:?}"),
         };
-        Worker::new(&storage, &llm)
+        let env = ScriptedEnv::inert();
+        Worker::new(&storage, &llm, &env)
             .run_next_pending(&mut emit)
             .await
             .unwrap();
@@ -345,8 +384,9 @@ async fn 空token剧本_助手消息为空文本_会话仍静止() {
     let storage = open_storage(dir.path());
     let session_id = submit(&storage, dir.path(), "空回复").await;
 
-    let llm = ScriptedLlm::new(vec![ScriptedTurn::Reply(vec![])]);
-    let (ran, events) = run_collect(&storage, &llm).await;
+    let llm = ScriptedLlm::new(vec![ScriptedTurn::Play(Vec::new())]);
+    let env = ScriptedEnv::inert();
+    let (ran, events) = run_collect(&storage, &llm, &env).await;
     assert_eq!(ran.unwrap(), Some(session_id));
 
     // 无增量事件，直接完成；空文本也构成完整助手消息
@@ -377,8 +417,9 @@ async fn 上下文路径为目录_读取失败向上传播且挂回待处理() {
     let storage = open_storage(dir.path());
     let session_id = submit(&storage, dir.path(), "任务").await;
 
-    let llm = ScriptedLlm::new(vec![ScriptedTurn::Reply(vec!["不应到达".into()])]);
-    let (result, events) = run_collect(&storage, &llm).await;
+    let llm = ScriptedLlm::new(vec![ScriptedTurn::reply(["不应到达"])]);
+    let env = ScriptedEnv::inert();
+    let (result, events) = run_collect(&storage, &llm, &env).await;
     assert!(matches!(result.unwrap_err(), AgentError::PromptIo(_)));
     assert!(events.is_empty(), "提示组装失败不得发出事件: {events:?}");
     assert!(llm.captured().is_empty(), "提示组装失败不得请求 LLM");
@@ -393,7 +434,8 @@ async fn 队列为空_无事可做也不触碰替身() {
     let storage = open_storage(dir.path());
     let llm = ScriptedLlm::new(vec![]);
 
-    let (result, events) = run_collect(&storage, &llm).await;
+    let env = ScriptedEnv::inert();
+    let (result, events) = run_collect(&storage, &llm, &env).await;
     assert_eq!(result.unwrap(), None);
     assert!(events.is_empty());
     assert!(llm.captured().is_empty());

@@ -6,4 +6,8 @@
 //! 调度器与 IPC 服务端在后续切片落地。
 
 pub mod agent;
+pub mod environment;
 pub mod storage;
+pub mod tools;
+
+pub use environment::LocalEnvironment;

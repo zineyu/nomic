@@ -29,7 +29,11 @@ impl Tool for EchoTool {
         true
     }
 
-    async fn call(&self, input: Self::Input) -> Result<Self::Output, ToolError> {
+    async fn call(
+        &self,
+        _working_dir: &std::path::Path,
+        input: Self::Input,
+    ) -> Result<Self::Output, ToolError> {
         Ok(input)
     }
 }
@@ -52,7 +56,11 @@ impl Tool for MutatingTool {
         false
     }
 
-    async fn call(&self, input: Self::Input) -> Result<Self::Output, ToolError> {
+    async fn call(
+        &self,
+        _working_dir: &std::path::Path,
+        input: Self::Input,
+    ) -> Result<Self::Output, ToolError> {
         Ok(input)
     }
 }
@@ -75,7 +83,11 @@ impl Tool for BatchTool {
         true
     }
 
-    async fn call(&self, input: Self::Input) -> Result<Self::Output, ToolError> {
+    async fn call(
+        &self,
+        _working_dir: &std::path::Path,
+        input: Self::Input,
+    ) -> Result<Self::Output, ToolError> {
         Ok(input.len() % 2 == 0)
     }
 }
@@ -125,6 +137,7 @@ impl ExecutionEnvironment for ScriptedEnv {
     fn execute(
         &self,
         _session: SessionId,
+        _working_dir: &std::path::Path,
         _call: &ToolCall,
     ) -> impl Future<Output = Result<ToolResult, EnvironmentError>> + Send {
         let outcome = match &self.0 {
@@ -133,6 +146,10 @@ impl ExecutionEnvironment for ScriptedEnv {
             StubOutcome::IoFailure(message) => Err(EnvironmentError::Io(message.clone())),
         };
         async move { outcome }
+    }
+
+    fn tool_specs(&self) -> &[nomic_core::ToolSpec] {
+        &[]
     }
 }
 
@@ -180,7 +197,8 @@ fn 环境派发故障独立于三层结果传播() {
         ),
     ];
     for (env, expected) in cases {
-        let outcome = futures::executor::block_on(env.execute(session, &call));
+        let outcome =
+            futures::executor::block_on(env.execute(session, std::path::Path::new("/"), &call));
         assert_eq!(classify(&outcome), expected);
     }
 }

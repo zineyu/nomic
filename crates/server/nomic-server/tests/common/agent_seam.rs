@@ -86,6 +86,8 @@ pub enum ScriptedTurn {
     GatedFail(Gate, LlmError),
     /// respond 立即以错误失败。
     Fail(LlmError),
+    /// 产出给定事件序列后以错误终止流。
+    FailAfter(Vec<ScriptedEvent>, LlmError),
 }
 
 impl ScriptedTurn {
@@ -172,7 +174,7 @@ impl LlmAdapter for ScriptedLlm {
             match turn {
                 ScriptedTurn::Play(events) => {
                     let events = into_llm_events(events);
-                    let stream: LlmEventStream = Box::pin(stream::iter(events));
+                    let stream: LlmEventStream = Box::pin(stream::iter(events.into_iter().map(Ok)));
                     Ok(stream)
                 }
                 ScriptedTurn::PlayGated(gate, events) => {
@@ -183,10 +185,16 @@ impl LlmAdapter for ScriptedLlm {
                             // 每个事件（含流终止）发射前等待一次放行
                             gate.wait().await;
                             let event = events.next()?;
-                            Some((event, (events, gate)))
+                            Some((Ok(event), (events, gate)))
                         },
                     );
                     let stream: LlmEventStream = Box::pin(stream);
+                    Ok(stream)
+                }
+                ScriptedTurn::FailAfter(events, error) => {
+                    let events = into_llm_events(events);
+                    let stream: LlmEventStream =
+                        Box::pin(stream::iter(events.into_iter().map(Ok).chain([Err(error)])));
                     Ok(stream)
                 }
                 ScriptedTurn::GatedFail(gate, error) => {

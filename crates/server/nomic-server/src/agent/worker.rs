@@ -190,7 +190,7 @@ impl<'a, S: Storage, L: LlmAdapter, E: ExecutionEnvironment> Worker<'a, S, L, E>
             let mut text = String::new();
             let mut calls: Vec<ToolCall> = Vec::new();
             while let Some(event) = stream.next().await {
-                match event {
+                match event? {
                     LlmEvent::Token(delta) => {
                         text.push_str(&delta);
                         emit(Event::TokenDelta {

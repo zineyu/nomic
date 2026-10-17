@@ -422,6 +422,50 @@ async fn llm_传输错误_会话挂回待处理_重驱按同一历史续跑() {
 }
 
 #[tokio::test]
+async fn llm_流中途传输错误_增量不落库且会话挂回待处理() {
+    let dir = tempfile::tempdir().unwrap();
+    let llm = ScriptedLlm::new(vec![ScriptedTurn::FailAfter(
+        vec![
+            ScriptedEvent::Token("半".into()),
+            ScriptedEvent::Token("句".into()),
+        ],
+        nomic_core::LlmError::Transport("connection reset".into()),
+    )]);
+    let fixture = ProtocolFixture::start(dir.path(), llm, ScriptedEnv::inert()).await;
+    let mut client = fixture.connect().await;
+    let session_id = submit(&mut client, dir.path(), "任务").await;
+
+    agent_seam::subscribe_synced(&mut client, session_id).await;
+    for expected in ["半", "句"] {
+        match next_session_event(&mut client).await {
+            Event::TokenDelta { delta, .. } => assert_eq!(delta, expected),
+            other => panic!("错误前必须先收到增量: {other:?}"),
+        }
+    }
+    match next_session_event(&mut client).await {
+        Event::Error { kind, message, .. } => {
+            assert_eq!(kind, nomic_core::EventErrorKind::Llm);
+            assert!(
+                message.contains("transport error: connection reset"),
+                "实际: {message}"
+            );
+        }
+        other => panic!("流中途失败必须发出错误事件: {other:?}"),
+    }
+
+    // 中途失败的回合未 checkpoint：半句增量不得成为助手消息
+    let steps = fixture.storage.steps(session_id).await.unwrap();
+    assert_eq!(steps.len(), 1, "失败不得追加助手步骤: {steps:?}");
+    let session = fixture
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.state(), SessionState::Pending);
+}
+
+#[tokio::test]
 async fn 请求未注册工具名_派发失败挂回待处理() {
     let dir = tempfile::tempdir().unwrap();
     let gate = agent_seam::gate();

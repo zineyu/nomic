@@ -33,8 +33,7 @@ pub enum LlmError {
     /// provider 拒绝或返回无法解析的响应。
     #[error("provider error: {0}")]
     Provider(String),
-    /// 部署未配置 provider：提交进入执行时显式失败（S5 起由
-    /// 配置加载与 rig 适配器消除本类别）。
+    /// 部署未配置 provider：提交进入执行时显式失败。
     #[error("no LLM provider configured")]
     Unconfigured,
     /// 达到上下文窗口上限：agent 停止，用户可分叉续跑。

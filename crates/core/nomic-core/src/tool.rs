@@ -58,8 +58,9 @@ pub struct ToolCall {
 ///
 /// 三个 `Ok` 载荷分支都回灌模型；语义不同——`Ok` 是正常输出，
 /// `Error` 是工具运行失败（消息面向模型与用户），`Rejected` 是
-/// 执行前的边界拒绝（如越出工作目录）。执行环境无法派发调用
-/// （进程无法拉起等）经 [`crate::EnvironmentError`] 传播，不在本类型内。
+/// 显式拒绝：调用被接受前或执行中被策略拒绝，结构化原因对用户
+/// 可见。执行环境无法派发调用（进程无法拉起等）经
+/// [`crate::EnvironmentError`] 传播，不在本类型内。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolResult {
@@ -73,7 +74,7 @@ pub enum ToolResult {
         /// 面向模型与用户的错误说明，原样回灌。
         message: String,
     },
-    /// 执行前的边界拒绝（如越出工作目录边界）。
+    /// 显式拒绝：调用被接受前或执行中被策略拒绝。
     Rejected {
         /// 面向用户的拒绝原因。
         reason: String,
@@ -179,10 +180,13 @@ pub trait Tool: Send + Sync {
 
     /// 执行工具。
     ///
-    /// 返回 `Ok` 为成功输出；`Err(ToolError)` 为工具自身报错
+    /// `working_dir` 为会话绑定的持久化工作区标识：相对路径经它解释
+    /// 坐标（绝对路径原样使用），具体语义由工具定义。返回 `Ok` 为
+    /// 成功输出；`Err(ToolError)` 为工具自身报错
     /// （经 [`ToolResult::Error`] 回灌模型）。
     fn call(
         &self,
+        working_dir: &std::path::Path,
         input: Self::Input,
     ) -> impl Future<Output = Result<Self::Output, ToolError>> + Send;
 }
@@ -223,7 +227,11 @@ mod trait_tests {
             true
         }
 
-        async fn call(&self, input: Self::Input) -> Result<Self::Output, ToolError> {
+        async fn call(
+            &self,
+            _working_dir: &std::path::Path,
+            input: Self::Input,
+        ) -> Result<Self::Output, ToolError> {
             Ok(GreetOutput {
                 greeting: format!("你好，{}", input.name),
             })
@@ -248,7 +256,11 @@ mod trait_tests {
             false
         }
 
-        async fn call(&self, _input: Self::Input) -> Result<Self::Output, ToolError> {
+        async fn call(
+            &self,
+            _working_dir: &std::path::Path,
+            _input: Self::Input,
+        ) -> Result<Self::Output, ToolError> {
             Err(ToolError::Failed("内部状态损坏".into()))
         }
     }
@@ -269,9 +281,12 @@ mod trait_tests {
 
     #[test]
     fn call_执行成功返回输出() {
-        let output = futures::executor::block_on(GreetTool.call(GreetInput {
-            name: "nomic".into(),
-        }))
+        let output = futures::executor::block_on(GreetTool.call(
+            std::path::Path::new("/"),
+            GreetInput {
+                name: "nomic".into(),
+            },
+        ))
         .unwrap();
         assert_eq!(output.greeting, "你好，nomic");
     }
@@ -279,9 +294,10 @@ mod trait_tests {
     #[test]
     fn 工具自身报错回灌为_error_分支且与成功_拒绝区分() {
         // 工具自身报错：Err(ToolError) → ToolResult::Error 回灌模型
-        let tool_error =
-            futures::executor::block_on(AlwaysFailTool.call(GreetInput { name: "x".into() }))
-                .unwrap_err();
+        let tool_error = futures::executor::block_on(
+            AlwaysFailTool.call(std::path::Path::new("/"), GreetInput { name: "x".into() }),
+        )
+        .unwrap_err();
         let result = ToolResult::from(tool_error);
         let json = serde_json::to_string(&result).unwrap();
         let decoded = serde_json::from_str::<ToolResult>(&json).unwrap();
@@ -289,7 +305,7 @@ mod trait_tests {
         // 三层各自可区分
         assert!(matches!(ToolResult::ok("o"), ToolResult::Ok { .. }));
         assert!(matches!(
-            ToolResult::rejected("越界"),
+            ToolResult::rejected("被策略拒绝"),
             ToolResult::Rejected { .. }
         ));
     }

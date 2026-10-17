@@ -16,6 +16,7 @@ pub mod step;
 pub mod storage;
 pub mod submission;
 pub mod tool;
+pub mod tool_registry;
 pub mod tree;
 
 pub use error::{EnvironmentError, LlmError, StorageError};
@@ -30,4 +31,5 @@ pub use step::Step;
 pub use storage::Storage;
 pub use submission::{Acceptance, SessionTarget, Submission};
 pub use tool::{Tool, ToolCall, ToolError, ToolName, ToolResult, ToolSpec};
+pub use tool_registry::{ToolRegistry, UnknownTool};
 pub use tree::{SessionTree, SessionTreeSnapshot, TreeError};

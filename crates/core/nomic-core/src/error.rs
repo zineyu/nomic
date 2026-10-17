@@ -3,6 +3,8 @@
 //! 每个边界一个错误类型，变体即失败类别；调用方按类别决定
 //! 处理策略（如重试只覆盖 [`LlmError::Transport`]）。
 
+use crate::tool::ToolName;
+
 /// 存储层故障。
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -52,6 +54,9 @@ pub enum EnvironmentError {
     /// 环境 IO 故障。
     #[error("environment io error: {0}")]
     Io(String),
+    /// 派发目标工具未注册：适配器请求了未声明的工具，协议违约。
+    #[error("unknown tool requested: {0}")]
+    UnknownTool(ToolName),
 }
 
 #[cfg(test)]

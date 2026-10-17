@@ -1,7 +1,7 @@
 //! 会话步骤：checkpoint 的持久化单元。
 //!
 //! agent loop 每步完成即落库一个 [`Step`]；崩溃恢复与用户 resume
-//! 走同一条回放路径，事件序列与落库步骤一一对应。
+//! 走同一条回放路径；事件与 checkpoint 步骤一一对应（流式增量除外）。
 
 use serde::{Deserialize, Serialize};
 

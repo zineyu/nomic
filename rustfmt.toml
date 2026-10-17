@@ -2,5 +2,6 @@
 # 等 nightly-only 选项刻意不启用，避免工具链分裂）。
 edition = "2024"
 max_width = 100
+newline_style = "Unix"
 use_field_init_shorthand = true
 use_try_shorthand = true

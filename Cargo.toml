@@ -24,8 +24,9 @@ rust_2018_idioms = { level = "deny", priority = -1 }
 unused_qualifications = "deny"
 trivial_casts = "deny"
 trivial_numeric_casts = "deny"
-missing_debug_implementations = "warn"
-missing_docs = "warn"
+missing_debug_implementations = "deny"
+missing_docs = "deny"
+unreachable_pub = "deny"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
@@ -33,9 +34,19 @@ pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
 
-# pedantic 中噪音过大的文档类 lint，允许（文档应写，但不强制每个错误类型成文）
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
+# 错误传播：可能失败的公共接口必须写明失败条件
+missing_errors_doc = "deny"
+# panic 属于契约的一部分：可能 panic 的公共接口必须写明触发条件
+missing_panics_doc = "deny"
+
+# 禁止调试残留：提交的代码不得输出到 stdout 或保留待办标记
+dbg_macro = "deny"
+print_stdout = "deny"
+todo = "deny"
+unimplemented = "deny"
+# 屏蔽 lint 必须给出理由，禁止无说明的 #[allow]
+allow_attributes_without_reason = "deny"
+
 # 模块名重复在领域建模中常常是可读性更好的选择
 module_name_repetitions = "allow"
 # 每个返回值的函数都标 #[must_use] 过于繁琐

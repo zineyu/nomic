@@ -10,7 +10,7 @@
 一切操作在 devenv 环境内进行（不要在环境外安装或运行项目依赖）：
 
 - 进入环境：`devenv shell`
-- 提交前必须通过 `check`（与 CI 等价的完整检查：fmt / size / clippy / test / doctest / doc / deny / audit / machete / taplo / typos，定义在 `devenv.nix`）
+- 提交前必须通过 `check`（与 CI 等价的完整检查：fmt / size / standards / clippy / test / doctest / doc / deny / audit / machete / taplo / typos，定义在 `devenv.nix`）
 - 常用单步：
   - Build: `cargo build --workspace --all-features --locked`
   - Format: `cargo fmt --all`
@@ -19,10 +19,16 @@
 
 ## Code Style
 
+- 编码规范见 `STANDARD.md`；其中可执行部分由 `check` 强制，包含 `scripts/check_standards.py` 的结构检查
 - Formatter: `rustfmt`（`rustfmt.toml`）；Linter: `clippy`（`clippy.toml`，msrv 1.97）
 - 严格 workspace lints（`Cargo.toml` `[workspace.lints]`）：`unsafe_code = "forbid"`，clippy `all` / `pedantic` / `nursery` / `cargo` 全部 deny
 - TOML: `taplo fmt`（`taplo.toml`）；拼写: `typos`（白名单 `_typos.toml`，误报时把词加入其中）
 - 单文件 800 行上限（`scripts/check-file-size.sh` 棘轮门禁）
+
+## TODO
+
+- 工作中发现、但不在当前 change 范围内的改进与重构记入 `TODO.md`
+- 条目必须写清现状、问题、期望结果、建议方案与验收标准；完成后删除条目
 
 ## Testing
 

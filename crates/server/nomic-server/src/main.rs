@@ -5,7 +5,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use nomic_server::daemon::{self, UnconfiguredLlm};
+use nomic_ai::RigAdapter;
+use nomic_server::daemon;
 use nomic_server::environment::LocalEnvironment;
 use nomic_server::ipc::{self, IpcServer};
 use nomic_server::storage::SQLiteStorage;
@@ -129,7 +130,7 @@ async fn serve_async(
         .map_err(|error| format!("打开存储失败: {error}"))?;
     let server = IpcServer::new(
         Arc::new(storage),
-        Arc::new(UnconfiguredLlm),
+        Arc::new(RigAdapter::unconfigured()),
         Arc::new(LocalEnvironment::new()),
     );
     // 先绑定再写 pid：绑定失败的第二实例不得覆盖活 daemon 的 pid

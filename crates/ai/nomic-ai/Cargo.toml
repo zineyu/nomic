@@ -1,11 +1,33 @@
 [package]
 name = "nomic-ai"
-description = "nomic rig-core LLM 适配层（骨架，适配器在 S5 实现）"
+description = "nomic 的 rig-core LLM 适配层与 provider 配置"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[features]
+# 测试 seam：以 OpenAI Chat SSE 帧驱动真实 wire 编解码的剧本化适配器。
+testing = ["rig-core/test-utils"]
+
+[dependencies]
+futures-util = "0.3.31"
+nomic-core = { path = "../../core/nomic-core", version = "0.4.0" }
+rig-core = { version = "=0.44.0", default-features = false, features = [
+  "reqwest",
+  "rustls",
+] }
+serde_json = "1.0.140"
+thiserror = "2.0.12"
+
+[dev-dependencies]
+rig-core = { version = "=0.44.0", default-features = false, features = [
+  "reqwest",
+  "rustls",
+  "test-utils",
+] }
+tokio = { version = "1.53.3", features = ["macros", "rt"] }
 
 [lints]
 workspace = true

@@ -33,9 +33,10 @@ pub enum LlmError {
     /// provider 拒绝或返回无法解析的响应。
     #[error("provider error: {0}")]
     Provider(String),
-    /// 部署未配置 provider：提交进入执行时显式失败。
-    #[error("no LLM provider configured")]
-    Unconfigured,
+    /// 部署未配置 provider：提交进入执行时显式失败。载荷是面向
+    /// 用户的修正指引（由配置边界给出，领域层不解释环境变量名）。
+    #[error("no LLM provider configured: {0}")]
+    Unconfigured(String),
     /// 达到上下文窗口上限：agent 停止，用户可分叉续跑。
     #[error("context window limit reached")]
     ContextLimit,

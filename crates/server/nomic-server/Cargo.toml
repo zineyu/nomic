@@ -14,6 +14,7 @@ workspace = true
 clap = { version = "4.5.55", features = ["derive"] }
 futures-util = "0.3.31"
 nix = { version = "0.30.1", features = ["fs", "process", "signal"] }
+nomic-ai = { path = "../../ai/nomic-ai", version = "0.4.0" }
 nomic-core = { path = "../../core/nomic-core", version = "0.4.0" }
 rusqlite = { version = "0.40.2", default-features = false, features = [
   "bundled",

@@ -223,20 +223,3 @@ async fn wait_exit(pid: i32) -> Result<(), StopError> {
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 }
-
-/// S5 之前的 LLM 组合：部署未配置 provider 时，会话进入执行
-/// 显式失败（`LlmError::Unconfigured`），不静默兜底；S5 以
-/// rig 适配器替换本类型。
-#[derive(Debug, Clone, Copy, Default)]
-pub struct UnconfiguredLlm;
-
-impl nomic_core::LlmAdapter for UnconfiguredLlm {
-    async fn respond(
-        &self,
-        _session: nomic_core::SessionId,
-        _messages: &[nomic_core::Message],
-        _tools: &[nomic_core::ToolSpec],
-    ) -> Result<nomic_core::LlmEventStream, nomic_core::LlmError> {
-        Err(nomic_core::LlmError::Unconfigured)
-    }
-}

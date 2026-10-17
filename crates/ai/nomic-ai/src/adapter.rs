@@ -484,6 +484,69 @@ mod tests {
         assert!(!rendered.contains(KEY), "实际: {rendered}");
     }
 
+    /// 只有增量、没有结束帧的 SSE 响应体（模拟流中途断开）。
+    fn truncated_sse_body() -> String {
+        let chunk = json!({
+            "id": "chatcmpl-truncated",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "test-model",
+            "choices": [{ "index": 0, "delta": { "content": "半" }, "finish_reason": null }],
+        });
+        format!("data: {chunk}\n\n")
+    }
+
+    #[tokio::test]
+    async fn 流中途截断_增量之后给传输错误并终止() {
+        let http = SequencedHttpClient::new(vec![MockHttpResponse::success_typed(
+            truncated_sse_body(),
+            "text/event-stream",
+        )]);
+        let config = OpenAIConfig::new(KEY).with_base_url("http://test.invalid/v1");
+        let adapter = RigAdapter::from_model(config.connect(http).chat("test-model"));
+        let messages = [system(), user("任务")];
+        let mut stream = adapter
+            .respond(SessionId::new(), &messages, &[])
+            .await
+            .unwrap();
+        let mut seen_token = false;
+        let mut failure = None;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(LlmEvent::Token(text)) => {
+                    assert_eq!(text, "半");
+                    seen_token = true;
+                }
+                Ok(other) => panic!("截断流不应有其他事件: {other:?}"),
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+        assert!(seen_token, "截断前必须已经产出增量");
+        match failure.expect("截断必须给出错误") {
+            LlmError::Transport(message) => {
+                assert!(message.contains("中断"), "实际: {message}");
+            }
+            other => panic!("截断必须是传输错误: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn 非法参数_原文保留为_json_字符串() {
+        let function = ToolFunction::parse(RigToolName::new("read").unwrap(), "{\"path\": \"a");
+        assert!(function.invalid_arguments.is_some(), "前置：参数非法");
+        let call = RigToolCall::new(CallId::from_wire("call_x"), function);
+        let domain = domain_call(call);
+        assert_eq!(domain.tool.as_str(), "read");
+        assert_eq!(
+            domain.arguments,
+            serde_json::Value::String("{\"path\": \"a".to_owned())
+        );
+        assert_ne!(domain.id.to_string(), "call_x");
+    }
+
     #[test]
     fn 未配置适配器请求显式失败并给出指引() {
         let adapter = RigAdapter::unconfigured();

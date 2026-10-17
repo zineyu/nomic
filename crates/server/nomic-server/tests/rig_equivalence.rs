@@ -15,8 +15,9 @@ use nomic_ai::testing::{
 };
 use nomic_core::{
     Acceptance, Event, ExecutionEnvironment, LlmAdapter, Message, RequestId, Role, SessionId,
-    SessionState, SessionTarget, Step, Storage, Submission, ToolResult,
+    SessionState, SessionTarget, Step, Storage, Submission, ToolName, ToolResult,
 };
+use nomic_server::agent::{DEFAULT_SYSTEM_PROMPT, assemble_system_prompt};
 use nomic_server::environment::LocalEnvironment;
 
 /// 提交一条用户消息到新会话，返回受理的会话 id。
@@ -328,4 +329,257 @@ async fn api_key_不进入任何落盘内容() {
         !text.contains(SCRIPTED_API_KEY),
         "SQLite 落盘内容含 API key"
     );
+}
+
+#[tokio::test]
+async fn rig_适配器重跑系统提示注入_首消息等于组装提示() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("AGENTS.md"), "项目规约：禁止 unwrap").unwrap();
+    std::fs::write(dir.path().join("CLAUDE.md"), "回答使用中文").unwrap();
+    let llm = ScriptedRig::new(vec![RigTurn::reply(["收到"])]);
+    let fixture = ProtocolFixture::start(dir.path(), llm, ScriptedEnv::inert()).await;
+    let mut client = fixture.connect().await;
+    let session = submit_new(&mut client, dir.path(), "继续").await;
+    wait_idle(&fixture, session).await;
+
+    let Message::System { text, .. } = &fixture.llm.captured()[0].messages[0] else {
+        panic!("请求历史首条必须是系统提示");
+    };
+    assert_eq!(text, &assemble_system_prompt(dir.path()).unwrap());
+    assert!(text.starts_with(DEFAULT_SYSTEM_PROMPT.trim_end()));
+    assert!(text.contains("## AGENTS.md\n\n项目规约：禁止 unwrap"));
+    assert!(text.contains("## CLAUDE.md\n\n回答使用中文"));
+    assert!(
+        text.find("## AGENTS.md").unwrap() < text.find("## CLAUDE.md").unwrap(),
+        "AGENTS.md 节必须先于 CLAUDE.md 节"
+    );
+    for spec in LocalEnvironment::new().tool_specs() {
+        assert!(
+            !text.contains(spec.name.as_str()),
+            "系统提示不得出现工具名 {}",
+            spec.name
+        );
+    }
+}
+
+#[tokio::test]
+async fn rig_适配器重跑三层结果回灌() {
+    let dir = tempfile::tempdir().unwrap();
+    let llm = ScriptedRig::new(vec![
+        RigTurn::Reply(vec![
+            RigEvent::tool_call("c1", "read", serde_json::json!({"path": "a.txt"})),
+            RigEvent::tool_call("c2", "read", serde_json::json!({"path": "b.txt"})),
+            RigEvent::tool_call("c3", "read", serde_json::json!({"path": "c.txt"})),
+        ]),
+        RigTurn::reply(["完成"]),
+    ]);
+    let env = ScriptedEnv::new(
+        vec![
+            Ok(ToolResult::ok("标准输出")),
+            Ok(ToolResult::error("文件不存在")),
+            Ok(ToolResult::rejected("结构化拒绝原因：命令被策略拒绝")),
+        ],
+        LocalEnvironment::new().tool_specs().to_vec(),
+    );
+    let fixture = ProtocolFixture::start(dir.path(), llm, env).await;
+    let mut client = fixture.connect().await;
+    let session_id = submit_new(&mut client, dir.path(), "跑三个工具").await;
+    wait_idle(&fixture, session_id).await;
+
+    let steps = fixture.storage.steps(session_id).await.unwrap();
+    let finished: Vec<&ToolResult> = steps
+        .iter()
+        .filter_map(|step| match step {
+            Step::ToolCallFinished { result, .. } => Some(result),
+            _ => None,
+        })
+        .collect();
+    assert!(matches!(finished[0], ToolResult::Ok { output } if output == "标准输出"));
+    assert!(matches!(finished[1], ToolResult::Error { message } if message == "文件不存在"));
+    assert!(
+        matches!(finished[2], ToolResult::Rejected { reason } if reason.contains("结构化拒绝原因"))
+    );
+
+    // 回灌：第二轮请求历史含三条工具消息，顺序与调用一致
+    let captured = fixture.llm.captured();
+    assert_eq!(captured.len(), 2);
+    let tool_messages: Vec<&Message> = captured[1]
+        .messages
+        .iter()
+        .filter(|message| message.role() == Role::Tool)
+        .collect();
+    assert_eq!(tool_messages.len(), 3);
+    assert_eq!(tool_messages[0].text(), "标准输出");
+    assert_eq!(tool_messages[1].text(), "文件不存在");
+    assert!(tool_messages[2].text().contains("结构化拒绝原因"));
+
+    // wire 层：三条工具结果与三个调用 id 一一配对
+    let body: serde_json::Value =
+        serde_json::from_str(fixture.llm.sent()[1].body.as_str()).unwrap();
+    let messages = body["messages"].as_array().unwrap();
+    let call_ids: Vec<&str> = messages
+        .iter()
+        .filter_map(|message| message["tool_calls"].as_array())
+        .flatten()
+        .filter_map(|call| call["id"].as_str())
+        .collect();
+    let result_ids: Vec<&str> = messages
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .filter_map(|message| message["tool_call_id"].as_str())
+        .collect();
+    assert_eq!(call_ids, result_ids, "wire 上调用与结果 id 配对");
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .map(|message| message["content"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        ["标准输出", "文件不存在", "结构化拒绝原因：命令被策略拒绝"]
+    );
+}
+
+#[tokio::test]
+async fn rig_适配器重跑空回复_空助手消息落库且静止() {
+    let dir = tempfile::tempdir().unwrap();
+    let llm = ScriptedRig::new(vec![RigTurn::Reply(Vec::new())]);
+    let fixture = ProtocolFixture::start(dir.path(), llm, ScriptedEnv::inert()).await;
+    let mut client = fixture.connect().await;
+    let session_id = submit_new(&mut client, dir.path(), "任务").await;
+    wait_idle(&fixture, session_id).await;
+
+    let steps = fixture.storage.steps(session_id).await.unwrap();
+    match &steps[..] {
+        [Step::Message(user), Step::Message(assistant)] => {
+            assert_eq!(user.role(), Role::User);
+            assert_eq!(assistant.text(), "");
+            assert!(assistant.tool_calls().is_empty());
+        }
+        other => panic!("空回复必须落库空助手消息: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn rig_适配器重跑未注册工具_派发失败挂回待处理() {
+    let dir = tempfile::tempdir().unwrap();
+    let llm = ScriptedRig::new(vec![RigTurn::Reply(vec![RigEvent::tool_call(
+        "c1",
+        "nope",
+        serde_json::json!({}),
+    )])]);
+    let env = ScriptedEnv::new(
+        vec![Err(nomic_core::EnvironmentError::UnknownTool(
+            ToolName::new("nope"),
+        ))],
+        Vec::new(),
+    );
+    let fixture = ProtocolFixture::start(dir.path(), llm, env).await;
+    let mut client = fixture.connect().await;
+    let session_id = submit_new(&mut client, dir.path(), "任务").await;
+
+    agent_seam::subscribe_synced(&mut client, session_id).await;
+    // 助手消息完成 → 调用开始 → 派发错误
+    match next_session_event(&mut client).await {
+        Event::MessageCompleted { message, .. } => assert_eq!(message.tool_calls().len(), 1),
+        other => panic!("必须先完成助手消息: {other:?}"),
+    }
+    match next_session_event(&mut client).await {
+        Event::ToolCallStarted { call, .. } => assert_eq!(call.tool.as_str(), "nope"),
+        other => panic!("必须收到调用开始: {other:?}"),
+    }
+    match next_session_event(&mut client).await {
+        Event::Error { kind, message, .. } => {
+            assert_eq!(kind, nomic_core::EventErrorKind::Environment);
+            assert!(
+                message.contains("unknown tool requested"),
+                "实际: {message}"
+            );
+        }
+        other => panic!("末事件必须是派发错误: {other:?}"),
+    }
+
+    let steps = fixture.storage.steps(session_id).await.unwrap();
+    assert_eq!(steps.len(), 4, "派发故障必须闭合 in-flight 调用: {steps:?}");
+    assert!(matches!(
+        steps.last(),
+        Some(Step::ToolCallInterrupted { .. })
+    ));
+    let session = fixture
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.state(), SessionState::Pending);
+}
+
+#[tokio::test]
+async fn rig_适配器重跑派发故障_闭合_interrupted_重驱恢复() {
+    let dir = tempfile::tempdir().unwrap();
+    let llm = ScriptedRig::new(vec![
+        RigTurn::Reply(vec![RigEvent::tool_call(
+            "c1",
+            "read",
+            serde_json::json!({"path": "a.txt"}),
+        )]),
+        RigTurn::reply(["换个方式"]),
+    ]);
+    let env = ScriptedEnv::new(
+        vec![Err(nomic_core::EnvironmentError::Spawn(
+            "进程无法拉起".into(),
+        ))],
+        Vec::new(),
+    );
+    let fixture = ProtocolFixture::start(dir.path(), llm, env).await;
+    let mut client = fixture.connect().await;
+    let session_id = submit_new(&mut client, dir.path(), "任务").await;
+
+    agent_seam::subscribe_synced(&mut client, session_id).await;
+    // 助手消息完成 → 调用开始 → 派发错误
+    let _ = next_session_event(&mut client).await;
+    let _ = next_session_event(&mut client).await;
+    match next_session_event(&mut client).await {
+        Event::Error { kind, message, .. } => {
+            assert_eq!(kind, nomic_core::EventErrorKind::Environment);
+            assert!(message.contains("failed to spawn"), "实际: {message}");
+        }
+        other => panic!("末事件必须是派发故障: {other:?}"),
+    }
+    let steps = fixture.storage.steps(session_id).await.unwrap();
+    assert!(matches!(
+        steps.last(),
+        Some(Step::ToolCallInterrupted {
+            partial_output: None,
+            ..
+        })
+    ));
+    let session = fixture
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.state(), SessionState::Pending);
+
+    // 重驱：interrupted 说明回灌模型，会话续跑至静止
+    client.resume(session_id).await.unwrap();
+    wait_idle(&fixture, session_id).await;
+
+    let captured = fixture.llm.captured();
+    assert_eq!(captured.len(), 2);
+    let tool_message = captured[1]
+        .messages
+        .iter()
+        .find(|message| matches!(message, Message::Tool { .. }))
+        .expect("重驱回放必须含 interrupted 回灌");
+    assert!(
+        matches!(
+            tool_message,
+            Message::Tool { result: ToolResult::Error { message }, .. }
+                if message.contains("no output committed")
+        ),
+        "interrupted 回灌必须为错误层: {tool_message:?}"
+    );
+    let steps = fixture.storage.steps(session_id).await.unwrap();
+    assert_eq!(steps.len(), 5, "续跑助手消息必须落库: {steps:?}");
 }

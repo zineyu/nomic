@@ -48,6 +48,8 @@ pub struct Config {
     socket: PathBuf,
     storage: PathBuf,
     provider: Option<ProviderConfig>,
+    /// socket 路径来自显式配置（环境变量或文件），不随 `data_dir` 派生。
+    socket_configured: bool,
     /// 存储路径来自显式配置（环境变量或文件），不随 `data_dir` 派生。
     storage_configured: bool,
 }
@@ -75,10 +77,22 @@ impl Config {
         config_path: &Path,
     ) -> Result<Self, ConfigError> {
         let file: FileConfig = match file {
-            Some(text) => toml::from_str(text).map_err(|source| ConfigError::Parse {
-                path: config_path.to_path_buf(),
-                source,
-            })?,
+            Some(text) => match toml::from_str(text) {
+                Ok(file) => file,
+                // provider.api_key 是明文密钥；解析错误不得回显文件正文
+                Err(mut source) => {
+                    let location = source.span().map_or_else(
+                        || "位置未知".to_owned(),
+                        |span| line_column(text, span.start),
+                    );
+                    source.set_input(None);
+                    return Err(ConfigError::Parse {
+                        path: config_path.to_path_buf(),
+                        location,
+                        source: Box::new(source),
+                    });
+                }
+            },
             None => FileConfig::default(),
         };
         let file_provider = file.provider.unwrap_or_default();
@@ -94,9 +108,10 @@ impl Config {
             .map_or_else(|| default_data_dir(env), |raw| expand_tilde(&raw, &home));
         let socket_configured = pick(env, env_names::SOCKET, file.socket);
         let storage_configured = pick(env, env_names::STORAGE, file.storage);
-        let socket = socket_configured.map_or_else(
+        let socket_explicit = socket_configured.as_ref();
+        let socket = socket_explicit.map_or_else(
             || data_dir.join("nomic.sock"),
-            |raw| expand_tilde(&raw, &home),
+            |raw| expand_tilde(raw, &home),
         );
         let storage_explicit = storage_configured.as_ref();
         let storage = storage_explicit
@@ -107,6 +122,7 @@ impl Config {
             socket,
             storage,
             provider,
+            socket_configured: socket_explicit.is_some(),
             storage_configured: storage_explicit.is_some(),
         })
     }
@@ -119,7 +135,7 @@ impl Config {
             if !self.storage_configured {
                 self.storage = dir.join("nomic.db");
             }
-            if socket.is_none() {
+            if !self.socket_configured && socket.is_none() {
                 self.socket = dir.join("nomic.sock");
             }
             self.data_dir = dir;
@@ -168,9 +184,14 @@ fn resolve_provider(
     let api_key = api_key.ok_or_else(|| ConfigError::MissingApiKey {
         path: config_path.to_path_buf(),
     })?;
-    let api_key = ApiKey::parse(api_key).map_err(|source| ConfigError::Provider {
-        path: config_path.to_path_buf(),
-        source,
+    let api_key = ApiKey::parse(api_key).map_err(|source| match source {
+        ProviderConfigError::MissingApiKey => ConfigError::MissingApiKey {
+            path: config_path.to_path_buf(),
+        },
+        source => ConfigError::Provider {
+            path: config_path.to_path_buf(),
+            source,
+        },
     })?;
     let model = model.ok_or_else(|| ConfigError::Provider {
         path: config_path.to_path_buf(),
@@ -184,9 +205,30 @@ fn resolve_provider(
         })
 }
 
-/// 环境变量优先于文件值。
+/// 环境变量优先于文件值；空值（含纯空白）视为未设置。
 fn pick(env: &impl EnvSource, key: &str, file: Option<String>) -> Option<String> {
-    env.get(key).or(file).filter(|value| !value.is_empty())
+    env.get(key)
+        .filter(|value| !value.trim().is_empty())
+        .or(file)
+        .filter(|value| !value.trim().is_empty())
+}
+
+/// 字节偏移对应的行号与列号（均从 1 开始）。
+fn line_column(text: &str, offset: usize) -> String {
+    let mut line = 1_usize;
+    let mut column = 1_usize;
+    for (index, character) in text.char_indices() {
+        if index >= offset {
+            break;
+        }
+        if character == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    format!("第 {line} 行第 {column} 列")
 }
 
 /// 展开路径开头的 `~/`。
@@ -248,13 +290,15 @@ pub enum ConfigError {
         source: std::io::Error,
     },
     /// 配置文件不是合法 TOML 或含未知字段。
-    #[error("解析配置失败 {path}: {source}")]
+    #[error("解析配置失败 {path}（{location}）：{source}")]
     Parse {
         /// 配置文件路径。
         path: PathBuf,
-        /// TOML 解析错误。
+        /// 出错位置（行/列）。
+        location: String,
+        /// TOML 解析错误；正文已被剥离，不回显密钥。
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     /// provider 部分配置但缺少 api_key。
     #[error("provider 缺少 api_key：设置 {key} 或在 {path} 写入 provider.api_key", key = env_names::API_KEY)]

@@ -1,0 +1,43 @@
+name: LGTM Auto Merge
+
+on:
+  issue_comment:
+    types: [created]
+
+# 同一 PR 的多次 /lgtm 评论串行执行，避免并发合并
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    name: Comment trigger merge
+    # 仅处理 PR 评论，且评论者必须是仓库 owner
+    if: github.event.issue.pull_request && github.event.comment.author_association == 'OWNER'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_URL: ${{ github.event.issue.pull_request.html_url }}
+    steps:
+      - name: Check trigger phrase
+        id: trigger
+        uses: step-security/pull-request-comment-trigger@v2
+        with:
+          trigger: '/lgtm'
+          reaction: '+1'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get PR head SHA
+        if: steps.trigger.outputs.triggered == 'true'
+        id: pr
+        run: echo "head_sha=$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid)" >> "$GITHUB_OUTPUT"
+
+      # 启用 auto-merge：分支保护要求的 CI（check 任务）通过后由 GitHub 自动合并；
+      # match-head-commit 保证评论后 PR 又推了新提交时不会合并意外的代码
+      - name: Enable auto merge
+        if: steps.trigger.outputs.triggered == 'true'
+        run: gh pr merge "$PR_URL" --rebase --auto --delete-branch --match-head-commit "${{ steps.pr.outputs.head_sha }}"

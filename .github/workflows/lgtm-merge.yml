@@ -24,7 +24,7 @@ jobs:
     steps:
       - name: Check trigger phrase
         id: trigger
-        uses: step-security/pull-request-comment-trigger@v2
+        uses: step-security/pull-request-comment-trigger@v1
         with:
           trigger: '/lgtm'
           reaction: '+1'
